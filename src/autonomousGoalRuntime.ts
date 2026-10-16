@@ -25,6 +25,7 @@ const MAX_AUTONOMOUS_SUPERVISOR_MESSAGE_IDS = 32;
 const MAX_AUTONOMOUS_SUPERVISOR_ROUTE_FIELD_CHARS = 256;
 const AUTONOMOUS_SUPERVISOR_SETTING_PREFIX = "autonomy:supervisor:";
 const AUTONOMY_CONTINUE_WAKE_REASON = "provider requested continuation";
+const AUTONOMY_RECOVERY_WAKE_REASON = "recoverable execution failure; inspect, repair, qualify, and resume the original goal";
 
 export type AutonomousGoalStatus = "active" | "complete" | "blocked" | "cancelled" | "budget_exhausted";
 
@@ -359,13 +360,15 @@ function boundedEvidence(goal: AutonomousGoal, evidence: string): string[] {
 /**
  * A claimed wake is deliberately never replayed after restart: the provider
  * boundary may already have been crossed before the process died. Reconcile
- * the orphaned ordinary Run and terminate the goal with bounded evidence.
+ * the orphaned ordinary Run and wake one fresh cycle with bounded evidence.
  */
 function recoverUnreconciledWake(db: BridgeDb, goal: AutonomousGoal, receipt: any): void {
   db.runInTransaction(() => {
     const run = receipt.run_id ? db.getRun(receipt.run_id) : null;
     const evidence = "recovered claimed autonomous wake without reconciliation; provider result not replayed";
-    const status = run?.status === "cancelled" ? "cancelled" : "blocked";
+    const status = run?.status === "cancelled"
+      ? "cancelled"
+      : goal.cycle + 1 >= goal.maxCycles ? "budget_exhausted" : "active";
     if (run && run.status !== "cancelled") {
       db.raw.prepare("UPDATE bridge_runs SET status = 'failed', ended_at = CURRENT_TIMESTAMP, error = ? WHERE run_id = ? AND status IN ('running', 'done')")
         .run("autonomous wake orphaned during restart", run.run_id);
@@ -375,7 +378,13 @@ function recoverUnreconciledWake(db: BridgeDb, goal: AutonomousGoal, receipt: an
     db.raw.prepare("UPDATE autonomous_goals SET cycle = ?, status = ?, evidence_json = ?, updated_at = CURRENT_TIMESTAMP WHERE goal_id = ?")
       .run(goal.cycle + 1, status, JSON.stringify(boundedEvidence(goal, evidence)), goal.goalId);
     settleSupervisorInputsForRun(db, receipt.run_id ?? "", status === "cancelled" ? "cancelled" : "failed", "restart_recovery");
-    retirePendingSupervisorInputs(db, goal.goalId, "episode_terminal");
+    if (status === "active") {
+      // The provider boundary may have been crossed before the crash. Never
+      // replay that Run; wake a fresh cycle with durable evidence instead.
+      scheduleWake(db, goal.goalId, { key: `${goal.goalId}:wake:${goal.cycle + 1}`, reason: AUTONOMY_RECOVERY_WAKE_REASON });
+    } else {
+      retirePendingSupervisorInputs(db, goal.goalId, "episode_terminal");
+    }
   });
 }
 
@@ -415,9 +424,16 @@ function reconcile(
     if (error) {
       db.raw.prepare("UPDATE bridge_runs SET status = 'failed', ended_at = CURRENT_TIMESTAMP, error = ?, final_text_preview = COALESCE(?, final_text_preview) WHERE run_id = ? AND status IN ('running', 'done')")
         .run(error, responseText ?? null, runId);
+      const exhausted = goal.cycle + 1 >= goal.maxCycles;
       if (currentGoal.status === "active") {
-        db.raw.prepare("UPDATE autonomous_goals SET cycle = ?, status = 'blocked', evidence_json = ?, updated_at = CURRENT_TIMESTAMP WHERE goal_id = ?")
-          .run(goal.cycle + 1, JSON.stringify(nextEvidence), goal.goalId);
+        db.raw.prepare("UPDATE autonomous_goals SET cycle = ?, status = ?, evidence_json = ?, updated_at = CURRENT_TIMESTAMP WHERE goal_id = ?")
+          .run(goal.cycle + 1, exhausted ? "budget_exhausted" : "active", JSON.stringify(nextEvidence), goal.goalId);
+        if (!exhausted) {
+          // A failed operation is evidence, not a decision to abandon the
+          // owning goal. The next fresh cycle must diagnose current state,
+          // repair if authorised, then re-qualify before retrying.
+          scheduleWake(db, goal.goalId, { key: `${goal.goalId}:wake:${goal.cycle + 1}`, reason: AUTONOMY_RECOVERY_WAKE_REASON });
+        }
       }
       db.raw.prepare("UPDATE event_receipts SET status = 'failed', error_class = ?, result_reference = ? WHERE id = ? AND status = 'run_created'").run("provider_failure", runId, receipt.id);
       settleSupervisorInputsForRun(db, runId, "failed", "provider_failure");

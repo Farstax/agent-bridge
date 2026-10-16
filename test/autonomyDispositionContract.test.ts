@@ -105,10 +105,33 @@ describe("run-scoped autonomous disposition contract", () => {
       createAutonomousGoal(db, { goalId: "failure", prompt: "Do work", constraints: [], bot: "claude", maxCycles: 3 });
       await runNextAutonomousGoal(db, "failure", engineWithDisposition("done", "unused", { failAfterDisposition: true }));
 
-      expect(getAutonomousGoal(db, "failure").status).toBe("blocked");
+      expect(getAutonomousGoal(db, "failure")).toMatchObject({ status: "active", cycle: 1 });
+      expect(db.raw.prepare("SELECT COUNT(*) AS count FROM event_receipts WHERE source = 'autonomous' AND event_kind = 'goal_wake' AND status = 'received'").get()).toEqual({ count: 1 });
       const run = db.raw.prepare("SELECT status, error FROM bridge_runs ORDER BY started_at DESC LIMIT 1").get() as any;
       expect(run.status).toBe("failed");
       expect(run.error).toContain("provider failed after disposition");
+    } finally {
+      db.close();
+      removeDb(dbPath);
+    }
+  });
+
+  it("keeps a recoverable failure attached to the original goal and escalates only at its retry bound", async () => {
+    const { db, dbPath } = makeDb();
+    try {
+      createAutonomousGoal(db, { goalId: "bounded-recovery", prompt: "Repair CI and finish the merge", constraints: [], bot: "claude", maxCycles: 2 });
+      const failed = engineWithDisposition("done", "CI failed; repair is required", { failAfterDisposition: true });
+
+      await runNextAutonomousGoal(db, "bounded-recovery", failed);
+      const afterFirst = getAutonomousGoal(db, "bounded-recovery");
+      expect(afterFirst).toMatchObject({ status: "active", cycle: 1 });
+      expect(afterFirst.evidence.at(-1)).toContain("provider failed after disposition");
+      const recoveryWake = db.raw.prepare("SELECT payload_json FROM event_receipts WHERE source = 'autonomous' AND event_kind = 'goal_wake' AND status = 'received'").get() as any;
+      expect(JSON.parse(recoveryWake.payload_json).reason).toContain("recoverable execution failure");
+
+      await runNextAutonomousGoal(db, "bounded-recovery", failed);
+      expect(getAutonomousGoal(db, "bounded-recovery")).toMatchObject({ status: "budget_exhausted", cycle: 2 });
+      expect(failed.executeSurfaceNeutralTurn).toHaveBeenCalledTimes(2);
     } finally {
       db.close();
       removeDb(dbPath);

@@ -654,7 +654,7 @@ describe("autonomous goal production runtime", () => {
     removeDb(dbPath);
   });
 
-  it("fails closed after restart when a wake was claimed and its owning Run was left unreconciled", async () => {
+  it("does not replay an unknown provider attempt after restart, and resumes the original goal in a fresh cycle", async () => {
     const { db, dbPath } = makeDb();
     createAutonomousGoal(db, {
       goalId: "claimed-crash",
@@ -671,12 +671,16 @@ describe("autonomous goal production runtime", () => {
 
     const reopened = openDb(dbPath, { serviceId: "test-autonomous", runId: "process-after-claim-crash" });
     const provider = vi.fn();
-    await drainAutonomousGoal(reopened, "claimed-crash", makeEngine(provider, reopened));
+    await runNextAutonomousGoal(reopened, "claimed-crash", makeEngine(provider, reopened));
 
     expect(provider).not.toHaveBeenCalled();
-    expect(getAutonomousGoal(reopened, "claimed-crash")).toMatchObject({ status: "blocked", cycle: 1 });
+    expect(getAutonomousGoal(reopened, "claimed-crash")).toMatchObject({ status: "active", cycle: 1 });
     expect(reopened.raw.prepare("SELECT status FROM event_receipts WHERE id = ?").get(wake.id)).toEqual({ status: "failed" });
     expect(reopened.raw.prepare("SELECT status FROM bridge_runs WHERE run_id = ?").get(runId)).toEqual({ status: "failed" });
+
+    const recovered = makeEngine(vi.fn().mockResolvedValue(cycleOutput("done", "fresh recovery completed")), reopened);
+    await runNextAutonomousGoal(reopened, "claimed-crash", recovered);
+    expect(getAutonomousGoal(reopened, "claimed-crash")).toMatchObject({ status: "complete", cycle: 2 });
 
     reopened.close();
     removeDb(dbPath);

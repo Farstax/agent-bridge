@@ -113,7 +113,7 @@ describe("autonomous restart ownership contract (#366)", () => {
     expect(await runNextAutonomousGoal(db, "input-after-claim", { executeSurfaceNeutralTurn }, observer)).toBe(true);
     expect(executeSurfaceNeutralTurn).not.toHaveBeenCalled();
     expect(observer).not.toHaveBeenCalled();
-    expect(getAutonomousGoal(db, "input-after-claim")).toMatchObject({ status: "blocked", cycle: 1 });
+    expect(getAutonomousGoal(db, "input-after-claim")).toMatchObject({ status: "active", cycle: 1 });
     expect(db.raw.prepare("SELECT status, error_class FROM event_receipts WHERE id = ?").get(wake.id))
       .toEqual({ status: "failed", error_class: "restart_recovery" });
     expect(db.raw.prepare("SELECT status, error_class FROM event_receipts WHERE id = ?").get(input.id))
@@ -121,10 +121,10 @@ describe("autonomous restart ownership contract (#366)", () => {
     expect(db.raw.prepare("SELECT status FROM bridge_runs WHERE run_id = ?").get(runId)).toEqual({ status: "failed" });
     expect(db.raw.prepare("SELECT COUNT(*) AS count FROM bridge_runs WHERE chat_id = ?").get("autonomous:input-after-claim")).toEqual({ count: 1 });
     expect(db.raw.prepare(`SELECT COUNT(*) AS count FROM event_receipts
-      WHERE source = ? AND event_kind = ?`).get(AUTONOMOUS_EVENT_SOURCE, AUTONOMOUS_EVENT_KIND)).toEqual({ count: 1 });
-    expect(await runNextAutonomousGoal(db, "input-after-claim", { executeSurfaceNeutralTurn }, observer)).toBe(false);
-    expect(executeSurfaceNeutralTurn).not.toHaveBeenCalled();
-    expect(observer).not.toHaveBeenCalled();
+      WHERE source = ? AND event_kind = ?`).get(AUTONOMOUS_EVENT_SOURCE, AUTONOMOUS_EVENT_KIND)).toEqual({ count: 2 });
+    const recovered = { executeSurfaceNeutralTurn: vi.fn(async () => ({ text: "recovered" })) } as any;
+    expect(await runNextAutonomousGoal(db, "input-after-claim", recovered, observer)).toBe(true);
+    expect(recovered.executeSurfaceNeutralTurn).toHaveBeenCalledTimes(1);
 
     db.close();
     removeDb(dbPath);
