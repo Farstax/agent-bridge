@@ -27,6 +27,7 @@ describe("fresh-session execution contract", () => {
     expect(wrapped).toContain("external audience");
     expect(wrapped).toContain("directly block or are caused by the requested work");
     expect(wrapped).toContain("complete the unblocked work");
+    expect(wrapped).toContain("stops that unsafe operation, not the objective");
     expect(wrapped).toContain("Do not claim work was completed or verified unless it was");
 
     // SOUL still owns response style; the old minimal response contract stays suppressed.

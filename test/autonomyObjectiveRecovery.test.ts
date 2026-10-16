@@ -7,9 +7,11 @@ import { openDb, type BridgeDb } from "../src/db.js";
 import {
   AUTONOMOUS_EVENT_SOURCE,
   AUTONOMOUS_RUN_SURFACE,
+  AUTONOMOUS_SUPERVISOR_INPUT_KIND,
   createAutonomousGoal,
   drainAutonomousGoal,
   getAutonomousGoal,
+  recordAutonomousSupervisorInput,
   runNextAutonomousGoal,
 } from "../src/autonomousGoalRuntime.js";
 
@@ -204,6 +206,56 @@ describe("autonomous objective recovery (#1021)", () => {
       removeDb(dbPath);
     }
   });
+
+  it("carries supervisor steering claimed by a failed Run into the recovery cycle", async () => {
+    const { db, dbPath } = makeDb();
+    try {
+      createAutonomousGoal(db, { goalId: "steer", prompt: "Deploy release R", constraints: [], bot: "claude", maxCycles: 3 });
+      expect(recordAutonomousSupervisorInput(db, { goalId: "steer", text: "do not deploy until the migration is approved", idempotencyKey: "steer-1" })).toBe(true);
+      const prompts: string[] = [];
+      let calls = 0;
+      const engine = {
+        executeSurfaceNeutralTurn: vi.fn(async (input: any) => {
+          prompts.push(input.prompt);
+          calls += 1;
+          if (calls === 1) throw new Error("provider exited with code 1");
+          declare(input.prompt, "blocked", "decision");
+          return { text: "Holding deployment for migration approval." };
+        }),
+      } as any;
+
+      await drainAutonomousGoal(db, "steer", engine);
+
+      expect(prompts).toHaveLength(2);
+      expect(prompts[0]).toContain("do not deploy until the migration is approved");
+      expect(prompts[1]).toContain("do not deploy until the migration is approved");
+      expect(getAutonomousGoal(db, "steer")).toMatchObject({ status: "blocked", cycle: 2 });
+      expect(db.raw.prepare("SELECT status FROM event_receipts WHERE source = ? AND event_kind = ?").get(AUTONOMOUS_EVENT_SOURCE, AUTONOMOUS_SUPERVISOR_INPUT_KIND))
+        .toEqual({ status: "completed" });
+    } finally {
+      db.close();
+      removeDb(dbPath);
+    }
+  });
+
+  it.each(["401 Unauthorized", "Invalid API key · Please run /login", "Authentication required"])(
+    "escalates provider authentication failure %j as an objective blocker without retrying",
+    async (message) => {
+      const { db, dbPath } = makeDb();
+      try {
+        createAutonomousGoal(db, { goalId: "auth", prompt: "Deploy release R", constraints: [], bot: "claude", maxCycles: 3 });
+        const engine = { executeSurfaceNeutralTurn: vi.fn(async () => { throw new Error(message); }) } as any;
+
+        await drainAutonomousGoal(db, "auth", engine);
+
+        expect(getAutonomousGoal(db, "auth")).toMatchObject({ status: "blocked", cycle: 1 });
+        expect(engine.executeSurfaceNeutralTurn).toHaveBeenCalledTimes(1);
+      } finally {
+        db.close();
+        removeDb(dbPath);
+      }
+    },
+  );
 
   it("retries a Run that ended without a disposition instead of abandoning the goal", async () => {
     const { db, dbPath } = makeDb();

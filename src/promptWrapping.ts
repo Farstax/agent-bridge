@@ -62,6 +62,7 @@ const SESSION_EXECUTION_CONTRACT = [
   "- When progress depends on a waitable process such as CI, deployment, provisioning, a build or another bounded external operation, wait or poll when available tools permit it and continue from the result.",
   "- If required bounded work is still pending and keeping this Run open is impractical, and AGENT_BRIDGE_WAIT_COMMAND is available, invoke the advertised Agent Bridge wait helper before finishing instead of merely promising to check later. Never use it for user input/approval or unbounded monitoring.",
   "- A fixable problem encountered while pursuing the objective is part of the work, not a blocker, when it is in scope.",
+  "- A failed CI run, refused rollout admission or other failed safety gate stops that unsafe operation, not the objective: diagnose, repair what is in scope, re-qualify and resume.",
   "- If part of the work is genuinely blocked, complete the unblocked work and state the specific blocker.",
   "- Ask the operator only when meaningful progress genuinely requires information, authority, credentials, a product decision, or an unsafe/irreversible action that has not been authorised.",
   "- Do not claim work was completed or verified unless it was.",

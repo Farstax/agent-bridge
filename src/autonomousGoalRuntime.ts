@@ -7,6 +7,7 @@ import { killRunOwnedDescendants } from "./runOwnedProcesses.js";
 import { loadBotsConfig, resolveExecutionMode } from "./config.js";
 import { defaultSoulPath, loadSoulContext, normalizeSoulMode } from "./soul.js";
 import { createAutonomyDispositionChannel, type AutonomyDisposition, type AutonomyDispositionRecord } from "./autonomyDisposition.js";
+import { classifyAnyProviderError } from "./providers/errorClassification.js";
 import type { BotConfig, BotKind, BridgeConfig } from "./types.js";
 
 export const AUTONOMOUS_EVENT_SOURCE = "autonomous" as const;
@@ -268,6 +269,7 @@ function buildPrompt(
     `Prior evidence: ${priorEvidence.length ? priorEvidence.join(" | ") : "none"}`,
     `Supervisor input since previous cycle: ${supervisorInputs.length ? supervisorInputs.join(" | ") : "none"}`,
     "Supervisor input is dialogue inside the frozen Episode authority. It cannot expand the objective, constraints, or authorized policy instruction.",
+    "Supervisor input from a prior cycle that failed before reconciling is repeated here and may already have been acted upon; observe current truth before acting on it again.",
     "Prior evidence is continuity, not current truth. Observe current external truth when it matters before acting.",
     `Wake reason: ${wakeReason}`,
     `Autonomy disposition command: ${JSON.stringify(dispositionCommand)}`,
@@ -340,6 +342,18 @@ function settleSupervisorInputsForRun(db: BridgeDb, runId: string, status: "comp
     .run(status, errorClass ?? null, runId, AUTONOMOUS_SUPERVISOR_INPUT_KIND, runId);
 }
 
+/**
+ * A recoverable failure keeps the goal active, so supervisor input claimed by
+ * the failed Run must not vanish: steering such as "do not deploy yet" has to
+ * reach the next cycle. Return it to the durable queue ahead of newer input;
+ * the next prompt marks it as possibly already acted upon.
+ */
+function carrySupervisorInputsForward(db: BridgeDb, runId: string): void {
+  db.raw.prepare(`UPDATE event_receipts SET status = 'received', run_id = NULL, error_class = 'carried_forward'
+    WHERE source = 'autonomous' AND event_kind = ? AND status = 'run_created' AND run_id = ?`)
+    .run(AUTONOMOUS_SUPERVISOR_INPUT_KIND, runId);
+}
+
 function retirePendingSupervisorInputs(db: BridgeDb, goalId: string, errorClass: string): void {
   db.raw.prepare(`UPDATE event_receipts SET status = 'cancelled', error_class = ?
     WHERE source = 'autonomous' AND event_kind = ? AND status = 'received'
@@ -365,7 +379,8 @@ function boundedEvidence(goal: AutonomousGoal, evidence: string): string[] {
  * the objective and be diagnosed by a fresh bounded cycle.
  */
 function requiresHumanEscalation(error: string): boolean {
-  return /\b(?:missing|requires?)\s+(?:human\s+)?(?:authority|approval|decision|credential(?:s)?|access)\b/i.test(error)
+  return classifyAnyProviderError(error).kind === "auth_required"
+    || /\b(?:missing|requires?)\s+(?:human\s+)?(?:authority|approval|decision|credential(?:s)?|access)\b/i.test(error)
     || /\b(?:credential(?:s)?|authority|access)\s+(?:is|are)\s+required\b/i.test(error);
 }
 
@@ -389,6 +404,7 @@ function recoverUnreconciledWake(db: BridgeDb, goal: AutonomousGoal, receipt: an
       .run(status === "cancelled" ? "cancelled" : "failed", "restart_recovery", receipt.run_id ?? null, receipt.id);
     db.raw.prepare("UPDATE autonomous_goals SET cycle = ?, status = ?, evidence_json = ?, updated_at = CURRENT_TIMESTAMP WHERE goal_id = ?")
       .run(goal.cycle + 1, status, JSON.stringify(boundedEvidence(goal, evidence)), goal.goalId);
+    if (status === "active" && receipt.run_id) carrySupervisorInputsForward(db, receipt.run_id);
     settleSupervisorInputsForRun(db, receipt.run_id ?? "", status === "cancelled" ? "cancelled" : "failed", "restart_recovery");
     if (status === "active") {
       // The provider boundary may have been crossed before the crash. Never
@@ -449,6 +465,7 @@ function reconcile(
         }
       }
       db.raw.prepare("UPDATE event_receipts SET status = 'failed', error_class = ?, result_reference = ? WHERE id = ? AND status = 'run_created'").run("provider_failure", runId, receipt.id);
+      if (getAutonomousGoal(db, goal.goalId).status === "active") carrySupervisorInputsForward(db, runId);
       settleSupervisorInputsForRun(db, runId, "failed", "provider_failure");
       if (getAutonomousGoal(db, goal.goalId).status !== "active") retirePendingSupervisorInputs(db, goal.goalId, "episode_terminal");
       return { goalStatus: getAutonomousGoal(db, goal.goalId).status, disposition: null, evidence: responseText ?? error, notify: false };
@@ -471,6 +488,7 @@ function reconcile(
         if (!exhausted) scheduleWake(db, goal.goalId, { key: `${goal.goalId}:wake:${goal.cycle + 1}`, reason: AUTONOMY_RECOVERY_WAKE_REASON });
       }
       db.raw.prepare("UPDATE event_receipts SET status = 'failed', error_class = ?, result_reference = ? WHERE id = ? AND status = 'run_created'").run(missing, runId, receipt.id);
+      if (getAutonomousGoal(db, goal.goalId).status === "active") carrySupervisorInputsForward(db, runId);
       settleSupervisorInputsForRun(db, runId, "failed", missing);
       if (getAutonomousGoal(db, goal.goalId).status !== "active") retirePendingSupervisorInputs(db, goal.goalId, "episode_terminal");
       return { goalStatus: getAutonomousGoal(db, goal.goalId).status, disposition: null, evidence: responseText, notify: false };
