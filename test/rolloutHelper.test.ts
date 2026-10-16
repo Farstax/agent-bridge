@@ -170,6 +170,23 @@ describe("guarded rollout helper", { timeout: 30_000 }, () => {
     }
   });
 
+  it("accepts only the Platform-owned bot drop-in pair", () => {
+    const fixture = createFixture();
+    prepareImmutableRelease(fixture, fixture.previousCommit);
+    const result = runRollout(fixture, undefined, undefined, { FAKE_DROPIN_MODE: "managed", FAKE_FAIL_PHASE: "inspect" });
+    expect(result.status).not.toBe(0);
+    expect(`${result.stdout}\n${result.stderr}`).not.toMatch(/unexpected systemd drop-in/i);
+  });
+
+  it("rejects a reordered managed bot drop-in pair before stopping services", () => {
+    const fixture = createFixture();
+    prepareImmutableRelease(fixture, fixture.previousCommit);
+    const result = runRollout(fixture, undefined, undefined, { FAKE_DROPIN_MODE: "managed-reordered" });
+    expect(result.status).not.toBe(0);
+    expect(`${result.stdout}\n${result.stderr}`).toMatch(/unexpected systemd drop-in/i);
+    expect(readFileSync(fixture.actionLog, "utf8")).not.toContain("systemctl:stop");
+  });
+
   it("resolves the release environment file for the active pointer", () => {
     const fixture = createFixture();
     const { currentPointer } = prepareImmutableRelease(fixture, fixture.previousCommit);

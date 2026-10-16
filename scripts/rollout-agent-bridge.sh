@@ -257,6 +257,18 @@ environment_files_are_supported() {
   [[ "$actual" == "$base" || "$actual" == "$base"$'\n'"$provider_files" ]]
 }
 
+# These two drop-ins are owned by the Platform appliance configuration. The
+# provider file's effective EnvironmentFiles are checked above; the owner
+# notification file supplies only the service runtime directory. Keep this
+# inventory exact so a local override cannot silently alter the bot unit.
+drop_in_paths_are_supported() {
+  local unit="$1" actual="$2" expected
+  [[ -z "$actual" ]] && return 0
+  [[ "$unit" == "agent-bridge-bot.service" ]] || return 1
+  expected="$systemd_unit_dir/agent-bridge-bot.service.d/owner-notification.conf $systemd_unit_dir/agent-bridge-bot.service.d/provider-api-keys.conf"
+  [[ "$actual" == "$expected" ]]
+}
+
 converge_deployer_autonomy_config() {
   [[ "$deployer_mode" == "1" ]] || return 0
   local autonomy_unit="" unit
@@ -590,7 +602,7 @@ for inventory_unit in "${units[@]}"; do
   actual_fragment_path="$(/usr/bin/cat "$systemd_inventory_dir/${safe_unit}.fragment-path")"
   [[ "$actual_fragment_path" == "$expected_fragment_path" ]] || die "FragmentPath mismatch for $inventory_unit"
   actual_drop_in_paths="$(/usr/bin/cat "$systemd_inventory_dir/${safe_unit}.drop-in-paths")"
-  [[ -z "$actual_drop_in_paths" ]] || die "unexpected systemd drop-in for $inventory_unit"
+  drop_in_paths_are_supported "$inventory_unit" "$actual_drop_in_paths" || die "unexpected systemd drop-in for $inventory_unit"
 done
 {
   for inventory_file in "$systemd_inventory_dir"/*; do
