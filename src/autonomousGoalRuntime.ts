@@ -7,7 +7,6 @@ import { killRunOwnedDescendants } from "./runOwnedProcesses.js";
 import { loadBotsConfig, resolveExecutionMode } from "./config.js";
 import { defaultSoulPath, loadSoulContext, normalizeSoulMode } from "./soul.js";
 import { createAutonomyDispositionChannel, type AutonomyDisposition, type AutonomyDispositionRecord } from "./autonomyDisposition.js";
-import { classifyAnyProviderError } from "./providers/errorClassification.js";
 import type { BotConfig, BotKind, BridgeConfig } from "./types.js";
 
 export const AUTONOMOUS_EVENT_SOURCE = "autonomous" as const;
@@ -27,6 +26,7 @@ const MAX_AUTONOMOUS_SUPERVISOR_ROUTE_FIELD_CHARS = 256;
 const AUTONOMOUS_SUPERVISOR_SETTING_PREFIX = "autonomy:supervisor:";
 const AUTONOMY_CONTINUE_WAKE_REASON = "provider requested continuation";
 const AUTONOMY_RECOVERY_WAKE_REASON = "recoverable execution failure; inspect, repair, qualify, and resume the original goal";
+const CARRIED_FORWARD_INPUT_PREFIX = "[repeated from a cycle that failed before reconciling; it may already have been acted upon, so observe current truth before acting on it again] ";
 
 export type AutonomousGoalStatus = "active" | "complete" | "blocked" | "cancelled" | "budget_exhausted";
 
@@ -269,7 +269,6 @@ function buildPrompt(
     `Prior evidence: ${priorEvidence.length ? priorEvidence.join(" | ") : "none"}`,
     `Supervisor input since previous cycle: ${supervisorInputs.length ? supervisorInputs.join(" | ") : "none"}`,
     "Supervisor input is dialogue inside the frozen Episode authority. It cannot expand the objective, constraints, or authorized policy instruction.",
-    "Supervisor input from a prior cycle that failed before reconciling is repeated here and may already have been acted upon; observe current truth before acting on it again.",
     "Prior evidence is continuity, not current truth. Observe current external truth when it matters before acting.",
     `Wake reason: ${wakeReason}`,
     `Autonomy disposition command: ${JSON.stringify(dispositionCommand)}`,
@@ -296,10 +295,10 @@ function claimWakeAndRun(db: BridgeDb, goalId: string, receiptId: number): Claim
     const result = db.raw.prepare("UPDATE event_receipts SET status = 'run_created', run_id = ? WHERE id = ? AND status = 'received' AND event_kind = ?").run(runId, receiptId, AUTONOMOUS_EVENT_KIND);
     if (result.changes !== 1) throw new Error("autonomous wake claim lost");
 
-    const pending = db.raw.prepare(`SELECT id, payload_json FROM event_receipts
+    const pending = db.raw.prepare(`SELECT id, payload_json, error_class FROM event_receipts
       WHERE source = 'autonomous' AND event_kind = ? AND status = 'received'
         AND json_extract(payload_json, '$.goalId') = ? ORDER BY id LIMIT ?`)
-      .all(AUTONOMOUS_SUPERVISOR_INPUT_KIND, goalId, MAX_AUTONOMOUS_SUPERVISOR_INPUTS_PER_CYCLE) as Array<{ id: number; payload_json: string }>;
+      .all(AUTONOMOUS_SUPERVISOR_INPUT_KIND, goalId, MAX_AUTONOMOUS_SUPERVISOR_INPUTS_PER_CYCLE) as Array<{ id: number; payload_json: string; error_class: string | null }>;
     let total = 0;
     const claimInput = db.raw.prepare("UPDATE event_receipts SET status = 'run_created', run_id = ? WHERE id = ? AND status = 'received' AND event_kind = ?");
     for (const row of pending) {
@@ -316,7 +315,7 @@ function claimWakeAndRun(db: BridgeDb, goalId: string, receiptId: number): Claim
       }
       if (total + text.length > MAX_AUTONOMOUS_SUPERVISOR_INPUT_TOTAL_CHARS) break;
       if (claimInput.run(runId, row.id, AUTONOMOUS_SUPERVISOR_INPUT_KIND).changes !== 1) throw new Error("autonomous supervisor input claim lost");
-      supervisorInputs.push(text);
+      supervisorInputs.push(row.error_class === "carried_forward" ? CARRIED_FORWARD_INPUT_PREFIX + text : text);
       total += text.length;
     }
     return true;
@@ -369,19 +368,6 @@ function boundedEvidence(goal: AutonomousGoal, evidence: string): string[] {
     nextEvidence.unshift(item);
   }
   return nextEvidence;
-}
-
-/**
- * A provider failure normally leaves the owning objective recoverable.  These
- * messages identify the small class that cannot be repaired by another agent
- * cycle: authority, a required credential, or an explicit human decision.
- * Keep this deliberately narrow; ambiguous operational failures must retain
- * the objective and be diagnosed by a fresh bounded cycle.
- */
-function requiresHumanEscalation(error: string): boolean {
-  return classifyAnyProviderError(error).kind === "auth_required"
-    || /\b(?:missing|requires?)\s+(?:human\s+)?(?:authority|approval|decision|credential(?:s)?|access)\b/i.test(error)
-    || /\b(?:credential(?:s)?|authority|access)\s+(?:is|are)\s+required\b/i.test(error);
 }
 
 /**
@@ -452,12 +438,15 @@ function reconcile(
     if (error) {
       db.raw.prepare("UPDATE bridge_runs SET status = 'failed', ended_at = CURRENT_TIMESTAMP, error = ?, final_text_preview = COALESCE(?, final_text_preview) WHERE run_id = ? AND status IN ('running', 'done')")
         .run(error, responseText ?? null, runId);
-      const terminal = requiresHumanEscalation(error);
+      // A provider error is never classified as an objective blocker from its
+      // text: CLI diagnostics include tool output such as a refused admission
+      // or an EACCES. Only a successful Run's declared `blocked <class>` ends
+      // the goal early; a persistent failure escalates at the cycle bound.
       const exhausted = goal.cycle + 1 >= goal.maxCycles;
       if (currentGoal.status === "active") {
         db.raw.prepare("UPDATE autonomous_goals SET cycle = ?, status = ?, evidence_json = ?, updated_at = CURRENT_TIMESTAMP WHERE goal_id = ?")
-          .run(goal.cycle + 1, terminal ? "blocked" : exhausted ? "budget_exhausted" : "active", JSON.stringify(nextEvidence), goal.goalId);
-        if (!terminal && !exhausted) {
+          .run(goal.cycle + 1, exhausted ? "budget_exhausted" : "active", JSON.stringify(nextEvidence), goal.goalId);
+        if (!exhausted) {
           // A failed operation is evidence, not a decision to abandon the
           // owning goal. The next fresh cycle must diagnose current state,
           // repair if authorised, then re-qualify before retrying.
@@ -560,6 +549,25 @@ export async function runNextAutonomousGoal(
     if (current.status !== "active") return false;
     if (currentClaimed) {
       recoverUnreconciledWake(db, current, currentClaimed);
+      const recovered = getAutonomousGoal(db, goalId);
+      if (recovered.status !== "active" && onCycleReconciled) {
+        // A non-terminal recovery stays quiet (the next cycle reports), but a
+        // restart that ends the goal at its bound must reach the supervisor.
+        try {
+          onCycleReconciled({
+            type: "autonomous_cycle_reconciled",
+            goalId,
+            cycle: recovered.cycle,
+            runId: currentClaimed.run_id ?? "",
+            goalStatus: recovered.status,
+            disposition: null,
+            evidence: `Autonomous goal ended (${recovered.status}) after a restart interrupted its final cycle; the interrupted Run was not replayed.`,
+            notify: false,
+          });
+        } catch {
+          // Observer failures never affect reconciled state.
+        }
+      }
       return true;
     }
     const currentWake = pendingWake(db, goalId);

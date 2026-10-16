@@ -228,7 +228,7 @@ describe("autonomous objective recovery (#1021)", () => {
 
       expect(prompts).toHaveLength(2);
       expect(prompts[0]).toContain("do not deploy until the migration is approved");
-      expect(prompts[1]).toContain("do not deploy until the migration is approved");
+      expect(prompts[1]).toContain("before acting on it again] do not deploy until the migration is approved");
       expect(getAutonomousGoal(db, "steer")).toMatchObject({ status: "blocked", cycle: 2 });
       expect(db.raw.prepare("SELECT status FROM event_receipts WHERE source = ? AND event_kind = ?").get(AUTONOMOUS_EVENT_SOURCE, AUTONOMOUS_SUPERVISOR_INPUT_KIND))
         .toEqual({ status: "completed" });
@@ -238,24 +238,51 @@ describe("autonomous objective recovery (#1021)", () => {
     }
   });
 
-  it.each(["401 Unauthorized", "Invalid API key · Please run /login", "Authentication required"])(
-    "escalates provider authentication failure %j as an objective blocker without retrying",
-    async (message) => {
-      const { db, dbPath } = makeDb();
-      try {
-        createAutonomousGoal(db, { goalId: "auth", prompt: "Deploy release R", constraints: [], bot: "claude", maxCycles: 3 });
-        const engine = { executeSurfaceNeutralTurn: vi.fn(async () => { throw new Error(message); }) } as any;
+  it.each([
+    "CLI exited with code 1: rollout admission refused: release requires approval evidence",
+    "CLI exited with code 1: EACCES: permission denied, mkdir '/var/lib/x'",
+    "CLI exited with code 1: npm ERR! code E401 Unauthorized",
+  ])("keeps provider error %j recoverable and escalates it clearly at the bound", async (message) => {
+    const { db, dbPath } = makeDb();
+    try {
+      createAutonomousGoal(db, { goalId: "provider-error", prompt: "Deploy release R", constraints: [], bot: "claude", maxCycles: 2 });
+      const engine = { executeSurfaceNeutralTurn: vi.fn(async () => { throw new Error(message); }) } as any;
+      const events: any[] = [];
 
-        await drainAutonomousGoal(db, "auth", engine);
+      await drainAutonomousGoal(db, "provider-error", engine, (event) => events.push(event));
 
-        expect(getAutonomousGoal(db, "auth")).toMatchObject({ status: "blocked", cycle: 1 });
-        expect(engine.executeSurfaceNeutralTurn).toHaveBeenCalledTimes(1);
-      } finally {
-        db.close();
-        removeDb(dbPath);
-      }
-    },
-  );
+      expect(getAutonomousGoal(db, "provider-error")).toMatchObject({ status: "budget_exhausted", cycle: 2 });
+      expect(engine.executeSurfaceNeutralTurn).toHaveBeenCalledTimes(2);
+      expect(events.map((event) => event.goalStatus)).toEqual(["active", "budget_exhausted"]);
+      expect(events.at(-1).evidence).toContain(message);
+    } finally {
+      db.close();
+      removeDb(dbPath);
+    }
+  });
+
+  it("reports a restart that ends the goal at its final cycle once, without replaying it", async () => {
+    const { db, dbPath } = makeDb();
+    try {
+      createAutonomousGoal(db, { goalId: "restart-last", prompt: "Deploy release R", constraints: [], bot: "claude", maxCycles: 1 });
+      const wake = db.raw.prepare("SELECT id FROM event_receipts WHERE source = ?").get(AUTONOMOUS_EVENT_SOURCE) as { id: number };
+      db.insertRun("crashed-last", { surfaceIdentity: AUTONOMOUS_RUN_SURFACE, chatKey: "autonomous:restart-last" }, "claude");
+      db.linkEventReceiptRun(wake.id, "crashed-last");
+      const engine = agent(() => "unreachable");
+      const events: any[] = [];
+
+      await drainAutonomousGoal(db, "restart-last", engine, (event) => events.push(event));
+
+      expect(engine.executeSurfaceNeutralTurn).not.toHaveBeenCalled();
+      expect(getAutonomousGoal(db, "restart-last")).toMatchObject({ status: "budget_exhausted", cycle: 1 });
+      expect(events).toHaveLength(1);
+      expect(events[0]).toMatchObject({ goalStatus: "budget_exhausted", disposition: null, runId: "crashed-last" });
+      expect(events[0].evidence).toContain("not replayed");
+    } finally {
+      db.close();
+      removeDb(dbPath);
+    }
+  });
 
   it("retries a Run that ended without a disposition instead of abandoning the goal", async () => {
     const { db, dbPath } = makeDb();
