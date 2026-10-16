@@ -4,9 +4,18 @@ import { join } from "node:path";
 
 export type AutonomyDisposition = "continue" | "done" | "blocked";
 
+/**
+ * `blocked` ends the objective, so it must name why no further agent-only
+ * action can make progress. A failed CI run, refused rollout admission, or
+ * other stopped operation is not one of these: that is repairable evidence
+ * for a `continue` successor Cycle.
+ */
+export type AutonomyEscalation = "authority" | "decision" | "external";
+
 export interface AutonomyDispositionRecord {
   disposition: AutonomyDisposition;
   notify: boolean;
+  escalation?: AutonomyEscalation;
 }
 
 export interface AutonomyDispositionChannel {
@@ -17,14 +26,16 @@ export interface AutonomyDispositionChannel {
 }
 
 const VALID_DISPOSITIONS = new Set<AutonomyDisposition>(["continue", "done", "blocked"]);
+const VALID_ESCALATIONS = new Set<AutonomyEscalation>(["authority", "decision", "external"]);
 
 function validateRecord(value: unknown): AutonomyDispositionRecord {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     throw new Error("invalid_autonomy_disposition");
   }
   const record = value as Record<string, unknown>;
+  const blocked = record.disposition === "blocked";
   const keys = Object.keys(record).sort();
-  if (keys.join(",") !== "disposition,notify") {
+  if (keys.join(",") !== (blocked ? "disposition,escalation,notify" : "disposition,notify")) {
     throw new Error("invalid_autonomy_disposition");
   }
   if (typeof record.disposition !== "string" || !VALID_DISPOSITIONS.has(record.disposition as AutonomyDisposition)) {
@@ -33,7 +44,11 @@ function validateRecord(value: unknown): AutonomyDispositionRecord {
   if (typeof record.notify !== "boolean") {
     throw new Error("invalid_autonomy_disposition");
   }
-  return { disposition: record.disposition as AutonomyDisposition, notify: record.notify };
+  if (!blocked) return { disposition: record.disposition as AutonomyDisposition, notify: record.notify };
+  if (typeof record.escalation !== "string" || !VALID_ESCALATIONS.has(record.escalation as AutonomyEscalation)) {
+    throw new Error("invalid_autonomy_disposition");
+  }
+  return { disposition: "blocked", notify: record.notify, escalation: record.escalation as AutonomyEscalation };
 }
 
 export function createAutonomyDispositionChannel(runId: string): AutonomyDispositionChannel {
@@ -48,13 +63,17 @@ if (args[args.length - 1] === "--notify") {
   notify = true;
   args.pop();
 }
-if (args.length !== 1 || !["continue", "done", "blocked"].includes(args[0])) {
-  console.error("usage: autonomy continue|done|blocked [--notify]");
+const valid = (args.length === 1 && ["continue", "done"].includes(args[0]))
+  || (args.length === 2 && args[0] === "blocked" && ["authority", "decision", "external"].includes(args[1]));
+if (!valid) {
+  console.error("usage: autonomy continue|done|blocked authority|decision|external [--notify]");
+  console.error("blocked ends the objective: use it only for missing authority, a required human decision, or an unresolvable external dependency. A failed CI run, refused rollout admission, or other stopped operation is repairable: repair and use continue.");
   process.exit(2);
 }
+const record = args[0] === "blocked" ? { disposition: "blocked", escalation: args[1], notify } : { disposition: args[0], notify };
 const recordPath = ${JSON.stringify(recordPath)};
 const tmpPath = \`\${recordPath}.\${process.pid}.\${Date.now()}.\${Math.random().toString(36).slice(2)}.tmp\`;
-fs.writeFileSync(tmpPath, JSON.stringify({ disposition: args[0], notify }), { flag: "wx", mode: 0o600 });
+fs.writeFileSync(tmpPath, JSON.stringify(record), { flag: "wx", mode: 0o600 });
 fs.renameSync(tmpPath, recordPath);
 `;
   writeFileSync(commandPath, script, { mode: 0o700 });

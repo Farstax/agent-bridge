@@ -67,7 +67,7 @@ function dispositionCommand(prompt: string): string {
 }
 
 function invokeDisposition(prompt: string, disposition: TestDisposition, notify = false): void {
-  execFileSync(dispositionCommand(prompt), [disposition, ...(notify ? ["--notify"] : [])], { stdio: "pipe" });
+  execFileSync(dispositionCommand(prompt), [...(disposition === "blocked" ? ["blocked", "authority"] : [disposition]), ...(notify ? ["--notify"] : [])], { stdio: "pipe" });
 }
 
 function cycleOutput(disposition: TestDisposition, evidence: string, notify = false): DispositionCliResult {
@@ -722,7 +722,7 @@ describe("autonomous goal production runtime", () => {
     removeDb(dbPath);
   });
 
-  it("fails a successful provider response with no disposition closed with no successor wake", async () => {
+  it("fails a successful provider response with no disposition closed and wakes one fresh recovery cycle", async () => {
     const { db, dbPath } = makeDb();
     createAutonomousGoal(db, {
       goalId: "malformed",
@@ -735,9 +735,8 @@ describe("autonomous goal production runtime", () => {
 
     await runNextAutonomousGoal(db, "malformed", makeEngine(runCliAsync, db));
 
-    expect(getAutonomousGoal(db, "malformed")).toMatchObject({ status: "blocked", cycle: 1 });
-    expect(db.raw.prepare("SELECT COUNT(*) AS count FROM event_receipts WHERE source = ?").get(AUTONOMOUS_EVENT_SOURCE)).toEqual({ count: 1 });
-    expect(db.raw.prepare("SELECT status FROM event_receipts WHERE source = ?").get(AUTONOMOUS_EVENT_SOURCE)).toEqual({ status: "failed" });
+    expect(getAutonomousGoal(db, "malformed")).toMatchObject({ status: "active", cycle: 1 });
+    expect(db.raw.prepare("SELECT status FROM event_receipts WHERE source = ? ORDER BY id").all(AUTONOMOUS_EVENT_SOURCE)).toEqual([{ status: "failed" }, { status: "received" }]);
     expect(db.raw.prepare("SELECT status FROM bridge_runs WHERE chat_id = ?").get("autonomous:malformed")).toEqual({ status: "failed" });
 
     db.close();

@@ -271,8 +271,8 @@ function buildPrompt(
     "Prior evidence is continuity, not current truth. Observe current external truth when it matters before acting.",
     `Wake reason: ${wakeReason}`,
     `Autonomy disposition command: ${JSON.stringify(dispositionCommand)}`,
-    "Before your ordinary final response, invoke that exact executable with one disposition: continue, done, or blocked. Add --notify only when the ordinary final response should also be sent to the supervisor route. If your conclusion changes later in this Run, invoke it again with the new disposition; the final valid call wins.",
-    "Use continue when another provider Run is needed, done when your bounded work is finished, and blocked when the Run succeeded but cannot safely continue. Do not write lifecycle JSON, wake metadata, evidence fields, cancellation, or budget state yourself.",
+    "Before your ordinary final response, invoke that exact executable with one disposition: continue, done, or blocked authority|decision|external. Add --notify only when the ordinary final response should also be sent to the supervisor route. If your conclusion changes later in this Run, invoke it again with the new disposition; the final valid call wins.",
+    "Use continue when another provider Run is needed, including after a failed CI run, refused rollout admission, or other safety gate stopped an operation: that gate stopped the unsafe operation, not the original goal, so repair what is in scope, re-qualify, and continue. Use done only when the original goal is finished and verified. Use blocked only when no further agent-only action can progress the original goal: authority for missing authority or credentials, decision for a required human decision, external for an unresolvable external dependency. Do not write lifecycle JSON, wake metadata, evidence fields, cancellation, or budget state yourself.",
     "Return a normal final response describing what you did and verified. That response is durable execution evidence and continuity context; it is not a control envelope.",
   ].join("\n");
 }
@@ -463,8 +463,12 @@ function reconcile(
       db.raw.prepare("UPDATE bridge_runs SET status = 'failed', ended_at = CURRENT_TIMESTAMP, error = ?, final_text_preview = ? WHERE run_id = ? AND status IN ('running', 'done')")
         .run(missing, responseText, runId);
       if (currentGoal.status === "active") {
-        db.raw.prepare("UPDATE autonomous_goals SET cycle = ?, status = 'blocked', evidence_json = ?, updated_at = CURRENT_TIMESTAMP WHERE goal_id = ?")
-          .run(goal.cycle + 1, JSON.stringify(nextEvidence), goal.goalId);
+        // An undeclared outcome is not an escalation. Keep the goal and let a
+        // fresh bounded Cycle observe current truth and declare it.
+        const exhausted = goal.cycle + 1 >= goal.maxCycles;
+        db.raw.prepare("UPDATE autonomous_goals SET cycle = ?, status = ?, evidence_json = ?, updated_at = CURRENT_TIMESTAMP WHERE goal_id = ?")
+          .run(goal.cycle + 1, exhausted ? "budget_exhausted" : "active", JSON.stringify(nextEvidence), goal.goalId);
+        if (!exhausted) scheduleWake(db, goal.goalId, { key: `${goal.goalId}:wake:${goal.cycle + 1}`, reason: AUTONOMY_RECOVERY_WAKE_REASON });
       }
       db.raw.prepare("UPDATE event_receipts SET status = 'failed', error_class = ?, result_reference = ? WHERE id = ? AND status = 'run_created'").run(missing, runId, receipt.id);
       settleSupervisorInputsForRun(db, runId, "failed", missing);
@@ -473,7 +477,10 @@ function reconcile(
     }
 
     db.updateRunCompleted(runId, responseText, null);
-    db.raw.prepare("UPDATE event_receipts SET status = 'completed', error_class = NULL, result_reference = ? WHERE id = ? AND status = 'run_created'").run(runId, receipt.id);
+    // The escalation class is the durable terminal classification of a
+    // provider-declared blocked objective.
+    const escalationClass = disposition.escalation ? `escalation_${disposition.escalation}` : null;
+    db.raw.prepare("UPDATE event_receipts SET status = 'completed', error_class = ?, result_reference = ? WHERE id = ? AND status = 'run_created'").run(escalationClass, runId, receipt.id);
     settleSupervisorInputsForRun(db, runId, "completed");
 
     if (currentGoal.status !== "active") {
