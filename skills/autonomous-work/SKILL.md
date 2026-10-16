@@ -39,21 +39,21 @@ A supervisor reply is dialogue, not new authority. Answer questions and use tact
 
 Autonomous wakes and active-Episode supervisor inputs are durable receipts. Before a wake is claimed, received inputs survive process restart and remain eligible for the next Cycle. When a wake is claimed, the controller atomically creates the ordinary Run and assigns the bounded pending supervisor inputs to that same Run before provider execution begins.
 
-A claimed-but-unreconciled Run is intentionally ambiguous after restart: the provider boundary may already have been crossed. Never replay that Run or its claimed supervisor inputs. Recovery fails the claimed wake, owning Run, and claimed inputs closed and terminates the Episode as blocked or cancelled. The reconciliation observer is not called for this recovery path, so a supervisor-facing notification is not repeated.
+A claimed-but-unreconciled Run is intentionally ambiguous after restart: the provider boundary may already have been crossed. Never replay that Run. Recovery fails the claimed wake and owning Run closed. A cancelled Run cancels the Episode and its claimed inputs; otherwise the Episode keeps its original goal and wakes one fresh recovery Cycle within its Cycle budget, and the claimed supervisor inputs return to that Cycle, each marked as possibly already acted upon, so steering is never silently lost. The same applies when a Run fails or ends without a disposition. The reconciliation observer is not called for a non-terminal recovery, so a supervisor-facing notification is not repeated; a recovery that ends the Episode at its Cycle budget is reported once.
 
 Do not invent a wait state, approval checkpoint, timer, or artificial restart window to make a claimed Run replayable. Exactly-once safety comes from durable pre-claim state plus fail-closed post-claim recovery. Successor intent and bounded post-Episode guidance are controller-owned transition state, not provider-owned lifecycle state.
 
 ## Disposition contract
 
-Before your ordinary final response, invoke the exact executable path given to you in the prompt under "Autonomy disposition command:" with one disposition — `continue`, `done`, or `blocked` — and `--notify` when a non-terminal response should also reach the supervisor:
+Before your ordinary final response, invoke the exact executable path given to you in the prompt under "Autonomy disposition command:" with one disposition — `continue`, `done`, or `blocked` plus its escalation class — and `--notify` when a non-terminal response should also reach the supervisor:
 
 ```sh
 <the exact path from the prompt> continue
 <the exact path from the prompt> done
-<the exact path from the prompt> blocked
+<the exact path from the prompt> blocked authority
 <the exact path from the prompt> continue --notify
 ```
 
-Use `continue` when another provider Run is needed, `done` when your bounded work is finished, and `blocked` when the Run succeeded but cannot safely continue. If your conclusion changes later in the same Run, invoke it again with the new disposition; the final valid call wins. Do not write lifecycle JSON, wake metadata, evidence fields, cancellation, budget state, Episode counters, approval state, or provider fallback state yourself — the helper and controller own those mechanical boundaries.
+Use `continue` when another provider Run is needed and `done` only when the original goal is finished and verified. A failed CI run, refused rollout admission, or other failed safety gate stops the unsafe operation, not the goal: repair what is in scope, re-qualify, and `continue`. Use `blocked` only when no further agent-only action can progress the goal, naming the class: `authority` (missing authority or credentials), `decision` (a required human decision), or `external` (an unresolvable external dependency). The helper rejects `blocked` without a class. A Run that ends without a disposition, or whose provider fails (a disposition declared before a provider failure is discarded), is retried by a fresh recovery Cycle until the Cycle budget ends; provider error text is never treated as an escalation. If your conclusion changes later in the same Run, invoke it again with the new disposition; the final valid call wins. Do not write lifecycle JSON, wake metadata, evidence fields, cancellation, budget state, Episode counters, approval state, or provider fallback state yourself — the helper and controller own those mechanical boundaries.
 
 Do not add hidden lifecycle states, approval waits, narrative fields, sensors, schedulers, workers, or provider stacks.

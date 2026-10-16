@@ -22,7 +22,7 @@ function commandFrom(prompt: string): string {
 function engine(disposition: "continue" | "done" | "blocked", text: string) {
   return {
     executeSurfaceNeutralTurn: vi.fn(async (input: any) => {
-      execFileSync(commandFrom(input.prompt), [disposition], { stdio: "pipe" });
+      execFileSync(commandFrom(input.prompt), [...(disposition === "blocked" ? ["blocked", "authority"] : [disposition])], { stdio: "pipe" });
       return { text, sessionId: null } as any;
     }),
   };

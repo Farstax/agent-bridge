@@ -82,7 +82,7 @@ describe("autonomous restart ownership contract (#366)", () => {
     removeDb(dbPath);
   });
 
-  it("fails a claimed supervisor input with its claimed wake without replay or reconciliation notification", async () => {
+  it("carries a claimed supervisor input to the fresh recovery cycle without replaying the Run or notifying", async () => {
     const { db, dbPath } = makeDb();
     createAutonomousGoal(db, {
       goalId: "input-after-claim",
@@ -113,18 +113,21 @@ describe("autonomous restart ownership contract (#366)", () => {
     expect(await runNextAutonomousGoal(db, "input-after-claim", { executeSurfaceNeutralTurn }, observer)).toBe(true);
     expect(executeSurfaceNeutralTurn).not.toHaveBeenCalled();
     expect(observer).not.toHaveBeenCalled();
-    expect(getAutonomousGoal(db, "input-after-claim")).toMatchObject({ status: "blocked", cycle: 1 });
+    expect(getAutonomousGoal(db, "input-after-claim")).toMatchObject({ status: "active", cycle: 1 });
     expect(db.raw.prepare("SELECT status, error_class FROM event_receipts WHERE id = ?").get(wake.id))
       .toEqual({ status: "failed", error_class: "restart_recovery" });
-    expect(db.raw.prepare("SELECT status, error_class FROM event_receipts WHERE id = ?").get(input.id))
-      .toEqual({ status: "failed", error_class: "restart_recovery" });
+    expect(db.raw.prepare("SELECT status, run_id, error_class FROM event_receipts WHERE id = ?").get(input.id))
+      .toEqual({ status: "received", run_id: null, error_class: "carried_forward" });
     expect(db.raw.prepare("SELECT status FROM bridge_runs WHERE run_id = ?").get(runId)).toEqual({ status: "failed" });
     expect(db.raw.prepare("SELECT COUNT(*) AS count FROM bridge_runs WHERE chat_id = ?").get("autonomous:input-after-claim")).toEqual({ count: 1 });
     expect(db.raw.prepare(`SELECT COUNT(*) AS count FROM event_receipts
-      WHERE source = ? AND event_kind = ?`).get(AUTONOMOUS_EVENT_SOURCE, AUTONOMOUS_EVENT_KIND)).toEqual({ count: 1 });
-    expect(await runNextAutonomousGoal(db, "input-after-claim", { executeSurfaceNeutralTurn }, observer)).toBe(false);
-    expect(executeSurfaceNeutralTurn).not.toHaveBeenCalled();
-    expect(observer).not.toHaveBeenCalled();
+      WHERE source = ? AND event_kind = ?`).get(AUTONOMOUS_EVENT_SOURCE, AUTONOMOUS_EVENT_KIND)).toEqual({ count: 2 });
+    const recoveredPrompts: string[] = [];
+    const recovered = { executeSurfaceNeutralTurn: vi.fn(async (turn: any) => { recoveredPrompts.push(turn.prompt); return { text: "recovered" }; }) } as any;
+    expect(await runNextAutonomousGoal(db, "input-after-claim", recovered, observer)).toBe(true);
+    expect(recovered.executeSurfaceNeutralTurn).toHaveBeenCalledTimes(1);
+    expect(recoveredPrompts[0]).toContain("ambiguous owner reply");
+    expect(recoveredPrompts[0]).toContain("may already have been acted upon");
 
     db.close();
     removeDb(dbPath);

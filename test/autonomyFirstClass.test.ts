@@ -31,7 +31,7 @@ function dispositionCommand(prompt: string): string {
   return JSON.parse(line.slice(prefix.length)) as string;
 }
 function declareDisposition(prompt: string, disposition: "continue" | "done" | "blocked", notify = false): void {
-  execFileSync(dispositionCommand(prompt), [disposition, ...(notify ? ["--notify"] : [])], { stdio: "pipe" });
+  execFileSync(dispositionCommand(prompt), [...(disposition === "blocked" ? ["blocked", "authority"] : [disposition]), ...(notify ? ["--notify"] : [])], { stdio: "pipe" });
 }
 function mockEngine(db: ReturnType<typeof openDb>, run: (input: any) => Promise<any>) {
   const engine = new BridgeEngine({

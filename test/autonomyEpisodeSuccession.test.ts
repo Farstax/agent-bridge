@@ -29,7 +29,7 @@ function dispositionEngine(disposition: "continue" | "done" | "blocked", notify 
   return {
     executeSurfaceNeutralTurn: vi.fn(async (input: any) => {
       input.onProviderExecutionStarted?.();
-      execFileSync(dispositionCommand(input.prompt), [disposition, ...(notify ? ["--notify"] : [])], { stdio: "pipe" });
+      execFileSync(dispositionCommand(input.prompt), [...(disposition === "blocked" ? ["blocked", "authority"] : [disposition]), ...(notify ? ["--notify"] : [])], { stdio: "pipe" });
       return { text, sessionId: null } as any;
     }),
   };
@@ -284,9 +284,10 @@ describe("bounded autonomous Episode succession (#512)", () => {
     const started = await controller.start({ bot: "claude" });
     await eventually(() => controller.status().state === "terminal");
 
+    // Each undeclared fallback Run is retried by a recovery cycle until the bound.
     expect(claude.executeSurfaceNeutralTurn).toHaveBeenCalledTimes(1);
-    expect(codex.executeSurfaceNeutralTurn).toHaveBeenCalledTimes(1);
-    expect(controller.status()).toMatchObject({ state: "terminal", goal: { goalId: started.goal.goalId, status: "blocked", cycle: 1 } });
+    expect(codex.executeSurfaceNeutralTurn).toHaveBeenCalledTimes(3);
+    expect(controller.status()).toMatchObject({ state: "terminal", goal: { goalId: started.goal.goalId, status: "budget_exhausted", cycle: 3 } });
     const run = db.raw.prepare("SELECT status, error FROM bridge_runs ORDER BY started_at DESC LIMIT 1").get() as { status: string; error: string | null };
     expect(run).toEqual({ status: "failed", error: "missing_autonomy_disposition" });
 
@@ -334,8 +335,8 @@ describe("bounded autonomous Episode succession (#512)", () => {
     const started = await controller.start({ bot: "claude" });
     await eventually(() => controller.status().state === "terminal");
 
-    expect(engine.executeSurfaceNeutralTurn).toHaveBeenCalledTimes(1);
-    expect(controller.status()).toMatchObject({ state: "terminal", goal: { goalId: started.goal.goalId, status: "blocked", cycle: 1 } });
+    expect(engine.executeSurfaceNeutralTurn).toHaveBeenCalledTimes(3);
+    expect(controller.status()).toMatchObject({ state: "terminal", goal: { goalId: started.goal.goalId, status: "budget_exhausted", cycle: 3 } });
     const run = db.raw.prepare("SELECT status, error FROM bridge_runs ORDER BY started_at DESC LIMIT 1").get() as { status: string; error: string | null };
     expect(run).toEqual({ status: "failed", error: "missing_autonomy_disposition" });
 
