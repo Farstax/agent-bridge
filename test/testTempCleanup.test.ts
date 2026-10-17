@@ -1,8 +1,9 @@
 import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
-const testRoot = new URL(".", import.meta.url).pathname;
+const testRoot = fileURLToPath(new URL(".", import.meta.url));
 
 function testSources(dir: string): string[] {
   return readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
@@ -18,7 +19,7 @@ describe("test temporary fixture cleanup", () => {
   it("does not rely on process exit handlers to remove fixtures", () => {
     const offenders = testSources(testRoot)
       .filter((path) => !path.endsWith("testTempCleanup.test.ts"))
-      .filter((path) => /process\.on\(\s*["']exit["']/.test(readFileSync(path, "utf8")))
+      .filter((path) => /process\.(on|once)\(\s*["'](exit|beforeExit)["']/.test(readFileSync(path, "utf8")))
       .map((path) => path.slice(testRoot.length));
     expect(offenders).toEqual([]);
   });
