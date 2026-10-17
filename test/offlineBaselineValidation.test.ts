@@ -3,7 +3,7 @@ import { cpSync, existsSync, linkSync, mkdtempSync, mkdirSync, rmSync, symlinkSy
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { readFileSync } from "node:fs";
-import { describe, expect, it } from "vitest";
+import { afterAll, describe, expect, it } from "vitest";
 import Database from "better-sqlite3";
 import { buildReleaseManifest } from "../scripts/releaseManifest.mjs";
 import { createLegacyFixture } from "./support/legacyDbFixture.js";
@@ -216,11 +216,18 @@ function getSharedMigrationArtifact(): SharedMigrationArtifact {
   mkdirSync(runtimeRoot);
   execFileSync("tar", ["-xzf", archive, "-C", runtimeRoot]);
   sharedMigrationArtifact = { archive, runtimeRoot, builderCommit };
-  process.on("exit", () => {
-    try { rmSync(root, { recursive: true, force: true }); } catch {}
-  });
+  sharedMigrationArtifactRoot = root;
   return sharedMigrationArtifact;
 }
+
+// Vitest fork workers exit without emitting process "exit", so the shared
+// artifact is removed when this suite finishes instead.
+let sharedMigrationArtifactRoot: string | null = null;
+afterAll(() => {
+  if (sharedMigrationArtifactRoot) rmSync(sharedMigrationArtifactRoot, { recursive: true, force: true });
+  sharedMigrationArtifactRoot = null;
+  sharedMigrationArtifact = null;
+});
 
   it("migrates a copied schema-3 fixture with the target runtime before validating schema 7", () => {
     const root = mkdtempSync(join(tmpdir(), "agent-bridge-schema-migration-offline-test-"));
