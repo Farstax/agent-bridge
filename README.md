@@ -214,10 +214,8 @@ Agent Bridge material in this repository is licensed under the
 own licence. See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for bundled
 third-party attribution.
 
-The licence applies to this public `agent-bridge` repository only. It does not
-license `agent-bridge-platform`, the Farstax hosted control plane, managed
-hosting or provisioning services, commercial operations, or other proprietary
-Platform assets.
+The licence applies only to material in this repository. It does not grant
+rights to independently licensed software or services outside this repository.
 
 The licence decision and rationale are recorded in
 [ADR-004](docs/adr/ADR-004-oss-license.md).
