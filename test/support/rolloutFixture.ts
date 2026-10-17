@@ -21,6 +21,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import Database from "better-sqlite3";
+import { afterAll } from "vitest";
 import { createLegacyFixture, ROLE_FIXTURES } from "./legacyDbFixture";
 
 export const helperPath = fileURLToPath(new URL("../../scripts/rollout-agent-bridge.sh", import.meta.url));
@@ -538,11 +539,9 @@ function getSharedTemplate(): SharedTemplate {
   ]);
 
   sharedTemplate = { templateDir: project, bundledRolloutDb, expectedCommit, previousCommit };
-  process.on("exit", () => {
-    try {
-      execFileSync("chmod", ["-R", "u+w", templateRoot], { stdio: "ignore" });
-      rmSync(templateRoot, { recursive: true, force: true });
-    } catch {}
+  sharedTemplateCleanups.push(() => {
+    execFileSync("chmod", ["-R", "u+w", templateRoot], { stdio: "ignore" });
+    rmSync(templateRoot, { recursive: true, force: true });
   });
   return sharedTemplate;
 }
@@ -555,11 +554,20 @@ function getEmptyLegacyDbTemplate(): string {
   const templatePath = join(dir, "empty-legacy.sqlite");
   createLegacyDb(templatePath, 0);
   emptyLegacyDbTemplate = templatePath;
-  process.on("exit", () => {
-    try { rmSync(dir, { recursive: true, force: true }); } catch {}
-  });
+  sharedTemplateCleanups.push(() => rmSync(dir, { recursive: true, force: true }));
   return emptyLegacyDbTemplate;
 }
+
+// Vitest fork workers exit without emitting process "exit", so the shared
+// templates are removed when the importing test file finishes instead.
+const sharedTemplateCleanups: Array<() => void> = [];
+afterAll(() => {
+  for (const cleanup of sharedTemplateCleanups.splice(0)) {
+    try { cleanup(); } catch {}
+  }
+  sharedTemplate = null;
+  emptyLegacyDbTemplate = null;
+});
 
 export function createFixture(options: { pending?: number; unknownSchema?: boolean; missingDb?: boolean; initiallyStopped?: boolean } = {}): Fixture {
   const root = mkdtempSync(join(tmpdir(), "agent-bridge-rollout-"));
