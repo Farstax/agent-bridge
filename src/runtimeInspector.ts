@@ -183,6 +183,31 @@ function nextRoutineOccurrence(routine: Row) {
   return { nextIntendedAt: null, nextIntendedReasonCode: "schedule_projection_unavailable" };
 }
 
+type RoutineOccurrenceRow = {
+  row: Row;
+  intendedAt: string;
+  intendedAtMs: number;
+};
+
+function latestRoutineOccurrence(db: Database.Database, occurrencePrefix: string): RoutineOccurrenceRow | null {
+  // Scheduled keys end with the intended ISO timestamp; manual runs insert
+  // one stable discriminator before that timestamp. Do not order whole keys:
+  // `manual:` sorts after the year in a scheduled key regardless of age.
+  const rows = db.prepare("SELECT key,value FROM settings WHERE key LIKE ?").all(`${occurrencePrefix}%`) as Row[];
+  let latest: RoutineOccurrenceRow | null = null;
+  for (const row of rows) {
+    const key = typeof row.key === "string" ? row.key : "";
+    const suffix = key.slice(occurrencePrefix.length);
+    const rawIntendedAt = suffix.startsWith("manual:") ? suffix.slice("manual:".length) : suffix;
+    const intendedAtMs = Date.parse(rawIntendedAt);
+    if (!Number.isFinite(intendedAtMs)) continue;
+    const candidate: RoutineOccurrenceRow = { row, intendedAt: new Date(intendedAtMs).toISOString(), intendedAtMs };
+    if (!latest || candidate.intendedAtMs > latest.intendedAtMs
+      || (candidate.intendedAtMs === latest.intendedAtMs && key > String(latest.row.key))) latest = candidate;
+  }
+  return latest;
+}
+
 function routines(db: Database.Database, s: ReturnType<typeof scope>, env: Env) {
   if (!s.chatKey || !s.surface || !hasTable(db, "settings")) return [];
   const owner = text(env.AGENT_BRIDGE_OWNER_KEY, 240);
@@ -196,8 +221,8 @@ function routines(db: Database.Database, s: ReturnType<typeof scope>, env: Env) 
     const id = text(r.id, 100);
     if (!id) continue;
     const occurrencePrefix = `${SCHEDULED_OCCURRENCE_PREFIX}${id}:`;
-    const occurrence = db.prepare("SELECT key,value FROM settings WHERE key LIKE ? ORDER BY key DESC LIMIT 1").get(`${occurrencePrefix}%`) as Row | undefined;
-    const evidence = parseScheduledOccurrenceEvidence(occurrence?.value);
+    const occurrence = latestRoutineOccurrence(db, occurrencePrefix);
+    const evidence = parseScheduledOccurrenceEvidence(occurrence?.row.value);
     const claimedAt = evidence?.claimedAt ?? null;
     let correlatedRun: Row | null = null;
     let correlationReasonCode: string | null = occurrence
@@ -214,7 +239,7 @@ function routines(db: Database.Database, s: ReturnType<typeof scope>, env: Env) 
     }
     const schedule = r.schedule && typeof r.schedule === "object" ? r.schedule as Row : null;
     const next = nextRoutineOccurrence(r);
-    out.push({ id, name: text(r.name, 120), kind: r.kind === "autonomous" ? "autonomous" : "companion", enabled: r.enabled === true, schedule: schedule?.type === "once" ? { type: "once", localDateTime: text(schedule.localDateTime, 40) } : schedule?.type === "weekly" ? { type: "weekly", weekdays: Array.isArray(schedule.weekdays) ? schedule.weekdays.slice(0,7) : [], time: text(schedule.time, 20) } : null, timezone: text(r.timezone, 100), ...next, recentOccurrence: occurrence ? { intendedAt: text(String(occurrence.key).slice(occurrencePrefix.length), 60), claimedAt, runId: text(correlatedRun?.run_id, 120), runStatus: text(correlatedRun?.status, 40), provider: pid(correlatedRun?.bot), reasonCode: correlationReasonCode } : null });
+    out.push({ id, name: text(r.name, 120), kind: r.kind === "autonomous" ? "autonomous" : "companion", enabled: r.enabled === true, schedule: schedule?.type === "once" ? { type: "once", localDateTime: text(schedule.localDateTime, 40) } : schedule?.type === "weekly" ? { type: "weekly", weekdays: Array.isArray(schedule.weekdays) ? schedule.weekdays.slice(0,7) : [], time: text(schedule.time, 20) } : null, timezone: text(r.timezone, 100), ...next, recentOccurrence: occurrence ? { intendedAt: occurrence.intendedAt, claimedAt, runId: text(correlatedRun?.run_id, 120), runStatus: text(correlatedRun?.status, 40), provider: pid(correlatedRun?.bot), reasonCode: correlationReasonCode } : null });
   }
   return out;
 }
