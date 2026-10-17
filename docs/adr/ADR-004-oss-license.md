@@ -6,7 +6,7 @@ Accepted — 2026-08-22.
 
 ## Context
 
-Agent Bridge is intended to remain a freely usable and forkable open-source runtime. Farstax's commercial model is managed hosting, provisioning, operations, and platform services rather than restricting use of the public runtime.
+Agent Bridge is intended to remain a freely usable and forkable open-source runtime, independent of any particular hosting or commercial deployment model.
 
 The repository previously had no root licence, so public visibility did not give users an explicit right to use, modify, or redistribute the code.
 
@@ -18,16 +18,14 @@ Apache-2.0 is selected because it is a standard permissive open-source licence, 
 
 Third-party material keeps its original licence and attribution. See `THIRD_PARTY_NOTICES.md` and any licence files stored with that material.
 
-## Product boundary
+## Licence boundary
 
-This decision applies only to the public `agent-bridge` repository. It does not license `agent-bridge-platform`, the Farstax hosted control plane, managed hosting or provisioning services, commercial operations, or other proprietary Platform assets.
-
-The runtime/platform responsibility boundary remains defined by `docs/architecture/platform-boundary.md`.
+This decision applies only to material in the public `agent-bridge` repository. Independently licensed software or services outside the repository are not covered. Deployment responsibilities remain described by `docs/architecture/platform-boundary.md`.
 
 ## Consequences
 
 - Agent Bridge can be used, modified, redistributed, and forked under Apache-2.0.
 - Commercial use of the OSS runtime is permitted by the licence.
 - Contributors and redistributors must comply with Apache-2.0 terms and preserve applicable third-party notices.
-- Farstax Platform licensing remains a separate decision outside this repository.
+- Licensing for software or services outside this repository is a separate decision.
 - No CLA or custom licensing framework is introduced by this decision.
