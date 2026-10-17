@@ -4,7 +4,7 @@ import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:
 import { tmpdir } from "node:os";
 import { openDb } from "../src/db.js";
 import { claimScheduledRoutineOccurrence, createScheduledRoutine } from "../src/scheduledRoutines.js";
-import { linkScheduledOccurrenceRun, scheduledOccurrenceKey } from "../src/scheduledRunCorrelation.js";
+import { encodeScheduledOccurrenceEvidence, linkScheduledOccurrenceRun, scheduledOccurrenceKey } from "../src/scheduledRunCorrelation.js";
 import { createAutonomousGoal } from "../src/autonomousGoalRuntime.js";
 import {
   MAX_INSPECTION_OUTPUT_CHARS,
@@ -109,6 +109,81 @@ describe("runtime inspector", () => {
       db.close();
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+
+  it("selects a newer scheduled occurrence over an older manual occurrence", () => {
+    const { dir, path, db } = fixture();
+    try {
+      createScheduledRoutine(db, {
+        id: "routine-occurrence-order", name: "Ordered", instruction: "bounded", kind: "companion",
+        surfaceIdentity: "telegram:interactive", chatKey: "chat-order", ownerKey: "owner-1", timezone: "UTC",
+        schedule: { type: "weekly", weekdays: [1], time: "09:00" }, enabled: true, createdAt: new Date().toISOString(),
+      });
+      const olderManual = "2026-10-12T10:39:09.588Z";
+      const newerScheduled = "2026-10-17T04:00:00.000Z";
+      db.raw.prepare("INSERT INTO settings(key,value) VALUES (?,?)").run(
+        scheduledOccurrenceKey("routine-occurrence-order", olderManual, "manual"),
+        encodeScheduledOccurrenceEvidence(olderManual, "missing-manual-run", "completed"),
+      );
+      expect(claimScheduledRoutineOccurrence(db, "routine-occurrence-order", newerScheduled)).toBe(true);
+
+      const view = JSON.parse(renderAgentBridgeInspection(["--json"], {
+        AGENT_BRIDGE_CONTEXT_DB: path, AGENT_BRIDGE_CHAT_KEY: "chat-order", AGENT_BRIDGE_SURFACE_IDENTITY: "telegram:interactive", AGENT_BRIDGE_OWNER_KEY: "owner-1", HOME: dir,
+      }));
+      expect(view.scheduledRoutines[0].recentOccurrence).toEqual(expect.objectContaining({
+        intendedAt: newerScheduled, runId: null, reasonCode: "run_not_created",
+      }));
+    } finally { db.close(); rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it("selects a newer manual occurrence over older scheduled and malformed evidence", () => {
+    const { dir, path, db } = fixture();
+    try {
+      createScheduledRoutine(db, {
+        id: "routine-manual-latest", name: "Manual latest", instruction: "bounded", kind: "companion",
+        surfaceIdentity: "telegram:interactive", chatKey: "chat-manual", ownerKey: "owner-1", timezone: "UTC",
+        schedule: { type: "weekly", weekdays: [1], time: "09:00" }, enabled: true, createdAt: new Date().toISOString(),
+      });
+      const olderScheduled = "2026-10-17T04:00:00.000Z";
+      const newerManual = "2026-10-17T05:00:00.000Z";
+      expect(claimScheduledRoutineOccurrence(db, "routine-manual-latest", olderScheduled)).toBe(true);
+      db.raw.prepare("INSERT INTO settings(key,value) VALUES (?,?)").run(
+        scheduledOccurrenceKey("routine-manual-latest", newerManual, "manual"),
+        encodeScheduledOccurrenceEvidence(newerManual, "missing-newer-run", "completed"),
+      );
+      // Lexically high malformed keys and evidence must never mask a valid timestamp.
+      db.raw.prepare("INSERT INTO settings(key,value) VALUES (?,?)").run(
+        "scheduled-routine-occurrence:v1:routine-manual-latest:manual:not-a-date", "not-json",
+      );
+
+      const view = JSON.parse(renderAgentBridgeInspection(["--json"], {
+        AGENT_BRIDGE_CONTEXT_DB: path, AGENT_BRIDGE_CHAT_KEY: "chat-manual", AGENT_BRIDGE_SURFACE_IDENTITY: "telegram:interactive", AGENT_BRIDGE_OWNER_KEY: "owner-1", HOME: dir,
+      }));
+      expect(view.scheduledRoutines[0].recentOccurrence).toEqual(expect.objectContaining({
+        intendedAt: newerManual, runId: null, reasonCode: "linked_run_unavailable",
+      }));
+    } finally { db.close(); rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it("keeps valid legacy occurrence evidence observable when no correlated run exists", () => {
+    const { dir, path, db } = fixture();
+    try {
+      createScheduledRoutine(db, {
+        id: "routine-legacy-occurrence", name: "Legacy", instruction: "bounded", kind: "companion",
+        surfaceIdentity: "telegram:interactive", chatKey: "chat-legacy", ownerKey: "owner-1", timezone: "UTC",
+        schedule: { type: "weekly", weekdays: [1], time: "09:00" }, enabled: true, createdAt: new Date().toISOString(),
+      });
+      const intendedAt = "2026-10-17T06:00:00.000Z";
+      db.raw.prepare("INSERT INTO settings(key,value) VALUES (?,?)").run(
+        scheduledOccurrenceKey("routine-legacy-occurrence", intendedAt), intendedAt,
+      );
+      const view = JSON.parse(renderAgentBridgeInspection(["--json"], {
+        AGENT_BRIDGE_CONTEXT_DB: path, AGENT_BRIDGE_CHAT_KEY: "chat-legacy", AGENT_BRIDGE_SURFACE_IDENTITY: "telegram:interactive", AGENT_BRIDGE_OWNER_KEY: "owner-1", HOME: dir,
+      }));
+      expect(view.scheduledRoutines[0].recentOccurrence).toEqual(expect.objectContaining({
+        intendedAt, runId: null, reasonCode: "run_correlation_legacy_unavailable",
+      }));
+    } finally { db.close(); rmSync(dir, { recursive: true, force: true }); }
   });
 
   it("never infers a scheduled Run from nearby conversation timing", () => {
