@@ -1351,15 +1351,16 @@ ROLLOUT_SAFETY_RESERVE_BYTES=268435456
 ROLLOUT_SYSTEM_CONFIG_BUDGET_BYTES=1048576
 ROLLOUT_RELEASE_COMMIT_BUDGET_BYTES=1048576
 
-rollout_artifact_is_terminal() {
-  local dir="$1" ledger="$1/phase-ledger.log" last
+rollout_artifact_has_last_phase() {
+  local dir="$1" pattern="$2" ledger="$1/phase-ledger.log" last
   [[ -f "$ledger" && ! -L "$ledger" && -f "$ledger.sha256" && ! -L "$ledger.sha256" ]] || return 1
   /usr/bin/sha256sum -c "$ledger.sha256" >/dev/null 2>&1 || return 1
   last="$(/usr/bin/grep '^phase=' "$ledger" | /usr/bin/tail -n 1 || true)"
-  case "$last" in
-    "phase=COMPLETE "*|"phase=FAILED_RESTORED "*|"phase=PRE_BACKUP_RECOVERED "*) return 0 ;;
-    *) return 1 ;;
-  esac
+  [[ "$last" =~ ^phase=($pattern)\  ]]
+}
+
+rollout_artifact_is_terminal() {
+  rollout_artifact_has_last_phase "$1" 'COMPLETE|FAILED_RESTORED|PRE_BACKUP_RECOVERED'
 }
 
 remove_named_child_directory() {
@@ -1376,7 +1377,7 @@ prune_rollout_retention() {
   local retention_count="$ROLLOUT_TERMINAL_RETENTION_COUNT"
   [[ -n "${AGENT_BRIDGE_ROLLOUT_RETENTION_COUNT:-}" ]] && retention_count="$AGENT_BRIDGE_ROLLOUT_RETENTION_COUNT"
   [[ "$retention_count" =~ ^[0-9]+$ ]] || die "rollout retention count is not numeric"
-  local -a terminal=()
+  local -a terminal=() refused=()
   local entry base
   while IFS= read -r entry; do
     [[ -n "$entry" ]] || continue
@@ -1384,9 +1385,21 @@ prune_rollout_retention() {
     base="$(/usr/bin/basename -- "$entry")"
     [[ "$base" =~ ^[0-9]{8}T[0-9]{6}Z-[0-9a-f]{40}$ ]] || continue
     [[ "$entry" == "$artifact_dir" ]] && continue
-    rollout_artifact_is_terminal "$entry" || continue
-    terminal+=("$base")
+    if rollout_artifact_is_terminal "$entry"; then
+      terminal+=("$base")
+    elif rollout_artifact_has_last_phase "$entry" PRECONDITION_FAILED \
+      && [[ ! -e "$backup_dir/$base" && ! -L "$backup_dir/$base" ]]; then
+      refused+=("$base")
+    fi
   done < <(/usr/bin/find "$log_dir" -mindepth 1 -maxdepth 1 -type d -print | /usr/bin/sort)
+  # Refused attempts never stopped a service or wrote a backup, so their
+  # evidence is pruned separately and never displaces a completed cohort.
+  local refused_pruned=0 refused_index
+  for (( refused_index=0; refused_index < ${#refused[@]} - retention_count; refused_index++ )); do
+    remove_named_child_directory "$log_dir" "${refused[$refused_index]}" || die "failed to prune refused rollout evidence: ${refused[$refused_index]}"
+    refused_pruned=$((refused_pruned + 1))
+  done
+  echo "rollout refused-attempt retention pruned=${refused_pruned}"
   local pruned=0 retained=${#terminal[@]}
   if (( ${#terminal[@]} > retention_count )); then
     local index name backup
@@ -1980,8 +1993,12 @@ on_exit() {
   if (( stop_attempted == 0 )); then
     # Pure precondition failure — services were never touched, containment
     # was never even attempted. A bare re-invocation behaves identically to
-    # the first attempt.
+    # the first attempt. Mark this invocation's own ledger terminal so later
+    # retention can prune the refused attempt's evidence.
     sentinel_removable=1
+    if (( phase_ledger_created == 1 )) && ! record_phase PRECONDITION_FAILED; then
+      echo "refused rollout evidence could not be marked terminal: $phase_ledger" >&2
+    fi
   else
     if stop_and_verify_all_services; then
       containment_verified=1
@@ -2083,6 +2100,7 @@ start_attempted=0
 services_started=0
 recovery_running=0
 stop_attempted=0
+phase_ledger_created=0
 backup_completed=0
 pointer_switched=0
 completed=0
@@ -2144,6 +2162,7 @@ prune_rollout_retention
 /usr/bin/sha256sum "$artifact_dir/systemd-inventory/sha256sums" > "$artifact_dir/systemd-inventory.sha256"
 touch "$phase_ledger"
 chmod 0600 "$phase_ledger"
+phase_ledger_created=1
 record_phase PRECHECK_STARTED
 converge_runtime_config_directory
 log_file="$artifact_dir/rollout.log"

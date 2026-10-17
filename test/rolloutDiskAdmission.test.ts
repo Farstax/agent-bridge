@@ -224,4 +224,27 @@ fi
     expect(readdirSync(fixture.backupDir)).toEqual([`20260923T000001Z-${fixture.expectedCommit}`]);
     expect(existsSync(join(fixture.logDir, `20260923T000000Z-${fixture.expectedCommit}`))).toBe(true);
   }, 20_000);
+
+  it("prunes older refused-attempt evidence without consuming completed cohort retention", () => {
+    const fixture = useMinimalInventory(createFixture());
+    const completed = writeTerminal(fixture.logDir, fixture.backupDir, "20260101T000000Z");
+    const refusedNames = ["20260923T000000Z", "20260923T000001Z", "20260923T000002Z"].map((stamp) => {
+      const refused = runRollout(fixture, undefined, undefined, {
+        AGENT_BRIDGE_ROLLOUT_AVAILABLE_BYTES: "1",
+        AGENT_BRIDGE_ROLLOUT_SAFETY_RESERVE_BYTES: "1048576",
+        AGENT_BRIDGE_ROLLOUT_TEST_TIMESTAMP: stamp,
+      });
+      expect(refused.status).not.toBe(0);
+      return `${stamp}-${fixture.expectedCommit}`;
+    });
+
+    expect(existsSync(join(fixture.logDir, refusedNames[0]))).toBe(false);
+    expect(existsSync(join(fixture.logDir, refusedNames[1]))).toBe(true);
+    expect(existsSync(join(fixture.logDir, refusedNames[2]))).toBe(true);
+    expect(readFileSync(join(fixture.logDir, refusedNames[2], "phase-ledger.log"), "utf8"))
+      .toMatch(/phase=PRECONDITION_FAILED timestamp=\S+\n$/);
+    expect(existsSync(join(fixture.logDir, completed))).toBe(true);
+    expect(existsSync(join(fixture.backupDir, completed))).toBe(true);
+    expect(actions(fixture)).not.toContain("systemctl:stop");
+  }, 60_000);
 });
