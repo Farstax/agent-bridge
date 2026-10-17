@@ -43,6 +43,3 @@ A configured autonomous Goal can run as a bounded Episode composed of Cycles. Ea
 
 See [FAQ](FAQ.md) and [autonomous-work contract](../skills/autonomous-work/SKILL.md).
 
-## Farstax versus OSS
-
-Self-hosted OSS uses infrastructure and credentials you administer. [Farstax](https://farstax.com/) is a separate managed platform. Its host-owned encrypted Workspace Secrets and dedicated workspace provisioning are **not** features to assume exist when running the OSS source checkout.
