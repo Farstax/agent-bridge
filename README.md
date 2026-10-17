@@ -203,9 +203,15 @@ initial installer.
 
 ## Runtime and deployment boundary
 
-Agent Bridge owns provider-native sessions, durable Runs, routing, fencing, and delivery. Deployment infrastructure owns host/workspace provisioning, credentials, service installation, and machine access. Agent Bridge does not become an infrastructure control plane when operated on managed or self-hosted infrastructure.
+Agent Bridge is the open-source runtime. It assumes you provide the machine,
+provider credentials, messaging surface, repository, and operating environment.
 
-See [deployment ownership](docs/architecture/platform-boundary.md).
+[Farstax](https://farstax.com/) is an optional hosted platform providing managed
+always-on workspaces and operations around Agent Bridge. Self-hosting Agent
+Bridge does not require Farstax.
+
+The generic runtime/deployment responsibility boundary is documented in
+[docs/architecture/platform-boundary.md](docs/architecture/platform-boundary.md).
 
 ## Open-source licence
 
