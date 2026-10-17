@@ -228,6 +228,7 @@ fi
   it("prunes older refused-attempt evidence without consuming completed cohort retention", () => {
     const fixture = useMinimalInventory(createFixture());
     const completed = writeTerminal(fixture.logDir, fixture.backupDir, "20260101T000000Z");
+    const refusedWithBackup = writeTerminal(fixture.logDir, fixture.backupDir, "20260201T000000Z", "PRECONDITION_FAILED");
     const refusedNames = ["20260923T000000Z", "20260923T000001Z", "20260923T000002Z"].map((stamp) => {
       const refused = runRollout(fixture, undefined, undefined, {
         AGENT_BRIDGE_ROLLOUT_AVAILABLE_BYTES: "1",
@@ -245,6 +246,8 @@ fi
       .toMatch(/phase=PRECONDITION_FAILED timestamp=\S+\n$/);
     expect(existsSync(join(fixture.logDir, completed))).toBe(true);
     expect(existsSync(join(fixture.backupDir, completed))).toBe(true);
+    expect(existsSync(join(fixture.logDir, refusedWithBackup))).toBe(true);
+    expect(existsSync(join(fixture.backupDir, refusedWithBackup))).toBe(true);
     expect(actions(fixture)).not.toContain("systemctl:stop");
   }, 60_000);
 });
