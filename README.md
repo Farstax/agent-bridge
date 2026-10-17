@@ -201,15 +201,11 @@ The production installer establishes the baseline once. Existing installations
 move between exact releases with `agent-bridge-deploy` rather than rerunning the
 initial installer.
 
-## Runtime and Platform boundary
+## Runtime and deployment boundary
 
-Agent Bridge is the open-source runtime. It assumes you provide the machine,
-provider credentials, messaging surface, repository, and operating environment.
+Agent Bridge owns provider-native sessions, durable Runs, routing, fencing, and delivery. Deployment infrastructure owns host/workspace provisioning, credentials, service installation, and machine access. Agent Bridge does not become an infrastructure control plane when operated on managed or self-hosted infrastructure.
 
-[Farstax](https://farstax.com/) is the separate hosted/control-plane product that
-provides managed always-on workspaces and operations around Agent Bridge. The
-runtime/platform responsibility boundary is documented in
-[docs/architecture/platform-boundary.md](docs/architecture/platform-boundary.md).
+See [deployment ownership](docs/architecture/platform-boundary.md).
 
 ## Open-source licence
 
