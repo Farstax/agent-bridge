@@ -15,7 +15,8 @@ import { WebClient } from "@slack/web-api";
 import { getBridgeProjectDir } from "./bridge.js";
 import { openProductionDb } from "./db.js";
 import { getExecutionProcessState, shutdownCliProcesses } from "./cliSupervisor.js";
-import { loadBotsConfig, resolveBusyMessageMode, resolveExecutionMode, validateBusyMessageModeEnv } from "./config.js";
+import { loadBotsConfig, resolveBusyMessageMode, resolveExecutionMode, resolveExecutionCapacityConfig, validateBusyMessageModeEnv } from "./config.js";
+import { openExecutionCapacityCoordinator } from "./executionCapacity.js";
 import { BridgeEngine } from "./engine.js";
 import { defaultSoulPath, loadSoulContext, normalizeSoulMode } from "./soul.js";
 import { ProviderFallbackChain } from "./providerFallback.js";
@@ -132,6 +133,7 @@ const dbPath = process.env.DB_PATH || `${getBridgeProjectDir()}/.data/slack-inte
 const executionMode = resolveExecutionMode("codex", process.env);
 validateBusyMessageModeEnv(process.env);
 const busyMessageMode = resolveBusyMessageMode(process.env);
+const executionCapacity = resolveExecutionCapacityConfig(process.env);
 const engineAllowedUserIds = new Set<string>(slackConfig.allowedUserIds);
 const config: BridgeConfig = {
   allowedUserIds: engineAllowedUserIds,
@@ -160,6 +162,12 @@ try {
   fail("database_unavailable", error instanceof Error ? error.message : "database unavailable", status);
 }
 const advisorBroker = await startConfiguredAdvisorBroker({ db, bots: config.bots, runCli });
+const executionCapacityDb = openExecutionCapacityCoordinator(executionCapacity, dbPath, db, {
+  serviceId: "slack:interactive",
+  installationId: process.env.AGENT_BRIDGE_INSTALLATION_ID,
+  requireInstallationIdentity: process.env.NODE_ENV === "production" && Boolean(process.env.AGENT_BRIDGE_INSTALLATION_ID?.trim()),
+  databaseRole: "slack",
+});
 
 const client = new SlackClient(web as unknown as import("./slack.js").SlackPostingClient);
 const cliChain = parseCliChain(process.env.INTERACTIVE_CLI_CHAIN, { allowed: interactiveChainKinds(), fallback: ["codex", "claude", "antigravity", "grok", "cursor"] });
@@ -178,6 +186,8 @@ const engines = Object.fromEntries(CLI_KINDS.map((kind) => [kind, new BridgeEngi
   soulContext,
   fullConfig: config,
   advisorCapabilities: advisorBroker ?? undefined,
+  maxConcurrentExecutions: executionCapacity.maxConcurrentExecutions,
+  executionCapacityDb: executionCapacityDb ?? undefined,
   hooks: { onProviderFallbackRequested: async (chatKey, reason) => { fallbackRequests.set(chatKey, reason); } },
 }, db, client)])) as Record<CliKind, BridgeEngine>;
 

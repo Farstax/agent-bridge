@@ -64,6 +64,7 @@ import { type as eventType } from "./events/types.js";
 import { EventStore } from "./events/store.js";
 import type { BridgeConfig, BotKind, RouteableBotKind, TelegramUpdate, TelegramMessage, TelegramCallbackQuery, CliResult, CliOptions } from "./types.js";
 import { ExecutionLockLostError, type BridgeDb, type ExecutionLaneHandle } from "./db.js";
+import type { ExecutionCapacityClaim } from "./repositories/executionCapacityRepository.js";
 import { DEFAULT_CONTEXT_MAX_CHARS } from "./db.js";
 import { linkScheduledOccurrenceRun, markScheduledOccurrenceFailed, SCHEDULED_OCCURRENCE_PREFIX } from "./scheduledRunCorrelation.js";
 import { resolveTimeoutsForKind } from "./timeouts.js";
@@ -151,6 +152,9 @@ export interface BridgeEngineOptions {
   fullConfig?: BridgeConfig;
   hooks?: BridgeEngineHooks;
   advisorCapabilities?: AdvisorCapabilityIssuer;
+  /** Positive only when all participating surfaces share executionCapacityDb. */
+  maxConcurrentExecutions?: number;
+  executionCapacityDb?: BridgeDb;
 }
 
 export interface ExecFns {
@@ -172,6 +176,15 @@ export interface SurfaceNeutralTurnInput {
 }
 
 const MAX_QUEUE_DEPTH = 5;
+const EXECUTION_CAPACITY_NOTICE = "All agents are currently busy. I've queued your request and will start automatically when capacity is available.";
+const BTW_PENDING_PREFIX = "agent-bridge:btw";
+
+class ProviderExecutionCapacityError extends Error {
+  constructor() {
+    super("all provider execution slots are occupied");
+    this.name = "ProviderExecutionCapacityError";
+  }
+}
 const ENGINE_CONTEXT_MAX_CHARS = parseInt(process.env.BRIDGE_CONTEXT_MAX_CHARS ?? "") || DEFAULT_CONTEXT_MAX_CHARS;
 const MANAGED_BOT_KINDS = new Set<string>(["codex", "antigravity", "claude", "grok", "cursor"]);
 function isManagedBotKind(kind: string): kind is BotKind {
@@ -220,6 +233,9 @@ export class BridgeEngine {
   ) {
     if (!opts.surfaceIdentity?.trim()) throw new Error("BridgeEngine surfaceIdentity is required");
     this.opts = opts;
+    if ((opts.maxConcurrentExecutions ?? 0) > 0 && !opts.executionCapacityDb) {
+      throw new Error("executionCapacityDb is required when maxConcurrentExecutions is positive");
+    }
     this.kind = opts.kind;
     this.surfaceIdentity = opts.surfaceIdentity;
     this.db = db;
@@ -433,7 +449,7 @@ export class BridgeEngine {
             return "committed";
           }
           if (commandResponse.kind === "execute") { return await this._executeAndSend(commandResponse.prompt, initialChatId, chatKey, primaryMessage.delivery.chatType, initialThreadId, initialUserId, initialHookCtx, []); }
-          if (commandResponse.kind === "btw") { await this._executeBtw(commandResponse.prompt, initialChatId, chatKey, initialThreadId); return "committed"; }
+          if (commandResponse.kind === "btw") { await this._executeBtw(commandResponse.prompt, initialChatId, chatKey, initialThreadId, initialUserId); return "committed"; }
         }
         return "committed";
       }
@@ -534,7 +550,7 @@ export class BridgeEngine {
     }
   }
 
-  private async _executeBtw(prompt: string, chatId: number | string, chatKey: string, threadId?: number | string): Promise<void> {
+  private async _executeBtw(prompt: string, chatId: number | string, chatKey: string, threadId?: number | string, userId?: number | string): Promise<void> {
     const executionKind = this._executionKind();
     if (executionKind === "antigravity") {
       await this.sendText(chatId, {
@@ -551,6 +567,41 @@ export class BridgeEngine {
       return;
     }
 
+    const admission = this.db.admitMessage(this.surfaceIdentity, chatKey, {
+      prompt, chatId, threadId, chatType: "private", userId, scheduledOccurrenceKey: BTW_PENDING_PREFIX,
+    }, MAX_QUEUE_DEPTH);
+    if (admission.kind === "full") {
+      await this.sendText(chatId, { text: `⏳ Queue is full (max ${MAX_QUEUE_DEPTH}). Please wait.`, message_thread_id: threadId });
+      return;
+    }
+    if (admission.kind === "queued") {
+      this._scheduleDurableQueueRecovery(chatKey);
+      return;
+    }
+    if (admission.kind === "execute_claimed") {
+      await this._drainQueueAndUnlock(admission.handle, admission.claimed);
+      return;
+    }
+    try {
+      await this._executeBtwClaimed(prompt, chatId, chatKey, threadId, admission.handle);
+    } catch (error) {
+      if (error instanceof ProviderExecutionCapacityError) {
+        const pendingId = this.db.enqueueMsg(this.surfaceIdentity, chatKey, {
+          prompt, chatId, threadId, chatType: "private", userId, scheduledOccurrenceKey: BTW_PENDING_PREFIX,
+        });
+        await this._notifyExecutionCapacityOnce(pendingId, chatId, threadId);
+        this._scheduleDurableQueueRecovery(chatKey);
+        return;
+      }
+      const userText = toUserMessage(error instanceof Error ? error : new Error(String(error)));
+      await this.sendText(chatId, { text: `Error: ${userText}`, message_thread_id: threadId });
+    } finally {
+      if (this.db.ownsLock(admission.handle)) this.db.unlock(admission.handle);
+    }
+  }
+
+  private async _executeBtwClaimed(prompt: string, chatId: number | string, chatKey: string, threadId: number | string | undefined, laneHandle: ExecutionLaneHandle): Promise<void> {
+    const executionKind = this._executionKind();
     const model = isRouteableKind(this.kind)
       ? (this.db.getSetting(this.kind) || this.opts.botConfig.modelPreference[0] || null)
       : (this.opts.botConfig.modelPreference[0] || null);
@@ -578,8 +629,7 @@ export class BridgeEngine {
     });
     const sideExecutionId = `${this._executionLane(chatKey)}:btw:${randomUUID()}`;
 
-    try {
-      const invoked = await this._runNativeOrAcp(
+    const invoked = await this._withExecutionCapacity(sideExecutionId, laneHandle, () => this._runNativeOrAcp(
         executionKind,
         invocation,
         cwd,
@@ -601,13 +651,9 @@ export class BridgeEngine {
           toolMode: "none",
         },
         { conversationId: `${chatKey}:btw`, runId: sideExecutionId },
-      );
-      const result = invoked.parsed ?? parseCliResult({ bot: executionKind, stdout: invoked.stdout });
-      await this.sendText(chatId, { text: result.text, message_thread_id: threadId });
-    } catch (error) {
-      const userText = toUserMessage(error instanceof Error ? error : new Error(String(error)));
-      await this.sendText(chatId, { text: `Error: ${userText}`, message_thread_id: threadId });
-    }
+    ));
+    const result = invoked.parsed ?? parseCliResult({ bot: executionKind, stdout: invoked.stdout });
+    await this.sendText(chatId, { text: result.text, message_thread_id: threadId });
   }
 
   private async _executeAndSend(
@@ -769,6 +815,27 @@ export class BridgeEngine {
       if (this.laneCoordinator.hasCancellation(executionLane) || this.laneCoordinator.isAborted(executionLane) || !this.db.ownsLock(laneHandle)) {
         outcome = "fenced";
         return "fenced";
+      }
+      if (error instanceof ProviderExecutionCapacityError) {
+        // A claimed receipt remains the single durable owner. It is released
+        // by the queue drainer after this deferred outcome, then recovered by
+        // the existing lease-based queue recovery path.
+        if (claimedPendingIds.length > 0 || activePendingIds.length > 0) {
+          const pendingId = [...claimedPendingIds, ...activePendingIds][0];
+          if (pendingId !== undefined) await this._notifyExecutionCapacityOnce(pendingId, chatId, threadId);
+          this._scheduleDurableQueueRecovery(chatKey);
+          outcome = "deferred";
+          return "deferred";
+        }
+        const pendingId = this.db.enqueueMsg(this.surfaceIdentity, chatKey, {
+          prompt, chatId, threadId, chatType, userId, attachments,
+          scheduledOccurrenceKey: scheduledOccurrenceKeys[0],
+        });
+        capacityPendingHeld = true;
+        this._scheduleDurableQueueRecovery(chatKey);
+        await this._notifyExecutionCapacityOnce(pendingId, chatId, threadId);
+        outcome = "queued";
+        return "queued";
       }
       console.error(`[${this.kind}] prompt execution failed`, error);
       if (error instanceof PreviewCleanupError) {
@@ -1554,6 +1621,19 @@ export class BridgeEngine {
   async executeClaimedMessage(next: PendingMessage): Promise<ExecutionOutcome> {
     if (!next.laneHandle) throw new Error("claimed message requires its acquisition handle");
     const chatKey = next.chatKey;
+    if ((next.scheduledOccurrenceKeys ?? [next.scheduledOccurrenceKey]).includes(BTW_PENDING_PREFIX)) {
+      try {
+        await this._executeBtwClaimed(next.prompt, next.chatId, chatKey, next.threadId ?? undefined, next.laneHandle);
+        return "committed";
+      } catch (error) {
+        if (error instanceof ProviderExecutionCapacityError) {
+          await this._notifyExecutionCapacityOnce(next.id, next.chatId, next.threadId ?? undefined);
+          this._scheduleDurableQueueRecovery(chatKey);
+          return "deferred";
+        }
+        throw error;
+      }
+    }
     if (this.opts.busyMessageMode === "augment") {
       this.laneCoordinator.setAugmentedTask(this._executionLane(chatKey), {
         prompt: next.prompt,
@@ -1888,6 +1968,40 @@ export class BridgeEngine {
     return { stdout, parsed: null };
   }
 
+  private async _withExecutionCapacity<T>(executionId: string, lane: Pick<ExecutionLaneHandle, "acquisitionId">, operation: () => Promise<T>): Promise<T> {
+    const limit = this.opts.maxConcurrentExecutions ?? 0;
+    if (limit === 0) return operation();
+    const coordinator = this.opts.executionCapacityDb!;
+    const claim = coordinator.acquireExecutionCapacity(limit, executionId, lane.acquisitionId);
+    if (!claim) throw new ProviderExecutionCapacityError();
+    const heartbeat = setInterval(() => {
+      try {
+        if (!coordinator.heartbeatExecutionCapacity(claim)) {
+          console.error(`[${this.kind}] execution-capacity claim lost execution=${executionId}`);
+        }
+      } catch (error) {
+        console.error(`[${this.kind}] execution-capacity heartbeat failed execution=${executionId}`, error);
+      }
+    }, coordinator.lockHeartbeatMs);
+    heartbeat.unref();
+    try {
+      return await operation();
+    } finally {
+      clearInterval(heartbeat);
+      coordinator.releaseExecutionCapacity(claim);
+    }
+  }
+
+  private async _notifyExecutionCapacityOnce(pendingId: number, chatId: number | string, threadId?: number | string): Promise<void> {
+    if (!this.db.markExecutionCapacityNotified(pendingId)) return;
+    await sendSurfaceMessage({
+      client: this.client,
+      kind: this._deliveryKind(),
+      chatId,
+      body: { text: EXECUTION_CAPACITY_NOTICE, message_thread_id: threadId },
+    }).catch((sendError) => console.error(`[${this.kind}] execution-capacity queue notification failed`, sendError));
+  }
+
   private async _executeProviderAttempt(
     prompt: string,
     sessionId: string | null,
@@ -1967,7 +2081,7 @@ export class BridgeEngine {
       let parsedAcp: CliResult | null = null;
       try {
         (body as { onProviderExecutionStarted?: () => void }).onProviderExecutionStarted?.();
-        const invoked = await this._runNativeOrAcp(
+        const invoked = await this._withExecutionCapacity(runId ?? `${executionLane}:${randomUUID()}`, laneHandle, () => this._runNativeOrAcp(
           executionKind,
           invocation,
           cwd,
@@ -1996,7 +2110,7 @@ export class BridgeEngine {
             effort: resolveEffort(executionKind, this.db),
           },
           { conversationId: chatKey, runId: runId ?? randomUUID() },
-        );
+        ));
         stdout = invoked.stdout;
         parsedAcp = invoked.parsed;
       } finally {

@@ -95,6 +95,7 @@ SHARED_KEYS = (
     "BRIDGE_ADVISOR_MAX_CALLS_PER_TURN", "BRIDGE_ADVISOR_MAX_CALLS_PER_TASK",
     "BRIDGE_ADVISOR_TIMEOUT_MS", "BRIDGE_ADVISOR_CONTEXT_MAX_CHARS",
     "AGENT_BRIDGE_SENSOR_CONFIG",
+    "AGENT_BRIDGE_MAX_CONCURRENT_EXECUTIONS",
     "CODEX_ACP_COMMAND", "CODEX_ACP_ARGS", "CLAUDE_ACP_COMMAND", "CLAUDE_ACP_ARGS",
     "GROK_ACP_COMMAND", "GROK_ACP_ARGS",
     "AGY_ACP_COMMAND", "AGY_ACP_ARGS",
@@ -486,6 +487,16 @@ def configure_host(
         "FETCH_TIMEOUT_MS": env.get("FETCH_TIMEOUT_MS", "45000"),
     }
     shared.update({key: env[key] for key in SHARED_KEYS if env.get(key, "") != ""})
+    raw_capacity = env.get("AGENT_BRIDGE_MAX_CONCURRENT_EXECUTIONS", "0")
+    if not re.fullmatch(r"0|[1-9][0-9]*", raw_capacity):
+        fail("AGENT_BRIDGE_MAX_CONCURRENT_EXECUTIONS must be a non-negative integer")
+    if int(raw_capacity) > 0:
+        # Every selected surface inherits this one already-managed SQLite DB.
+        # Prefer the ordinary interactive DB when present; otherwise use the
+        # first selected service DB. The installer bootstraps it below, so it
+        # never creates an extra coordinator database.
+        coordinator_service = next((service for service in selected if service[3] == "interactive"), selected[0])
+        shared["AGENT_BRIDGE_EXECUTION_COORDINATION_DB_PATH"] = str(database_path(state_root, coordinator_service))
     if not (shared.get("TELEGRAM_ALLOWED_USER_IDS") or shared.get("TELEGRAM_ALLOWED_USER_ID") or env.get("DISCORD_ALLOWED_USER_IDS") or env.get("SLACK_ALLOWED_USER_IDS")):
         fail("an allowed Telegram, Discord or Slack user ID must be configured")
     safe_write(DEFAULTS_DIR / "agent-bridge-shared", render_env(shared), 0o600)

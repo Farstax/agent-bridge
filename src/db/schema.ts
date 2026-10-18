@@ -18,9 +18,11 @@ import { applyOutwardAcpSessionsMigration } from "./outwardAcpSessionsMigration.
 import { applyConversationIdentityMigration } from "./conversationIdentityMigration.js";
 import { applyLegacySettingsSurfaceMigration } from "./legacySettingsSurfaceMigration.js";
 import { applySlackReceiptsMigration } from "./slackReceiptsMigration.js";
+import { applyExecutionCapacityMigration } from "./executionCapacityMigration.js";
+import { applyExecutionCapacityNotificationMigration } from "./executionCapacityNotificationMigration.js";
 
 /** The schema version reached after the complete registered migration plan. */
-export const CURRENT_SCHEMA_VERSION = 20;
+export const CURRENT_SCHEMA_VERSION = 22;
 
 export interface Migration {
   version: number;
@@ -39,7 +41,7 @@ const MIGRATION_GROWTH: Readonly<Record<number, "none" | "copy">> = {
   1: "copy", 2: "copy", 3: "copy", 4: "copy", 5: "copy", 6: "none",
   7: "copy", 8: "copy", 9: "copy", 10: "copy", 11: "copy", 12: "copy",
   13: "copy", 14: "copy", 15: "copy", 16: "copy", 17: "copy", 18: "copy",
-  19: "none", 20: "copy",
+  19: "none", 20: "copy", 21: "none", 22: "none",
 };
 
 export function migrationGrowthClass(currentVersion: number): "none" | "copy" {
@@ -226,4 +228,6 @@ const DEFAULT_MIGRATIONS: readonly Migration[] = [
   { version: 18, name: "scope-conversation-state-by-surface", up: applyConversationIdentityMigration },
   { version: 19, name: "scope-legacy-settings-by-surface", up: applyLegacySettingsSurfaceMigration },
   { version: 20, name: "add-slack-event-receipts", up: applySlackReceiptsMigration },
+  { version: 21, name: "add-execution-capacity-claims", up: applyExecutionCapacityMigration },
+  { version: 22, name: "add-execution-capacity-notification", up: applyExecutionCapacityNotificationMigration },
 ];
