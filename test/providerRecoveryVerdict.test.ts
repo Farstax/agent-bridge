@@ -60,12 +60,14 @@ describe("provider recovery verdict", () => {
     expect(decideProviderRecovery("codex", new Error("spawn agent ENOENT")).reason).toBe("provider_unavailable");
   });
 
-  it("does not make Claude OAuth refresh contention a transport retry", () => {
+  it("keeps Claude OAuth refresh contention transient, not auth_required or a transport fallback", () => {
     const decision = decideProviderRecovery(
       "claude",
       new Error("Failed to refresh OAuth token: another Claude Code process is refreshing it or exited mid-refresh."),
     );
-    expect(decision.reason).toBe("auth_required");
+    expect(decision.authRequired).toBe(false);
+    expect(decision.classification.kind).toBe("transient");
+    expect(decision.reason).toBeNull();
   });
 });
 

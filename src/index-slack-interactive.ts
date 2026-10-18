@@ -25,7 +25,6 @@ import { getAvailableCliKinds } from "./interactiveCliAuth.js";
 import {
   dispatchClaimedInteractiveWithFallback,
   dispatchInteractiveTurnWithFallback,
-  setUserCliPreference,
   type CliKind,
 } from "./interactiveBot.js";
 import { runCli } from "./cli.js";
@@ -203,7 +202,6 @@ async function notifyNative(channel: string, thread: string | undefined, text: s
 const dispatchDeps = (channel: string, thread: string | undefined, chatKey: string) => ({
   surfaceIdentity, engines, fallbackChain, fallbackRequests, db,
   notify: async (msg: string) => { await notifyNative(channel, thread, msg); },
-  onCliSwitched: async (newCli: CliKind) => setUserCliPreference(db, { surfaceIdentity, chatKey }, newCli),
 });
 
 for (const engine of Object.values(engines)) {

@@ -38,17 +38,38 @@ const ACP_SYSTEM_ERROR_DIAGNOSTIC_MAX_CHARS = 2_000;
  * failure-text shapes, not a broad heuristic -- add an entry only for a
  * confirmed, reproduced failure text, never a guessed pattern.
  */
-const IN_BAND_FAILURE_TEXT_MARKERS: readonly RegExp[] = [
+const IN_BAND_FAILURE_TEXT_MARKERS: Readonly<Record<string, readonly RegExp[]>> = {
   // Antigravity (Agy): the resumed session's checkpoint no longer exists.
-  /could not find doneCh for checkpoint/i,
-];
+  agy: [/could not find doneCh for checkpoint/i],
+};
 
-function inBandFailureTextDiagnostic(liveText: string): string | null {
-  return IN_BAND_FAILURE_TEXT_MARKERS.some((marker) => marker.test(liveText)) ? liveText : null;
+// Agy's complete quota reply: the whole answer is the banner and nothing else,
+// so a quoted excerpt or an answer discussing quotas never matches.
+const AGY_QUOTA_BANNER =
+  /^\s*Usage Limit Reached\s+You have reached your current quota for this period\.(?:\s+Your limit will reset in ((?:\d+ (?:days?|hours?|minutes?)(?:, | and )?)+)\.?)?\s*$/i;
+
+function relativeResetMs(text: string): number | null {
+  let total = 0;
+  for (const [, n, unit] of text.matchAll(/(\d+) (day|hour|minute)/gi)) {
+    total += Number(n) * ({ day: 86_400_000, hour: 3_600_000, minute: 60_000 }[unit!.toLowerCase() as "day"]);
+  }
+  return total > 0 ? total : null;
+}
+
+function inBandFailureDiagnostic(providerId: string | undefined, liveText: string): AcpSystemError | null {
+  if (providerId === "agy") {
+    const banner = AGY_QUOTA_BANNER.exec(liveText);
+    if (banner) {
+      const ms = banner[1] ? relativeResetMs(banner[1]) : null;
+      return new AcpSystemError(liveText, "usageLimitExceeded", ms === null ? undefined : new Date(Date.now() + ms).toISOString());
+    }
+  }
+  const markers = providerId ? IN_BAND_FAILURE_TEXT_MARKERS[providerId] : undefined;
+  return markers?.some((marker) => marker.test(liveText)) ? new AcpSystemError(liveText) : null;
 }
 
 export class AcpSystemError extends Error {
-  readonly data: { readonly acpSystemError: true; readonly message: string; readonly codexErrorInfo?: string };
+  readonly data: { readonly acpSystemError: true; readonly message: string; readonly codexErrorInfo?: string; readonly capacityResetsAt?: string };
 
   /**
    * `codexErrorInfo` routes this error through the same structured
@@ -58,12 +79,12 @@ export class AcpSystemError extends Error {
    * (`usageLimited`/`budgetLimited`) Codex's own protocol already
    * distinguishes from a generic `systemError`.
    */
-  constructor(diagnostic: string, codexErrorInfo?: string) {
+  constructor(diagnostic: string, codexErrorInfo?: string, capacityResetsAt?: string) {
     const bounded = diagnostic.trim().slice(0, ACP_SYSTEM_ERROR_DIAGNOSTIC_MAX_CHARS)
       || "ACP session reported a system error";
     super(bounded);
     this.name = "AcpSystemError";
-    this.data = { acpSystemError: true, message: bounded, ...(codexErrorInfo ? { codexErrorInfo } : {}) };
+    this.data = { acpSystemError: true, message: bounded, ...(codexErrorInfo ? { codexErrorInfo } : {}), ...(capacityResetsAt ? { capacityResetsAt } : {}) };
   }
 }
 
@@ -91,6 +112,8 @@ export interface AcpRetainedEvent {
 }
 
 export interface AcpTurnInput {
+  /** Bridge provider id; scopes provider-specific in-band failure detection. */
+  readonly providerId?: string;
   readonly cwd: string;
   readonly conversationId: string;
   readonly runId: string;
@@ -707,8 +730,8 @@ export async function runAcpTurn(input: AcpTurnInput): Promise<AcpTurnResult> {
 
     const liveText = liveDeliveryText(updates, acpSessionId);
     if (promptResponse.stopReason !== "cancelled") {
-      const inBandFailure = inBandFailureTextDiagnostic(liveText);
-      if (inBandFailure !== null) throw new AcpSystemError(inBandFailure);
+      const inBandFailure = inBandFailureDiagnostic(input.providerId, liveText);
+      if (inBandFailure !== null) throw inBandFailure;
     }
     return {
       conversationId: input.conversationId,
