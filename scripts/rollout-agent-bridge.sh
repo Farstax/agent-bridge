@@ -1472,7 +1472,8 @@ NODE
 }
 
 prune_host_component_versions() {
-  local provider="$1" versions_dir="$2" link="$3" remover="$4" current_version previous_version linked entry name pruned=0
+  local provider="$1" versions_dir="$2" remover="$3" current_version previous_version link linked entry name pruned=0
+  shift 3
   if [[ ! -e "$versions_dir" && ! -L "$versions_dir" ]]; then
     echo "host component retention provider=$provider pruned=0 reason=not_installed"
     return 0
@@ -1488,12 +1489,14 @@ prune_host_component_versions() {
     echo "host component retention skipped provider=$provider reason=install_in_progress"
     return 0
   fi
-  linked=""
-  if [[ -L "$link" ]]; then
+  # Every managed link the installer publishes must already serve the current
+  # version; a stale link means activation did not converge.
+  for link in "$@"; do
+    [[ -L "$link" ]] || continue
     linked="$(/usr/bin/readlink -f -- "$link")" || { echo "host component retention skipped provider=$provider reason=link_unresolved"; return 0; }
     [[ "$linked" == "$versions_dir/$current_version/"* ]] \
       || { echo "host component retention skipped provider=$provider reason=link_not_current"; return 0; }
-  fi
+  done
   while IFS= read -r entry; do
     name="$(/usr/bin/basename -- "$entry")"
     [[ "$name" =~ ^[0-9A-Za-z][0-9A-Za-z._+-]*$ ]] || continue
@@ -1521,12 +1524,13 @@ prune_host_component_retention() {
     echo "host component retention skipped reason=release_pins_ambiguous"
     return 0
   fi
-  prune_host_component_versions agy "$ROLLOUT_HOST_COMPONENT_ROOT/agy-acp/components" \
-    "${AGENT_BRIDGE_AGY_ACP_LINK:-/usr/local/bin/agy_acp_server.par}" remove_named_child_directory
+  prune_host_component_versions agy "$ROLLOUT_HOST_COMPONENT_ROOT/agy-acp/components" remove_named_child_directory \
+    "${AGENT_BRIDGE_AGY_ACP_LINK:-/usr/local/bin/agy_acp_server.par}" \
+    "${AGENT_BRIDGE_AGY_HARNESS_LINK:-/usr/local/bin/agy_localharness_external}"
   local runtime_home
   runtime_home="$(resolve_runtime_home 2>/dev/null)" || { echo "host component retention skipped provider=cursor reason=runtime_home_unavailable"; return 0; }
-  prune_host_component_versions cursor "$runtime_home/.local/share/agent-bridge/cursor-acp/versions" \
-    "$runtime_home/.local/bin/cursor-agent" remove_runtime_child_directory
+  prune_host_component_versions cursor "$runtime_home/.local/share/agent-bridge/cursor-acp/versions" remove_runtime_child_directory \
+    "$runtime_home/.local/bin/cursor-agent"
 }
 
 regular_file_bytes() {
