@@ -6,7 +6,7 @@ import { actions, cleanupRoots, createFixture, runRollout, useMinimalInventory }
 
 afterEach(cleanupRoots);
 
-const evidenceBytes = 16_777_216;
+const evidenceBytes = 1_048_576;
 const commit = "a".repeat(40);
 
 function writeTerminal(logDir: string, backupDir: string, stamp: string, phase = "COMPLETE") {

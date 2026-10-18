@@ -130,4 +130,18 @@ describe("ACP telemetry retention", () => {
     ]);
     reopened.close();
   });
+
+  it("uses bounded delete batches and never vacuums a live database", () => {
+    const { path, db } = createDb();
+    addRun(db, "old-done", "done");
+    for (let sequence = 1; sequence <= 1_001; sequence += 1) {
+      addEvent(db, "old-done", sequence, "acp.event", "2026-01-01T00:00:00.000Z");
+    }
+    db.close();
+
+    const evidence = prune(path).databases[0].acpTelemetryRetention;
+    expect(evidence.deletedRows).toBe(1_001);
+    expect(evidence.batchSize).toBeGreaterThan(0);
+    expect(evidence.compacted).toBe(false);
+  });
 });
