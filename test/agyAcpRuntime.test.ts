@@ -7,7 +7,7 @@ import { describe, expect, it } from "vitest";
 import { buildCliInvocation, parseCliResult } from "../src/cli.js";
 import { runAcpTurn } from "../src/acp/client.js";
 import { getLockedAcpRegistryEntry } from "../src/providers/acpRegistry.js";
-import { assertAgyAcpVersion } from "../src/providers/agyAcpConfig.js";
+import { AGY_ACP_VERSION_TIMEOUT_MS, assertAgyAcpVersion, readAgyAcpVersion } from "../src/providers/agyAcpConfig.js";
 import { resolveProviderRuntime } from "../src/providers/acpRuntime.js";
 import {
   acpProviderDefaultSettingKey,
@@ -83,6 +83,18 @@ describe("Agy ACP provider", () => {
       transport: "acp-stdio",
     });
     expect(invocation.args).not.toContain("--print");
+  });
+
+  it("uses the bounded Agy-specific version verification timeout", () => {
+    let options: { timeout?: number } | undefined;
+    expect(readAgyAcpVersion("agy_acp_server.par", ((command, args, received) => {
+      expect(command).toBe("agy_acp_server.par");
+      expect(args).toEqual(["--version"]);
+      options = received as { timeout?: number };
+      return "agy_acp_server.par 1.3.0";
+    }) as never)).toContain("1.3.0");
+    expect(options?.timeout).toBe(AGY_ACP_VERSION_TIMEOUT_MS);
+    expect(AGY_ACP_VERSION_TIMEOUT_MS).toBeGreaterThan(10_000);
   });
 
   it("refuses a stale, malformed, or missing Agy executable before submission", () => {

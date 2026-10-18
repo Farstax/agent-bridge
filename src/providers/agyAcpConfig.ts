@@ -3,6 +3,7 @@ import type { AcpRegistryAgentEntry } from "./acpRegistry.js";
 
 const DEFAULT_AGY_ACP_COMMAND = "agy_acp_server.par";
 const DEFAULT_AGY_ACP_ARGS = ["--uid="];
+export const AGY_ACP_VERSION_TIMEOUT_MS = 30_000;
 
 export function resolveAgyAcpCommand(
   env: Record<string, string | undefined> = process.env,
@@ -21,15 +22,22 @@ export function resolveAgyAcpArgs(
   return [...(entry?.distribution.binary?.["linux-x86_64"]?.args ?? DEFAULT_AGY_ACP_ARGS)];
 }
 
+export function readAgyAcpVersion(
+  command: string,
+  execute: typeof execFileSync = execFileSync,
+): string {
+  return execute(command, ["--version"], {
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+    timeout: AGY_ACP_VERSION_TIMEOUT_MS,
+  }).trim();
+}
+
 /** Refuse an installed Agy executable whose actual version differs from the release lock. */
 export function assertAgyAcpVersion(
   command: string,
   expectedVersion: string | null,
-  readVersion: () => string = () => execFileSync(command, ["--version"], {
-    encoding: "utf8",
-    stdio: ["ignore", "pipe", "pipe"],
-    timeout: 10_000,
-  }).trim(),
+  readVersion: () => string = () => readAgyAcpVersion(command),
 ): void {
   if (!expectedVersion) throw new Error("Agy ACP release lock has no selected version");
   let observedVersion = "unknown";
