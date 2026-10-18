@@ -121,6 +121,7 @@ describe("systemd templates", () => {
     expect(service).toContain("EnvironmentFile=/etc/default/agent-bridge-release");
     expect(service).toContain("BRIDGE_CURRENT_RELEASE_DIR");
     expect(service).toContain("scripts/reap-tmp-artifacts.sh");
+    expect(service).toContain("/etc/default/agent-bridge-interactive");
     expect(service).not.toContain("BRIDGE_REPO_DIR/scripts");
   });
 

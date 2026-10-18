@@ -1142,6 +1142,10 @@ if [ -e ${JSON.stringify(`${fixture.dbPaths[0]}-wal`)} ]; then printf '1\\n'; el
       claimStateCounts: expect.any(Object),
       executionLockState: expect.any(Object),
       claimRunAcquisitionCorrelation: expect.any(String),
+      deliveryIdentityCorrelation: expect.objectContaining({
+        count: expect.any(Number),
+        digest: expect.stringMatching(/^[0-9a-f]{64}$/),
+      }),
       deliveryState: expect.any(Object),
     }));
     expect(JSON.parse(readFileSync(join(artifacts, "post-start-evidence.json"), "utf8")).databases[0].claimRunAcquisitionCorrelation)

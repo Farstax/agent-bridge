@@ -49,7 +49,7 @@ interface DbEvidence {
   claimRunAcquisitionCorrelation: string;
   runLockCorrelation: { queue: Array<Record<string, unknown>>; locks: Array<Record<string, unknown>> };
   runIdentityCorrelation: Array<Record<string, unknown>>;
-  deliveryIdentityCorrelation: Array<Record<string, unknown>>;
+  deliveryIdentityCorrelation: { count: number; digest: string };
   lifecycle: {
     runs: Array<Record<string, unknown>>;
     locks: Array<Record<string, unknown>>;
@@ -65,6 +65,8 @@ interface DbEvidence {
   acpTelemetryRetention?: {
     cutoff: string;
     deletedRows: number;
+    batchSize: number;
+    batchCount: number;
     pageSize: number;
     pageCountBefore: number;
     freePagesBefore: number;
@@ -299,6 +301,23 @@ function digestRows(rows: unknown[]): string {
   return createHash("sha256").update(JSON.stringify(rows)).digest("hex");
 }
 
+/**
+ * Rollout evidence must prove that delivery identity did not silently drift,
+ * without serialising an unbounded copy of diagnostic events into every
+ * evidence file. Iterate in deterministic order so the digest remains
+ * meaningful and keep only the count and digest in the emitted evidence.
+ */
+function digestQueryRows(statement: Database.Statement): { count: number; digest: string } {
+  const hash = createHash("sha256");
+  let count = 0;
+  for (const row of statement.iterate() as Iterable<Record<string, unknown>>) {
+    hash.update(JSON.stringify(row));
+    hash.update("\n");
+    count += 1;
+  }
+  return { count, digest: hash.digest("hex") };
+}
+
 function inspectDatabase(path: string, requireCurrent: boolean, resolvingUnits: string[] = [], role: DatabaseRole = "shared", allowRetiredHealthTable = false): DbEvidence {
   const db = new Database(path, { readonly: true, fileMustExist: true });
   try {
@@ -368,8 +387,8 @@ function inspectDatabase(path: string, requireCurrent: boolean, resolvingUnits: 
       ? db.prepare("SELECT run_id, chat_id, bot, status, started_at, ended_at, session_id, error FROM bridge_runs ORDER BY run_id").all() as Array<Record<string, unknown>>
       : [];
     const deliveryIdentityCorrelation = tables.includes("bridge_events")
-      ? db.prepare("SELECT id, run_id, seq, type, timestamp FROM bridge_events ORDER BY run_id, seq, id").all() as Array<Record<string, unknown>>
-      : [];
+      ? digestQueryRows(db.prepare("SELECT id, run_id, seq, type, timestamp FROM bridge_events ORDER BY run_id, seq, id"))
+      : { count: 0, digest: createHash("sha256").digest("hex") };
     const lifecycleRuns: Array<Record<string, unknown>> = [];
     const lifecycleLocks: Array<Record<string, unknown>> = [];
     const reconciliationAudits = tables.includes("reconciliation_audit")
@@ -446,8 +465,7 @@ function checkpointDatabase(path: string, resolvingUnits: string[] = [], role: D
 }
 
 const ACP_EVENT_RETENTION_DAYS = 14;
-const MIN_COMPACTION_RECLAIMABLE_BYTES = 64 * 1024 * 1024;
-const MIN_COMPACTION_FREE_RATIO = 0.20;
+const ACP_TELEMETRY_DELETE_BATCH_SIZE = 500;
 
 function pragmaNumber(db: Database.Database, name: "page_size" | "page_count" | "freelist_count"): number {
   return Number(db.pragma(name, { simple: true }));
@@ -463,12 +481,13 @@ function pruneAcpTelemetry(path: string, resolvingUnits: string[] = [], role: Da
   let deletedRows = 0;
   let pageCountAfterDelete = pageCountBefore;
   let freePagesAfterDelete = freePagesBefore;
-  let compacted = false;
+  let batchCount = 0;
   try {
     const tables = new Set((raw.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all() as Array<{ name: string }>).map((row) => row.name));
     if (tables.has("bridge_events") && tables.has("bridge_runs")) {
-      const remove = raw.transaction(() => raw.prepare(`
-        DELETE FROM bridge_events
+      const candidates = raw.prepare(`
+        SELECT bridge_events.id
+        FROM bridge_events
         WHERE type = 'acp.event'
           AND timestamp < ?
           AND EXISTS (
@@ -477,17 +496,20 @@ function pruneAcpTelemetry(path: string, resolvingUnits: string[] = [], role: Da
             WHERE bridge_runs.run_id = bridge_events.run_id
               AND bridge_runs.status IN ('done', 'failed', 'cancelled')
           )
-      `).run(cutoff));
-      deletedRows = Number(remove().changes);
+        ORDER BY bridge_events.id
+        LIMIT ?
+      `);
+      const remove = raw.prepare("DELETE FROM bridge_events WHERE id = ?");
+      const removeBatch = raw.transaction((ids: Array<{ id: string }>) => ids.reduce((total, row) => total + Number(remove.run(row.id).changes), 0));
+      for (;;) {
+        const ids = candidates.all(cutoff, ACP_TELEMETRY_DELETE_BATCH_SIZE) as Array<{ id: string }>;
+        if (ids.length === 0) break;
+        deletedRows += removeBatch(ids);
+        batchCount += 1;
+      }
     }
     pageCountAfterDelete = pragmaNumber(raw, "page_count");
     freePagesAfterDelete = pragmaNumber(raw, "freelist_count");
-    const reclaimableBytesAfterDelete = freePagesAfterDelete * pageSize;
-    const freeRatio = pageCountAfterDelete === 0 ? 0 : freePagesAfterDelete / pageCountAfterDelete;
-    if (deletedRows > 0 && reclaimableBytesAfterDelete >= MIN_COMPACTION_RECLAIMABLE_BYTES && freeRatio >= MIN_COMPACTION_FREE_RATIO) {
-      raw.exec("VACUUM");
-      compacted = true;
-    }
     const integrity = String(raw.pragma("integrity_check", { simple: true }));
     if (integrity !== "ok") throw new Error(`integrity check failed after ACP telemetry retention for ${path}: ${integrity}`);
   } finally {
@@ -508,13 +530,15 @@ function pruneAcpTelemetry(path: string, resolvingUnits: string[] = [], role: Da
     acpTelemetryRetention: {
       cutoff,
       deletedRows,
+      batchSize: ACP_TELEMETRY_DELETE_BATCH_SIZE,
+      batchCount,
       pageSize,
       pageCountBefore,
       freePagesBefore,
       pageCountAfterDelete,
       freePagesAfterDelete,
       reclaimableBytesAfterDelete: freePagesAfterDelete * pageSize,
-      compacted,
+      compacted: false,
       pageCountAfter,
       freePagesAfter,
       fileBytesAfter: statSync(path).size,

@@ -1,5 +1,5 @@
 import { execFileSync, spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -42,6 +42,54 @@ function initGitRepo(dir: string) {
 }
 
 describe("reap-tmp-artifacts.sh", () => {
+  function telemetryFixture(nodeStub: string) {
+    const root = makeRoot();
+    const release = join(root, "release");
+    mkdirSync(join(release, "node_modules", "tsx", "dist"), { recursive: true });
+    mkdirSync(join(release, "scripts"), { recursive: true });
+    writeFileSync(join(release, "node_modules", "tsx", "dist", "cli.mjs"), "");
+    writeFileSync(join(release, "scripts", "rollout-db.ts"), "");
+    const current = join(root, "current");
+    symlinkSync(release, current);
+    const database = join(root, "interactive.db");
+    writeFileSync(database, "");
+    const nodeBin = join(root, "node-stub");
+    writeFileSync(nodeBin, `#!/usr/bin/env bash\necho "$*" >> "${join(root, "calls")}"\n${nodeStub}\n`);
+    chmodSync(nodeBin, 0o755);
+    return {
+      root,
+      env: { REAP_TMP_ROOT: join(root, "tmp"), REAP_WORKTREE_REPOS: ",", BRIDGE_DB_PATH: database, BRIDGE_CURRENT_RELEASE_DIR: current, NODE_BIN: nodeBin },
+    };
+  }
+
+  it("prunes ACP telemetry through the active release without a rollout", () => {
+    const { root, env } = telemetryFixture("exit 0");
+    const result = run(env);
+    expect(result.status).toBe(0);
+    expect(readFileSync(join(root, "calls"), "utf8")).toContain(`prune --db ${env.BRIDGE_DB_PATH}`);
+  });
+
+  it("defers ACP telemetry retention when the live database is locked", () => {
+    const { env } = telemetryFixture('echo "SqliteError: database is locked (SQLITE_BUSY)" >&2; exit 1');
+    const result = run(env);
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain("ACP telemetry retention deferred");
+  });
+
+  it("fails cleanup on a non-lock ACP telemetry retention error", () => {
+    const { env } = telemetryFixture('echo "integrity check failed" >&2; exit 1');
+    const result = run(env);
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("integrity check failed");
+  });
+
+  it("skips ACP telemetry retention when no database is configured", () => {
+    const { root, env } = telemetryFixture("exit 0");
+    const result = run({ ...env, BRIDGE_DB_PATH: "" });
+    expect(result.status).toBe(0);
+    expect(existsSync(join(root, "calls"))).toBe(false);
+  });
+
   it("removes stale bridge-out run directories but keeps fresh ones", () => {
     const tmpRoot = makeRoot();
     const bridgeOut = join(tmpRoot, "bridge-out");
