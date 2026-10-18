@@ -1615,7 +1615,11 @@ export class BridgeEngine {
           this._scheduleDurableQueueRecovery(chatKey);
           return "deferred";
         }
-        throw error;
+        // A side question failure is answered in place; it never drives a
+        // provider switch for the conversation.
+        const userText = toUserMessage(error instanceof Error ? error : new Error(String(error)));
+        await this.sendText(next.chatId, { text: `Error: ${userText}`, message_thread_id: next.threadId ?? undefined });
+        return "committed";
       }
     }
     if (this.opts.busyMessageMode === "augment") {
