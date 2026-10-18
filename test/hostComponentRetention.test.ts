@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { cleanupRoots, createFixture, prepareImmutableRelease, runRollout, type Fixture } from "./support/rolloutFixture.js";
@@ -310,5 +310,22 @@ describe("provider binary retention after accepted rollout", () => {
     expect(existsSync(join(overrideComponents, "1.0.0"))).toBe(false);
     expect(existsSync(join(overrideComponents, "2.0.0"))).toBe(true);
     expect(existsSync(join(overrideComponents, "3.0.0"))).toBe(true);
+  }, 20_000);
+
+  it("skips pruning when a managed link dangles", () => {
+    const fixture = createFixture();
+    prepareImmutableRelease(fixture, fixture.previousCommit);
+    pinRelease(fixture, fixture.expectedCommit, { agy: "3.0.0", cursor: "3.0.0" });
+    pinRelease(fixture, fixture.previousCommit, { agy: "2.0.0", cursor: "2.0.0" });
+    const paths = installVersions(fixture, ["1.0.0", "2.0.0", "3.0.0"]);
+    linkCurrent(paths, "3.0.0");
+    rmSync(join(paths.agyRoot, "3.0.0", "linux-x86_64", "agy_acp_server.par"));
+
+    const result = runRollout(fixture, undefined, undefined, paths.env);
+    const output = `${result.stdout}\n${result.stderr}`;
+
+    expect(result.status, output).toBe(0);
+    expect(output).toContain("host component retention skipped provider=agy reason=link_not_managed");
+    expect(existsSync(join(paths.agyRoot, "1.0.0"))).toBe(true);
   }, 20_000);
 });

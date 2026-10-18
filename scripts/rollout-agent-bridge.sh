@@ -1516,7 +1516,7 @@ prune_host_component_versions() {
   # Every managed link the installer publishes must already serve the current
   # version; a stale link means activation did not converge.
   for link in "$@"; do
-    [[ -L "$link" ]] || { echo "host component retention skipped provider=$provider reason=link_not_managed"; return 0; }
+    [[ -L "$link" && -e "$link" ]] || { echo "host component retention skipped provider=$provider reason=link_not_managed"; return 0; }
     linked="$(/usr/bin/readlink -f -- "$link")" || { echo "host component retention skipped provider=$provider reason=link_unresolved"; return 0; }
     [[ "$linked" == "$versions_dir/$current_version/"* ]] \
       || { echo "host component retention skipped provider=$provider reason=link_not_current"; return 0; }
