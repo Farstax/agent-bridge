@@ -1453,6 +1453,86 @@ prune_immutable_release_retention() {
   echo "immutable release retention pruned=${pruned} retained_active=${pointer_target} retained_target=${expected_commit}"
 }
 
+# Provider binaries are versioned host components installed beside, never
+# inside, immutable releases. After acceptance the only releases that can run
+# are the new current release and the previous (rollback) release, so any
+# installed provider version neither pins is obsolete. Every ambiguity skips
+# pruning: the rollout is already accepted and must not fail on hygiene.
+locked_host_component_version() {
+  local release_dir="$1" provider="$2" module="$1/dist/providers/acpRegistry.js"
+  [[ -f "$module" && ! -L "$module" ]] || return 1
+  "$node_bin" --input-type=module - "$module" "$provider" <<'NODE'
+import { pathToFileURL } from "node:url";
+const [modulePath, provider] = process.argv.slice(2);
+const { getLockedAcpRegistryEntry } = await import(pathToFileURL(modulePath).href);
+const version = getLockedAcpRegistryEntry(provider)?.version;
+if (typeof version !== "string" || !/^[0-9A-Za-z][0-9A-Za-z._+-]*$/.test(version)) process.exit(2);
+process.stdout.write(version);
+NODE
+}
+
+prune_host_component_versions() {
+  local provider="$1" versions_dir="$2" remover="$3" current_version previous_version link linked entry name pruned=0
+  shift 3
+  if [[ ! -e "$versions_dir" && ! -L "$versions_dir" ]]; then
+    echo "host component retention provider=$provider pruned=0 reason=not_installed"
+    return 0
+  fi
+  [[ -d "$versions_dir" && ! -L "$versions_dir" ]] || { echo "host component retention skipped provider=$provider reason=unsafe_root"; return 0; }
+  current_version="$(locked_host_component_version "$release_root/$expected_commit" "$provider")" \
+    || { echo "host component retention skipped provider=$provider reason=current_pin_unavailable"; return 0; }
+  previous_version="$(locked_host_component_version "$release_root/$previous_pointer_target" "$provider")" \
+    || { echo "host component retention skipped provider=$provider reason=rollback_pin_unavailable"; return 0; }
+  [[ -d "$versions_dir/$current_version" && ! -L "$versions_dir/$current_version" ]] \
+    || { echo "host component retention skipped provider=$provider reason=current_version_not_installed"; return 0; }
+  if [[ -n "$(/usr/bin/find "$(/usr/bin/dirname -- "$versions_dir")" -mindepth 1 -maxdepth 1 -name '.install-*' -print -quit)" ]]; then
+    echo "host component retention skipped provider=$provider reason=install_in_progress"
+    return 0
+  fi
+  # Every managed link the installer publishes must already serve the current
+  # version; a stale link means activation did not converge.
+  for link in "$@"; do
+    [[ -L "$link" ]] || continue
+    linked="$(/usr/bin/readlink -f -- "$link")" || { echo "host component retention skipped provider=$provider reason=link_unresolved"; return 0; }
+    [[ "$linked" == "$versions_dir/$current_version/"* ]] \
+      || { echo "host component retention skipped provider=$provider reason=link_not_current"; return 0; }
+  done
+  while IFS= read -r entry; do
+    name="$(/usr/bin/basename -- "$entry")"
+    [[ "$name" =~ ^[0-9A-Za-z][0-9A-Za-z._+-]*$ ]] || continue
+    [[ "$name" != "$current_version" && "$name" != "$previous_version" ]] || continue
+    [[ -d "$entry" && ! -L "$entry" ]] || continue
+    if $remover "$versions_dir" "$name"; then
+      pruned=$((pruned + 1))
+    else
+      echo "host component retention could not remove provider=$provider version=$name" >&2
+    fi
+  done < <(/usr/bin/find "$versions_dir" -mindepth 1 -maxdepth 1 -print | /usr/bin/sort)
+  echo "host component retention provider=$provider pruned=${pruned} retained_current=${current_version} retained_rollback=${previous_version}"
+}
+
+remove_runtime_child_directory() {
+  run_as_runtime /usr/bin/rm -rf -- "$1/$2"
+}
+
+prune_host_component_retention() {
+  (( release_mode == 1 )) || return 0
+  local active
+  active="$(/usr/bin/readlink -- "$current_pointer" 2>/dev/null || true)"
+  if [[ "$active" != "$expected_commit" || ! "$previous_pointer_target" =~ ^[0-9a-f]{40}$ || "$previous_pointer_target" == "$expected_commit" \
+    || ! -d "$release_root/$previous_pointer_target" ]]; then
+    echo "host component retention skipped reason=release_pins_ambiguous"
+    return 0
+  fi
+  prune_host_component_versions agy "$ROLLOUT_HOST_COMPONENT_ROOT/agy-acp/components" remove_named_child_directory \
+    "${AGENT_BRIDGE_AGY_ACP_LINK:-/usr/local/bin/agy_acp_server.par}" \
+    "${AGENT_BRIDGE_AGY_HARNESS_LINK:-/usr/local/bin/agy_localharness_external}"
+  local runtime_home
+  runtime_home="$(resolve_runtime_home 2>/dev/null)" || { echo "host component retention skipped provider=cursor reason=runtime_home_unavailable"; return 0; }
+  prune_host_component_versions cursor "$runtime_home/.local/share/agent-bridge/cursor-acp/versions" remove_runtime_child_directory \
+    "$runtime_home/.local/bin/cursor-agent"
+}
+
 regular_file_bytes() {
   local path="$1"
   if [[ ! -e "$path" && ! -L "$path" ]]; then
@@ -2408,6 +2488,7 @@ record_phase ACCEPTED
 # deciding whether to contain/stop the already-healthy new release).
 release_accepted=1
 retire_health_state_after_acceptance
+prune_host_component_retention
 
 completed=1
 record_phase COMPLETE
