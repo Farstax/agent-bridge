@@ -48,7 +48,7 @@ export function decideProviderRecovery(
 ): ProviderRecoveryDecision {
   const classification = provider ? classifyProviderError(provider, error) : classifyAnyProviderError(error);
   const claudeContention = provider === "claude" && isClaudeOAuthRefreshContention(error);
-  const authRequired = classification.kind === "auth_required" || claudeContention;
+  const authRequired = classification.kind === "auth_required";
   // Capacity wording is shared across provider CLIs (e.g. "session limit"), so
   // the category check stays provider-agnostic as it was at every old call site.
   const capacityExhausted = isFallbackEligibleProviderError(classification)

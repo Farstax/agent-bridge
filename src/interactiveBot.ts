@@ -540,7 +540,6 @@ async function dispatchInteractiveExecutionWithFallback(
     return execution.exhaustedOutcome;
   }
 
-  if (tried.size > 1) setUserCliPreference(db, identity, activeCli);
   return outcome;
 }
 

@@ -571,6 +571,7 @@ export async function runResolvedAcpProviderTurn(
         ...(credentialExecutionLock ? { providerCredentialLock: credentialExecutionLock } : {}),
       },
       async (io) => runAcpTurn({
+        providerId,
         stream: nodeStdioStream(
           io.stdin as import("node:stream").Writable,
           io.stdout as import("node:stream").Readable,

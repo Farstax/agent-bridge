@@ -185,6 +185,7 @@ describe("ACP provider failure handling", () => {
 
     try {
       await runAcpTurn({
+        providerId: "agy",
         peer: inBandTextOnlyAgent("Agent execution error: could not find doneCh for checkpoint"),
         cwd: process.cwd(),
         conversationId: "conv-agy-donech",

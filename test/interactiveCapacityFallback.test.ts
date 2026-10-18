@@ -381,7 +381,7 @@ describe("interactive capacity fallback durable admission", () => {
       expect(antigravityRun).toHaveBeenCalledTimes(1);
       expect(db.pendingMsgCount("telegram:interactive", "100")).toBe(0);
       expect(db.pendingMsgCount("telegram:interactive", "200")).toBe(1);
-      expect(getUserCliPreference(db, { surfaceIdentity: "telegram:interactive", chatKey: "100" } )).toBe("antigravity");
+      expect(getUserCliPreference(db, { surfaceIdentity: "telegram:interactive", chatKey: "100" } )).toBe("codex");
       expect(notifications).toEqual([
         "Switching to claude (codex at capacity)",
         "Switching to antigravity (claude at capacity)",

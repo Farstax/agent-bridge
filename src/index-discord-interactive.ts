@@ -31,7 +31,6 @@ import "./interactiveCliAuthStartup.js";
 import { getAvailableCliKinds } from "./interactiveCliAuth.js";
 import {
   getUserCliPreference,
-  setUserCliPreference,
   buildCliStatusText,
   handleCliSwitchCallback,
   dispatchInteractiveTurnWithFallback,
@@ -216,7 +215,6 @@ for (const engine of Object.values(engines)) {
     return dispatchClaimedInteractiveWithFallback(queued, queued.chatKey, {
       surfaceIdentity: "discord:interactive", engines, fallbackChain, fallbackRequests, capacityFallbackAttempts, db,
       notify: async (msg) => { await client.sendMessage({ chat_id: queued.chatKey, text: msg }); },
-      onCliSwitched: async (newCli) => setUserCliPreference(db, { surfaceIdentity: "discord:interactive", chatKey: queued.chatKey }, newCli),
     });
   });
 }
@@ -249,7 +247,6 @@ if (scheduledOwnerKey && scheduledActorId) {
         capacityFallbackAttempts,
         db,
         notify: async (msg) => { await client.sendMessage({ chat_id: routine.chatKey, text: msg }); },
-        onCliSwitched: async (newCli) => setUserCliPreference(db, { surfaceIdentity: routine.surfaceIdentity, chatKey: routine.chatKey }, newCli),
       });
     },
   );
@@ -274,7 +271,6 @@ if (scheduledActorId) {
         capacityFallbackAttempts,
         db,
         notify: async (msg) => { await client.sendMessage({ chat_id: continuation.chatKey, text: msg }); },
-        onCliSwitched: async (newCli) => setUserCliPreference(db, { surfaceIdentity: continuation.surfaceIdentity, chatKey: continuation.chatKey }, newCli),
       }, new Set([provider]));
     },
     undefined,

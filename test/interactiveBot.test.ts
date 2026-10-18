@@ -735,7 +735,7 @@ describe("dispatchInteractiveWithFallback", () => {
     expect(claude.handleCount).toBe(1);
     expect(codex.handleCount).toBe(1);
     expect(sentMessages).toContain("claude needs re-authentication. Falling back to codex…");
-    expect(getUserCliPreference(db, { surfaceIdentity: "telegram:interactive", chatKey: "chat:1" } )).toBe("codex");
+    expect(getUserCliPreference(db, { surfaceIdentity: "telegram:interactive", chatKey: "chat:1" } )).toBe("claude");
   });
 
   it("does not claim global CLI unavailability when the configured chain is exhausted", async () => {
@@ -767,12 +767,12 @@ describe("dispatchInteractiveWithFallback", () => {
 
     expect(codex.handleCount).toBe(1);
     expect(claude.handleCount).toBe(1);
-    expect(getUserCliPreference(db, { surfaceIdentity: "telegram:interactive", chatKey: "chat:1" } )).toBe("claude");
+    expect(getUserCliPreference(db, { surfaceIdentity: "telegram:interactive", chatKey: "chat:1" } )).toBe("codex");
     expect(sentMessages).toContain("Switching to claude (codex at capacity)");
     expect(onCliSwitchedCalls).toContain("claude");
   });
 
-  it("auto-fallback promotes the successful fallback CLI into the stored DB preference", async () => {
+  it("auto-fallback keeps the explicit stored DB preference", async () => {
     setUserCliPreference(db, { surfaceIdentity: "telegram:interactive", chatKey: "chat:1" }, "codex");
     codex.handleInteractiveTurn = async () => {
       codex.handleCount++;
@@ -782,10 +782,10 @@ describe("dispatchInteractiveWithFallback", () => {
     await dispatchInteractiveTurnWithFallback({ surfaceIdentity: "telegram:interactive", chatKey: "chat:1", actorId: "1", messageId: "1", text: "hello", delivery: { chatId: 1, chatType: "private" }, attachments: [] }, deps());
 
     expect(onCliSwitchedCalls).toContain("claude");
-    expect(getUserCliPreference(db, { surfaceIdentity: "telegram:interactive", chatKey: "chat:1" } )).toBe("claude");
+    expect(getUserCliPreference(db, { surfaceIdentity: "telegram:interactive", chatKey: "chat:1" } )).toBe("codex");
   });
 
-  it("second message after fallback starts from the promoted CLI instead of retrying the exhausted one", async () => {
+  it("second message after fallback starts from the preferred CLI again", async () => {
     setUserCliPreference(db, { surfaceIdentity: "telegram:interactive", chatKey: "chat:1" }, "codex");
     codex.handleInteractiveTurn = async () => {
       codex.handleCount++;
@@ -797,12 +797,12 @@ describe("dispatchInteractiveWithFallback", () => {
     expect(codex.handleCount).toBe(1);
     expect(claude.handleCount).toBe(1);
 
-    // Codex stays available, but the promoted preference should start with claude.
+    // The preference was not overwritten by the fallback, so codex is tried first.
     codex.handleInteractiveTurn = async () => { codex.handleCount++; };
 
     await dispatchInteractiveTurnWithFallback({ surfaceIdentity: "telegram:interactive", chatKey: "chat:1", actorId: "1", messageId: "2", text: "next", delivery: { chatId: 1, chatType: "private" }, attachments: [] }, deps());
-    expect(codex.handleCount).toBe(1);
-    expect(claude.handleCount).toBe(2);
+    expect(codex.handleCount).toBe(2);
+    expect(claude.handleCount).toBe(1);
   });
 
   it("wakes a capacity-held queue through the existing queue recovery boundary", async () => {
