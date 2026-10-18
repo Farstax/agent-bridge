@@ -1471,9 +1471,33 @@ process.stdout.write(version);
 NODE
 }
 
+# A version directory is deletable only when it carries the identity record its
+# own installer writes: Agy's per-platform manifest naming this exact version,
+# Cursor's recorded payload digest beside its payload directory.
+agy_version_dir_is_managed() {
+  local entry="$1" name="$2" manifest
+  while IFS= read -r manifest; do
+    [[ -f "$manifest" && ! -L "$manifest" ]] || continue
+    /usr/bin/python3 - "$manifest" "$name" <<'PY' && return 0
+import json, sys
+try:
+    manifest = json.load(open(sys.argv[1], encoding="utf-8"))
+except Exception:
+    raise SystemExit(1)
+raise SystemExit(0 if manifest.get("schemaVersion") == 2 and manifest.get("version") == sys.argv[2] else 1)
+PY
+  done < <(/usr/bin/find "$entry" -mindepth 2 -maxdepth 2 -name manifest.json -print)
+  return 1
+}
+
+cursor_version_dir_is_managed() {
+  local entry="$1"
+  [[ -f "$entry/dist-package.sha256" && ! -L "$entry/dist-package.sha256" && -d "$entry/dist-package" && ! -L "$entry/dist-package" ]]
+}
+
 prune_host_component_versions() {
-  local provider="$1" versions_dir="$2" remover="$3" current_version previous_version link linked entry name pruned=0
-  shift 3
+  local provider="$1" versions_dir="$2" remover="$3" managed_check="$4" current_version previous_version link linked entry name pruned=0
+  shift 4
   if [[ ! -e "$versions_dir" && ! -L "$versions_dir" ]]; then
     echo "host component retention provider=$provider pruned=0 reason=not_installed"
     return 0
@@ -1492,7 +1516,7 @@ prune_host_component_versions() {
   # Every managed link the installer publishes must already serve the current
   # version; a stale link means activation did not converge.
   for link in "$@"; do
-    [[ -L "$link" ]] || continue
+    [[ -L "$link" && -e "$link" ]] || { echo "host component retention skipped provider=$provider reason=link_not_managed"; return 0; }
     linked="$(/usr/bin/readlink -f -- "$link")" || { echo "host component retention skipped provider=$provider reason=link_unresolved"; return 0; }
     [[ "$linked" == "$versions_dir/$current_version/"* ]] \
       || { echo "host component retention skipped provider=$provider reason=link_not_current"; return 0; }
@@ -1502,6 +1526,7 @@ prune_host_component_versions() {
     [[ "$name" =~ ^[0-9A-Za-z][0-9A-Za-z._+-]*$ ]] || continue
     [[ "$name" != "$current_version" && "$name" != "$previous_version" ]] || continue
     [[ -d "$entry" && ! -L "$entry" ]] || continue
+    $managed_check "$entry" "$name" || continue
     if $remover "$versions_dir" "$name"; then
       pruned=$((pruned + 1))
     else
@@ -1524,12 +1549,12 @@ prune_host_component_retention() {
     echo "host component retention skipped reason=release_pins_ambiguous"
     return 0
   fi
-  prune_host_component_versions agy "$ROLLOUT_HOST_COMPONENT_ROOT/agy-acp/components" remove_named_child_directory \
+  prune_host_component_versions agy "$(agy_component_root)/components" remove_named_child_directory agy_version_dir_is_managed \
     "${AGENT_BRIDGE_AGY_ACP_LINK:-/usr/local/bin/agy_acp_server.par}" \
     "${AGENT_BRIDGE_AGY_HARNESS_LINK:-/usr/local/bin/agy_localharness_external}"
   local runtime_home
   runtime_home="$(resolve_runtime_home 2>/dev/null)" || { echo "host component retention skipped provider=cursor reason=runtime_home_unavailable"; return 0; }
-  prune_host_component_versions cursor "$runtime_home/.local/share/agent-bridge/cursor-acp/versions" remove_runtime_child_directory \
+  prune_host_component_versions cursor "$runtime_home/.local/share/agent-bridge/cursor-acp/versions" remove_runtime_child_directory cursor_version_dir_is_managed \
     "$runtime_home/.local/bin/cursor-agent"
 }
 
@@ -1559,6 +1584,12 @@ resolve_runtime_home() {
 }
 
 ROLLOUT_HOST_COMPONENT_ROOT="${AGENT_BRIDGE_ROLLOUT_HOST_COMPONENT_ROOT:-/opt/agent-bridge/host-components}"
+
+# The Agy installer's own root, including its supported override, so retention
+# and installation always resolve the same directory.
+agy_component_root() {
+  printf '%s' "${AGENT_BRIDGE_AGY_ACP_ROOT:-$ROLLOUT_HOST_COMPONENT_ROOT/agy-acp}"
+}
 
 host_component_root_for() {
   local id="$1"
@@ -1620,6 +1651,8 @@ legacy_host_component_installed_root() {
   local id="$1"
   if [[ "$id" == cursor-acp ]]; then
     printf '%s/.local/share/agent-bridge/cursor-acp' "$(resolve_runtime_home)"
+  elif [[ "$id" == agy-acp ]]; then
+    agy_component_root
   else
     printf '%s/%s' "$ROLLOUT_HOST_COMPONENT_ROOT" "$id"
   fi
