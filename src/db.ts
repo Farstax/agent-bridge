@@ -14,6 +14,8 @@ import { dirname, resolve } from "node:path";
 import { LockRepository, type ExecutionLaneHandle, type ExecutionLockRecord } from "./repositories/lockRepository.js";
 import { ExecutionCapacityRepository, type ExecutionCapacityClaim } from "./repositories/executionCapacityRepository.js";
 export type { ExecutionLaneHandle } from "./repositories/lockRepository.js";
+/** Occurrence key marking a /btw side question held for execution capacity. */
+export const BTW_PENDING_OCCURRENCE_KEY = "agent-bridge:btw";
 import { RunRepository, type RunningRun } from "./repositories/runRepository.js";
 import { SessionRepository } from "./repositories/sessionRepository.js";
 import { AcpSessionRepository } from "./repositories/acpSessionRepository.js";
@@ -914,6 +916,9 @@ export class BridgeDb {
           AND (state = 'queued' OR (state = 'claimed' AND claim_run_id = ? AND claim_acquisition_id = ?))
         ORDER BY id ASC
       `).all(surface, chatKey, handle.runId, handle.acquisitionId) as any[];
+      // A queued /btw side question never merges with ordinary turns.
+      const btwIndex = rows.findIndex((row) => row.scheduledOccurrenceKey === BTW_PENDING_OCCURRENCE_KEY);
+      if (btwIndex >= 0) rows.splice(btwIndex === 0 ? 1 : btwIndex);
       if (rows.length === 0) return [];
       const claimedAt = new Date().toISOString();
       const claim = this.raw.prepare(`

@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { rmSync } from "node:fs";
-import { openDb, type BridgeDb } from "../src/db.js";
+import { BTW_PENDING_OCCURRENCE_KEY, openDb, type BridgeDb } from "../src/db.js";
 import { BridgeEngine } from "../src/engine.js";
 import { acpEngineExec } from "./support/acpEngineExec.js";
 
@@ -120,7 +120,9 @@ describe("global provider execution capacity", () => {
     const first = telegram.handleMessages(message(1, 101));
     const second = discord.handleMessages(message(2, 202));
     await vi.waitFor(() => expect(runCli).toHaveBeenCalledTimes(2));
+    const slackFailures = vi.spyOn(slackDb, "incrementFailures");
     await expect(slack.handleMessages(message(3, 303))).resolves.toBe("queued");
+    expect(slackFailures).not.toHaveBeenCalled();
     expect(runCli).toHaveBeenCalledTimes(2);
     expect(slackDb.pendingMsgCount("slack:interactive", "303")).toBe(1);
     expect(slackClient.sendMessage).toHaveBeenCalledWith(expect.objectContaining({ text: "All agents are currently busy. I've queued your request and will start automatically when capacity is available." }));
@@ -133,6 +135,49 @@ describe("global provider execution capacity", () => {
     pending.shift()!.resolve();
     await Promise.all([second, vi.waitFor(() => expect(slackDb.pendingMsgCount("slack:interactive", "303")).toBe(0))]);
   }, 15_000);
+
+  it("never merges a queued /btw receipt with ordinary turns", () => {
+    const path = join(tmpdir(), `execution-capacity-btw-merge-${Date.now()}-${Math.random()}.sqlite`);
+    paths.push(path);
+    const db = openDb(path, { serviceId: "telegram:interactive", runId: "process" });
+    dbs.push(db);
+    const msg = (prompt: string, key?: string) => ({ prompt, chatId: 101, chatType: "private", scheduledOccurrenceKey: key });
+    db.enqueueMsg("telegram:interactive", "101", msg("first"));
+    db.enqueueMsg("telegram:interactive", "101", msg("side", BTW_PENDING_OCCURRENCE_KEY));
+    db.enqueueMsg("telegram:interactive", "101", msg("third"));
+    const handle = db.acquireLock("telegram:interactive", "101")!;
+    const batches: string[][] = [];
+    for (;;) {
+      const rows = db.claimPendingMsgs(handle);
+      if (rows.length === 0) break;
+      batches.push(rows.map((row) => row.prompt));
+      expect(db.completePendingMsgs(handle, rows.map((row) => row.id))).toBe(true);
+    }
+    expect(batches).toEqual([["first"], ["side"], ["third"]]);
+  });
+
+  it("keeps /btw lock-free beside a running turn when unrestricted", async () => {
+    const path = join(tmpdir(), `execution-capacity-btw-free-${Date.now()}-${Math.random()}.sqlite`);
+    paths.push(path);
+    const db = openDb(path, { serviceId: "telegram:interactive", runId: "process" });
+    dbs.push(db);
+    const pending: Array<() => void> = [];
+    const runCli = vi.fn(() => new Promise<string>((resolve) => pending.push(() => resolve(JSON.stringify({ type: "text", data: "done" }) + "\n" + JSON.stringify({ type: "end", sessionId: "session" }) + "\n"))));
+    const client = {
+      capabilities: { maxMessageLength: 4096, editMessages: true, deleteMessages: true, previewStreaming: true, threads: true, attachments: true, typing: true, polling: true, remoteFileDownload: true, richMessages: true, passiveSurroundingContext: false, formatting: "telegram-html" },
+      sendMessage: vi.fn().mockResolvedValue({ ok: true, result: { message_id: 1 } }), sendChatAction: vi.fn().mockResolvedValue({ ok: true }), setMyCommands: vi.fn().mockResolvedValue({ ok: true }), answerCallbackQuery: vi.fn().mockResolvedValue({ ok: true }), editMessageText: vi.fn().mockResolvedValue({ ok: true }), deleteMessage: vi.fn().mockResolvedValue({ ok: true }), sendPhoto: vi.fn().mockResolvedValue({ ok: true }), sendDocument: vi.fn().mockResolvedValue({ ok: true }), getUpdates: vi.fn().mockResolvedValue({ ok: true, result: [] }),
+    } as any;
+    const engine = new BridgeEngine({
+      kind: "claude", surfaceIdentity: "telegram:interactive", botConfig: { command: "claude", modelPreference: [] }, allowedUserIds: new Set(["42"]), executionMode: "safe", busyMessageMode: "queue", pollIntervalMs: 1_000, workingDir: process.cwd(),
+    }, db, client, acpEngineExec(runCli));
+    const main = engine.handleMessages([{ message_id: 1, chat: { id: 101, type: "private" }, from: { id: 42, first_name: "operator" }, text: "run" }]);
+    await vi.waitFor(() => expect(runCli).toHaveBeenCalledTimes(1));
+    const side = (engine as any)._executeBtw("side question", 101, "101", undefined, 42);
+    await vi.waitFor(() => expect(runCli).toHaveBeenCalledTimes(2));
+    expect(db.pendingMsgCount("telegram:interactive", "101")).toBe(0);
+    pending.splice(0).forEach((resolve) => resolve());
+    await Promise.all([main, side]);
+  });
 
   it("keeps a /btw side execution as a durable receipt when capacity is full", async () => {
     const coordinatorPath = join(tmpdir(), `execution-capacity-btw-${Date.now()}-${Math.random()}.sqlite`);
