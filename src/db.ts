@@ -12,7 +12,10 @@ import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { LockRepository, type ExecutionLaneHandle, type ExecutionLockRecord } from "./repositories/lockRepository.js";
+import { ExecutionCapacityRepository, type ExecutionCapacityClaim } from "./repositories/executionCapacityRepository.js";
 export type { ExecutionLaneHandle } from "./repositories/lockRepository.js";
+/** Occurrence key marking a /btw side question held for execution capacity. */
+export const BTW_PENDING_OCCURRENCE_KEY = "agent-bridge:btw";
 import { RunRepository, type RunningRun } from "./repositories/runRepository.js";
 import { SessionRepository } from "./repositories/sessionRepository.js";
 import { AcpSessionRepository } from "./repositories/acpSessionRepository.js";
@@ -164,7 +167,7 @@ function assertProductionInstallation(raw: Database.Database, dbPath: string, op
   }
   const record = provenance as Record<string, unknown>;
   if (record.schemaVersion !== 1 || (record.source !== "fresh-install" && record.source !== "adopted-existing")
-    || record.installationId !== expected || record.role !== options.databaseRole || record.path !== dbPath) {
+    || record.installationId !== expected || (options.databaseRole !== undefined && record.role !== options.databaseRole) || record.path !== dbPath) {
     throw new Error("database installation provenance is invalid");
   }
   if (get("agent_bridge_first_boot_verified")) return;
@@ -266,6 +269,7 @@ export class BridgeDb {
   private readonly sessions: SessionRepository;
   private readonly acpSessions: AcpSessionRepository;
   private readonly locks: LockRepository;
+  private readonly executionCapacity: ExecutionCapacityRepository;
   private readonly settings: SettingsRepository;
   private readonly runs: RunRepository;
   private readonly eventReceipts: EventReceiptRepository;
@@ -279,6 +283,7 @@ export class BridgeDb {
     this.sessions = new SessionRepository(raw);
     this.acpSessions = new AcpSessionRepository(raw);
     this.locks = new LockRepository(raw, lockOptions);
+    this.executionCapacity = new ExecutionCapacityRepository(raw, lockOptions);
     this.lockHeartbeatMs = Math.max(100, Math.floor(lockOptions.leaseMs / 3));
     this.settings = new SettingsRepository(raw);
     this.runs = new RunRepository(raw);
@@ -354,6 +359,22 @@ export class BridgeDb {
 
   get lockLeaseMs(): number {
     return this.locks.leaseMs;
+  }
+
+  acquireExecutionCapacity(limit: number, executionId: string, acquisitionId: string): ExecutionCapacityClaim | null {
+    return this.executionCapacity.acquire(limit, executionId, acquisitionId);
+  }
+
+  heartbeatExecutionCapacity(claim: ExecutionCapacityClaim): boolean {
+    return this.executionCapacity.heartbeat(claim);
+  }
+
+  releaseExecutionCapacity(claim: ExecutionCapacityClaim): boolean {
+    return this.executionCapacity.release(claim);
+  }
+
+  executionCapacityCount(): number {
+    return this.executionCapacity.count();
   }
 
   // ── Global polling offset (per bot kind) ────────────────────────────────
@@ -753,14 +774,21 @@ export class BridgeDb {
     surface: string,
     chatKey: string,
     msg: { prompt: string; chatId: number | string; threadId?: number | string; chatType: string; userId?: number | string; attachments?: string[]; scheduledOccurrenceKey?: string },
-  ): void {
+  ): number {
     assertExecutionScope(surface, chatKey);
-    this.raw
+    return Number(this.raw
       .prepare(
         `INSERT INTO pending_messages (surface, chat_key, prompt, chat_id, thread_id, chat_type, user_id, attachments_json, scheduled_occurrence_key)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
-      .run(surface, chatKey, msg.prompt, msg.chatId, msg.threadId ?? null, msg.chatType, msg.userId ?? null, JSON.stringify(msg.attachments ?? []), msg.scheduledOccurrenceKey ?? null);
+      .run(surface, chatKey, msg.prompt, msg.chatId, msg.threadId ?? null, msg.chatType, msg.userId ?? null, JSON.stringify(msg.attachments ?? []), msg.scheduledOccurrenceKey ?? null).lastInsertRowid);
+  }
+
+  markExecutionCapacityNotified(id: number): boolean {
+    return this.raw.prepare(`
+      UPDATE pending_messages SET execution_capacity_notified = 1
+      WHERE id = ? AND execution_capacity_notified = 0
+    `).run(id).changes === 1;
   }
 
   dequeueMsgs(surface: string, chatKey: string): Array<{
@@ -888,6 +916,9 @@ export class BridgeDb {
           AND (state = 'queued' OR (state = 'claimed' AND claim_run_id = ? AND claim_acquisition_id = ?))
         ORDER BY id ASC
       `).all(surface, chatKey, handle.runId, handle.acquisitionId) as any[];
+      // A queued /btw side question never merges with ordinary turns.
+      const btwIndex = rows.findIndex((row) => row.scheduledOccurrenceKey === BTW_PENDING_OCCURRENCE_KEY);
+      if (btwIndex >= 0) rows.splice(btwIndex === 0 ? 1 : btwIndex);
       if (rows.length === 0) return [];
       const claimedAt = new Date().toISOString();
       const claim = this.raw.prepare(`

@@ -18,6 +18,34 @@ import type { BotConfig, BotKind, BridgeConfig } from "./types.js";
 
 type Env = Record<string, string | undefined>;
 
+export interface ExecutionCapacityConfig {
+  maxConcurrentExecutions: number;
+  coordinatorDbPath: string | null;
+}
+
+/**
+ * A positive cap must have one managed SQLite coordinator shared by every
+ * participating surface.  Falling back to each surface's own DB would look
+ * configured while silently creating independent caps.
+ */
+export function resolveExecutionCapacityConfig(env: Env): ExecutionCapacityConfig {
+  const raw = env.AGENT_BRIDGE_MAX_CONCURRENT_EXECUTIONS;
+  if (raw === undefined || raw === "") return { maxConcurrentExecutions: 0, coordinatorDbPath: null };
+  if (!/^(0|[1-9][0-9]*)$/.test(raw)) {
+    throw new Error(`Invalid AGENT_BRIDGE_MAX_CONCURRENT_EXECUTIONS: "${raw}". Must be a non-negative integer.`);
+  }
+  const maxConcurrentExecutions = Number(raw);
+  if (!Number.isSafeInteger(maxConcurrentExecutions)) {
+    throw new Error(`Invalid AGENT_BRIDGE_MAX_CONCURRENT_EXECUTIONS: "${raw}". Must be a safe non-negative integer.`);
+  }
+  if (maxConcurrentExecutions === 0) return { maxConcurrentExecutions, coordinatorDbPath: null };
+  const coordinatorDbPath = env.AGENT_BRIDGE_EXECUTION_COORDINATION_DB_PATH?.trim();
+  if (!coordinatorDbPath || !coordinatorDbPath.startsWith("/")) {
+    throw new Error("AGENT_BRIDGE_EXECUTION_COORDINATION_DB_PATH must be an absolute path when AGENT_BRIDGE_MAX_CONCURRENT_EXECUTIONS is positive.");
+  }
+  return { maxConcurrentExecutions, coordinatorDbPath };
+}
+
 export const DEFAULT_ANTIGRAVITY_MODEL_PREFERENCE = [
   "gemini-3.8-flash",
   "gemini-3.7-flash",

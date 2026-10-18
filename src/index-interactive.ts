@@ -13,7 +13,8 @@ import { TelegramClient } from "./telegram.js";
 import { BridgeEngine } from "./engine.js";
 import { defaultSoulPath, loadSoulContext, normalizeSoulMode } from "./soul.js";
 import { sendTelegramMessage } from "./messageDelivery.js";
-import { loadBotsConfig, resolveExecutionMode, resolveBusyMessageMode, validateBusyMessageModeEnv } from "./config.js";
+import { loadBotsConfig, resolveExecutionMode, resolveBusyMessageMode, resolveExecutionCapacityConfig, validateBusyMessageModeEnv } from "./config.js";
+import { openExecutionCapacityCoordinator } from "./executionCapacity.js";
 import { ProviderFallbackChain } from "./providerFallback.js";
 import { parseCliChain, interactiveChainKinds } from "./providers/selection.js";
 import "./interactiveCliAuthStartup.js";
@@ -97,6 +98,7 @@ const pollIntervalMs = Number(process.env.POLL_INTERVAL_MS || 1000);
 const executionMode = resolveExecutionMode(providerLock ?? "codex", process.env);
 validateBusyMessageModeEnv(process.env);
 const busyMessageMode = resolveBusyMessageMode(process.env);
+const executionCapacity = resolveExecutionCapacityConfig(process.env);
 const {
   enabled: autonomyEnabled,
   dir: autonomyDir,
@@ -122,6 +124,12 @@ const soulContext = loadSoulContext({
 if (soulContext) console.log(`[interactive] loaded SOUL.md context (${soulContext.length} chars)`);
 
 const db = openProductionDb(dbPath, {
+  serviceId: runtimePolicy.databaseServiceId,
+  installationId: process.env.AGENT_BRIDGE_INSTALLATION_ID,
+  requireInstallationIdentity: process.env.NODE_ENV === "production" && Boolean(process.env.AGENT_BRIDGE_INSTALLATION_ID?.trim()),
+  databaseRole: runtimePolicy.databaseRole,
+});
+const executionCapacityDb = openExecutionCapacityCoordinator(executionCapacity, dbPath, db, {
   serviceId: runtimePolicy.databaseServiceId,
   installationId: process.env.AGENT_BRIDGE_INSTALLATION_ID,
   requireInstallationIdentity: process.env.NODE_ENV === "production" && Boolean(process.env.AGENT_BRIDGE_INSTALLATION_ID?.trim()),
@@ -238,6 +246,8 @@ const engines = Object.fromEntries(
           soulContext,
           fullConfig: config,
           advisorCapabilities: advisorBroker ?? undefined,
+          maxConcurrentExecutions: executionCapacity.maxConcurrentExecutions,
+          executionCapacityDb: executionCapacityDb ?? undefined,
           hooks: {
             onCommand: async (commandText, ctx) => {
               if (!isAcpConfigControlCommand(commandText)) return null;
@@ -333,6 +343,8 @@ const autonomyEngines = autonomyDb && autonomyDir ? Object.fromEntries(
     botConfig: config.bots[kind as BotKind],
     allowedUserIds,
     executionMode: resolveExecutionMode(kind as BotKind, process.env),
+    maxConcurrentExecutions: executionCapacity.maxConcurrentExecutions,
+    executionCapacityDb: executionCapacityDb ?? undefined,
     pollIntervalMs,
     soulContext: autonomySoulContext,
     workingDir: join(autonomyDir, "work"),

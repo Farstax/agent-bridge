@@ -21,7 +21,8 @@ import dotenv from "dotenv";
 import { getBridgeProjectDir } from "./bridge.js";
 import { openProductionDb } from "./db.js";
 import { getExecutionProcessState, shutdownCliProcesses } from "./cliSupervisor.js";
-import { loadBotsConfig, resolveBusyMessageMode, resolveExecutionMode, validateBusyMessageModeEnv } from "./config.js";
+import { loadBotsConfig, resolveBusyMessageMode, resolveExecutionMode, resolveExecutionCapacityConfig, validateBusyMessageModeEnv } from "./config.js";
+import { openExecutionCapacityCoordinator } from "./executionCapacity.js";
 import { DiscordClient, type DiscordUpdate } from "./discord.js";
 import { BridgeEngine } from "./engine.js";
 import { defaultSoulPath, loadSoulContext, normalizeSoulMode } from "./soul.js";
@@ -77,6 +78,7 @@ const dbPath = process.env.DB_PATH || `${getBridgeProjectDir()}/.data/discord-in
 const executionMode = resolveExecutionMode("codex", process.env);
 validateBusyMessageModeEnv(process.env);
 const busyMessageMode = resolveBusyMessageMode(process.env);
+const executionCapacity = resolveExecutionCapacityConfig(process.env);
 const config: BridgeConfig = {
   allowedUserIds: engineAllowedUserIds,
   serviceEnvFile: null,
@@ -95,6 +97,12 @@ const soulContext = loadSoulContext({
 if (soulContext) console.log(`[discord-interactive] loaded SOUL.md context (${soulContext.length} chars)`);
 
 const db = openProductionDb(dbPath, {
+  serviceId: "discord:interactive",
+  installationId: process.env.AGENT_BRIDGE_INSTALLATION_ID,
+  requireInstallationIdentity: process.env.NODE_ENV === "production" && Boolean(process.env.AGENT_BRIDGE_INSTALLATION_ID?.trim()),
+  databaseRole: "discord",
+});
+const executionCapacityDb = openExecutionCapacityCoordinator(executionCapacity, dbPath, db, {
   serviceId: "discord:interactive",
   installationId: process.env.AGENT_BRIDGE_INSTALLATION_ID,
   requireInstallationIdentity: process.env.NODE_ENV === "production" && Boolean(process.env.AGENT_BRIDGE_INSTALLATION_ID?.trim()),
@@ -170,6 +178,8 @@ const engines = Object.fromEntries(
         soulContext,
         fullConfig: config,
         advisorCapabilities: advisorBroker ?? undefined,
+        maxConcurrentExecutions: executionCapacity.maxConcurrentExecutions,
+        executionCapacityDb: executionCapacityDb ?? undefined,
         hooks: {
           onProviderFallbackRequested: async (chatKey, reason, context) => {
             fallbackRequests.set(chatKey, reason);

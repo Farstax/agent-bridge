@@ -13,7 +13,7 @@ describe("schema v20 slack receipts (#943)", () => {
   afterEach(() => rmSync(dir, { recursive: true, force: true }));
 
   it("upgrades a v19 database preserving health and autonomous receipts, then admits slack rows", () => {
-    expect(CURRENT_SCHEMA_VERSION).toBe(20);
+    expect(CURRENT_SCHEMA_VERSION).toBe(22);
     const path = join(dir, "bridge.sqlite");
     const raw = new Database(path);
     // Build a current v19 image by running the registered plan to v19 semantics.
@@ -37,7 +37,7 @@ describe("schema v20 slack receipts (#943)", () => {
     raw.close();
 
     const db = openDb(path);
-    expect(Number(db.raw.pragma("user_version", { simple: true }))).toBe(20);
+    expect(Number(db.raw.pragma("user_version", { simple: true }))).toBe(22);
     expect(db.getEventReceiptByIdempotencyKey("k-health")).toMatchObject({ source: "health", status: "completed" });
     expect(db.getEventReceiptByIdempotencyKey("k-auto")).toMatchObject({ source: "autonomous", status: "received" });
     const admitted = db.admitEventReceipt({
