@@ -4,8 +4,8 @@
 
 Agent Bridge is the open-source, self-hosted runtime for the coding-agent CLIs
 you already use. Run Codex, Claude Code, Antigravity/Agy, Grok Build, or Cursor
-on an always-on machine and keep the workstream available from Telegram or
-Discord.
+on an always-on machine and keep the workstream available from Telegram,
+Discord or Slack.
 
 Built for developers who already use these coding agents and want the same
 agents, repositories, tools, and workstreams available away from the laptop.
@@ -13,6 +13,11 @@ agents, repositories, tools, and workstreams available away from the laptop.
 Keep work running when you close the laptop. Continue from your phone. Switch
 providers without throwing away the conversation. Restart the host without
 losing the workstream.
+
+## Run it yourself or use Farstax
+
+- **Self-host Agent Bridge (open source):** run the runtime on a host you control. The [Node.js 24+ source setup wizard](#quick-start-from-source) is for trying it from a checkout; [production installation](docs/INITIAL-INSTALL.md) uses a qualified release and managed services. You own the host, provider and messaging credentials, permissions, updates and recovery.
+- **[Farstax managed workspaces](https://farstax.com/):** Farstax provisions and maintains the workspace infrastructure so your agents can keep their development environment available. You still connect and authorise your own coding providers, GitHub access and messaging identity, and remain responsible for consequential decisions. [Apply for beta](https://farstax.com/#beta-application).
 
 Agent Bridge does not replace your coding agents with another agent framework.
 It keeps their native CLI and session model, then adds the durable runtime around
