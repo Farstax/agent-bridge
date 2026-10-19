@@ -4,8 +4,8 @@
 
 Agent Bridge is the open-source, self-hosted runtime for the coding-agent CLIs
 you already use. Run Codex, Claude Code, Antigravity/Agy, Grok Build, or Cursor
-on an always-on machine and keep the workstream available from Telegram or
-Discord.
+on an always-on machine and keep the workstream available from Telegram,
+Discord or Slack.
 
 Built for developers who already use these coding agents and want the same
 agents, repositories, tools, and workstreams available away from the laptop.
