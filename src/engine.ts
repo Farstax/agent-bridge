@@ -1771,7 +1771,9 @@ export class BridgeEngine {
       ...(ownerKey ? ['"$AGENT_BRIDGE_CONTEXT_COMMAND" --search "<terms>" --scope owner'] : []),
       "",
     ].join("\n") : "";
-    const continuationPrompt = canContinue ? [
+    // The legacy wait helper remains available to existing scripts, but only
+    // the outcome command is advertised to eligible interactive Runs.
+    const continuationPrompt = canContinue && !canOutcome ? [
       "[Agent Bridge continuation]",
       "If required bounded work is still pending and keeping this Run open is impractical, request a same-session continuation instead of promising to check later:",
       '"$AGENT_BRIDGE_WAIT_COMMAND" --after-seconds 60 --reason "<what to re-check>"',
