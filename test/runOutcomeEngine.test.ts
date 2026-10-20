@@ -13,19 +13,28 @@ afterEach(() => {
   for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
 });
 
-function fixture(mode: "complete-after-retry" | "continue-after-retry" | "blocked-after-retry" | "missing-twice" | "report-first" | "retry-throws" | "refusal") {
+function fixture(mode: "complete-after-retry" | "continue-after-retry" | "blocked-after-retry" | "missing-twice" | "report-first" | "retry-throws" | "refusal" | "continue-then-invalid-session" | "continue-then-model-fallback") {
   const dir = mkdtempSync(join(tmpdir(), "run-outcome-engine-")); dirs.push(dir);
   const path = join(dir, "bridge.sqlite");
   const db = openDb(path, { serviceId: "outcome-engine-test", runId: "process" });
   const identity = { surfaceIdentity: "telegram:interactive", chatKey: "chat" };
-  db.insertRun("run-one", identity, "claude");
+  const provider = mode === "continue-then-model-fallback" ? "codex" : "claude";
+  db.insertRun("run-one", identity, provider);
   const handle = db.acquireLock(identity.surfaceIdentity, identity.chatKey);
   if (!handle) throw new Error("missing fixture lane ownership");
   let calls = 0;
   const invocation = vi.fn(async (_provider: unknown, _invocation: unknown, _cwd: unknown, options: any, request: any) => {
     calls += 1;
     if (mode === "retry-throws" && calls === 2) throw new Error("provider quota exhausted after initial work");
-    if (mode === "report-first" || (mode === "complete-after-retry" && calls === 2)) {
+    if (mode === "continue-then-invalid-session" && calls === 1) {
+      requestAgentBridgeOutcome(["continue", "--after-seconds", "60", "--reason", "stale wake"], options.contextEnv);
+      throw new Error("No conversation found with session ID: stale-session");
+    }
+    if (mode === "continue-then-model-fallback" && calls === 1) {
+      requestAgentBridgeOutcome(["continue", "--after-seconds", "60", "--reason", "stale model wake"], options.contextEnv);
+      throw new Error("usage limit reached");
+    }
+    if (mode === "report-first" || (mode === "complete-after-retry" && calls === 2) || (mode === "continue-then-invalid-session" && calls === 2) || (mode === "continue-then-model-fallback" && calls === 2)) {
       requestAgentBridgeOutcome(["complete", "--evidence", "verified"], options.contextEnv);
     }
     if (mode === "continue-after-retry" && calls === 2) {
@@ -43,8 +52,8 @@ function fixture(mode: "complete-after-retry" | "continue-after-retry" | "blocke
   });
   const engine = new BridgeEngine({
     surfaceIdentity: identity.surfaceIdentity,
-    kind: "claude",
-    botConfig: { command: "claude", modelPreference: [] },
+    kind: provider,
+    botConfig: { command: provider, modelPreference: mode === "continue-then-model-fallback" ? ["primary", "fallback"] : [] },
     allowedUserIds: new Set(["42"]),
     executionMode: "safe",
     pollIntervalMs: 1000,
@@ -126,6 +135,25 @@ describe("ordinary Run objective settlement", () => {
       .rejects.toBeInstanceOf(RunOutcomeReconciliationError);
     expect(invocation).toHaveBeenCalledTimes(2);
     expect(invocation.mock.calls[1][4].sessionId).toBe("same-acp-session");
+    db.close();
+  });
+
+  it("discards an abandoned attempt's continue disposition before retrying an invalid provider session", async () => {
+    const { db, engine, handle, invocation } = fixture("continue-then-invalid-session");
+    await engine.executePromptAsync("Finish release", "stale-session", "chat", {}, () => {}, [], undefined, "run-one", null, "chat", handle);
+    expect(invocation).toHaveBeenCalledTimes(2);
+    expect(db.getRun("run-one").outcome_status).toBe("complete");
+    expect(listRunContinuations(db)).toHaveLength(1);
+    expect(listRunContinuations(db)[0]).toEqual(expect.objectContaining({ state: "cancelled", reason: "stale wake" }));
+    db.close();
+  });
+
+  it("discards an abandoned attempt's continue disposition before retrying another model", async () => {
+    const { db, engine, handle, invocation } = fixture("continue-then-model-fallback");
+    await engine.executePromptAsync("Finish release", null, "chat", {}, () => {}, [], undefined, "run-one", null, "chat", handle);
+    expect(invocation).toHaveBeenCalledTimes(2);
+    expect(db.getRun("run-one").outcome_status).toBe("complete");
+    expect(listRunContinuations(db)).toEqual([expect.objectContaining({ state: "cancelled", reason: "stale model wake" })]);
     db.close();
   });
 

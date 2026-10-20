@@ -2373,7 +2373,13 @@ export class BridgeEngine {
       if (sessionId && isInvalidProviderSessionError(error)) {
         console.warn(`[${this.kind}] session ID invalid, retrying with fresh session...`);
         const kind = this.kind;
-        if (isRouteableKind(kind)) this._runWithFence(laneHandle, () => persistEngineProviderSession(this.db, { surfaceIdentity: this.surfaceIdentity, chatKey }, kind, null));
+        this._runWithFence(laneHandle, () => {
+          if (runId) {
+            cancelPendingRunContinuation(this.db, runId, "provider attempt failed before terminal settlement");
+            clearRunOutcomeForProviderRetry(this.db, runId);
+          }
+          if (isRouteableKind(kind)) persistEngineProviderSession(this.db, { surfaceIdentity: this.surfaceIdentity, chatKey }, kind, null);
+        });
         return this.executePromptAsync(prompt, null, chatId, body, onProgress, attachments, eventContext, runId, collect, chatKey, laneHandle);
       }
       // One bounded same-provider alternate-model attempt; the alternate attempt
@@ -2381,6 +2387,10 @@ export class BridgeEngine {
       if (!modelFallback && isCapacityExhaustedError(error as Error) && this.opts.botConfig.modelPreference.length > 1) {
         const fallbackModel = getNextFallbackModel(model, this.opts.botConfig.modelPreference);
         if (fallbackModel) {
+          if (runId) this._runWithFence(laneHandle, () => {
+            cancelPendingRunContinuation(this.db, runId, "provider attempt failed before terminal settlement");
+            clearRunOutcomeForProviderRetry(this.db, runId);
+          });
           return this._executeProviderAttempt(
             prompt, null, chatId, body, onProgress, attachments, eventContext, runId, collect, chatKey, laneHandle,
             { model: fallbackModel, from: model },
