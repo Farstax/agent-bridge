@@ -38,6 +38,7 @@ function fixture(mode: "complete-after-retry" | "continue-after-retry" | "blocke
       text: calls === 1 ? "Original user-facing answer" : "Reconciliation was recorded",
       sessionId: "same-acp-session",
       stopReason: "end_turn",
+      telemetry: { provider: "claude", inputTokens: calls === 1 ? 100 : 20, outputTokens: calls === 1 ? 30 : 5 },
     };
   });
   const engine = new BridgeEngine({
@@ -64,6 +65,7 @@ describe("ordinary Run objective settlement", () => {
     expect(invocation.mock.calls[1][4].sessionId).toBe("same-acp-session");
     expect(invocation.mock.calls[1][4].outputDir).toBe(invocation.mock.calls[0][4].outputDir);
     expect(result.text).toBe("Reconciliation was recorded");
+    expect(result.telemetry).toEqual(expect.objectContaining({ inputTokens: 120, outputTokens: 35 }));
     expect(db.getRun("run-one").outcome_status).toBe("complete");
     db.close();
   });
