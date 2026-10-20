@@ -42,7 +42,7 @@ import {
   type ProviderFailureEvidence,
 } from "./providers/failureEvidence.js";
 import { lookupProviderSession, persistProviderSession } from "./providers/sessionRuntime.js";
-import { captureParsedProviderOutput, registerProviderOutput } from "./runTelemetry.js";
+import { captureParsedProviderOutput, registerProviderOutput, combineSequentialTurnTelemetry } from "./runTelemetry.js";
 import type { ProviderInvocation } from "./providers/types.js";
 import { surfaceCapabilities, type MessagingPlatform } from "./platform.js";
 import { adaptTelegramMessage, adaptTelegramUpdate, InteractiveTurnBuffer, type InteractiveTurnInput } from "./interactiveIngress.js";
@@ -2287,6 +2287,8 @@ export class BridgeEngine {
           ...stagedResult,
           text: scrubOutputDir(reconciledResult.text, outDir),
           sessionId: reconciledResult.sessionId ?? stagedResult.sessionId,
+          stopReason: reconciledResult.stopReason ?? stagedResult.stopReason,
+          telemetry: combineSequentialTurnTelemetry(stagedResult.telemetry, reconciledResult.telemetry),
         };
       }
       if (this.hooks.onAfterExecute) {
