@@ -3,6 +3,17 @@ import { BridgeDb } from "./db.js";
 import { requestRunContinuation } from "./runContinuation.js";
 import type { RouteableBotKind } from "./types.js";
 
+export class MissingRunOutcomeError extends Error {
+  constructor(message: string) { super(message); this.name = "MissingRunOutcomeError"; }
+}
+
+/** This is the sole new retry limit. Zero disables reconciliation; one is the default. */
+export function missingOutcomeRetries(env: Record<string, string | undefined> = process.env): 0 | 1 {
+  const raw = env.AGENT_BRIDGE_MISSING_OUTCOME_RETRIES ?? "1";
+  if (raw !== "0" && raw !== "1") throw new Error("AGENT_BRIDGE_MISSING_OUTCOME_RETRIES must be 0 or 1");
+  return Number(raw) as 0 | 1;
+}
+
 export type RunOutcomeStatus = "complete" | "continue" | "blocked";
 export interface RunOutcome { status: RunOutcomeStatus; detail: string }
 type EnvLike = Record<string, string | undefined>;
