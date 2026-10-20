@@ -87,6 +87,19 @@ describe("Run-scoped provider outcomes", () => {
     db.close();
   });
 
+  it("does not postpone an existing wake when a matching continue command is retried", () => {
+    const { db, env } = setup();
+    requestAgentBridgeOutcome(["continue", "--after-seconds", "60", "--reason", "CI pending"], env);
+    const first = listRunContinuations(db)[0];
+    expect(first).toBeDefined();
+    expect(requestAgentBridgeOutcome([
+      "continue", "--after-seconds", "300", "--reason", "CI pending",
+    ], env)).toMatch(/already scheduled/);
+    const after = listRunContinuations(db)[0];
+    expect(after).toEqual(first);
+    db.close();
+  });
+
   it("reports an explicit blocker without scheduling another Run", () => {
     const { db, env } = setup();
     requestAgentBridgeOutcome(["blocked", "--reason", "Owner approval is required"], env);
