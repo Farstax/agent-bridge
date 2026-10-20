@@ -14,7 +14,12 @@ function setup() {
   const path = join(dir, "bridge.sqlite");
   const db = openDb(path, { serviceId: "outcome-test", runId: "process" });
   db.insertRun("run-1", scope, "codex");
+  const lock = db.acquireLock(scope.surfaceIdentity, scope.chatKey);
+  if (!lock) throw new Error("missing fixture lane lock");
   const env = {
+    AGENT_BRIDGE_LOCK_SERVICE_ID: lock.serviceId,
+    AGENT_BRIDGE_LOCK_RUN_ID: lock.runId,
+    AGENT_BRIDGE_LOCK_ACQUISITION_ID: lock.acquisitionId,
     AGENT_BRIDGE_CONTEXT_DB: path,
     AGENT_BRIDGE_RUN_ID: "run-1",
     AGENT_BRIDGE_SURFACE_IDENTITY: scope.surfaceIdentity,
@@ -82,6 +87,15 @@ describe("Run-scoped provider outcomes", () => {
     expect(() => requestAgentBridgeOutcome(["continue", "--after-seconds", "60", "--reason", "retry"], env))
       .toThrow(/not active/);
     expect(listRunContinuations(db)).toHaveLength(0);
+    db.close();
+  });
+
+  it("rejects a stale execution acquisition even if the Run row remains running", () => {
+    const { db, env } = setup();
+    expect(() => requestAgentBridgeOutcome(["complete", "--evidence", "verified"], {
+      ...env, AGENT_BRIDGE_LOCK_ACQUISITION_ID: "stale",
+    })).toThrow(/ownership/);
+    expect(readRunOutcome(db, "run-1")).toBeNull();
     db.close();
   });
 
