@@ -105,6 +105,29 @@ export function captureParsedProviderOutput(provider: RouteableBotKind, stdout: 
   trimOldest(parsedByRun);
 }
 
+/** Account for an additional, same-Run ACP prompt used only to reconcile a missing disposition. */
+export function combineSequentialTurnTelemetry(
+  first: RunTelemetry | undefined,
+  second: RunTelemetry | undefined,
+): RunTelemetry | undefined {
+  if (!first) return second;
+  if (!second) return first;
+  const combined: RunTelemetry = { ...first, ...second };
+  const summedFields = [
+    "inputTokens", "cachedInputTokens", "cacheCreationInputTokens",
+    "outputTokens", "reasoningTokens", "costUsd", "providerDurationMs",
+    "providerApiDurationMs", "turns",
+  ] as const;
+  for (const field of summedFields) {
+    const a = first[field];
+    const b = second[field];
+    if (a !== undefined || b !== undefined) {
+      combined[field] = (a ?? 0) + (b ?? 0);
+    }
+  }
+  return combined;
+}
+
 export function finalizeRunTelemetry(runId: string | undefined, provider: RouteableBotKind, parsed?: RunTelemetry, nowMs = Date.now()): RunTelemetry {
   const state = runId ? attemptsByRun.get(runId) : undefined;
   const inheritedFallback = runId ? fallbackByRun.get(runId) : undefined;
