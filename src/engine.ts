@@ -2064,7 +2064,7 @@ export class BridgeEngine {
       outputDir: null,
     }).nativeSessionMode;
     // Read-only verification turns get no scratch helper: its write and clear are mutations.
-    const promptForCli = await this._buildPromptForCli(chatKey, prompt, nativeSessionMode, model, runId, executionKind, chatId, threadId, isVerificationOnly ? undefined : laneHandle, !isVerificationOnly && this.kind !== "autonomous" && publishArtifacts);
+    const promptForCli = await this._buildPromptForCli(chatKey, prompt, nativeSessionMode, model, runId, executionKind, chatId, threadId, isVerificationOnly ? undefined : laneHandle, !isVerificationOnly && this.kind !== "autonomous" && publishArtifacts && Boolean(this.opts.fullConfig?.dbPath));
     const invocation = buildCliInvocation({
       bot: executionKind,
       command: this.opts.botConfig.command,
@@ -2144,7 +2144,7 @@ export class BridgeEngine {
       if (modelFallback) {
         result.text = `⚠️ Fell back to ${modelFallback.model} (${modelFallback.from || "default"} at capacity)\n\n${result.text}`;
       }
-      const stagedResult: StagedCliResult = { ...this._stageResultState(result), nativeSessionMode };
+      let stagedResult: StagedCliResult = { ...this._stageResultState(result), nativeSessionMode };
       if (stagedResult.stopReason === "cancelled") {
         // The provider ended the turn itself (ACP session/cancel resolving
         // gracefully, not a process kill) — this must never look like a
@@ -2173,31 +2173,109 @@ export class BridgeEngine {
         return stagedResult;
       }
       this._renewLaneOrThrow(laneHandle);
-      // ACP settles a provider turn, not the original operator objective.
-      // Reconcile one forgotten outcome in the same native session, before final
-      // delivery, keeping the original Run owner and without replaying side effects.
-      const eligibleOutcome = runId !== null && !isVerificationOnly && this.kind !== "autonomous" && publishArtifacts;
+      // ACP settles a provider turn, not the operator's intent. An ordinary
+      // Run missing its outcome gets one *additional prompt within the same
+      // admitted Run/session*. Reuse this output directory: re-entering the
+      // entire execute/deliver path would lose files and the original answer.
+      const eligibleOutcome = runId !== null && !isVerificationOnly && this.kind !== "autonomous"
+        && publishArtifacts && Boolean(this.opts.fullConfig?.dbPath);
       if (eligibleOutcome && !readRunOutcome(this.db, runId!)) {
-        const retry = (body as { outcomeReconciliation?: boolean }).outcomeReconciliation === true;
-        if (retry || missingOutcomeRetries() === 0 || !stagedResult.sessionId) {
+        if (missingOutcomeRetries() === 0 || !stagedResult.sessionId) {
+          throw new MissingRunOutcomeError("The provider finished without reporting an objective outcome.");
+        }
+        const reconcilePrompt = [
+          "[Agent Bridge missing outcome reconciliation]",
+          "The previous provider turn ended without a required objective disposition.",
+          "Do not repeat earlier work or side effects. Reconcile the ORIGINAL user intent against evidence already gathered.",
+          "Report the outcome now using \"$AGENT_BRIDGE_OUTCOME_COMMAND\" with exactly one of:",
+          "complete --evidence \"<verified result>\"; continue --after-seconds 60 --reason \"<remaining work>\"; blocked --reason \"<genuine blocker>\".",
+          "This is the only reconciliation attempt. Do not claim completion while work remains.",
+        ].join("\n");
+        const followup = await this._buildPromptForCli(
+          chatKey, reconcilePrompt, "resume", model, runId, executionKind,
+          chatId, threadId, laneHandle, true,
+        );
+        const followupInvocation = buildCliInvocation({
+          bot: executionKind,
+          command: this.opts.botConfig.command,
+          model,
+          effort: resolveEffort(executionKind, this.db),
+          prompt: followup.prompt,
+          sessionId: stagedResult.sessionId,
+          executionMode,
+          outputFormat: "json",
+          logFile,
+          soulContext: followup.soulContext,
+          includeResponseContract: followup.includeResponseContract,
+          attachments: [],
+          outputDir: outDir,
+          includeExecutionContract: true,
+        });
+        const reconciled = await this._withExecutionCapacity(
+          runId!, laneHandle.acquisitionId,
+          () => {
+            this.laneCoordinator.markAborted(executionLane);
+            abortCliProcess(executionLane);
+          },
+          () => this._runNativeOrAcp(
+            executionKind, followupInvocation, cwd,
+            {
+              ...buildExecutionOptions(executionKind),
+              onProgress,
+              chatId: executionLane,
+              stdin: followupInvocation.stdin,
+              contextEnv: followup.contextEnv,
+              eventContext,
+              onEvent: collect ?? undefined,
+            },
+            {
+              prompt: followupInvocation.prompt ?? followup.prompt,
+              sessionId: stagedResult.sessionId,
+              model, executionMode,
+              soulContext: followup.soulContext,
+              includeResponseContract: followup.includeResponseContract,
+              attachments: [], outputDir: outDir,
+              effort: resolveEffort(executionKind, this.db),
+            },
+            { conversationId: chatKey, runId: runId! },
+          ),
+        );
+        this._renewLaneOrThrow(laneHandle);
+        const reconciledResult: CliResult = reconciled.parsed
+          ?? parseCliResult({ bot: executionKind, stdout: reconciled.stdout });
+        if (reconciledResult.stopReason === "cancelled") {
+          // Do not turn a provider cancellation into a missing-outcome failure.
+          stagedResult = { ...reconciledResult, nativeSessionMode: "resume" };
+          if (stagedResult.sessionId && isRouteableKind(this.kind)) {
+            this._runWithFence(laneHandle, () => persistEngineProviderSession(
+              this.db, { surfaceIdentity: this.surfaceIdentity, chatKey }, this.kind,
+              stagedResult.sessionId, runId,
+            ));
+          }
+          if (collect && runId && eventContext) {
+            collect(eventType.runCancelled({ ...eventContext, reason: "provider" }));
+          }
+          await this._cleanTerminalOutputDir(outDir, "provider cancellation");
+          return stagedResult;
+        }
+        const reported = readRunOutcome(this.db, runId!);
+        if (!reported) {
           throw new MissingRunOutcomeError(
-            retry ? "The provider did not report an objective outcome after the reconciliation attempt."
-              : "The provider finished without reporting an objective outcome.",
+            "The provider did not report an objective outcome after the single reconciliation attempt.",
           );
         }
-        return this._executeProviderAttempt(
-          [
-            "[Agent Bridge missing outcome reconciliation]",
-            "The previous provider turn ended without a required objective outcome.",
-            "Do not repeat work or side effects. Reconcile the ORIGINAL user intent against verified evidence.",
-            "Before your final response you MUST call \"$AGENT_BRIDGE_OUTCOME_COMMAND\" with exactly one of:",
-            "complete --evidence \"<verified result>\"; continue --after-seconds 60 --reason \"<remaining work>\"; blocked --reason \"<genuine blocker>\".",
-            "This is the single reconciliation attempt. If work remains, request continuation rather than claiming completion.",
-          ].join("\n"),
-          stagedResult.sessionId, chatId,
-          { ...body, outcomeReconciliation: true }, onProgress, [],
-          eventContext, runId, collect, chatKey, laneHandle, modelFallback,
-        );
+        // The first turn's answer/files remain authoritative if completion
+        // was verified; a follow-up that reports pending/blocked may correct
+        // the original final prose, so use that most recent provider answer.
+        if (reported.status !== "complete") {
+          stagedResult = {
+            ...stagedResult,
+            text: scrubOutputDir(reconciledResult.text, outDir),
+            sessionId: reconciledResult.sessionId ?? stagedResult.sessionId,
+          };
+        } else if (reconciledResult.sessionId) {
+          stagedResult = { ...stagedResult, sessionId: reconciledResult.sessionId };
+        }
       }
       if (this.hooks.onAfterExecute) {
         try {
