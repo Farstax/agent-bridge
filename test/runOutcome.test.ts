@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { openDb } from "../src/db.js";
-import { missingOutcomeRetries, readRunOutcome, requestAgentBridgeOutcome, requestAgentBridgeWait } from "../src/runOutcome.js";
+import { missingOutcomeRetries, readRunOutcome, requestAgentBridgeOutcome, requestAgentBridgeWait, clearRunOutcomeForProviderRetry } from "../src/runOutcome.js";
 import { listRunContinuations } from "../src/runContinuation.js";
 
 const dirs: string[] = [];
@@ -125,6 +125,26 @@ describe("Run-scoped provider outcomes", () => {
     expect(() => requestAgentBridgeOutcome(["continue", "--after-seconds", "60", "--reason", "retry"], env))
       .toThrow(/not active/);
     expect(listRunContinuations(db)).toHaveLength(0);
+    db.close();
+  });
+
+  it("clears a failed provider attempt outcome under the owning lane fence before retry", () => {
+    const { db, env } = setup();
+    requestAgentBridgeOutcome(["complete", "--evidence", "first attempt claim"], env);
+    expect(readRunOutcome(db, "run-1")?.status).toBe("complete");
+    const handle = {
+      serviceId: env.AGENT_BRIDGE_LOCK_SERVICE_ID,
+      runId: env.AGENT_BRIDGE_LOCK_RUN_ID,
+      acquisitionId: env.AGENT_BRIDGE_LOCK_ACQUISITION_ID,
+      surface: scope.surfaceIdentity,
+      chatKey: scope.chatKey,
+    };
+    // Caller holds the real lane lock; this helper is not advertised as a shell command.
+    db.runWithLockFence(handle as Parameters<typeof db.runWithLockFence>[0], () =>
+      clearRunOutcomeForProviderRetry(db, "run-1"));
+    expect(readRunOutcome(db, "run-1")).toBeNull();
+    requestAgentBridgeOutcome(["blocked", "--reason", "Owner approval"], env);
+    expect(readRunOutcome(db, "run-1")?.status).toBe("blocked");
     db.close();
   });
 
