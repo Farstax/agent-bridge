@@ -8,6 +8,7 @@ import hashlib
 import json
 import os
 import pwd
+import signal
 import subprocess
 import sys
 import tempfile
@@ -18,6 +19,7 @@ SHA = 40
 HOST_COMPONENT_ID_CHARS = frozenset("abcdefghijklmnopqrstuvwxyz0123456789-")
 DEFAULT_STT_ROOT = "/opt/agent-bridge/host-components/voice-stt"
 RUNTIME_USER_CHARS = frozenset("abcdefghijklmnopqrstuvwxyz0123456789_-$")
+_active_component_process: subprocess.Popen[str] | None = None
 
 
 def fail(message: str) -> None:
@@ -194,6 +196,13 @@ def _parse_component_status(stdout: str, component_id: str) -> str:
     return statuses[0]
 
 
+def _parse_component_health(stdout: str, component_id: str) -> None:
+    marker = "host_component_health="
+    statuses = [line.strip()[len(marker):] for line in stdout.splitlines() if line.strip().startswith(marker)]
+    if statuses != ["healthy"]:
+        fail(f"host component {component_id} installer returned invalid health status")
+
+
 def _cursor_component_environment(environment: dict[str, str], runtime_user: str) -> dict[str, str]:
     try:
         runtime_home = pwd.getpwnam(runtime_user).pw_dir
@@ -355,6 +364,111 @@ def converge_active_release_host_components(release_root: Path, current: Path) -
     return {"schema_version": 1, "release": target, **result}
 
 
+def check_active_release_host_components(release_root: Path, current: Path) -> dict:
+    """Read-only verification for every component declared by the active release.
+
+    The release is validated before any component runs.  Each declared installer
+    owns its identity and health verification and must explicitly support the
+    verify phase.  This path never calls convergence or preparation.
+    """
+    try:
+        release_root = validate_release_root(release_root)
+        if current.parent != release_root or current.name != "current":
+            fail("current pointer must be release-root/current")
+        target = current_target(current, release_root)
+        if target is None:
+            fail("current release pointer is absent")
+        validate_commit(target)
+        release = release_root / target
+        validate_release(release, target, strict=True)
+        manifest = _load_manifest(release)
+        if "host_components" not in manifest:
+            return {"schema_version": 1, "release": target, "declared": False, "status": "unverifiable", "components": []}
+        components = _host_components(release, manifest)
+    except Exception:
+        return {"schema_version": 1, "declared": False, "status": "unverifiable", "components": []}
+
+    environment = os.environ.copy()
+    environment["AGENT_BRIDGE_STT_ROOT"] = DEFAULT_STT_ROOT
+    environment["AGENT_BRIDGE_HOST_COMPONENT_PHASE"] = "verify"
+    try:
+        runtime_user = _runtime_user() if any(component["id"] == "cursor-acp" for component in components) else ""
+    except Exception:
+        return {"schema_version": 1, "release": target, "declared": True, "status": "unverifiable", "components": [
+            {"id": component["id"], "status": "unverifiable"} for component in components
+        ]}
+
+    def terminate_active_verifier(_signum: int, _frame: object) -> None:
+        if _active_component_process:
+            try:
+                os.killpg(_active_component_process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+        raise SystemExit(128 + _signum)
+
+    previous_term = signal.signal(signal.SIGTERM, terminate_active_verifier)
+    previous_int = signal.signal(signal.SIGINT, terminate_active_verifier)
+    results: list[dict[str, str]] = []
+    try:
+      for component in components:
+        component_env = environment.copy()
+        command = ["/bin/bash", str(release / component["installer"])]
+        if component["id"] == "cursor-acp":
+            try:
+                component_env = _cursor_component_environment(component_env, runtime_user)
+            except Exception:
+                results.append({"id": component["id"], "status": "unverifiable"})
+                continue
+            command = ["/usr/sbin/runuser", "--preserve-environment", "--user", runtime_user, "--", *command]
+        try:
+            global _active_component_process
+            blocked = {signal.SIGTERM, signal.SIGINT}
+            previous_mask = signal.pthread_sigmask(signal.SIG_BLOCK, blocked)
+            try:
+                process = subprocess.Popen(
+                    command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                    env=component_env, start_new_session=True,
+                )
+                _active_component_process = process
+            finally:
+                signal.pthread_sigmask(signal.SIG_SETMASK, previous_mask)
+            try:
+                stdout, _stderr = process.communicate(timeout=60)
+            except subprocess.TimeoutExpired:
+                os.killpg(process.pid, signal.SIGKILL)
+                process.communicate()
+                raise
+            if process.returncode:
+                raise subprocess.CalledProcessError(process.returncode, command)
+            _parse_component_health(stdout, component["id"])
+        except subprocess.CalledProcessError:
+            results.append({"id": component["id"], "status": "unhealthy"})
+            continue
+        except subprocess.TimeoutExpired:
+            results.append({"id": component["id"], "status": "unverifiable"})
+            continue
+        except Exception:
+            results.append({"id": component["id"], "status": "unverifiable"})
+            continue
+        results.append({"id": component["id"], "status": "healthy"})
+    finally:
+        _active_component_process = None
+        signal.signal(signal.SIGTERM, previous_term)
+        signal.signal(signal.SIGINT, previous_int)
+
+    # A pointer switch between validation and the final decision makes the
+    # answer unsafe to consume, even when every individual check passed.
+    try:
+        if current_target(current, release_root) != target:
+                return {"schema_version": 1, "release": target, "declared": True, "status": "unverifiable", "components": results}
+    except Exception:
+            return {"schema_version": 1, "release": target, "declared": True, "status": "unverifiable", "components": results}
+    status = "unverifiable" if any(entry["status"] == "unverifiable" for entry in results) else (
+        "unhealthy" if any(entry["status"] == "unhealthy" for entry in results) else "healthy"
+    )
+    return {"schema_version": 1, "release": target, "declared": True, "status": status, "components": results}
+
+
 def activate(release_root: Path, current: Path, expected_commit: str) -> str:
     validate_commit(expected_commit)
     release_root = validate_release_root(release_root)
@@ -411,6 +525,7 @@ def main() -> int:
     parser.add_argument("--expected-commit")
     parser.add_argument("--validate-only", action="store_true")
     parser.add_argument("--converge-active-host-components", action="store_true")
+    parser.add_argument("--check-active-host-components", action="store_true")
     parser.add_argument("--prepare-host-components", action="store_true")
     args = parser.parse_args()
     if os.geteuid() != 0 and production_mode():
@@ -419,6 +534,11 @@ def main() -> int:
         if args.expected_commit or args.validate_only:
             fail("active host-component convergence does not accept activation arguments")
         print(json.dumps(converge_active_release_host_components(args.release_root, args.current), sort_keys=True))
+        return 0
+    if args.check_active_host_components:
+        if args.expected_commit or args.validate_only or args.prepare_host_components:
+            fail("active host-component health check does not accept activation arguments")
+        print(json.dumps(check_active_release_host_components(args.release_root, args.current), sort_keys=True))
         return 0
     if not args.expected_commit:
         fail("--expected-commit is required for validation or activation")

@@ -8,7 +8,7 @@ if [[ "${1:-}" == "--print-required-bytes" ]]; then
   print_required_bytes=1
 fi
 phase="${AGENT_BRIDGE_HOST_COMPONENT_PHASE:-converge}"
-[[ "$phase" == prepare || "$phase" == commit || "$phase" == converge ]] || fail "invalid host component phase"
+[[ "$phase" == prepare || "$phase" == commit || "$phase" == converge || "$phase" == verify ]] || fail "invalid host component phase"
 
 # Guarded activation selects the account; the installer itself runs as that
 # account so root never follows or writes through user-controlled paths.
@@ -76,6 +76,14 @@ valid_binary() {
   [[ "${actual_sha}" == "${expected_sha}" ]] || return 1
   [[ "$("${BINARY}" --version 2>/dev/null || true)" == *"${VERSION}"* ]]
 }
+
+if [[ "$phase" == verify ]]; then
+  valid_binary || fail "installed Cursor ACP binary failed validation"
+  [[ -x "${LINK}" && "$(readlink -f "${LINK}")" == "${BINARY}" ]] \
+    || fail "managed Cursor ACP link does not select the verified component"
+  printf 'host_component_health=healthy\\n'
+  exit 0
+fi
 
 if valid_binary; then
   if (( print_required_bytes == 1 )); then

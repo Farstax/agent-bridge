@@ -31,7 +31,7 @@ function releaseFixture(options: { declared?: boolean; installer?: boolean; comp
   writeFileSync(rolloutDb, "export {};\n");
   writeFileSync(rolloutImpl, "export {};\n");
   if (options.installer !== false) {
-    writeFileSync(installer, `#!/bin/sh\nset -eu\nprintf '%s\\n' "\${AGENT_BRIDGE_STT_ROOT:-}" > "\${HOST_COMPONENT_STATE}.stt-root"\nif [ "\${AGENT_BRIDGE_HOST_COMPONENT_PHASE:-}" = commit ] && [ ! -f "$HOST_COMPONENT_STATE" ]; then exit 7; fi\nif [ -f "$HOST_COMPONENT_STATE" ]; then\n  echo host_component_status=no_op\nelse\n  : > "$HOST_COMPONENT_STATE"\n  echo host_component_status=converged\nfi\n`);
+    writeFileSync(installer, `#!/bin/sh\nset -eu\nif [ "\${AGENT_BRIDGE_HOST_COMPONENT_PHASE:-}" = verify ]; then\n  [ -f "$HOST_COMPONENT_STATE" ] || exit 4\n  echo host_component_health=healthy\n  exit 0\nfi\nprintf '%s\\n' "\${AGENT_BRIDGE_STT_ROOT:-}" > "\${HOST_COMPONENT_STATE}.stt-root"\nif [ "\${AGENT_BRIDGE_HOST_COMPONENT_PHASE:-}" = commit ] && [ ! -f "$HOST_COMPONENT_STATE" ]; then exit 7; fi\nif [ -f "$HOST_COMPONENT_STATE" ]; then\n  echo host_component_status=no_op\nelse\n  : > "$HOST_COMPONENT_STATE"\n  echo host_component_status=converged\nfi\n`);
   }
 
   const files = [
@@ -82,6 +82,23 @@ print(json.dumps(result, sort_keys=True))
     stdio: ["ignore", "pipe", "pipe"],
   });
   return JSON.parse(output.trim()) as { status: string; release: string; components: Array<{ id: string; status: string }> };
+}
+
+function check(root: string, current: string, state: string) {
+  const program = `
+import importlib.util, json, sys
+from pathlib import Path
+spec = importlib.util.spec_from_file_location("release_activate", sys.argv[1])
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+module.production_mode = lambda: False
+result = module.check_active_release_host_components(Path(sys.argv[2]), Path(sys.argv[3]))
+print(json.dumps(result, sort_keys=True))
+`;
+  const output = execFileSync("python3", ["-c", program, ACTIVATE, root, current], {
+    encoding: "utf8", env: { ...process.env, HOST_COMPONENT_STATE: state },
+  });
+  return JSON.parse(output.trim()) as { status: string; release?: string; components: Array<{ id: string; status: string }> };
 }
 
 describe("active release host-component convergence", () => {
@@ -163,6 +180,40 @@ print(json.dumps({'result': result, 'calls': calls}, sort_keys=True))
       schema_version: 1,
       release: COMMIT,
       status: "no_op",
+      components: [],
+    });
+  });
+});
+
+describe("active release host-component health", () => {
+  it("reports a declared, checksum-backed component as healthy without mutating it", () => {
+    const fixture = releaseFixture();
+    writeFileSync(fixture.state, "ready\n");
+    const before = readFileSync(fixture.state, "utf8");
+    expect(check(fixture.root, fixture.current, fixture.state)).toEqual({
+      schema_version: 1,
+      release: COMMIT,
+      declared: true,
+      status: "healthy",
+      components: [{ id: "test-component", status: "healthy" }],
+    });
+    expect(readFileSync(fixture.state, "utf8")).toBe(before);
+  });
+
+  it("fails closed for missing or unhealthy declared components", () => {
+    const fixture = releaseFixture();
+    expect(check(fixture.root, fixture.current, fixture.state)).toEqual({
+      schema_version: 1,
+      release: COMMIT,
+      declared: true,
+      status: "unhealthy",
+      components: [{ id: "test-component", status: "unhealthy" }],
+    });
+    const malformed = releaseFixture({ installer: false });
+    expect(check(malformed.root, malformed.current, malformed.state)).toMatchObject({
+      schema_version: 1,
+      declared: false,
+      status: "unverifiable",
       components: [],
     });
   });
