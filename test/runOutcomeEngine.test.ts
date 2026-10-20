@@ -13,7 +13,7 @@ afterEach(() => {
   for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
 });
 
-function fixture(mode: "complete-after-retry" | "continue-after-retry" | "blocked-after-retry" | "missing-twice" | "report-first" | "retry-throws") {
+function fixture(mode: "complete-after-retry" | "continue-after-retry" | "blocked-after-retry" | "missing-twice" | "report-first" | "retry-throws" | "refusal") {
   const dir = mkdtempSync(join(tmpdir(), "run-outcome-engine-")); dirs.push(dir);
   const path = join(dir, "bridge.sqlite");
   const db = openDb(path, { serviceId: "outcome-engine-test", runId: "process" });
@@ -37,7 +37,7 @@ function fixture(mode: "complete-after-retry" | "continue-after-retry" | "blocke
     return {
       text: calls === 1 ? "Original user-facing answer" : "Reconciliation was recorded",
       sessionId: "same-acp-session",
-      stopReason: "end_turn",
+      stopReason: mode === "refusal" ? "refusal" : "end_turn",
       telemetry: { provider: "claude", inputTokens: calls === 1 ? 100 : 20, outputTokens: calls === 1 ? 30 : 5 },
     };
   });
@@ -108,6 +108,18 @@ describe("ordinary Run objective settlement", () => {
     expect(db.getRun("run-one").outcome_status).toBeNull();
     db.close();
   });
+  it("does not re-prompt a structural ACP refusal solely to obtain an outcome helper call", async () => {
+    const { db, engine, handle, invocation } = fixture("refusal");
+    const result = await engine.executePromptAsync(
+      "Request provider-refused operation", null, "chat", {},
+      () => {}, [], undefined, "run-one", null, "chat", handle,
+    );
+    expect(result.stopReason).toBe("refusal");
+    expect(invocation).toHaveBeenCalledTimes(1);
+    expect(db.getRun("run-one").outcome_status).toBeNull();
+    db.close();
+  });
+
   it("never falls back to replaying the original work if the reconciliation provider fails", async () => {
     const { db, engine, handle, invocation } = fixture("retry-throws");
     await expect(engine.executePromptAsync("Ship and deploy", null, "chat", {}, () => {}, [], undefined, "run-one", null, "chat", handle))
