@@ -42,6 +42,7 @@ export function readRunOutcome(db: BridgeDb, runId: string): RunOutcome | null {
 export function recordRunOutcome(db: BridgeDb, input: {
   runId: string; surfaceIdentity: string; chatKey: string; provider: string;
   status: RunOutcomeStatus; detail: string;
+  lock: { serviceId: string; runId: string; acquisitionId: string };
 }): RunOutcome {
   const detail = input.detail.trim();
   if (!detail || detail.length > 500) throw new Error("outcome detail must contain 1 to 500 characters");
@@ -51,6 +52,10 @@ export function recordRunOutcome(db: BridgeDb, input: {
     if (run.surface_identity !== input.surfaceIdentity || run.chat_id !== input.chatKey || run.bot !== input.provider) {
       throw new Error("outcome does not belong to the active Run identity");
     }
+    const owner = db.raw.prepare(
+      "SELECT 1 FROM execution_locks WHERE surface = ? AND chat_key = ? AND service_id = ? AND run_id = ? AND acquisition_id = ? AND lease_expires_at > ?",
+    ).get(input.surfaceIdentity, input.chatKey, input.lock.serviceId, input.lock.runId, input.lock.acquisitionId, new Date().toISOString());
+    if (!owner) throw new Error("outcome rejected: execution-lane ownership has changed or expired");
     const existing = readRunOutcome(db, input.runId);
     if (existing) {
       if (existing.status === input.status && existing.detail === detail) return existing;
@@ -75,6 +80,11 @@ export function requestAgentBridgeOutcome(args: string[], env: EnvLike = process
   const surfaceIdentity = required(env, "AGENT_BRIDGE_SURFACE_IDENTITY");
   const chatKey = required(env, "AGENT_BRIDGE_CHAT_KEY");
   const provider = required(env, "AGENT_BRIDGE_PROVIDER") as RouteableBotKind;
+  const lock = {
+    serviceId: required(env, "AGENT_BRIDGE_LOCK_SERVICE_ID"),
+    runId: required(env, "AGENT_BRIDGE_LOCK_RUN_ID"),
+    acquisitionId: required(env, "AGENT_BRIDGE_LOCK_ACQUISITION_ID"),
+  };
   const detail = status === "complete" ? (option(flags, "--evidence") ?? "") : (option(flags, "--reason") ?? "");
   const secondsRaw = option(flags, "--after-seconds");
   if (status === "continue" && (secondsRaw === null || !Number.isInteger(Number(secondsRaw)))) {
@@ -94,7 +104,7 @@ export function requestAgentBridgeOutcome(args: string[], env: EnvLike = process
   const db = new BridgeDb(raw, { serviceId: "run-outcome-helper", runId, leaseMs: 90_000 });
   try {
     return db.runInTransaction(() => {
-      recordRunOutcome(db, { runId, surfaceIdentity, chatKey, provider, status, detail });
+      recordRunOutcome(db, { runId, surfaceIdentity, chatKey, provider, status, detail, lock });
       if (status === "continue") {
         const c = requestRunContinuation(db, {
           originRunId: runId, surfaceIdentity, chatKey, provider, reason: detail,
