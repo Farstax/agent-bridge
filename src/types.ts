@@ -161,6 +161,8 @@ export interface CliOptions {
    * the provider's policy opts in (issue #748). Never invoked otherwise.
    */
   onSteerReady?: (steer: AcpSteerFn) => void;
+  /** Called before ACP begins its one same-session transient successor attempt. */
+  onProviderRetry?: () => void | Promise<void>;
   /**
    * Skip runWithAcpTransientRetry's own same-session retry for this attempt.
    * Set by BridgeEngine's tier-2 same-provider fresh-session retry (after a

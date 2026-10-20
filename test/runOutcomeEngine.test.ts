@@ -13,7 +13,7 @@ afterEach(() => {
   for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
 });
 
-function fixture(mode: "complete-after-retry" | "continue-after-retry" | "blocked-after-retry" | "missing-twice" | "report-first" | "retry-throws" | "refusal" | "continue-then-invalid-session" | "continue-then-model-fallback") {
+function fixture(mode: "complete-after-retry" | "continue-after-retry" | "blocked-after-retry" | "missing-twice" | "report-first" | "retry-throws" | "refusal" | "continue-then-invalid-session" | "continue-then-model-fallback" | "continue-then-internal-retry") {
   const dir = mkdtempSync(join(tmpdir(), "run-outcome-engine-")); dirs.push(dir);
   const path = join(dir, "bridge.sqlite");
   const db = openDb(path, { serviceId: "outcome-engine-test", runId: "process" });
@@ -34,7 +34,11 @@ function fixture(mode: "complete-after-retry" | "continue-after-retry" | "blocke
       requestAgentBridgeOutcome(["continue", "--after-seconds", "60", "--reason", "stale model wake"], options.contextEnv);
       throw new Error("usage limit reached");
     }
-    if (mode === "report-first" || (mode === "complete-after-retry" && calls === 2) || (mode === "continue-then-invalid-session" && calls === 2) || (mode === "continue-then-model-fallback" && calls === 2)) {
+    if (mode === "continue-then-internal-retry") {
+      requestAgentBridgeOutcome(["continue", "--after-seconds", "60", "--reason", "stale internal wake"], options.contextEnv);
+      await options.onProviderRetry();
+    }
+    if (mode === "report-first" || (mode === "complete-after-retry" && calls === 2) || (mode === "continue-then-invalid-session" && calls === 2) || (mode === "continue-then-model-fallback" && calls === 2) || mode === "continue-then-internal-retry") {
       requestAgentBridgeOutcome(["complete", "--evidence", "verified"], options.contextEnv);
     }
     if (mode === "continue-after-retry" && calls === 2) {
@@ -154,6 +158,14 @@ describe("ordinary Run objective settlement", () => {
     expect(invocation).toHaveBeenCalledTimes(2);
     expect(db.getRun("run-one").outcome_status).toBe("complete");
     expect(listRunContinuations(db)).toEqual([expect.objectContaining({ state: "cancelled", reason: "stale model wake" })]);
+    db.close();
+  });
+
+  it("fences an outcome before an ACP-internal retry successor begins", async () => {
+    const { db, engine, handle } = fixture("continue-then-internal-retry");
+    await engine.executePromptAsync("Finish release", null, "chat", {}, () => {}, [], undefined, "run-one", null, "chat", handle);
+    expect(db.getRun("run-one").outcome_status).toBe("complete");
+    expect(listRunContinuations(db)).toEqual([expect.objectContaining({ state: "cancelled", reason: "stale internal wake" })]);
     db.close();
   });
 

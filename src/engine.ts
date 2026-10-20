@@ -1707,6 +1707,14 @@ export class BridgeEngine {
     }
   }
 
+  private _discardAbandonedAttemptOutcome(laneHandle: ExecutionLaneHandle, runId: string | null): void {
+    if (!runId) return;
+    this._runWithFence(laneHandle, () => {
+      cancelPendingRunContinuation(this.db, runId, "provider attempt failed before terminal settlement");
+      clearRunOutcomeForProviderRetry(this.db, runId);
+    });
+  }
+
   private _executionLane(chatKey: string): string {
     return JSON.stringify([this.surfaceIdentity, chatKey]);
   }
@@ -2118,6 +2126,7 @@ export class BridgeEngine {
             contextEnv: promptForCli.contextEnv,
             eventContext,
             onEvent: collect ?? undefined,
+            onProviderRetry: () => this._discardAbandonedAttemptOutcome(laneHandle, runId),
             onSteerReady: (steer) => this.laneCoordinator.setSteerHandle(executionLane, steer),
             suppressTransientRetry: (body as { suppressTransientRetry?: boolean }).suppressTransientRetry,
           },
@@ -2245,6 +2254,7 @@ export class BridgeEngine {
                 contextEnv: followup.contextEnv,
                 eventContext,
                 onEvent: collect ?? undefined,
+                onProviderRetry: () => this._discardAbandonedAttemptOutcome(laneHandle, runId),
               },
               {
                 prompt: followupInvocation.prompt ?? followup.prompt,
@@ -2373,13 +2383,8 @@ export class BridgeEngine {
       if (sessionId && isInvalidProviderSessionError(error)) {
         console.warn(`[${this.kind}] session ID invalid, retrying with fresh session...`);
         const kind = this.kind;
-        this._runWithFence(laneHandle, () => {
-          if (runId) {
-            cancelPendingRunContinuation(this.db, runId, "provider attempt failed before terminal settlement");
-            clearRunOutcomeForProviderRetry(this.db, runId);
-          }
-          if (isRouteableKind(kind)) persistEngineProviderSession(this.db, { surfaceIdentity: this.surfaceIdentity, chatKey }, kind, null);
-        });
+        this._discardAbandonedAttemptOutcome(laneHandle, runId);
+        if (isRouteableKind(kind)) this._runWithFence(laneHandle, () => persistEngineProviderSession(this.db, { surfaceIdentity: this.surfaceIdentity, chatKey }, kind, null));
         return this.executePromptAsync(prompt, null, chatId, body, onProgress, attachments, eventContext, runId, collect, chatKey, laneHandle);
       }
       // One bounded same-provider alternate-model attempt; the alternate attempt
@@ -2387,10 +2392,7 @@ export class BridgeEngine {
       if (!modelFallback && isCapacityExhaustedError(error as Error) && this.opts.botConfig.modelPreference.length > 1) {
         const fallbackModel = getNextFallbackModel(model, this.opts.botConfig.modelPreference);
         if (fallbackModel) {
-          if (runId) this._runWithFence(laneHandle, () => {
-            cancelPendingRunContinuation(this.db, runId, "provider attempt failed before terminal settlement");
-            clearRunOutcomeForProviderRetry(this.db, runId);
-          });
+          this._discardAbandonedAttemptOutcome(laneHandle, runId);
           return this._executeProviderAttempt(
             prompt, null, chatId, body, onProgress, attachments, eventContext, runId, collect, chatKey, laneHandle,
             { model: fallbackModel, from: model },

@@ -110,4 +110,26 @@ describe("tier-2 fresh-session retry does not re-trigger tier 1's own retry", ()
     expect(result.text).toBe("recovered");
     expect(runAcpTurnMock).toHaveBeenCalledTimes(1);
   });
+
+  it("fences bridge-owned settlement before an internal transient successor starts", async () => {
+    const retryFence = vi.fn();
+    runAcpTurnMock
+      .mockRejectedValueOnce(new Error("connection reset by peer"))
+      .mockImplementationOnce(async () => {
+        expect(retryFence).toHaveBeenCalledTimes(1);
+        return {
+          conversationId: "conv-4", runId: "run-4", acpSessionId: "same-session", sessionMode: "resume",
+          stopReason: "end_turn", liveText: "recovered", events: [], updates: [], configOptions: [], staleSessionConfig: [],
+          initialize: { protocolVersion: 1, agentCapabilities: {} },
+        };
+      });
+    const { runResolvedAcpProviderTurn } = await import("../src/providers/acpRuntime.js");
+
+    await expect(runResolvedAcpProviderTurn(
+      policy, runtime, fixtureRequest(), process.cwd(),
+      { bot: "codex", timeoutMs: 5_000, idleTimeoutMs: 5_000, onProviderRetry: retryFence },
+      { conversationId: "conv-4", runId: "run-4" },
+    )).resolves.toMatchObject({ text: "recovered" });
+    expect(retryFence).toHaveBeenCalledTimes(1);
+  });
 });
