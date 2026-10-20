@@ -3,6 +3,14 @@ import { BridgeDb } from "./db.js";
 import { requestRunContinuation } from "./runContinuation.js";
 import type { RouteableBotKind } from "./types.js";
 
+/** Original provider turn may already have executed side effects. Never replay it merely because reconciliation failed. */
+export class RunOutcomeReconciliationError extends Error {
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options);
+    this.name = "RunOutcomeReconciliationError";
+  }
+}
+
 export class MissingRunOutcomeError extends Error {
   constructor(message: string) { super(message); this.name = "MissingRunOutcomeError"; }
 }
