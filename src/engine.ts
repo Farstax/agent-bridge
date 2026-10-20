@@ -8,7 +8,7 @@
  */
 
 import { SCRATCH_SIGNPOST, readScratch, renderFreshScratch } from "./scratchpad.js";
-import { MissingRunOutcomeError, RunOutcomeReconciliationError, readRunOutcome, missingOutcomeRetries } from "./runOutcome.js";
+import { MissingRunOutcomeError, RunOutcomeReconciliationError, readRunOutcome, missingOutcomeRetries, clearRunOutcomeForProviderRetry } from "./runOutcome.js";
 import { EVENT_RECEIPT_CORRELATION_PREFIX } from "./interactiveIngress.js";
 import { randomUUID } from "node:crypto";
 import { basename, dirname, join } from "node:path";
@@ -897,7 +897,14 @@ export class BridgeEngine {
         // Submission evidence is monotonic across the admitted action: a first
         // attempt without evidence is treated as possibly submitted.
         priorEvidence = readProviderFailureEvidence(providerError) ?? { promptSubmitted: true };
-        this._runWithFence(laneHandle, () => persistEngineProviderSession(this.db, { surfaceIdentity: this.surfaceIdentity, chatKey }, sourceKind, null));
+        this._runWithFence(laneHandle, () => {
+          // A failed provider attempt is not the terminal answer for this Run.
+          // Its outcome (and any requested wake) must not survive a fresh
+          // attempt that may make a different final determination.
+          cancelPendingRunContinuation(this.db, runId, "provider attempt failed before terminal settlement");
+          clearRunOutcomeForProviderRetry(this.db, runId);
+          persistEngineProviderSession(this.db, { surfaceIdentity: this.surfaceIdentity, chatKey }, sourceKind, null);
+        });
         markHandoffRequired(this.db, this.surfaceIdentity, chatKey, sourceKind, `fallback_from_${sourceKind}`);
         try {
           const retryResult = await this._executeAndDeliverTurn({
@@ -2181,7 +2188,10 @@ export class BridgeEngine {
       // entire execute/deliver path would lose files and the original answer.
       const eligibleOutcome = runId !== null && !isVerificationOnly && this.kind !== "autonomous"
         && publishArtifacts && Boolean(this.opts.fullConfig?.dbPath);
-      if (eligibleOutcome && !readRunOutcome(this.db, runId!)) {
+      // A structural ACP refusal is an actual provider safety boundary, not
+      // a forgotten helper invocation. Never prompt a refusing provider a
+      // second time simply to obtain a shell-command disposition.
+      if (eligibleOutcome && stagedResult.stopReason !== "refusal" && !readRunOutcome(this.db, runId!)) {
         if (missingOutcomeRetries() === 0 || !stagedResult.sessionId) {
           throw new MissingRunOutcomeError("The provider finished without reporting an objective outcome.");
         }
