@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { openDb } from "../src/db.js";
 import { BridgeEngine } from "../src/engine.js";
+import { requestAgentBridgeOutcome } from "../src/runOutcome.js";
 import { acpEngineExec } from "./support/acpEngineExec.js";
 import type { TelegramMessage } from "../src/types.js";
 
@@ -64,8 +65,9 @@ describe("Issue #538 fresh-session handoff guidance", () => {
   it("orients a fresh provider from exact retained turns and preserves scoped older-history search", async () => {
     db.addConvTurn("100", "user", HISTORY_MARKER);
     let capturedPrompt = "";
-    const runCli = vi.fn().mockImplementation(async (_cmd: string, args: string[]) => {
+    const runCli = vi.fn().mockImplementation(async (_cmd: string, args: string[], _cwd: string, options: any) => {
       capturedPrompt = args[1];
+      requestAgentBridgeOutcome(["complete", "--evidence", "handoff inspected"], options.contextEnv);
       return [JSON.stringify({ type: "text", data: "ok" }), JSON.stringify({ type: "end", sessionId: "issue-538-session", stopReason: "end_turn" })].join("\n") + "\n";
     });
 
@@ -80,8 +82,9 @@ describe("Issue #538 fresh-session handoff guidance", () => {
 
   it("keeps first-ever fresh-session guidance conditional when no prior turns exist", async () => {
     let capturedPrompt = "";
-    const runCli = vi.fn().mockImplementation(async (_cmd: string, args: string[]) => {
+    const runCli = vi.fn().mockImplementation(async (_cmd: string, args: string[], _cwd: string, options: any) => {
       capturedPrompt = args[1];
+      requestAgentBridgeOutcome(["complete", "--evidence", "fresh prompt inspected"], options.contextEnv);
       return [JSON.stringify({ type: "text", data: "ok" }), JSON.stringify({ type: "end", sessionId: "issue-538-new-session", stopReason: "end_turn" })].join("\n") + "\n";
     });
 
@@ -102,8 +105,9 @@ describe("Issue #538 fresh-session handoff guidance", () => {
       runId: null,
     });
     let capturedPrompt = "";
-    const runCli = vi.fn().mockImplementation(async (_cmd: string, args: string[]) => {
+    const runCli = vi.fn().mockImplementation(async (_cmd: string, args: string[], _cwd: string, options: any) => {
       capturedPrompt = args[1];
+      requestAgentBridgeOutcome(["complete", "--evidence", "resumed prompt inspected"], options.contextEnv);
       return [JSON.stringify({ type: "text", data: "ok" }), JSON.stringify({ type: "end", sessionId: "existing-session", stopReason: "end_turn" })].join("\n") + "\n";
     });
 

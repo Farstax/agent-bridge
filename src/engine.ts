@@ -1710,6 +1710,7 @@ export class BridgeEngine {
   private _discardAbandonedAttemptOutcome(laneHandle: ExecutionLaneHandle, runId: string | null): void {
     if (!runId) return;
     this._runWithFence(laneHandle, () => {
+      if (this.db.getRun(runId)?.status !== "running") return;
       cancelPendingRunContinuation(this.db, runId, "provider attempt failed before terminal settlement");
       clearRunOutcomeForProviderRetry(this.db, runId);
     });
