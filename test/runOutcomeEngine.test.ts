@@ -20,12 +20,14 @@ function fixture(mode: "complete-after-retry" | "missing-twice" | "report-first"
   db.insertRun("run-one", identity, "claude");
   const handle = db.acquireLock(identity.surfaceIdentity, identity.chatKey);
   if (!handle) throw new Error("missing fixture lane ownership");
+  let calls = 0;
   const invocation = vi.fn(async (_provider: unknown, _invocation: unknown, _cwd: unknown, options: any, request: any) => {
-    if (mode === "report-first" || (mode === "complete-after-retry" && invocation.mock.calls.length === 2)) {
+    calls += 1;
+    if (mode === "report-first" || (mode === "complete-after-retry" && calls === 2)) {
       requestAgentBridgeOutcome(["complete", "--evidence", "verified"], options.contextEnv);
     }
     return {
-      text: invocation.mock.calls.length === 1 ? "Original user-facing answer" : "Reconciliation was recorded",
+      text: calls === 1 ? "Original user-facing answer" : "Reconciliation was recorded",
       sessionId: "same-acp-session",
       stopReason: "end_turn",
     };
