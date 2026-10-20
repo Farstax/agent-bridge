@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { openDb } from "../src/db.js";
-import { missingOutcomeRetries, readRunOutcome, requestAgentBridgeOutcome } from "../src/runOutcome.js";
+import { missingOutcomeRetries, readRunOutcome, requestAgentBridgeOutcome, requestAgentBridgeWait } from "../src/runOutcome.js";
 import { listRunContinuations } from "../src/runContinuation.js";
 
 const dirs: string[] = [];
@@ -60,6 +60,30 @@ describe("Run-scoped provider outcomes", () => {
     expect(listRunContinuations(db)).toEqual([expect.objectContaining({
       originRunId: "run-1", provider: "codex", reason: "CI pending; re-check", state: "pending",
     })]);
+    db.close();
+  });
+
+  it("keeps the legacy wait helper usable without lane credentials", () => {
+    const { db, env } = setup();
+    const {
+      AGENT_BRIDGE_LOCK_SERVICE_ID: _service,
+      AGENT_BRIDGE_LOCK_RUN_ID: _lockRun,
+      AGENT_BRIDGE_LOCK_ACQUISITION_ID: _acquisition,
+      ...legacyEnv
+    } = env;
+    expect(requestAgentBridgeWait(["--after-seconds", "60", "--reason", "legacy wake"], legacyEnv))
+      .toMatch(/Continuation scheduled/);
+    expect(listRunContinuations(db)).toEqual([expect.objectContaining({ reason: "legacy wake" })]);
+    // The legacy helper did not require the newer explicit disposition.
+    expect(readRunOutcome(db, "run-1")).toBeNull();
+    db.close();
+  });
+
+  it("uses the same outcome path for a wait call made by a new ordinary Run", () => {
+    const { db, env } = setup();
+    requestAgentBridgeWait(["--after-seconds", "60", "--reason", "CI pending"], env);
+    expect(readRunOutcome(db, "run-1")).toEqual({ status: "continue", detail: "CI pending" });
+    expect(listRunContinuations(db)).toHaveLength(1);
     db.close();
   });
 
