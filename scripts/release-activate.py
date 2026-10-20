@@ -8,6 +8,7 @@ import hashlib
 import json
 import os
 import pwd
+import signal
 import subprocess
 import sys
 import tempfile
@@ -379,9 +380,12 @@ def check_active_release_host_components(release_root: Path, current: Path) -> d
         validate_commit(target)
         release = release_root / target
         validate_release(release, target, strict=True)
-        components = _host_components(release, _load_manifest(release))
+        manifest = _load_manifest(release)
+        if "host_components" not in manifest:
+            return {"schema_version": 1, "release": target, "declared": False, "status": "unverifiable", "components": []}
+        components = _host_components(release, manifest)
     except Exception:
-        return {"schema_version": 1, "status": "unverifiable", "components": []}
+        return {"schema_version": 1, "declared": False, "status": "unverifiable", "components": []}
 
     environment = os.environ.copy()
     environment["AGENT_BRIDGE_STT_ROOT"] = DEFAULT_STT_ROOT
@@ -389,7 +393,7 @@ def check_active_release_host_components(release_root: Path, current: Path) -> d
     try:
         runtime_user = _runtime_user() if any(component["id"] == "cursor-acp" for component in components) else ""
     except Exception:
-        return {"schema_version": 1, "release": target, "status": "unverifiable", "components": [
+        return {"schema_version": 1, "release": target, "declared": True, "status": "unverifiable", "components": [
             {"id": component["id"], "status": "unverifiable"} for component in components
         ]}
 
@@ -405,10 +409,19 @@ def check_active_release_host_components(release_root: Path, current: Path) -> d
                 continue
             command = ["/usr/sbin/runuser", "--preserve-environment", "--user", runtime_user, "--", *command]
         try:
-            completed = subprocess.run(
-                command, check=True, capture_output=True, text=True, timeout=60, env=component_env,
+            process = subprocess.Popen(
+                command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                env=component_env, start_new_session=True,
             )
-            _parse_component_health(completed.stdout, component["id"])
+            try:
+                stdout, _stderr = process.communicate(timeout=60)
+            except subprocess.TimeoutExpired:
+                os.killpg(process.pid, signal.SIGKILL)
+                process.communicate()
+                raise
+            if process.returncode:
+                raise subprocess.CalledProcessError(process.returncode, command)
+            _parse_component_health(stdout, component["id"])
         except subprocess.CalledProcessError:
             results.append({"id": component["id"], "status": "unhealthy"})
             continue
@@ -424,13 +437,13 @@ def check_active_release_host_components(release_root: Path, current: Path) -> d
     # answer unsafe to consume, even when every individual check passed.
     try:
         if current_target(current, release_root) != target:
-            return {"schema_version": 1, "release": target, "status": "unverifiable", "components": results}
+                return {"schema_version": 1, "release": target, "declared": True, "status": "unverifiable", "components": results}
     except Exception:
-        return {"schema_version": 1, "release": target, "status": "unverifiable", "components": results}
+            return {"schema_version": 1, "release": target, "declared": True, "status": "unverifiable", "components": results}
     status = "unverifiable" if any(entry["status"] == "unverifiable" for entry in results) else (
         "unhealthy" if any(entry["status"] == "unhealthy" for entry in results) else "healthy"
     )
-    return {"schema_version": 1, "release": target, "status": status, "components": results}
+    return {"schema_version": 1, "release": target, "declared": True, "status": status, "components": results}
 
 
 def activate(release_root: Path, current: Path, expected_commit: str) -> str:

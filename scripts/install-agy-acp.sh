@@ -71,7 +71,7 @@ normalize_runtime_dir() {
   fi
 }
 
-if (( print_required_bytes == 0 )); then
+if (( print_required_bytes == 0 )) && [[ "$phase" != verify ]]; then
   mkdir -p "${ROOT}/components"
   chown root:root "${ROOT}" "${ROOT}/components"
   chmod 0755 "${ROOT}" "${ROOT}/components"

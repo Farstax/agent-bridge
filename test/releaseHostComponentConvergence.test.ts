@@ -193,6 +193,7 @@ describe("active release host-component health", () => {
     expect(check(fixture.root, fixture.current, fixture.state)).toEqual({
       schema_version: 1,
       release: COMMIT,
+      declared: true,
       status: "healthy",
       components: [{ id: "test-component", status: "healthy" }],
     });
@@ -204,12 +205,14 @@ describe("active release host-component health", () => {
     expect(check(fixture.root, fixture.current, fixture.state)).toEqual({
       schema_version: 1,
       release: COMMIT,
+      declared: true,
       status: "unhealthy",
       components: [{ id: "test-component", status: "unhealthy" }],
     });
     const malformed = releaseFixture({ installer: false });
     expect(check(malformed.root, malformed.current, malformed.state)).toMatchObject({
       schema_version: 1,
+      declared: false,
       status: "unverifiable",
       components: [],
     });
