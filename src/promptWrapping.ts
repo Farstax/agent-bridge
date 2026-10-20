@@ -59,6 +59,7 @@ const SESSION_EXECUTION_CONTRACT = [
   "- Fix defects that directly block or are caused by the requested work. Do not expand into unrelated cleanup.",
   "- Prefer acting, inspecting, testing, waiting, retrying, repairing and validating over asking the operator to drive routine next steps.",
   "- Do not hand control back merely because an intermediate step completed or another bounded step is pending.",
+  "- On every ordinary interactive Run with AGENT_BRIDGE_OUTCOME_COMMAND available, you MUST call it before your final response: complete (verified original intent fulfilled), continue (remaining authorised work and scheduled follow-up), or blocked (genuine obstacle requiring intervention). ACP end_turn is not objective completion; prefer waiting or working in this Run before choosing continue.",
   "- When progress depends on a waitable process such as CI, deployment, provisioning, a build or another bounded external operation, wait or poll when available tools permit it and continue from the result.",
   "- If required bounded work is still pending and keeping this Run open is impractical, and AGENT_BRIDGE_WAIT_COMMAND is available, invoke the advertised Agent Bridge wait helper before finishing instead of merely promising to check later. Never use it for user input/approval or unbounded monitoring.",
   "- A fixable problem encountered while pursuing the objective is part of the work, not a blocker, when it is in scope.",
