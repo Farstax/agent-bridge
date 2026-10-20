@@ -399,8 +399,11 @@ def check_active_release_host_components(release_root: Path, current: Path) -> d
         ]}
 
     def terminate_active_verifier(_signum: int, _frame: object) -> None:
-        if _active_component_process and _active_component_process.poll() is None:
-            os.killpg(_active_component_process.pid, signal.SIGKILL)
+        if _active_component_process:
+            try:
+                os.killpg(_active_component_process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
         raise SystemExit(128 + _signum)
 
     previous_term = signal.signal(signal.SIGTERM, terminate_active_verifier)
@@ -419,11 +422,16 @@ def check_active_release_host_components(release_root: Path, current: Path) -> d
             command = ["/usr/sbin/runuser", "--preserve-environment", "--user", runtime_user, "--", *command]
         try:
             global _active_component_process
-            process = subprocess.Popen(
-                command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
-                env=component_env, start_new_session=True,
-            )
-            _active_component_process = process
+            blocked = {signal.SIGTERM, signal.SIGINT}
+            previous_mask = signal.pthread_sigmask(signal.SIG_BLOCK, blocked)
+            try:
+                process = subprocess.Popen(
+                    command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                    env=component_env, start_new_session=True,
+                )
+                _active_component_process = process
+            finally:
+                signal.pthread_sigmask(signal.SIG_SETMASK, previous_mask)
             try:
                 stdout, _stderr = process.communicate(timeout=60)
             except subprocess.TimeoutExpired:
