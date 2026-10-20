@@ -177,6 +177,32 @@ jobs:
             if (file.sha256 !== digest) throw new Error(`archived ${component.id} installer is not hash-bound`);
           }
           NODE
+          python3 - "$verify_root" <<'PY'
+          # Execute the archived health markers through the archived parser.
+          import importlib.util, json, subprocess, sys
+          from pathlib import Path
+          root = Path(sys.argv[1])
+          spec = importlib.util.spec_from_file_location("release_activate", root / "scripts/release-activate.py")
+          activate = importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(activate)
+          components = json.loads((root / "manifest.json").read_text()).get("host_components") or []
+          if not components:
+              raise SystemExit("archived release declares no host components")
+          for component in components:
+              lines = [line.strip() for line in (root / component["installer"]).read_text().splitlines() if "host_component_health=" in line]
+              if len(lines) != 1:
+                  raise SystemExit(f"archived {component['id']} installer must emit exactly one health marker")
+              stdout = subprocess.run(["bash", "--noprofile", "--norc", "-c", lines[0]], capture_output=True, check=True, timeout=10, env={"PATH": "/usr/bin:/bin"}).stdout
+              if stdout != b"host_component_health=healthy\n":
+                  raise SystemExit(f"archived {component['id']} health marker emitted {stdout!r}")
+              activate._parse_component_health(stdout.decode(), component["id"])
+          for malformed in ["host_component_health=healthy\\n", "", "host_component_health=healthy\nhost_component_health=healthy\n", "host_component_health=unhealthy\n", "host_component_health=unverifiable\n", "healthy\n"]:
+              try:
+                  activate._parse_component_health(malformed, "malformed-fixture")
+              except RuntimeError:
+                  continue
+              raise SystemExit(f"archived health parser accepted {malformed!r}")
+          PY
           ( cd "$(dirname "$archive")" && sha256sum "$(basename "$archive")" ) | tee "$archive.sha256"
           echo "archive=$archive" >> "$GITHUB_OUTPUT"
 

@@ -8,6 +8,7 @@ export default defineConfig({
       BRIDGE_SKIP_MEMORY_IMPORT: "1",
       BRIDGE_LEGACY_MEMORY_COMPACTION_ENABLED: "true",
     },
+    globalSetup: ["./test/globalTempRoot.ts"],
     setupFiles: ["./test/setup.ts"],
     pool: "forks",
     // Bound aggregate memory without serializing the entire suite. Tests that
