@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
+import { execFileSync } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -96,6 +97,31 @@ describe("Run-scoped provider outcomes", () => {
       ...env, AGENT_BRIDGE_LOCK_ACQUISITION_ID: "stale",
     })).toThrow(/ownership/);
     expect(readRunOutcome(db, "run-1")).toBeNull();
+    db.close();
+  });
+
+  it("preserves the unscoped legacy wait command outside an outcome-enabled lane", () => {
+    const { db, env } = setup();
+    const legacyEnv = { ...process.env, ...env };
+    delete legacyEnv.AGENT_BRIDGE_LOCK_SERVICE_ID;
+    delete legacyEnv.AGENT_BRIDGE_LOCK_RUN_ID;
+    delete legacyEnv.AGENT_BRIDGE_LOCK_ACQUISITION_ID;
+    const output = execFileSync(join(process.cwd(), "bin", "agent-bridge-wait"), [
+      "--after-seconds", "60", "--reason", "previously supported legacy caller",
+    ], { env: legacyEnv, encoding: "utf8" });
+    expect(output).toMatch(/Continuation scheduled/);
+    expect(readRunOutcome(db, "run-1")).toBeNull();
+    expect(listRunContinuations(db)).toHaveLength(1);
+    db.close();
+  });
+
+  it("makes a legacy wait call count as continue on an outcome-enabled Run", () => {
+    const { db, env } = setup();
+    const output = execFileSync(join(process.cwd(), "bin", "agent-bridge-wait"), [
+      "--after-seconds", "60", "--reason", "CI pending",
+    ], { env: { ...process.env, ...env }, encoding: "utf8" });
+    expect(output).toMatch(/Continuation scheduled/);
+    expect(readRunOutcome(db, "run-1")).toEqual({ status: "continue", detail: "CI pending" });
     db.close();
   });
 
