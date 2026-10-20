@@ -13,12 +13,12 @@ import { join } from "node:path";
 function makeRemovable(dir: string): void {
   try {
     chmodSync(dir, 0o700);
+    for (const entry of readdirSync(dir)) {
+      const path = join(dir, entry);
+      if (lstatSync(path).isDirectory()) makeRemovable(path);
+    }
   } catch {
     // Not ours to change; rmSync below reports what it cannot remove.
-  }
-  for (const entry of readdirSync(dir)) {
-    const path = join(dir, entry);
-    if (lstatSync(path).isDirectory()) makeRemovable(path);
   }
 }
 

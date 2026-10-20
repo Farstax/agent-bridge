@@ -192,6 +192,8 @@ jobs:
               lines = [line.strip() for line in (root / component["installer"]).read_text().splitlines() if "host_component_health=" in line]
               if len(lines) != 1:
                   raise SystemExit(f"archived {component['id']} installer must emit exactly one health marker")
+              if not lines[0].startswith("printf '"):
+                  raise SystemExit(f"archived {component['id']} health marker is not a literal printf")
               stdout = subprocess.run(["bash", "--noprofile", "--norc", "-c", lines[0]], capture_output=True, check=True, timeout=10, env={"PATH": "/usr/bin:/bin"}).stdout
               if stdout != b"host_component_health=healthy\n":
                   raise SystemExit(f"archived {component['id']} health marker emitted {stdout!r}")
