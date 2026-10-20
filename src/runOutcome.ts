@@ -112,7 +112,15 @@ export function requestAgentBridgeOutcome(args: string[], env: EnvLike = process
   const db = new BridgeDb(raw, { serviceId: "run-outcome-helper", runId, leaseMs: 90_000 });
   try {
     return db.runInTransaction(() => {
+      // A retried identical helper invocation must not refresh the existing
+      // continuation's due time/expiry or create a new scheduling decision.
+      const previous = readRunOutcome(db, runId);
       recordRunOutcome(db, { runId, surfaceIdentity, chatKey, provider, status, detail, lock });
+      if (previous) {
+        return status === "continue"
+          ? "Continuation already scheduled for this Run. Finish this Run."
+          : status === "complete" ? "Run outcome already recorded: complete." : "Run outcome already recorded: blocked.";
+      }
       if (status === "continue") {
         const c = requestRunContinuation(db, {
           originRunId: runId, surfaceIdentity, chatKey, provider, reason: detail,
