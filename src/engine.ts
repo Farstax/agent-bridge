@@ -2064,7 +2064,7 @@ export class BridgeEngine {
       outputDir: null,
     }).nativeSessionMode;
     // Read-only verification turns get no scratch helper: its write and clear are mutations.
-    const promptForCli = await this._buildPromptForCli(chatKey, prompt, nativeSessionMode, model, runId, executionKind, chatId, threadId, isVerificationOnly ? undefined : laneHandle, !isVerificationOnly && this.kind !== "autonomous");
+    const promptForCli = await this._buildPromptForCli(chatKey, prompt, nativeSessionMode, model, runId, executionKind, chatId, threadId, isVerificationOnly ? undefined : laneHandle, !isVerificationOnly && this.kind !== "autonomous" && publishArtifacts);
     const invocation = buildCliInvocation({
       bot: executionKind,
       command: this.opts.botConfig.command,
@@ -2176,9 +2176,8 @@ export class BridgeEngine {
       // ACP settles a provider turn, not the original operator objective.
       // Reconcile one forgotten outcome in the same native session, before final
       // delivery, keeping the original Run owner and without replaying side effects.
-      const eligibleOutcome = runId !== null && !isVerificationOnly && this.kind !== "autonomous";
-      if (eligibleOutcome && (stagedResult.stopReason === "end_turn" || stagedResult.stopReason == null)
-          && !readRunOutcome(this.db, runId!)) {
+      const eligibleOutcome = runId !== null && !isVerificationOnly && this.kind !== "autonomous" && publishArtifacts;
+      if (eligibleOutcome && !readRunOutcome(this.db, runId!)) {
         const retry = (body as { outcomeReconciliation?: boolean }).outcomeReconciliation === true;
         if (retry || missingOutcomeRetries() === 0 || !stagedResult.sessionId) {
           throw new MissingRunOutcomeError(
@@ -2197,7 +2196,7 @@ export class BridgeEngine {
           ].join("\n"),
           stagedResult.sessionId, chatId,
           { ...body, outcomeReconciliation: true }, onProgress, [],
-          eventContext, runId, collect, chatKey, laneHandle,
+          eventContext, runId, collect, chatKey, laneHandle, modelFallback,
         );
       }
       if (this.hooks.onAfterExecute) {
