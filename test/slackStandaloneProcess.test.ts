@@ -66,6 +66,10 @@ function startCompanion(slackUrl: string, extraEnv: NodeJS.ProcessEnv = {}, dir 
     CODEX_ACP_ARGS: `${tsxCli} ${fakeAgent}`,
     FAKE_ACP_STORE: join(dir, "acp-store.json"),
     BRIDGE_EXECUTION_MODE: "safe",
+    // The fake ACP agent reports a real outcome through the provider child
+    // environment. This proves the standalone surface remains compatible
+    // with mandatory ordinary-Run outcome reporting.
+    FAKE_ACP_REPORT_OUTCOME: "1",
     ...extraEnv,
   };
   const child = spawn(process.execPath, ["--import", "tsx", "src/index-slack-interactive.ts"], { cwd: process.cwd(), env, stdio: ["ignore", "pipe", "pipe"] });
@@ -108,6 +112,11 @@ describe("standalone Slack companion over the wire (#943)", () => {
     try { return db.prepare("SELECT idempotency_key, status, run_id, payload_json FROM event_receipts WHERE source = 'slack' ORDER BY id").all() as any[]; }
     finally { db.close(); }
   };
+  const runOutcomes = (running: Running) => {
+    const db = new Database(running.dbPath, { readonly: true });
+    try { return db.prepare("SELECT outcome_status, outcome_detail FROM bridge_runs ORDER BY started_at").all() as Array<{ outcome_status: string | null; outcome_detail: string | null }>; }
+    finally { db.close(); }
+  };
 
   it("binds identity on the live socket, acknowledges after the receipt, runs once and replies in the DM", async () => {
     const { slack, running } = await boot();
@@ -126,6 +135,7 @@ describe("standalone Slack companion over the wire (#943)", () => {
     expect(row).toMatchObject({ idempotency_key: "slack:T0TEAM:A0APP:EvDM1", status: "completed" });
     expect(row.run_id).toBeTruthy();
     expect(row.payload_json).toBe("{}");
+    expect(runOutcomes(running)).toContainEqual({ outcome_status: "complete", outcome_detail: "fixture reply verified" });
     // Secrets never reach logs or the status file.
     expect(running.output()).not.toContain(TOKENS.bot);
     expect(running.output()).not.toContain(TOKENS.app);

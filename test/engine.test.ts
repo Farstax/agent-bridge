@@ -7,6 +7,7 @@ import { openDb } from "../src/db.js";
 import type { BridgeConfig, TelegramMessage } from "../src/types.js";
 import { type as eventType } from "../src/events/types.js";
 import { markHandoffRequired, isHandoffRequired } from "../src/handoffState.js";
+import { requestAgentBridgeOutcome } from "../src/runOutcome.js";
 import { acpEngineExec } from "./support/acpEngineExec.js";
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -1800,6 +1801,7 @@ describe("BridgeEngine", () => {
       const runCli = vi.fn().mockImplementation(async (_cmd: string, args: string[], _cwd: string, options: any) => {
         capturedPrompt = args[1];
         capturedContextEnv = options.contextEnv;
+        requestAgentBridgeOutcome(["complete", "--evidence", "context inspected"], options.contextEnv);
         return cursorResult("done");
       });
       const engine = new BridgeEngine(
@@ -1831,7 +1833,7 @@ describe("BridgeEngine", () => {
       expect(capturedPrompt).not.toContain("Current objective:");
     });
 
-    it("exposes one installed continuation command on fresh and resumed ordinary turns", async () => {
+    it("exposes the outcome command on fresh and resumed ordinary turns", async () => {
       const { BridgeEngine } = await import("../src/engine.js");
       const client = makeMockClient();
       const capturedPrompts: string[] = [];
@@ -1839,6 +1841,7 @@ describe("BridgeEngine", () => {
       const runCli = vi.fn().mockImplementation(async (_cmd: string, args: string[], _cwd: string, options: any) => {
         capturedPrompts.push(args[1]);
         capturedContextEnvs.push(options.contextEnv);
+        requestAgentBridgeOutcome(["complete", "--evidence", "turn complete"], options.contextEnv);
         return cursorResult("done", "continuation-session");
       });
       const engine = new BridgeEngine(
@@ -1866,15 +1869,15 @@ describe("BridgeEngine", () => {
       });
       for (const capturedContextEnv of capturedContextEnvs) {
         expect(capturedContextEnv?.AGENT_BRIDGE_RUN_ID).toBeTruthy();
-        expect(capturedContextEnv?.AGENT_BRIDGE_WAIT_COMMAND).toContain("bin/agent-bridge-wait");
+        expect(capturedContextEnv?.AGENT_BRIDGE_OUTCOME_COMMAND).toContain("bin/agent-bridge-outcome");
         expect(capturedContextEnv?.AGENT_BRIDGE_WAIT_SCRIPT).toBeUndefined();
       }
       for (const capturedPrompt of capturedPrompts) {
-        expect(capturedPrompt).toContain("[Agent Bridge continuation]");
-        expect(capturedPrompt).toContain('"$AGENT_BRIDGE_WAIT_COMMAND" --after-seconds 60 --reason "<what to re-check>"');
+        expect(capturedPrompt).toContain("[Agent Bridge outcome]");
+        expect(capturedPrompt).toContain("$AGENT_BRIDGE_OUTCOME_COMMAND");
         expect(capturedPrompt).not.toContain("AGENT_BRIDGE_WAIT_SCRIPT");
         expect(capturedPrompt).not.toContain("node_modules/.bin/tsx");
-        expect((capturedPrompt.match(/\[Agent Bridge continuation\]/g) ?? [])).toHaveLength(1);
+        expect((capturedPrompt.match(/\[Agent Bridge outcome\]/g) ?? [])).toHaveLength(1);
         expect((capturedPrompt.match(/Agent Bridge execution contract:/g) ?? [])).toHaveLength(1);
       }
       expect(capturedPrompts[0]).not.toContain("[Agent Bridge context]");

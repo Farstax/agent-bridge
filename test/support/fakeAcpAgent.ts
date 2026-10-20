@@ -1,4 +1,5 @@
 import * as acp from "@agentclientprotocol/sdk";
+import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { Readable, Writable } from "node:stream";
@@ -290,6 +291,16 @@ export function createFakeAcpAgent(options: FakeAcpAgentOptions = {}): acp.Agent
       });
       session.history.push({ role: "agent", text: reply });
       persistSessions(sessions);
+      // The standalone Slack acceptance fixture uses the actual provider child
+      // environment. Exercise the shipped outcome command there, rather than
+      // weakening the production outcome requirement for this older fixture.
+      if (process.env.FAKE_ACP_REPORT_OUTCOME === "1") {
+        const command = process.env.AGENT_BRIDGE_OUTCOME_COMMAND;
+        if (!command) throw new Error("AGENT_BRIDGE_OUTCOME_COMMAND is required when FAKE_ACP_REPORT_OUTCOME=1");
+        execFileSync(command, ["complete", "--evidence", "fixture reply verified"], {
+          cwd: process.cwd(), env: process.env, stdio: "pipe",
+        });
+      }
       return options.usageUpdateOnly
         ? { stopReason: "end_turn" }
         : {

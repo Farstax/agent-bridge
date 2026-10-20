@@ -1,0 +1,172 @@
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { mkdtempSync, rmSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
+import { BridgeEngine } from "../src/engine.js";
+import { openDb } from "../src/db.js";
+import { MissingRunOutcomeError, RunOutcomeReconciliationError, requestAgentBridgeOutcome } from "../src/runOutcome.js";
+import { listRunContinuations } from "../src/runContinuation.js";
+
+const dirs: string[] = [];
+afterEach(() => {
+  vi.restoreAllMocks();
+  for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
+});
+
+function fixture(mode: "complete-after-retry" | "continue-after-retry" | "blocked-after-retry" | "missing-twice" | "report-first" | "retry-throws" | "refusal" | "continue-then-invalid-session" | "continue-then-model-fallback" | "continue-then-internal-retry") {
+  const dir = mkdtempSync(join(tmpdir(), "run-outcome-engine-")); dirs.push(dir);
+  const path = join(dir, "bridge.sqlite");
+  const db = openDb(path, { serviceId: "outcome-engine-test", runId: "process" });
+  const identity = { surfaceIdentity: "telegram:interactive", chatKey: "chat" };
+  const provider = mode === "continue-then-model-fallback" ? "codex" : "claude";
+  db.insertRun("run-one", identity, provider);
+  const handle = db.acquireLock(identity.surfaceIdentity, identity.chatKey);
+  if (!handle) throw new Error("missing fixture lane ownership");
+  let calls = 0;
+  const invocation = vi.fn(async (_provider: unknown, _invocation: unknown, _cwd: unknown, options: any, request: any) => {
+    calls += 1;
+    if (mode === "retry-throws" && calls === 2) throw new Error("provider quota exhausted after initial work");
+    if (mode === "continue-then-invalid-session" && calls === 1) {
+      requestAgentBridgeOutcome(["continue", "--after-seconds", "60", "--reason", "stale wake"], options.contextEnv);
+      throw new Error("No conversation found with session ID: stale-session");
+    }
+    if (mode === "continue-then-model-fallback" && calls === 1) {
+      requestAgentBridgeOutcome(["continue", "--after-seconds", "60", "--reason", "stale model wake"], options.contextEnv);
+      throw new Error("usage limit reached");
+    }
+    if (mode === "continue-then-internal-retry") {
+      requestAgentBridgeOutcome(["continue", "--after-seconds", "60", "--reason", "stale internal wake"], options.contextEnv);
+      await options.onProviderRetry();
+    }
+    if (mode === "report-first" || (mode === "complete-after-retry" && calls === 2) || (mode === "continue-then-invalid-session" && calls === 2) || (mode === "continue-then-model-fallback" && calls === 2) || mode === "continue-then-internal-retry") {
+      requestAgentBridgeOutcome(["complete", "--evidence", "verified"], options.contextEnv);
+    }
+    if (mode === "continue-after-retry" && calls === 2) {
+      requestAgentBridgeOutcome(["continue", "--after-seconds", "60", "--reason", "CI pending, finish merge"], options.contextEnv);
+    }
+    if (mode === "blocked-after-retry" && calls === 2) {
+      requestAgentBridgeOutcome(["blocked", "--reason", "Owner approval required"], options.contextEnv);
+    }
+    return {
+      text: calls === 1 ? "Original user-facing answer" : "Reconciliation was recorded",
+      sessionId: "same-acp-session",
+      stopReason: mode === "refusal" ? "refusal" : "end_turn",
+      telemetry: { provider: "claude", inputTokens: calls === 1 ? 100 : 20, outputTokens: calls === 1 ? 30 : 5 },
+    };
+  });
+  const engine = new BridgeEngine({
+    surfaceIdentity: identity.surfaceIdentity,
+    kind: provider,
+    botConfig: { command: provider, modelPreference: mode === "continue-then-model-fallback" ? ["primary", "fallback"] : [] },
+    allowedUserIds: new Set(["42"]),
+    executionMode: "safe",
+    pollIntervalMs: 1000,
+    workingDir: dir,
+    fullConfig: { dbPath: path } as any,
+  }, db, {} as any, { runProviderInvocation: invocation } as any);
+  return { db, engine, handle, invocation };
+}
+
+describe("ordinary Run objective settlement", () => {
+  it("performs one same-session reconciliation without losing the original answer", async () => {
+    const { db, engine, handle, invocation } = fixture("complete-after-retry");
+    const result = await engine.executePromptAsync(
+      "Fix and verify", null, "chat", {}, () => {}, [],
+      undefined, "run-one", null, "chat", handle,
+    );
+    expect(invocation).toHaveBeenCalledTimes(2);
+    expect(invocation.mock.calls[1][4].sessionId).toBe("same-acp-session");
+    expect(invocation.mock.calls[1][4].outputDir).toBe(invocation.mock.calls[0][4].outputDir);
+    expect(result.text).toBe("Reconciliation was recorded");
+    expect(result.telemetry).toEqual(expect.objectContaining({ inputTokens: 120, outputTokens: 35 }));
+    expect(db.getRun("run-one").outcome_status).toBe("complete");
+    db.close();
+  });
+
+  it("schedules unfinished work after one missing-outcome reconciliation", async () => {
+    const { db, engine, handle, invocation } = fixture("continue-after-retry");
+    const result = await engine.executePromptAsync("Ship both PRs", null, "chat", {}, () => {}, [], undefined, "run-one", null, "chat", handle);
+    expect(invocation).toHaveBeenCalledTimes(2);
+    expect(db.getRun("run-one").outcome_status).toBe("continue");
+    expect(listRunContinuations(db)).toEqual([expect.objectContaining({
+      originRunId: "run-one", state: "pending", reason: "CI pending, finish merge",
+    })]);
+    expect(result.text).toBe("Reconciliation was recorded");
+    db.close();
+  });
+
+  it("keeps a genuine blocker terminal after one missing-outcome reconciliation", async () => {
+    const { db, engine, handle, invocation } = fixture("blocked-after-retry");
+    const result = await engine.executePromptAsync("Deploy", null, "chat", {}, () => {}, [], undefined, "run-one", null, "chat", handle);
+    expect(invocation).toHaveBeenCalledTimes(2);
+    expect(db.getRun("run-one").outcome_status).toBe("blocked");
+    expect(listRunContinuations(db)).toHaveLength(0);
+    expect(result.text).toBe("Reconciliation was recorded");
+    db.close();
+  });
+
+  it("does not retry after a present complete outcome", async () => {
+    const { db, engine, handle, invocation } = fixture("report-first");
+    const result = await engine.executePromptAsync("Answer", null, "chat", {}, () => {}, [], undefined, "run-one", null, "chat", handle);
+    expect(invocation).toHaveBeenCalledTimes(1);
+    expect(result.text).toBe("Original user-facing answer");
+    db.close();
+  });
+
+  it("fails as unresolved after exactly one unsuccessful reconciliation", async () => {
+    const { db, engine, handle, invocation } = fixture("missing-twice");
+    await expect(engine.executePromptAsync("Fix", null, "chat", {}, () => {}, [], undefined, "run-one", null, "chat", handle))
+      .rejects.toBeInstanceOf(MissingRunOutcomeError);
+    expect(invocation).toHaveBeenCalledTimes(2);
+    expect(db.getRun("run-one").outcome_status).toBeNull();
+    db.close();
+  });
+  it("does not re-prompt a structural ACP refusal solely to obtain an outcome helper call", async () => {
+    const { db, engine, handle, invocation } = fixture("refusal");
+    const result = await engine.executePromptAsync(
+      "Request provider-refused operation", null, "chat", {},
+      () => {}, [], undefined, "run-one", null, "chat", handle,
+    );
+    expect(result.stopReason).toBe("refusal");
+    expect(invocation).toHaveBeenCalledTimes(1);
+    expect(db.getRun("run-one").outcome_status).toBeNull();
+    db.close();
+  });
+
+  it("never falls back to replaying the original work if the reconciliation provider fails", async () => {
+    const { db, engine, handle, invocation } = fixture("retry-throws");
+    await expect(engine.executePromptAsync("Ship and deploy", null, "chat", {}, () => {}, [], undefined, "run-one", null, "chat", handle))
+      .rejects.toBeInstanceOf(RunOutcomeReconciliationError);
+    expect(invocation).toHaveBeenCalledTimes(2);
+    expect(invocation.mock.calls[1][4].sessionId).toBe("same-acp-session");
+    db.close();
+  });
+
+  it("discards an abandoned attempt's continue disposition before retrying an invalid provider session", async () => {
+    const { db, engine, handle, invocation } = fixture("continue-then-invalid-session");
+    await engine.executePromptAsync("Finish release", "stale-session", "chat", {}, () => {}, [], undefined, "run-one", null, "chat", handle);
+    expect(invocation).toHaveBeenCalledTimes(2);
+    expect(db.getRun("run-one").outcome_status).toBe("complete");
+    expect(listRunContinuations(db)).toHaveLength(1);
+    expect(listRunContinuations(db)[0]).toEqual(expect.objectContaining({ state: "cancelled", reason: "stale wake" }));
+    db.close();
+  });
+
+  it("discards an abandoned attempt's continue disposition before retrying another model", async () => {
+    const { db, engine, handle, invocation } = fixture("continue-then-model-fallback");
+    await engine.executePromptAsync("Finish release", null, "chat", {}, () => {}, [], undefined, "run-one", null, "chat", handle);
+    expect(invocation).toHaveBeenCalledTimes(2);
+    expect(db.getRun("run-one").outcome_status).toBe("complete");
+    expect(listRunContinuations(db)).toEqual([expect.objectContaining({ state: "cancelled", reason: "stale model wake" })]);
+    db.close();
+  });
+
+  it("fences an outcome before an ACP-internal retry successor begins", async () => {
+    const { db, engine, handle } = fixture("continue-then-internal-retry");
+    await engine.executePromptAsync("Finish release", null, "chat", {}, () => {}, [], undefined, "run-one", null, "chat", handle);
+    expect(db.getRun("run-one").outcome_status).toBe("complete");
+    expect(listRunContinuations(db)).toEqual([expect.objectContaining({ state: "cancelled", reason: "stale internal wake" })]);
+    db.close();
+  });
+
+});

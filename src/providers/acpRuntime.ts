@@ -636,7 +636,8 @@ export async function runResolvedAcpProviderTurn(
       : await runWithAcpTransientRetry(providerId as ProviderId, runTurn, {
         abortRequested,
         promptSubmitted: () => promptEverSubmitted,
-        onRetryDecision: (error, successorStarted) => {
+        onRetryDecision: async (error, successorStarted) => {
+          if (successorStarted) await options.onProviderRetry?.();
           priorAttemptRecorded = true;
           if (eventContext && onEvent) {
             const redacted = redactAcpFailure(error, redactionEnv);

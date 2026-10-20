@@ -8,6 +8,7 @@
  */
 
 import { SCRATCH_SIGNPOST, readScratch, renderFreshScratch } from "./scratchpad.js";
+import { MissingRunOutcomeError, RunOutcomeReconciliationError, readRunOutcome, missingOutcomeRetries, clearRunOutcomeForProviderRetry } from "./runOutcome.js";
 import { EVENT_RECEIPT_CORRELATION_PREFIX } from "./interactiveIngress.js";
 import { randomUUID } from "node:crypto";
 import { basename, dirname, join } from "node:path";
@@ -41,7 +42,7 @@ import {
   type ProviderFailureEvidence,
 } from "./providers/failureEvidence.js";
 import { lookupProviderSession, persistProviderSession } from "./providers/sessionRuntime.js";
-import { captureParsedProviderOutput, registerProviderOutput } from "./runTelemetry.js";
+import { captureParsedProviderOutput, registerProviderOutput, combineSequentialTurnTelemetry } from "./runTelemetry.js";
 import type { ProviderInvocation } from "./providers/types.js";
 import { surfaceCapabilities, type MessagingPlatform } from "./platform.js";
 import { adaptTelegramMessage, adaptTelegramUpdate, InteractiveTurnBuffer, type InteractiveTurnInput } from "./interactiveIngress.js";
@@ -861,6 +862,14 @@ export class BridgeEngine {
         outcome = "failed";
         return "failed";
       }
+      if (error instanceof MissingRunOutcomeError || error instanceof RunOutcomeReconciliationError) {
+        await sendSurfaceMessage({
+          client: this.client, kind: this._deliveryKind(), chatId,
+          body: { text: `Error: ${error.message} The original intent remains unresolved.`, message_thread_id: threadId },
+        }).catch((sendError) => console.error(`[${this.kind}] outcome failure delivery failed`, sendError));
+        outcome = "failed";
+        return "failed";
+      }
       let providerError = error instanceof Error ? error : new Error(String(error));
       let priorEvidence: ProviderFailureEvidence | null = null;
       const executionProvider = providerIdForBotName(this._executionKind());
@@ -888,7 +897,14 @@ export class BridgeEngine {
         // Submission evidence is monotonic across the admitted action: a first
         // attempt without evidence is treated as possibly submitted.
         priorEvidence = readProviderFailureEvidence(providerError) ?? { promptSubmitted: true };
-        this._runWithFence(laneHandle, () => persistEngineProviderSession(this.db, { surfaceIdentity: this.surfaceIdentity, chatKey }, sourceKind, null));
+        this._runWithFence(laneHandle, () => {
+          // A failed provider attempt is not the terminal answer for this Run.
+          // Its outcome (and any requested wake) must not survive a fresh
+          // attempt that may make a different final determination.
+          cancelPendingRunContinuation(this.db, runId, "provider attempt failed before terminal settlement");
+          clearRunOutcomeForProviderRetry(this.db, runId);
+          persistEngineProviderSession(this.db, { surfaceIdentity: this.surfaceIdentity, chatKey }, sourceKind, null);
+        });
         markHandoffRequired(this.db, this.surfaceIdentity, chatKey, sourceKind, `fallback_from_${sourceKind}`);
         try {
           const retryResult = await this._executeAndDeliverTurn({
@@ -1691,6 +1707,15 @@ export class BridgeEngine {
     }
   }
 
+  private _discardAbandonedAttemptOutcome(laneHandle: ExecutionLaneHandle, runId: string | null): void {
+    if (!runId) return;
+    this._runWithFence(laneHandle, () => {
+      if (this.db.getRun(runId)?.status !== "running") return;
+      cancelPendingRunContinuation(this.db, runId, "provider attempt failed before terminal settlement");
+      clearRunOutcomeForProviderRetry(this.db, runId);
+    });
+  }
+
   private _executionLane(chatKey: string): string {
     return JSON.stringify([this.surfaceIdentity, chatKey]);
   }
@@ -1725,14 +1750,16 @@ export class BridgeEngine {
     return ctx ? `${ctx}${prompt}` : prompt;
   }
 
-  private _buildContextAccess(chatKey: string, runId: string | null, executionKind: RouteableBotKind, chatId?: number | string, threadId?: number | string, laneHandle?: ExecutionLaneHandle): { prompt: string; continuationPrompt: string; env: Record<string, string> } | null {
+  private _buildContextAccess(chatKey: string, runId: string | null, executionKind: RouteableBotKind, chatId?: number | string, threadId?: number | string, laneHandle?: ExecutionLaneHandle, outcomeEligible = false): { prompt: string; continuationPrompt: string; env: Record<string, string> } | null {
     const dbPath = this.opts.fullConfig?.dbPath;
     const status = this.db.getConvStatus(chatKey, this.surfaceIdentity);
     const hasContext = !!dbPath && status.turnCount > 0;
     const commandPath = join(process.cwd(), "bin", "agent-bridge-context");
     const advisorCommandPath = join(process.cwd(), "bin", "agent-bridge-advisor");
     const waitCommandPath = join(process.cwd(), "bin", "agent-bridge-wait");
+    const outcomeCommandPath = join(process.cwd(), "bin", "agent-bridge-outcome");
     const canContinue = Boolean(dbPath && runId && this.kind !== "autonomous");
+    const canOutcome = canContinue && outcomeEligible;
     const canScratch = Boolean(dbPath && runId && laneHandle);
     const scratchCommandPath = join(process.cwd(), "bin", "agent-bridge-scratch");
     const turnKey = `${chatKey}:${randomUUID()}`;
@@ -1760,16 +1787,28 @@ export class BridgeEngine {
       ...(ownerKey ? ['"$AGENT_BRIDGE_CONTEXT_COMMAND" --search "<terms>" --scope owner'] : []),
       "",
     ].join("\n") : "";
-    const continuationPrompt = canContinue ? [
+    // The legacy wait helper remains available to existing scripts, but only
+    // the outcome command is advertised to eligible interactive Runs.
+    const continuationPrompt = canContinue && !canOutcome ? [
       "[Agent Bridge continuation]",
       "If required bounded work is still pending and keeping this Run open is impractical, request a same-session continuation instead of promising to check later:",
       '"$AGENT_BRIDGE_WAIT_COMMAND" --after-seconds 60 --reason "<what to re-check>"',
       "Do not use continuation for user input/approval or unbounded monitoring.",
       "",
     ].join("\n") : "";
+    const outcomePrompt = canOutcome ? [
+      "[Agent Bridge outcome]",
+      "Before ending this Run, you MUST call \"$AGENT_BRIDGE_OUTCOME_COMMAND\" exactly once with a final disposition of the original user intent:",
+      "  complete --evidence \"<verified outcome>\"  (all authorised work finished)",
+      "  continue --after-seconds 60 --reason \"<remaining work and next action>\"  (work remains; bounded continuation is necessary)",
+      "  blocked --reason \"<specific genuine blocker>\"  (user action/authority or an unresolvable obstacle is required)",
+      "Prefer finishing work and bounded waits within this Run. Failed CI or a pending bounded operation is not itself a terminal blocker.",
+      "A normal final response and ACP end_turn do not count as an objective outcome.",
+      "",
+    ].join("\n") : "";
     return {
       prompt: contextPrompt,
-      continuationPrompt,
+      continuationPrompt: continuationPrompt + outcomePrompt,
       env: {
         ...((hasContext || canContinue || canScratch) ? {
           AGENT_BRIDGE_CONTEXT_DB: dbPath!,
@@ -1804,6 +1843,7 @@ export class BridgeEngine {
             ...(threadId !== undefined ? { AGENT_BRIDGE_DELIVERY_THREAD_ID: String(threadId) } : {}),
           } : {}),
         } : {}),
+        ...(canOutcome ? { AGENT_BRIDGE_OUTCOME_COMMAND: outcomeCommandPath } : {}),
         ...(advisorCapability ? {
           AGENT_BRIDGE_ADVISOR_COMMAND: advisorCommandPath,
           AGENT_BRIDGE_ADVISOR_CAPABILITY: advisorCapability,
@@ -1812,11 +1852,11 @@ export class BridgeEngine {
     };
   }
 
-  private async _buildPromptForCli(chatKey: string, prompt: string, nativeSessionMode: "fresh" | "resume", model: string | null, runId: string | null, executionKind: RouteableBotKind, chatId?: number | string, threadId?: number | string, laneHandle?: ExecutionLaneHandle): Promise<{ prompt: string; contextEnv?: Record<string, string>; soulContext: string | null; includeResponseContract: boolean }> {
+  private async _buildPromptForCli(chatKey: string, prompt: string, nativeSessionMode: "fresh" | "resume", model: string | null, runId: string | null, executionKind: RouteableBotKind, chatId?: number | string, threadId?: number | string, laneHandle?: ExecutionLaneHandle, outcomeEligible = false): Promise<{ prompt: string; contextEnv?: Record<string, string>; soulContext: string | null; includeResponseContract: boolean }> {
     const contextMode = this._contextMode(chatKey, nativeSessionMode);
     const includeFreshContext = contextMode !== "resume";
     const contextPrompt = this._buildRecentContextPrompt(chatKey, prompt, contextMode);
-    const access = this._buildContextAccess(chatKey, runId, executionKind, chatId, threadId, laneHandle);
+    const access = this._buildContextAccess(chatKey, runId, executionKind, chatId, threadId, laneHandle, outcomeEligible);
     const workspacePrompt = this.opts.workspaceContext === undefined
       ? prependWorkspaceContext(contextPrompt, process.env, { includeManagedContext: includeFreshContext })
       : (includeFreshContext && this.opts.workspaceContext
@@ -2042,7 +2082,7 @@ export class BridgeEngine {
       outputDir: null,
     }).nativeSessionMode;
     // Read-only verification turns get no scratch helper: its write and clear are mutations.
-    const promptForCli = await this._buildPromptForCli(chatKey, prompt, nativeSessionMode, model, runId, executionKind, chatId, threadId, isVerificationOnly ? undefined : laneHandle);
+    const promptForCli = await this._buildPromptForCli(chatKey, prompt, nativeSessionMode, model, runId, executionKind, chatId, threadId, isVerificationOnly ? undefined : laneHandle, !isVerificationOnly && this.kind !== "autonomous" && publishArtifacts && Boolean(this.opts.fullConfig?.dbPath));
     const invocation = buildCliInvocation({
       bot: executionKind,
       command: this.opts.botConfig.command,
@@ -2087,6 +2127,7 @@ export class BridgeEngine {
             contextEnv: promptForCli.contextEnv,
             eventContext,
             onEvent: collect ?? undefined,
+            onProviderRetry: () => this._discardAbandonedAttemptOutcome(laneHandle, runId),
             onSteerReady: (steer) => this.laneCoordinator.setSteerHandle(executionLane, steer),
             suppressTransientRetry: (body as { suppressTransientRetry?: boolean }).suppressTransientRetry,
           },
@@ -2122,7 +2163,7 @@ export class BridgeEngine {
       if (modelFallback) {
         result.text = `⚠️ Fell back to ${modelFallback.model} (${modelFallback.from || "default"} at capacity)\n\n${result.text}`;
       }
-      const stagedResult: StagedCliResult = { ...this._stageResultState(result), nativeSessionMode };
+      let stagedResult: StagedCliResult = { ...this._stageResultState(result), nativeSessionMode };
       if (stagedResult.stopReason === "cancelled") {
         // The provider ended the turn itself (ACP session/cancel resolving
         // gracefully, not a process kill) — this must never look like a
@@ -2151,6 +2192,126 @@ export class BridgeEngine {
         return stagedResult;
       }
       this._renewLaneOrThrow(laneHandle);
+      // ACP settles a provider turn, not the operator's intent. An ordinary
+      // Run missing its outcome gets one *additional prompt within the same
+      // admitted Run/session*. Reuse this output directory: re-entering the
+      // entire execute/deliver path would lose files and the original answer.
+      const eligibleOutcome = runId !== null && !isVerificationOnly && this.kind !== "autonomous"
+        && publishArtifacts && Boolean(this.opts.fullConfig?.dbPath);
+      // A structural ACP refusal is an actual provider safety boundary, not
+      // a forgotten helper invocation. Never prompt a refusing provider a
+      // second time simply to obtain a shell-command disposition.
+      if (eligibleOutcome && stagedResult.stopReason !== "refusal" && !readRunOutcome(this.db, runId!)) {
+        if (missingOutcomeRetries() === 0 || !stagedResult.sessionId) {
+          throw new MissingRunOutcomeError("The provider finished without reporting an objective outcome.");
+        }
+        const reconcilePrompt = [
+          "[Agent Bridge missing outcome reconciliation]",
+          "The previous provider turn ended without a required objective disposition.",
+          "Do not repeat earlier work or side effects. Reconcile the ORIGINAL user intent against evidence already gathered.",
+          "Report the outcome now using \"$AGENT_BRIDGE_OUTCOME_COMMAND\" with exactly one of:",
+          "complete --evidence \"<verified result>\"; continue --after-seconds 60 --reason \"<remaining work>\"; blocked --reason \"<genuine blocker>\".",
+          "This is the only reconciliation attempt. Do not claim completion while work remains.",
+          "After calling the helper, provide a complete, accurate user-facing final answer reflecting the actual current outcome, including any correction to your previous answer.",
+        ].join("\n");
+        const followup = await this._buildPromptForCli(
+          chatKey, reconcilePrompt, "resume", model, runId, executionKind,
+          chatId, threadId, laneHandle, true,
+        );
+        const followupInvocation = buildCliInvocation({
+          bot: executionKind,
+          command: this.opts.botConfig.command,
+          model,
+          effort: resolveEffort(executionKind, this.db),
+          prompt: followup.prompt,
+          sessionId: stagedResult.sessionId,
+          executionMode,
+          outputFormat: "json",
+          logFile,
+          soulContext: followup.soulContext,
+          includeResponseContract: followup.includeResponseContract,
+          attachments: [],
+          outputDir: outDir,
+          includeExecutionContract: true,
+        });
+        // A failure during reconciliation must not replay the original
+        // prompt through outer transport fallback: its side effects may
+        // already have happened in the successfully settled first turn.
+        let reconciled: Awaited<ReturnType<typeof this._runNativeOrAcp>>;
+        try {
+          reconciled = await this._withExecutionCapacity(
+            runId!, laneHandle.acquisitionId,
+            () => {
+              this.laneCoordinator.markAborted(executionLane);
+              abortCliProcess(executionLane);
+            },
+            () => this._runNativeOrAcp(
+              executionKind, followupInvocation, cwd,
+              {
+                ...buildExecutionOptions(executionKind),
+                onProgress,
+                chatId: executionLane,
+                stdin: followupInvocation.stdin,
+                contextEnv: followup.contextEnv,
+                eventContext,
+                onEvent: collect ?? undefined,
+                onProviderRetry: () => this._discardAbandonedAttemptOutcome(laneHandle, runId),
+              },
+              {
+                prompt: followupInvocation.prompt ?? followup.prompt,
+                sessionId: stagedResult.sessionId,
+                model, executionMode,
+                soulContext: followup.soulContext,
+                includeResponseContract: followup.includeResponseContract,
+                attachments: [], outputDir: outDir,
+                effort: resolveEffort(executionKind, this.db),
+              },
+              { conversationId: chatKey, runId: runId! },
+            ),
+          );
+        } catch (error) {
+          if (error instanceof LostExecutionLeaseError) throw error;
+          if (this.laneCoordinator.hasCancellation(executionLane) || this.laneCoordinator.isAborted(executionLane)) throw error;
+          throw new RunOutcomeReconciliationError(
+            "Provider error during outcome reconciliation; original work may have executed and intent remains unresolved.",
+            { cause: error },
+          );
+        }
+        this._renewLaneOrThrow(laneHandle);
+        const reconciledResult: CliResult = reconciled.parsed
+          ?? parseCliResult({ bot: executionKind, stdout: reconciled.stdout });
+        if (reconciledResult.stopReason === "cancelled") {
+          // Do not turn a provider cancellation into a missing-outcome failure.
+          stagedResult = { ...reconciledResult, nativeSessionMode: "resume" };
+          if (stagedResult.sessionId) {
+            this._runWithFence(laneHandle, () => persistEngineProviderSession(
+              this.db, { surfaceIdentity: this.surfaceIdentity, chatKey }, executionKind,
+              stagedResult.sessionId, runId,
+            ));
+          }
+          if (collect && runId && eventContext) {
+            collect(eventType.runCancelled({ ...eventContext, reason: "provider" }));
+          }
+          await this._cleanTerminalOutputDir(outDir, "provider cancellation");
+          return stagedResult;
+        }
+        const reported = readRunOutcome(this.db, runId!);
+        if (!reported) {
+          throw new MissingRunOutcomeError(
+            "The provider did not report an objective outcome after the single reconciliation attempt.",
+          );
+        }
+        // Keep artifacts from the first invocation, but use the reconciled
+        // final answer: the first one may have claimed failure/completion
+        // inconsistent with the now-explicit disposition.
+        stagedResult = {
+          ...stagedResult,
+          text: scrubOutputDir(reconciledResult.text, outDir),
+          sessionId: reconciledResult.sessionId ?? stagedResult.sessionId,
+          stopReason: reconciledResult.stopReason ?? stagedResult.stopReason,
+          telemetry: combineSequentialTurnTelemetry(stagedResult.telemetry, reconciledResult.telemetry),
+        };
+      }
       if (this.hooks.onAfterExecute) {
         try {
           await this.hooks.onAfterExecute(prompt, stagedResult.text, hookContext(chatId, chatKey, body.message_thread_id));
@@ -2185,6 +2346,7 @@ export class BridgeEngine {
       return stagedResult;
     } catch (error) {
       if (logFile) { try { rmSync(logFile); } catch {} }
+      if (error instanceof MissingRunOutcomeError) throw error;
       if (error instanceof LostExecutionLeaseError) {
         // Fenced after losing the execution lease: never publish, and the
         // attempt owns no further continuation, so its output is terminal.
@@ -2222,6 +2384,7 @@ export class BridgeEngine {
       if (sessionId && isInvalidProviderSessionError(error)) {
         console.warn(`[${this.kind}] session ID invalid, retrying with fresh session...`);
         const kind = this.kind;
+        this._discardAbandonedAttemptOutcome(laneHandle, runId);
         if (isRouteableKind(kind)) this._runWithFence(laneHandle, () => persistEngineProviderSession(this.db, { surfaceIdentity: this.surfaceIdentity, chatKey }, kind, null));
         return this.executePromptAsync(prompt, null, chatId, body, onProgress, attachments, eventContext, runId, collect, chatKey, laneHandle);
       }
@@ -2230,6 +2393,7 @@ export class BridgeEngine {
       if (!modelFallback && isCapacityExhaustedError(error as Error) && this.opts.botConfig.modelPreference.length > 1) {
         const fallbackModel = getNextFallbackModel(model, this.opts.botConfig.modelPreference);
         if (fallbackModel) {
+          this._discardAbandonedAttemptOutcome(laneHandle, runId);
           return this._executeProviderAttempt(
             prompt, null, chatId, body, onProgress, attachments, eventContext, runId, collect, chatKey, laneHandle,
             { model: fallbackModel, from: model },
