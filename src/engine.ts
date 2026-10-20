@@ -8,7 +8,7 @@
  */
 
 import { SCRATCH_SIGNPOST, readScratch, renderFreshScratch } from "./scratchpad.js";
-import { MissingRunOutcomeError, readRunOutcome, missingOutcomeRetries } from "./runOutcome.js";
+import { MissingRunOutcomeError, RunOutcomeReconciliationError, readRunOutcome, missingOutcomeRetries } from "./runOutcome.js";
 import { EVENT_RECEIPT_CORRELATION_PREFIX } from "./interactiveIngress.js";
 import { randomUUID } from "node:crypto";
 import { basename, dirname, join } from "node:path";
@@ -862,7 +862,7 @@ export class BridgeEngine {
         outcome = "failed";
         return "failed";
       }
-      if (error instanceof MissingRunOutcomeError) {
+      if (error instanceof MissingRunOutcomeError || error instanceof RunOutcomeReconciliationError) {
         await sendSurfaceMessage({
           client: this.client, kind: this._deliveryKind(), chatId,
           body: { text: `Error: ${error.message} The original intent remains unresolved.`, message_thread_id: threadId },
@@ -2213,35 +2213,48 @@ export class BridgeEngine {
           outputDir: outDir,
           includeExecutionContract: true,
         });
-        const reconciled = await this._withExecutionCapacity(
-          runId!, laneHandle.acquisitionId,
-          () => {
-            this.laneCoordinator.markAborted(executionLane);
-            abortCliProcess(executionLane);
-          },
-          () => this._runNativeOrAcp(
-            executionKind, followupInvocation, cwd,
-            {
-              ...buildExecutionOptions(executionKind),
-              onProgress,
-              chatId: executionLane,
-              stdin: followupInvocation.stdin,
-              contextEnv: followup.contextEnv,
-              eventContext,
-              onEvent: collect ?? undefined,
+        // A failure during reconciliation must not replay the original
+        // prompt through outer transport fallback: its side effects may
+        // already have happened in the successfully settled first turn.
+        let reconciled: Awaited<ReturnType<typeof this._runNativeOrAcp>>;
+        try {
+          reconciled = await this._withExecutionCapacity(
+            runId!, laneHandle.acquisitionId,
+            () => {
+              this.laneCoordinator.markAborted(executionLane);
+              abortCliProcess(executionLane);
             },
-            {
-              prompt: followupInvocation.prompt ?? followup.prompt,
-              sessionId: stagedResult.sessionId,
-              model, executionMode,
-              soulContext: followup.soulContext,
-              includeResponseContract: followup.includeResponseContract,
-              attachments: [], outputDir: outDir,
-              effort: resolveEffort(executionKind, this.db),
-            },
-            { conversationId: chatKey, runId: runId! },
-          ),
-        );
+            () => this._runNativeOrAcp(
+              executionKind, followupInvocation, cwd,
+              {
+                ...buildExecutionOptions(executionKind),
+                onProgress,
+                chatId: executionLane,
+                stdin: followupInvocation.stdin,
+                contextEnv: followup.contextEnv,
+                eventContext,
+                onEvent: collect ?? undefined,
+              },
+              {
+                prompt: followupInvocation.prompt ?? followup.prompt,
+                sessionId: stagedResult.sessionId,
+                model, executionMode,
+                soulContext: followup.soulContext,
+                includeResponseContract: followup.includeResponseContract,
+                attachments: [], outputDir: outDir,
+                effort: resolveEffort(executionKind, this.db),
+              },
+              { conversationId: chatKey, runId: runId! },
+            ),
+          );
+        } catch (error) {
+          if (error instanceof LostExecutionLeaseError) throw error;
+          if (this.laneCoordinator.hasCancellation(executionLane) || this.laneCoordinator.isAborted(executionLane)) throw error;
+          throw new RunOutcomeReconciliationError(
+            "Provider error during outcome reconciliation; original work may have executed and intent remains unresolved.",
+            { cause: error },
+          );
+        }
         this._renewLaneOrThrow(laneHandle);
         const reconciledResult: CliResult = reconciled.parsed
           ?? parseCliResult({ bot: executionKind, stdout: reconciled.stdout });
