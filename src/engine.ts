@@ -8,6 +8,7 @@
  */
 
 import { SCRATCH_SIGNPOST, readScratch, renderFreshScratch } from "./scratchpad.js";
+import { MissingRunOutcomeError, readRunOutcome, missingOutcomeRetries } from "./runOutcome.js";
 import { EVENT_RECEIPT_CORRELATION_PREFIX } from "./interactiveIngress.js";
 import { randomUUID } from "node:crypto";
 import { basename, dirname, join } from "node:path";
@@ -858,6 +859,14 @@ export class BridgeEngine {
           chatId,
           body: { text: `Error: ${toUserMessage(error.cause instanceof Error ? error.cause : error)}`, message_thread_id: threadId },
         }).catch((sendError) => console.error(`[${this.kind}] post-execution failure notification failed`, sendError));
+        outcome = "failed";
+        return "failed";
+      }
+      if (error instanceof MissingRunOutcomeError) {
+        await sendSurfaceMessage({
+          client: this.client, kind: this._deliveryKind(), chatId,
+          body: { text: `Error: ${error.message} The original intent remains unresolved.`, message_thread_id: threadId },
+        }).catch((sendError) => console.error(`[${this.kind}] outcome failure delivery failed`, sendError));
         outcome = "failed";
         return "failed";
       }
@@ -1725,14 +1734,16 @@ export class BridgeEngine {
     return ctx ? `${ctx}${prompt}` : prompt;
   }
 
-  private _buildContextAccess(chatKey: string, runId: string | null, executionKind: RouteableBotKind, chatId?: number | string, threadId?: number | string, laneHandle?: ExecutionLaneHandle): { prompt: string; continuationPrompt: string; env: Record<string, string> } | null {
+  private _buildContextAccess(chatKey: string, runId: string | null, executionKind: RouteableBotKind, chatId?: number | string, threadId?: number | string, laneHandle?: ExecutionLaneHandle, outcomeEligible = false): { prompt: string; continuationPrompt: string; env: Record<string, string> } | null {
     const dbPath = this.opts.fullConfig?.dbPath;
     const status = this.db.getConvStatus(chatKey, this.surfaceIdentity);
     const hasContext = !!dbPath && status.turnCount > 0;
     const commandPath = join(process.cwd(), "bin", "agent-bridge-context");
     const advisorCommandPath = join(process.cwd(), "bin", "agent-bridge-advisor");
     const waitCommandPath = join(process.cwd(), "bin", "agent-bridge-wait");
+    const outcomeCommandPath = join(process.cwd(), "bin", "agent-bridge-outcome");
     const canContinue = Boolean(dbPath && runId && this.kind !== "autonomous");
+    const canOutcome = canContinue && outcomeEligible;
     const canScratch = Boolean(dbPath && runId && laneHandle);
     const scratchCommandPath = join(process.cwd(), "bin", "agent-bridge-scratch");
     const turnKey = `${chatKey}:${randomUUID()}`;
@@ -1767,9 +1778,19 @@ export class BridgeEngine {
       "Do not use continuation for user input/approval or unbounded monitoring.",
       "",
     ].join("\n") : "";
+    const outcomePrompt = canOutcome ? [
+      "[Agent Bridge outcome]",
+      "Before ending this Run, you MUST call \"$AGENT_BRIDGE_OUTCOME_COMMAND\" exactly once with a final disposition of the original user intent:",
+      "  complete --evidence \"<verified outcome>\"  (all authorised work finished)",
+      "  continue --after-seconds 60 --reason \"<remaining work and next action>\"  (work remains; bounded continuation is necessary)",
+      "  blocked --reason \"<specific genuine blocker>\"  (user action/authority or an unresolvable obstacle is required)",
+      "Prefer finishing work and bounded waits within this Run. Failed CI or a pending bounded operation is not itself a terminal blocker.",
+      "A normal final response and ACP end_turn do not count as an objective outcome.",
+      "",
+    ].join("\n") : "";
     return {
       prompt: contextPrompt,
-      continuationPrompt,
+      continuationPrompt: continuationPrompt + outcomePrompt,
       env: {
         ...((hasContext || canContinue || canScratch) ? {
           AGENT_BRIDGE_CONTEXT_DB: dbPath!,
@@ -1804,6 +1825,7 @@ export class BridgeEngine {
             ...(threadId !== undefined ? { AGENT_BRIDGE_DELIVERY_THREAD_ID: String(threadId) } : {}),
           } : {}),
         } : {}),
+        ...(canOutcome ? { AGENT_BRIDGE_OUTCOME_COMMAND: outcomeCommandPath } : {}),
         ...(advisorCapability ? {
           AGENT_BRIDGE_ADVISOR_COMMAND: advisorCommandPath,
           AGENT_BRIDGE_ADVISOR_CAPABILITY: advisorCapability,
@@ -1812,11 +1834,11 @@ export class BridgeEngine {
     };
   }
 
-  private async _buildPromptForCli(chatKey: string, prompt: string, nativeSessionMode: "fresh" | "resume", model: string | null, runId: string | null, executionKind: RouteableBotKind, chatId?: number | string, threadId?: number | string, laneHandle?: ExecutionLaneHandle): Promise<{ prompt: string; contextEnv?: Record<string, string>; soulContext: string | null; includeResponseContract: boolean }> {
+  private async _buildPromptForCli(chatKey: string, prompt: string, nativeSessionMode: "fresh" | "resume", model: string | null, runId: string | null, executionKind: RouteableBotKind, chatId?: number | string, threadId?: number | string, laneHandle?: ExecutionLaneHandle, outcomeEligible = false): Promise<{ prompt: string; contextEnv?: Record<string, string>; soulContext: string | null; includeResponseContract: boolean }> {
     const contextMode = this._contextMode(chatKey, nativeSessionMode);
     const includeFreshContext = contextMode !== "resume";
     const contextPrompt = this._buildRecentContextPrompt(chatKey, prompt, contextMode);
-    const access = this._buildContextAccess(chatKey, runId, executionKind, chatId, threadId, laneHandle);
+    const access = this._buildContextAccess(chatKey, runId, executionKind, chatId, threadId, laneHandle, outcomeEligible);
     const workspacePrompt = this.opts.workspaceContext === undefined
       ? prependWorkspaceContext(contextPrompt, process.env, { includeManagedContext: includeFreshContext })
       : (includeFreshContext && this.opts.workspaceContext
@@ -2042,7 +2064,7 @@ export class BridgeEngine {
       outputDir: null,
     }).nativeSessionMode;
     // Read-only verification turns get no scratch helper: its write and clear are mutations.
-    const promptForCli = await this._buildPromptForCli(chatKey, prompt, nativeSessionMode, model, runId, executionKind, chatId, threadId, isVerificationOnly ? undefined : laneHandle);
+    const promptForCli = await this._buildPromptForCli(chatKey, prompt, nativeSessionMode, model, runId, executionKind, chatId, threadId, isVerificationOnly ? undefined : laneHandle, !isVerificationOnly && this.kind !== "autonomous");
     const invocation = buildCliInvocation({
       bot: executionKind,
       command: this.opts.botConfig.command,
@@ -2151,6 +2173,33 @@ export class BridgeEngine {
         return stagedResult;
       }
       this._renewLaneOrThrow(laneHandle);
+      // ACP settles a provider turn, not the original operator objective.
+      // Reconcile one forgotten outcome in the same native session, before final
+      // delivery, keeping the original Run owner and without replaying side effects.
+      const eligibleOutcome = runId !== null && !isVerificationOnly && this.kind !== "autonomous";
+      if (eligibleOutcome && (stagedResult.stopReason === "end_turn" || stagedResult.stopReason == null)
+          && !readRunOutcome(this.db, runId!)) {
+        const retry = (body as { outcomeReconciliation?: boolean }).outcomeReconciliation === true;
+        if (retry || missingOutcomeRetries() === 0 || !stagedResult.sessionId) {
+          throw new MissingRunOutcomeError(
+            retry ? "The provider did not report an objective outcome after the reconciliation attempt."
+              : "The provider finished without reporting an objective outcome.",
+          );
+        }
+        return this._executeProviderAttempt(
+          [
+            "[Agent Bridge missing outcome reconciliation]",
+            "The previous provider turn ended without a required objective outcome.",
+            "Do not repeat work or side effects. Reconcile the ORIGINAL user intent against verified evidence.",
+            "Before your final response you MUST call \"$AGENT_BRIDGE_OUTCOME_COMMAND\" with exactly one of:",
+            "complete --evidence \"<verified result>\"; continue --after-seconds 60 --reason \"<remaining work>\"; blocked --reason \"<genuine blocker>\".",
+            "This is the single reconciliation attempt. If work remains, request continuation rather than claiming completion.",
+          ].join("\n"),
+          stagedResult.sessionId, chatId,
+          { ...body, outcomeReconciliation: true }, onProgress, [],
+          eventContext, runId, collect, chatKey, laneHandle,
+        );
+      }
       if (this.hooks.onAfterExecute) {
         try {
           await this.hooks.onAfterExecute(prompt, stagedResult.text, hookContext(chatId, chatKey, body.message_thread_id));
@@ -2185,6 +2234,7 @@ export class BridgeEngine {
       return stagedResult;
     } catch (error) {
       if (logFile) { try { rmSync(logFile); } catch {} }
+      if (error instanceof MissingRunOutcomeError) throw error;
       if (error instanceof LostExecutionLeaseError) {
         // Fenced after losing the execution lease: never publish, and the
         // attempt owns no further continuation, so its output is terminal.
