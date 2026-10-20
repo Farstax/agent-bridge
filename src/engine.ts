@@ -2192,6 +2192,7 @@ export class BridgeEngine {
           "Report the outcome now using \"$AGENT_BRIDGE_OUTCOME_COMMAND\" with exactly one of:",
           "complete --evidence \"<verified result>\"; continue --after-seconds 60 --reason \"<remaining work>\"; blocked --reason \"<genuine blocker>\".",
           "This is the only reconciliation attempt. Do not claim completion while work remains.",
+          "After calling the helper, provide a complete, accurate user-facing final answer reflecting the actual current outcome, including any correction to your previous answer.",
         ].join("\n");
         const followup = await this._buildPromptForCli(
           chatKey, reconcilePrompt, "resume", model, runId, executionKind,
@@ -2279,18 +2280,14 @@ export class BridgeEngine {
             "The provider did not report an objective outcome after the single reconciliation attempt.",
           );
         }
-        // The first turn's answer/files remain authoritative if completion
-        // was verified; a follow-up that reports pending/blocked may correct
-        // the original final prose, so use that most recent provider answer.
-        if (reported.status !== "complete") {
-          stagedResult = {
-            ...stagedResult,
-            text: scrubOutputDir(reconciledResult.text, outDir),
-            sessionId: reconciledResult.sessionId ?? stagedResult.sessionId,
-          };
-        } else if (reconciledResult.sessionId) {
-          stagedResult = { ...stagedResult, sessionId: reconciledResult.sessionId };
-        }
+        // Keep artifacts from the first invocation, but use the reconciled
+        // final answer: the first one may have claimed failure/completion
+        // inconsistent with the now-explicit disposition.
+        stagedResult = {
+          ...stagedResult,
+          text: scrubOutputDir(reconciledResult.text, outDir),
+          sessionId: reconciledResult.sessionId ?? stagedResult.sessionId,
+        };
       }
       if (this.hooks.onAfterExecute) {
         try {
