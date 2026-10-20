@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { BridgeEngine } from "../src/engine.js";
 import { openDb } from "../src/db.js";
-import { MissingRunOutcomeError, requestAgentBridgeOutcome } from "../src/runOutcome.js";
+import { MissingRunOutcomeError, RunOutcomeReconciliationError, requestAgentBridgeOutcome } from "../src/runOutcome.js";
 
 const dirs: string[] = [];
 afterEach(() => {
@@ -12,7 +12,7 @@ afterEach(() => {
   for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
 });
 
-function fixture(mode: "complete-after-retry" | "missing-twice" | "report-first") {
+function fixture(mode: "complete-after-retry" | "missing-twice" | "report-first" | "retry-throws") {
   const dir = mkdtempSync(join(tmpdir(), "run-outcome-engine-")); dirs.push(dir);
   const path = join(dir, "bridge.sqlite");
   const db = openDb(path, { serviceId: "outcome-engine-test", runId: "process" });
@@ -23,6 +23,7 @@ function fixture(mode: "complete-after-retry" | "missing-twice" | "report-first"
   let calls = 0;
   const invocation = vi.fn(async (_provider: unknown, _invocation: unknown, _cwd: unknown, options: any, request: any) => {
     calls += 1;
+    if (mode === "retry-throws" && calls === 2) throw new Error("provider quota exhausted after initial work");
     if (mode === "report-first" || (mode === "complete-after-retry" && calls === 2)) {
       requestAgentBridgeOutcome(["complete", "--evidence", "verified"], options.contextEnv);
     }
@@ -54,6 +55,7 @@ describe("ordinary Run objective settlement", () => {
     );
     expect(invocation).toHaveBeenCalledTimes(2);
     expect(invocation.mock.calls[1][4].sessionId).toBe("same-acp-session");
+    expect(invocation.mock.calls[1][4].outputDir).toBe(invocation.mock.calls[0][4].outputDir);
     expect(result.text).toBe("Original user-facing answer");
     expect(db.getRun("run-one").outcome_status).toBe("complete");
     db.close();
@@ -75,4 +77,13 @@ describe("ordinary Run objective settlement", () => {
     expect(db.getRun("run-one").outcome_status).toBeNull();
     db.close();
   });
+  it("never falls back to replaying the original work if the reconciliation provider fails", async () => {
+    const { db, engine, handle, invocation } = fixture("retry-throws");
+    await expect(engine.executePromptAsync("Ship and deploy", null, "chat", {}, () => {}, [], undefined, "run-one", null, "chat", handle))
+      .rejects.toBeInstanceOf(RunOutcomeReconciliationError);
+    expect(invocation).toHaveBeenCalledTimes(2);
+    expect(invocation.mock.calls[1][4].sessionId).toBe("same-acp-session");
+    db.close();
+  });
+
 });
