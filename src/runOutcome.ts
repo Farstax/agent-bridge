@@ -126,3 +126,43 @@ export function requestAgentBridgeOutcome(args: string[], env: EnvLike = process
     db.close();
   }
 }
+
+
+/**
+ * Compatibility for pre-outcome callers. New ordinary Runs have the lane
+ * credentials and record an explicit continue outcome. Older/non-outcome
+ * invocations keep the original wait scheduling contract with no new
+ * mandatory lock variables.
+ */
+export function requestAgentBridgeWait(args: string[], env: EnvLike = process.env): string {
+  if (["AGENT_BRIDGE_LOCK_SERVICE_ID", "AGENT_BRIDGE_LOCK_RUN_ID", "AGENT_BRIDGE_LOCK_ACQUISITION_ID"]
+    .some(key => Boolean(env[key]?.trim()))) {
+    return requestAgentBridgeOutcome(["continue", ...args], env);
+  }
+  const dbPath = required(env, "AGENT_BRIDGE_CONTEXT_DB");
+  const originRunId = required(env, "AGENT_BRIDGE_RUN_ID");
+  const surfaceIdentity = required(env, "AGENT_BRIDGE_SURFACE_IDENTITY");
+  const chatKey = required(env, "AGENT_BRIDGE_CHAT_KEY");
+  const provider = required(env, "AGENT_BRIDGE_PROVIDER") as RouteableBotKind;
+  const reason = option(args, "--reason") ?? "";
+  const afterRaw = option(args, "--after-seconds");
+  const afterSeconds = Number(afterRaw);
+  if (!Number.isInteger(afterSeconds)) throw new Error("--after-seconds requires an integer");
+  const chatId = env.AGENT_BRIDGE_DELIVERY_CHAT_ID?.trim();
+  const chatType = env.AGENT_BRIDGE_DELIVERY_CHAT_TYPE?.trim();
+  const threadId = env.AGENT_BRIDGE_DELIVERY_THREAD_ID?.trim();
+  const delivery = chatId && chatType
+    ? { chatId, chatType, ...(threadId ? { threadId } : {}) }
+    : undefined;
+  const raw = new Database(dbPath, { fileMustExist: true });
+  raw.pragma("foreign_keys = ON");
+  const db = new BridgeDb(raw, { serviceId: "run-continuation-helper", runId: originRunId, leaseMs: 90_000 });
+  try {
+    const continuation = requestRunContinuation(db, {
+      originRunId, surfaceIdentity, chatKey, provider, reason, afterSeconds, delivery,
+    });
+    return `Continuation scheduled for ${continuation.dueAt}. Finish this Run without promising the user to check manually.`;
+  } finally {
+    db.close();
+  }
+}
