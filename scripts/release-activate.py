@@ -19,6 +19,7 @@ SHA = 40
 HOST_COMPONENT_ID_CHARS = frozenset("abcdefghijklmnopqrstuvwxyz0123456789-")
 DEFAULT_STT_ROOT = "/opt/agent-bridge/host-components/voice-stt"
 RUNTIME_USER_CHARS = frozenset("abcdefghijklmnopqrstuvwxyz0123456789_-$")
+_active_component_process: subprocess.Popen[str] | None = None
 
 
 def fail(message: str) -> None:
@@ -397,8 +398,16 @@ def check_active_release_host_components(release_root: Path, current: Path) -> d
             {"id": component["id"], "status": "unverifiable"} for component in components
         ]}
 
+    def terminate_active_verifier(_signum: int, _frame: object) -> None:
+        if _active_component_process and _active_component_process.poll() is None:
+            os.killpg(_active_component_process.pid, signal.SIGKILL)
+        raise SystemExit(128 + _signum)
+
+    previous_term = signal.signal(signal.SIGTERM, terminate_active_verifier)
+    previous_int = signal.signal(signal.SIGINT, terminate_active_verifier)
     results: list[dict[str, str]] = []
-    for component in components:
+    try:
+      for component in components:
         component_env = environment.copy()
         command = ["/bin/bash", str(release / component["installer"])]
         if component["id"] == "cursor-acp":
@@ -409,10 +418,12 @@ def check_active_release_host_components(release_root: Path, current: Path) -> d
                 continue
             command = ["/usr/sbin/runuser", "--preserve-environment", "--user", runtime_user, "--", *command]
         try:
+            global _active_component_process
             process = subprocess.Popen(
                 command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
                 env=component_env, start_new_session=True,
             )
+            _active_component_process = process
             try:
                 stdout, _stderr = process.communicate(timeout=60)
             except subprocess.TimeoutExpired:
@@ -432,6 +443,10 @@ def check_active_release_host_components(release_root: Path, current: Path) -> d
             results.append({"id": component["id"], "status": "unverifiable"})
             continue
         results.append({"id": component["id"], "status": "healthy"})
+    finally:
+        _active_component_process = None
+        signal.signal(signal.SIGTERM, previous_term)
+        signal.signal(signal.SIGINT, previous_int)
 
     # A pointer switch between validation and the final decision makes the
     # answer unsafe to consume, even when every individual check passed.
