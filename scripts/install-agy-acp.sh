@@ -147,7 +147,7 @@ if [[ "$phase" == verify ]]; then
     || fail "managed Agy ACP link does not select the verified component"
   [[ -x "${HARNESS_LINK}" && "$(readlink -f "${HARNESS_LINK}")" == "${HARNESS}" ]] \
     || fail "managed Agy harness link does not select the verified component"
-  printf 'host_component_health=healthy\\n'
+  printf 'host_component_health=healthy\n'
   exit 0
 fi
 

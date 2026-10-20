@@ -81,7 +81,7 @@ if [[ "$phase" == verify ]]; then
   valid_binary || fail "installed Cursor ACP binary failed validation"
   [[ -x "${LINK}" && "$(readlink -f "${LINK}")" == "${BINARY}" ]] \
     || fail "managed Cursor ACP link does not select the verified component"
-  printf 'host_component_health=healthy\\n'
+  printf 'host_component_health=healthy\n'
   exit 0
 fi
 
