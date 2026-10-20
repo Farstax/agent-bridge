@@ -217,6 +217,19 @@ describe("active release host-component health", () => {
       components: [],
     });
   });
+
+  it("emits a newline from each production installer health marker", () => {
+    for (const script of [
+      "scripts/install-voice-stt.sh",
+      "scripts/install-agy-acp.sh",
+      "scripts/install-cursor-acp.sh",
+    ]) {
+      const line = readFileSync(script, "utf8").split("\n").find((entry) => entry.includes("host_component_health="));
+      expect(line?.trim()).toBe("printf 'host_component_health=healthy\\n'");
+      const stdout = execFileSync("bash", ["-c", line!.trim()]);
+      expect(stdout).toEqual(Buffer.from("host_component_health=healthy\n"));
+    }
+  });
 });
 
 describe("prepared host-component receipts", () => {

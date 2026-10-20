@@ -288,7 +288,7 @@ if [[ "$phase" == verify ]]; then
     || fail "shared runtime environment does not select the verified component"
   manifest_whisper="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["whisperExecutable"])' "${COMPONENT_DIR}/manifest.json")"
   "${COMPONENT_DIR}/${manifest_whisper}" --version >/dev/null 2>&1 || fail "whisper-cli version preflight failed"
-  printf 'host_component_health=healthy\\n'
+  printf 'host_component_health=healthy\n'
   exit 0
 fi
 
