@@ -40,7 +40,7 @@ if [[ "${1:-}" == "--print-required-bytes" ]]; then
   print_required_bytes=1
 fi
 phase="${AGENT_BRIDGE_HOST_COMPONENT_PHASE:-converge}"
-[[ "$phase" == prepare || "$phase" == commit || "$phase" == converge ]] || fail "invalid host component phase"
+[[ "$phase" == prepare || "$phase" == commit || "$phase" == converge || "$phase" == verify ]] || fail "invalid host component phase"
 
 [[ "$(id -u)" == "0" ]] || fail "must run as root"
 [[ "$(uname -s)" == "Linux" ]] || fail "whisper.cpp appliance component is supported only on Linux"
@@ -57,7 +57,7 @@ for command in curl tar sha256sum python3 apt-get dpkg-query find readlink timeo
   command -v "${command}" >/dev/null 2>&1 || fail "required command is missing: ${command}"
 done
 
-if (( print_required_bytes == 0 )) && [[ "$phase" != commit ]]; then
+if (( print_required_bytes == 0 )) && [[ "$phase" != commit && "$phase" != verify ]]; then
 if [[ "${STT_ROOT}" == "${DEFAULT_STT_ROOT}" ]]; then
   for ancestor in /opt/agent-bridge /opt/agent-bridge/host-components; do
     [[ ! -e "${ancestor}" || ( -d "${ancestor}" && ! -L "${ancestor}" ) ]] \
@@ -273,6 +273,22 @@ if (( print_required_bytes == 1 )); then
     ffmpeg_bytes=67108864
   fi
   printf '%s\n' $((component_bytes + ffmpeg_bytes))
+  exit 0
+fi
+
+if [[ "$phase" == verify ]]; then
+  valid_component || fail "installed voice transcription component failed checksum validation"
+  [[ "$(dpkg-query -W -f='${Version}' ffmpeg 2>/dev/null || true)" == "${FFMPEG_PACKAGE_VERSION}" ]] \
+    || fail "ffmpeg package version does not match ${FFMPEG_PACKAGE_VERSION}"
+  [[ -L "${CURRENT_LINK}" && "$(readlink "${CURRENT_LINK}")" == "components/${WHISPER_RELEASE}" ]] \
+    || fail "voice current pointer does not match the release-locked component"
+  [[ -f "${SHARED_ENV_FILE}" && ! -L "${SHARED_ENV_FILE}" ]] \
+    || fail "shared runtime environment is unavailable"
+  grep -Fx "AGENT_BRIDGE_STT_ROOT=${STT_ROOT}" "${SHARED_ENV_FILE}" >/dev/null \
+    || fail "shared runtime environment does not select the verified component"
+  manifest_whisper="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["whisperExecutable"])' "${COMPONENT_DIR}/manifest.json")"
+  "${COMPONENT_DIR}/${manifest_whisper}" --version >/dev/null 2>&1 || fail "whisper-cli version preflight failed"
+  printf 'host_component_health=healthy\\n'
   exit 0
 fi
 

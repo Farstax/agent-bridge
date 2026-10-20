@@ -11,8 +11,8 @@ if [[ "${1:-}" == "--print-required-bytes" ]]; then
   print_required_bytes=1
 fi
 phase="${AGENT_BRIDGE_HOST_COMPONENT_PHASE:-converge}"
-[[ "$phase" == prepare || "$phase" == commit || "$phase" == converge ]] || fail "invalid host component phase"
-if (( print_required_bytes == 0 )); then
+[[ "$phase" == prepare || "$phase" == commit || "$phase" == converge || "$phase" == verify ]] || fail "invalid host component phase"
+if (( print_required_bytes == 0 )) && [[ "$phase" != verify ]]; then
   [[ "$(id -u)" == "0" ]] || fail "must run as root"
 fi
 [[ "$(uname -s)" == "Linux" ]] || fail "Agy ACP managed host component is supported only on Linux"
@@ -140,6 +140,16 @@ except Exception:
     raise SystemExit(1)
 PY
 }
+
+if [[ "$phase" == verify ]]; then
+  valid_component || fail "installed Agy ACP component failed identity/checksum validation"
+  [[ -x "${LINK}" && "$(readlink -f "${LINK}")" == "${BINARY}" ]] \
+    || fail "managed Agy ACP link does not select the verified component"
+  [[ -x "${HARNESS_LINK}" && "$(readlink -f "${HARNESS_LINK}")" == "${HARNESS}" ]] \
+    || fail "managed Agy harness link does not select the verified component"
+  printf 'host_component_health=healthy\\n'
+  exit 0
+fi
 
 if ! valid_component; then
   [[ "$phase" != commit ]] || fail "prepared Agy ACP payload is missing or invalid"
