@@ -155,7 +155,7 @@ export function requestAgentBridgeOutcome(args: string[], env: EnvLike = process
  */
 export function requestAgentBridgeWait(args: string[], env: EnvLike = process.env): string {
   if (["AGENT_BRIDGE_LOCK_SERVICE_ID", "AGENT_BRIDGE_LOCK_RUN_ID", "AGENT_BRIDGE_LOCK_ACQUISITION_ID"]
-    .some(key => Boolean(env[key]?.trim()))) {
+    .every(key => Boolean(env[key]?.trim()))) {
     return requestAgentBridgeOutcome(["continue", ...args], env);
   }
   const dbPath = required(env, "AGENT_BRIDGE_CONTEXT_DB");

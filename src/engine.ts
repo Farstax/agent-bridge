@@ -2272,9 +2272,9 @@ export class BridgeEngine {
         if (reconciledResult.stopReason === "cancelled") {
           // Do not turn a provider cancellation into a missing-outcome failure.
           stagedResult = { ...reconciledResult, nativeSessionMode: "resume" };
-          if (stagedResult.sessionId && isRouteableKind(this.kind)) {
+          if (stagedResult.sessionId) {
             this._runWithFence(laneHandle, () => persistEngineProviderSession(
-              this.db, { surfaceIdentity: this.surfaceIdentity, chatKey }, this.kind,
+              this.db, { surfaceIdentity: this.surfaceIdentity, chatKey }, executionKind,
               stagedResult.sessionId, runId,
             ));
           }

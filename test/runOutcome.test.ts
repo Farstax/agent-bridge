@@ -79,6 +79,16 @@ describe("Run-scoped provider outcomes", () => {
     db.close();
   });
 
+  it("keeps a legacy wait caller on its original path when it inherits only a partial lane environment", () => {
+    const { db, env } = setup();
+    const { AGENT_BRIDGE_LOCK_RUN_ID: _lockRun, AGENT_BRIDGE_LOCK_ACQUISITION_ID: _acquisition, ...legacyEnv } = env;
+    expect(requestAgentBridgeWait(["--after-seconds", "60", "--reason", "legacy partial environment"], legacyEnv))
+      .toMatch(/Continuation scheduled/);
+    expect(readRunOutcome(db, "run-1")).toBeNull();
+    expect(listRunContinuations(db)).toEqual([expect.objectContaining({ reason: "legacy partial environment" })]);
+    db.close();
+  });
+
   it("uses the same outcome path for a wait call made by a new ordinary Run", () => {
     const { db, env } = setup();
     requestAgentBridgeWait(["--after-seconds", "60", "--reason", "CI pending"], env);
