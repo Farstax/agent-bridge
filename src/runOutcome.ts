@@ -77,6 +77,17 @@ export function recordRunOutcome(db: BridgeDb, input: {
   });
 }
 
+/** The owning execution lane calls this only when abandoning a failed provider attempt.
+ * A successor provider attempt in the same Run must not inherit its predecessor's claim.
+ * Caller must hold the Bridge execution-lock fence; it also cancels prior pending wakes.
+ */
+export function clearRunOutcomeForProviderRetry(db: BridgeDb, runId: string): void {
+  const change = db.raw.prepare(
+    "UPDATE bridge_runs SET outcome_status = NULL, outcome_detail = NULL WHERE run_id = ? AND status = 'running'",
+  ).run(runId);
+  if (change.changes !== 1) throw new Error("cannot clear outcome of an inactive Run");
+}
+
 /** Shared owner for the new command and the legacy wait alias. */
 export function requestAgentBridgeOutcome(args: string[], env: EnvLike = process.env): string {
   const [status, ...flags] = args;
