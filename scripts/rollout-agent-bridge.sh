@@ -257,10 +257,11 @@ environment_files_are_supported() {
   [[ "$actual" == "$base" || "$actual" == "$base"$'\n'"$provider_files" ]]
 }
 
-# These two drop-ins are owned by the Platform appliance configuration. The
-# provider file's effective EnvironmentFiles are checked above; the owner
-# notification file supplies only the service runtime directory. Keep this
-# inventory exact so a local override cannot silently alter the bot unit.
+# The notification and provider drop-ins are owned by the Platform appliance
+# configuration; the provider file's effective EnvironmentFiles are checked
+# above. Platform's digitalOceanProvider.ts also emits the optional SOUL
+# drop-in. Keep its content pinned here so config drift fails closed rather
+# than allowing an arbitrary systemd override.
 drop_in_paths_are_supported() {
   local unit="$1" actual="$2" expected
   [[ -z "$actual" ]] && return 0

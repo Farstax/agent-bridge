@@ -209,6 +209,7 @@ describe("guarded rollout helper", { timeout: 30_000 }, () => {
 
     expect(result.status).not.toBe(0);
     expect(`${result.stdout}\n${result.stderr}`).not.toMatch(/unexpected systemd drop-in/i);
+    expect(readFileSync(fixture.actionLog, "utf8")).toContain(" inspect --evidence -");
   });
 
   it("rejects a Platform soul drop-in that adds any unreviewed systemd configuration", () => {
