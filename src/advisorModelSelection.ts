@@ -10,7 +10,7 @@ export function advisorModelClass(provider: ProviderId, configuredModel: string)
 
 function versionComponents(id: string, modelClass: "opus" | "sol"): number[] | null {
   if (!new RegExp(`(?:^|[^a-z0-9])${modelClass}(?:$|[^a-z0-9])`, "i").test(id)) return null;
-  const parts = id.match(/\\d+/g);
+  const parts = id.match(/\d+/g);
   if (!parts?.length) return null;
   const version = parts.map(Number);
   return version.every((part) => Number.isSafeInteger(part)) ? version : null;
