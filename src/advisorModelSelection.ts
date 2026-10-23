@@ -9,11 +9,24 @@ export function advisorModelClass(provider: ProviderId, configuredModel: string)
 }
 
 function versionComponents(id: string, modelClass: "opus" | "sol"): number[] | null {
-  if (!new RegExp(`(?:^|[^a-z0-9])${modelClass}(?:$|[^a-z0-9])`, "i").test(id)) return null;
-  const parts = id.match(/\d+/g);
-  if (!parts?.length) return null;
-  const version = parts.map(Number);
-  return version.every((part) => Number.isSafeInteger(part)) ? version : null;
+  const tokens = id.toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
+  const classIndex = tokens.indexOf(modelClass);
+  if (classIndex < 0) return null;
+  // Release dates such as 20261020 are not minor versions.
+  const components = modelClass === "opus"
+    ? tokens.slice(classIndex + 1, classIndex + 3)
+    : (() => {
+      const familyIndex = tokens.lastIndexOf("gpt", classIndex);
+      return familyIndex < 0 || classIndex - familyIndex > 3
+        ? []
+        : tokens.slice(familyIndex + 1, classIndex);
+    })();
+  const major = components[0];
+  if (!major || !/^\d{1,2}$/.test(major)) return null;
+  const minor = components[1];
+  return minor && /^\d{1,2}$/.test(minor)
+    ? [Number(major), Number(minor)]
+    : [Number(major)];
 }
 
 function compareVersions(a: readonly number[], b: readonly number[]): number {
