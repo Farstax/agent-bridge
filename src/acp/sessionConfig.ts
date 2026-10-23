@@ -141,7 +141,6 @@ export function acpSessionConfigIntents(
   request: {
     readonly model: string | null;
     readonly modelRequired?: boolean;
-    readonly modelUseProviderDefault?: boolean;
     readonly effort: string | null;
   },
   preferences: AcpSessionConfigPreferences = {},
@@ -149,8 +148,7 @@ export function acpSessionConfigIntents(
   const intents: AcpSessionConfigIntent[] = [];
   // Required caller targets (notably Advisor provider:model) are explicit
   // authority and must not be shadowed by the interactive user's default choice.
-  const forceModelDefault = request.modelUseProviderDefault === true
-    || (!request.modelRequired && hasAcpProviderDefaultIntent(providerId, "model"));
+  const forceModelDefault = !request.modelRequired && hasAcpProviderDefaultIntent(providerId, "model");
   const modelPreference = forceModelDefault ? [] : preferences.model ?? [];
   if (forceModelDefault || request.model || modelPreference.length > 0) {
     intents.push({

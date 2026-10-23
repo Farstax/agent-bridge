@@ -13,11 +13,7 @@ import { openDb } from "../src/db.js";
 // Mocking runProviderInvocation here drives the broker's bounded/redaction/
 // budget/cancellation logic deterministically without spawning a real ACP
 // stdio child.
-const { runProviderInvocationMock, discoverModelMock } = vi.hoisted(() => ({
-  runProviderInvocationMock: vi.fn(),
-  discoverModelMock: vi.fn(),
-}));
-vi.mock("../src/providers/acpConfigDiscovery.js", () => ({ discoverAcpProviderConfig: discoverModelMock }));
+const { runProviderInvocationMock } = vi.hoisted(() => ({ runProviderInvocationMock: vi.fn() }));
 vi.mock("../src/cli.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../src/cli.js")>();
   return { ...actual, runProviderInvocation: runProviderInvocationMock };
@@ -27,7 +23,6 @@ const dirs: string[] = [];
 afterEach(() => {
   for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
   runProviderInvocationMock.mockReset();
-  discoverModelMock.mockReset();
 });
 
 function setup(
@@ -60,48 +55,6 @@ function setup(
 }
 
 describe("bounded cross-provider frontier advice", () => {
-
-  it("uses the highest advertised Opus model and still calls only the independent provider once", async () => {
-    const { broker, db } = setup({ BRIDGE_ADVISOR_CHAIN: "claude:opus,codex:sol" });
-    discoverModelMock.mockResolvedValue({ sessionId: "discovery", configOptions: [{
-      id: "model", category: "model", type: "select",
-      options: [{ value: "claude-opus-5-9" }, { value: "claude-opus-5-10" }],
-    }] });
-    const capability = broker.issue({ chatKey: "class", cliKind: "codex", turnKey: "t", taskKey: "job", repoPath: "/repo" });
-    await expect(broker.requestWithCapability({ capability, question: "Review risk" })).resolves.toBe("Independent view");
-    expect(discoverModelMock).toHaveBeenCalledTimes(1);
-    expect(runProviderInvocationMock).toHaveBeenCalledTimes(1);
-    expect(runProviderInvocationMock.mock.calls[0][0]).toBe("claude");
-    expect(runProviderInvocationMock.mock.calls[0][4]).toMatchObject({
-      model: "claude-opus-5-10", modelRequired: true, modelUseProviderDefault: false, toolMode: "none", sessionId: null,
-    });
-    expect(db.raw.prepare("SELECT selected_model FROM advisor_calls").get()).toMatchObject({ selected_model: "claude-opus-5-10" });
-    db.close();
-  });
-
-  it("falls back to the same independent provider's default when model discovery fails", async () => {
-    const { broker, db } = setup({ BRIDGE_ADVISOR_CHAIN: "claude:opus,codex:sol" });
-    discoverModelMock.mockRejectedValue(new Error("catalogue unavailable"));
-    const capability = broker.issue({ chatKey: "fallback", cliKind: "codex", turnKey: "t", taskKey: "job", repoPath: "/repo" });
-    await expect(broker.requestWithCapability({ capability, question: "Review risk" })).resolves.toBe("Independent view");
-    expect(runProviderInvocationMock).toHaveBeenCalledTimes(1);
-    expect(runProviderInvocationMock.mock.calls[0][0]).toBe("claude");
-    expect(runProviderInvocationMock.mock.calls[0][4]).toMatchObject({
-      model: null, modelRequired: false, modelUseProviderDefault: true, toolMode: "none", sessionId: null,
-    });
-    expect(db.raw.prepare("SELECT selected_model FROM advisor_calls").get()).toMatchObject({ selected_model: "provider-default" });
-    db.close();
-  });
-
-  it("uses an explicit provider default without catalogue discovery", async () => {
-    const { broker, db } = setup({ BRIDGE_ADVISOR_CHAIN: "claude:default,codex:sol" });
-    const capability = broker.issue({ chatKey: "explicit-default", cliKind: "codex", turnKey: "t", taskKey: "job", repoPath: "/repo" });
-    await broker.requestWithCapability({ capability, question: "Review risk" });
-    expect(discoverModelMock).not.toHaveBeenCalled();
-    expect(runProviderInvocationMock.mock.calls[0][4]).toMatchObject({ model: null, modelUseProviderDefault: true });
-    db.close();
-  });
-
   it("keeps Advisor available on a remaining tool-free target when Codex ACP is selected", () => {
     try {
       const { broker } = setup();

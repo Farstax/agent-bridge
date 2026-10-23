@@ -54,8 +54,6 @@ export interface ProviderInvocationRequest {
    * provider:model target), not a stale-tolerant interactive user override.
    */
   modelRequired?: boolean;
-  /** ACP-only: ignore persisted model preferences and keep the provider-selected default. */
-  modelUseProviderDefault?: boolean;
   executionMode: "safe" | "trusted";
   outputFormat: "json" | "stream-json" | "streaming-json" | null;
   soulContext: string | null;
