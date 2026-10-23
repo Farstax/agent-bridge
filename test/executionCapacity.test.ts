@@ -100,39 +100,48 @@ describe("global provider execution capacity", () => {
     const slackDb = openDb(slackPath, { serviceId: "slack:interactive", runId: "slack-process" });
     dbs.push(coordinatorA, coordinatorB, coordinatorC, telegramDb, discordDb, slackDb);
 
-    const pending: Array<{ resolve: () => void }> = [];
-    const runCli = vi.fn(() => new Promise<string>((resolve) => pending.push({ resolve: () => resolve(JSON.stringify({ type: "text", data: "done" }) + "\n" + JSON.stringify({ type: "end", sessionId: "session" }) + "\n") })));
+    const createCli = () => {
+      const pending: Array<{ resolve: () => void }> = [];
+      const runCli = vi.fn(() => new Promise<string>((resolve) => pending.push({ resolve: () => resolve(JSON.stringify({ type: "text", data: "done" }) + "\n" + JSON.stringify({ type: "end", sessionId: "session" }) + "\n") })));
+      return { runCli, pending };
+    };
+    const telegramCli = createCli();
+    const discordCli = createCli();
+    const slackCli = createCli();
     const client = () => ({
       capabilities: { maxMessageLength: 4096, editMessages: true, deleteMessages: true, previewStreaming: true, threads: true, attachments: true, typing: true, polling: true, remoteFileDownload: true, richMessages: true, passiveSurroundingContext: false, formatting: "telegram-html" },
       sendMessage: vi.fn().mockResolvedValue({ ok: true, result: { message_id: 1 } }), sendChatAction: vi.fn().mockResolvedValue({ ok: true }), setMyCommands: vi.fn().mockResolvedValue({ ok: true }), answerCallbackQuery: vi.fn().mockResolvedValue({ ok: true }), editMessageText: vi.fn().mockResolvedValue({ ok: true }), deleteMessage: vi.fn().mockResolvedValue({ ok: true }), sendPhoto: vi.fn().mockResolvedValue({ ok: true }), sendDocument: vi.fn().mockResolvedValue({ ok: true }), getUpdates: vi.fn().mockResolvedValue({ ok: true, result: [] }),
     } as any);
-    const makeEngine = (surfaceIdentity: string, db: BridgeDb, coordinator: BridgeDb, clientInstance: any) => new BridgeEngine({
+    const makeEngine = (surfaceIdentity: string, db: BridgeDb, coordinator: BridgeDb, clientInstance: any, runCli: ReturnType<typeof vi.fn>) => new BridgeEngine({
       kind: "grok", surfaceIdentity, botConfig: { command: "grok", modelPreference: [] }, allowedUserIds: new Set(["42"]), executionMode: "safe", busyMessageMode: "queue", pollIntervalMs: 1_000, workingDir: process.cwd(), maxConcurrentExecutions: 2, executionCapacityDb: coordinator,
     }, db, clientInstance, acpEngineExec(runCli));
     const telegramClient = client();
     const discordClient = client();
     const slackClient = client();
-    const telegram = makeEngine("telegram:interactive", telegramDb, coordinatorA, telegramClient);
-    const discord = makeEngine("discord:interactive", discordDb, coordinatorB, discordClient);
-    const slack = makeEngine("slack:interactive", slackDb, coordinatorC, slackClient);
+    const telegram = makeEngine("telegram:interactive", telegramDb, coordinatorA, telegramClient, telegramCli.runCli);
+    const discord = makeEngine("discord:interactive", discordDb, coordinatorB, discordClient, discordCli.runCli);
+    const slack = makeEngine("slack:interactive", slackDb, coordinatorC, slackClient, slackCli.runCli);
     const message = (id: number, chatId: number) => [{ message_id: id, chat: { id: chatId, type: "private" }, from: { id: 42, first_name: "operator" }, text: "run" }];
 
     const first = telegram.handleMessages(message(1, 101));
     const second = discord.handleMessages(message(2, 202));
-    await vi.waitFor(() => expect(runCli).toHaveBeenCalledTimes(2));
+    await vi.waitFor(() => {
+      expect(telegramCli.runCli).toHaveBeenCalledTimes(1);
+      expect(discordCli.runCli).toHaveBeenCalledTimes(1);
+    });
     const slackFailures = vi.spyOn(slackDb, "incrementFailures");
     await expect(slack.handleMessages(message(3, 303))).resolves.toBe("queued");
     expect(slackFailures).not.toHaveBeenCalled();
-    expect(runCli).toHaveBeenCalledTimes(2);
+    expect(slackCli.runCli).not.toHaveBeenCalled();
     expect(slackDb.pendingMsgCount("slack:interactive", "303")).toBe(1);
     expect(slackClient.sendMessage).toHaveBeenCalledWith(expect.objectContaining({ text: "All agents are currently busy. I've queued your request and will start automatically when capacity is available." }));
 
-    pending.shift()!.resolve();
+    telegramCli.pending.shift()!.resolve();
     await first;
     void slack.recoverPendingQueues();
-    await vi.waitFor(() => expect(runCli).toHaveBeenCalledTimes(3));
-    pending.shift()!.resolve();
-    pending.shift()!.resolve();
+    await vi.waitFor(() => expect(slackCli.runCli).toHaveBeenCalledTimes(1));
+    discordCli.pending.shift()!.resolve();
+    slackCli.pending.shift()!.resolve();
     await Promise.all([second, vi.waitFor(() => expect(slackDb.pendingMsgCount("slack:interactive", "303")).toBe(0))]);
   }, 15_000);
 
