@@ -9,7 +9,7 @@ This skill owns the `review it` command. The reviewer's job is to try to disprov
 
 ## Independence
 
-Prefer a fresh/context-isolated execution when available. Start from the issue/acceptance contract, current candidate diff/head, repository architecture/instructions, and evidence the reviewer chooses to inspect. Do not treat the implementer's reasoning, claimed root cause, or green tests as proof.
+Prefer a fresh/context-isolated execution when available, preferably through a provider different from the implementer. Select a currently advertised model from the configured class, falling back to **that independent provider's default** when no class match is reliable; never pin a speculative or unavailable model. Start from the issue/acceptance contract, current candidate diff/head, repository architecture/instructions, and evidence the reviewer chooses to inspect. The bounded, tool-free Advisor opinion alone is not a full `review it` PASS when an independent reviewer must inspect repository code and runtime evidence. Do not treat the implementer's reasoning, claimed root cause, or green tests as proof.
 
 Before reading the implementation in detail, independently restate the intended observable outcome, actor/resource/authority, and important non-goals. If that contract is wrong or incomplete, report it rather than reviewing the wrong solution more carefully.
 
