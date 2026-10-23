@@ -257,15 +257,24 @@ environment_files_are_supported() {
   [[ "$actual" == "$base" || "$actual" == "$base"$'\n'"$provider_files" ]]
 }
 
-# These two drop-ins are owned by the Platform appliance configuration. The
-# provider file's effective EnvironmentFiles are checked above; the owner
-# notification file supplies only the service runtime directory. Keep this
-# inventory exact so a local override cannot silently alter the bot unit.
+# The notification and provider drop-ins are owned by the Platform appliance
+# configuration; the provider file's effective EnvironmentFiles are checked
+# above. Platform's digitalOceanProvider.ts also emits the optional SOUL
+# drop-in. Keep its content pinned here so config drift fails closed rather
+# than allowing an arbitrary systemd override.
 drop_in_paths_are_supported() {
   local unit="$1" actual="$2" expected
   [[ -z "$actual" ]] && return 0
   [[ "$unit" == "agent-bridge-bot.service" ]] || return 1
   expected="$systemd_unit_dir/agent-bridge-bot.service.d/owner-notification.conf $systemd_unit_dir/agent-bridge-bot.service.d/provider-api-keys.conf"
+  if [[ "$actual" == "$systemd_unit_dir/agent-bridge-bot.service.d/agent-bridge-soul.conf $expected" ]]; then
+    local soul_drop_in="$systemd_unit_dir/agent-bridge-bot.service.d/agent-bridge-soul.conf"
+    local expected_soul_drop_in
+    expected_soul_drop_in=$'[Unit]\n# Managed by Agent Bridge Platform prompt configuration v1.\n[Service]\nEnvironment=AGENT_BRIDGE_SOUL_PATH=/etc/agent-bridge/prompt/SOUL.md\nEnvironment=AGENT_BRIDGE_SOUL_MODE=full'
+    validate_secure_path "$soul_drop_in" file
+    [[ "$(/usr/bin/cat "$soul_drop_in")" == "$expected_soul_drop_in" ]]
+    return $?
+  fi
   [[ "$actual" == "$expected" ]]
 }
 

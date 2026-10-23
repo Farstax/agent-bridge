@@ -190,6 +190,48 @@ describe("guarded rollout helper", { timeout: 30_000 }, () => {
     expect(`${result.stdout}\n${result.stderr}`).not.toMatch(/unexpected systemd drop-in/i);
   });
 
+  it("accepts the exact Platform-managed soul drop-in with the fixed notification and provider drop-ins", () => {
+    const fixture = createFixture();
+    prepareImmutableRelease(fixture, fixture.previousCommit);
+    useLegacyBotInventory(fixture);
+    const dropInDir = join(fixture.root, "systemd", "agent-bridge-bot.service.d");
+    mkdirSync(dropInDir, { recursive: true });
+    writeFileSync(join(dropInDir, "agent-bridge-soul.conf"), [
+      "[Unit]",
+      "# Managed by Agent Bridge Platform prompt configuration v1.",
+      "[Service]",
+      "Environment=AGENT_BRIDGE_SOUL_PATH=/etc/agent-bridge/prompt/SOUL.md",
+      "Environment=AGENT_BRIDGE_SOUL_MODE=full",
+      "",
+    ].join("\n"), { mode: 0o644 });
+
+    const result = runRollout(fixture, undefined, undefined, { FAKE_DROPIN_MODE: "managed-with-soul", FAKE_FAIL_PHASE: "inspect" });
+
+    expect(result.status).not.toBe(0);
+    expect(`${result.stdout}\n${result.stderr}`).not.toMatch(/unexpected systemd drop-in/i);
+    expect(readFileSync(fixture.actionLog, "utf8")).toContain(" inspect --evidence -");
+  });
+
+  it("rejects a Platform soul drop-in that adds any unreviewed systemd configuration", () => {
+    const fixture = createFixture();
+    prepareImmutableRelease(fixture, fixture.previousCommit);
+    useLegacyBotInventory(fixture);
+    const dropInDir = join(fixture.root, "systemd", "agent-bridge-bot.service.d");
+    mkdirSync(dropInDir, { recursive: true });
+    writeFileSync(join(dropInDir, "agent-bridge-soul.conf"), [
+      "[Service]",
+      "Environment=AGENT_BRIDGE_SOUL_PATH=/etc/agent-bridge/prompt/SOUL.md",
+      "ExecStart=/bin/false",
+      "",
+    ].join("\n"), { mode: 0o644 });
+
+    const result = runRollout(fixture, undefined, undefined, { FAKE_DROPIN_MODE: "managed-with-soul" });
+
+    expect(result.status).not.toBe(0);
+    expect(`${result.stdout}\n${result.stderr}`).toMatch(/unexpected systemd drop-in/i);
+    expect(readFileSync(fixture.actionLog, "utf8")).not.toContain("systemctl:stop");
+  });
+
   it("rejects a reordered managed bot drop-in pair before stopping services", () => {
     const fixture = createFixture();
     prepareImmutableRelease(fixture, fixture.previousCommit);

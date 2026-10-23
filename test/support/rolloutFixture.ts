@@ -368,6 +368,11 @@ echo "systemctl:$*" >> "${fixture.actionLog}"
                 printf '%s %s\\n' "${fixture.root}/systemd/agent-bridge-bot.service.d/owner-notification.conf" "${fixture.root}/systemd/agent-bridge-bot.service.d/provider-api-keys.conf"
               fi
               ;;
+            managed-with-soul)
+              if [ "$unit" = agent-bridge-bot.service ]; then
+                printf '%s %s %s\\n' "${fixture.root}/systemd/agent-bridge-bot.service.d/agent-bridge-soul.conf" "${fixture.root}/systemd/agent-bridge-bot.service.d/owner-notification.conf" "${fixture.root}/systemd/agent-bridge-bot.service.d/provider-api-keys.conf"
+              fi
+              ;;
             managed-reordered)
               if [ "$unit" = agent-bridge-bot.service ]; then
                 printf '%s %s\\n' "${fixture.root}/systemd/agent-bridge-bot.service.d/provider-api-keys.conf" "${fixture.root}/systemd/agent-bridge-bot.service.d/owner-notification.conf"
