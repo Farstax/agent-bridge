@@ -7,6 +7,8 @@ description: Get one bounded independent frontier opinion from a configured prov
 
 Use this Skill only when an independent frontier opinion has enough expected value to justify one extra model call. Agent Bridge itself does not suggest or auto-run it.
 
+**This Advisor call is deliberately tool-free**. It is not a `release-readiness-review` or independent code-review PASS: it cannot inspect repository files, PRs, or runtime evidence. For full independent `review it` use a fresh provider-native agent with repository tools as described by the release-readiness-review Skill. Do not broaden this broker's tool permissions to work around review configuration.
+
 ## How to use it
 
 - Ask one small, decision-bearing question. Include only the context needed to answer it; do not send secrets or a full transcript.
