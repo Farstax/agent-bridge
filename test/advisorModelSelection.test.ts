@@ -12,6 +12,10 @@ describe("Advisor dynamic class selection", () => {
     expect(selectAdvisorClassModel(catalogue("claude-opus-5-10", "claude-opus-5-9", "claude-sonnet-6", "claude-opus-5-5"), "opus"))
       .toBe("claude-opus-5-10");
   });
+  it("does not mistake a date-stamped older Opus release for a newer minor version", () => {
+    expect(selectAdvisorClassModel(catalogue("claude-opus-4-20250514", "claude-opus-4-5-20251101"), "opus"))
+      .toBe("claude-opus-4-5-20251101");
+  });
   it("recognizes Sol versions only in the exact class, without inventing names", () => {
     expect(selectAdvisorClassModel(catalogue("gpt-6-sol", "gpt-6-1-sol", "gpt-7-soleil"), "sol"))
       .toBe("gpt-6-1-sol");
