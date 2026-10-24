@@ -35,6 +35,17 @@ afterEach(() => {
 });
 
 describe("shared skills catalog", () => {
+  it("uses supported bounded flags for the pinned Playwright MCP setup", () => {
+    const instructions = readFileSync(join(process.cwd(), "skills", "manage-mcp", "SKILL.md"), "utf8");
+
+    // Playwright MCP 0.0.79 has action/navigation/settle timeouts, but no
+    // --idle-timeout option. An unknown option makes its stdio server exit.
+    expect(instructions).not.toMatch(/--idle-timeout\b/);
+    expect(instructions).toContain("--timeout-action 10000");
+    expect(instructions).toContain("--timeout-navigation 30000");
+    expect(instructions).toContain("--isolated");
+  });
+
   it("lists the consolidated SDLC skills without the retired compatibility alias", () => {
     const names = listLocalCatalog().map((entry) => entry.name);
     expect(names).toContain("requirements-to-acceptance");
