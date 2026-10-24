@@ -215,7 +215,7 @@ export function installSkillGlobal(skillName: string, options: InstallSkillOptio
   for (const nativeDir of nativeSkillDirs(paths)) {
     assertReplaceableManagedProjection(join(nativeDir, skillName), sharedDir, previous);
   }
-  if (previous?.cursorProjected === true) {
+  if (options.projectCursor && previous?.cursorProjected === true) {
     assertReplaceableManagedProjection(join(paths.cursorSkillsDir, skillName), sharedDir, previous);
   }
 
