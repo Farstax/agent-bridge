@@ -6,7 +6,7 @@ The unified source setup wizard supports Telegram, Discord and Slack. Choose Tel
 
 Requirements for this path:
 
-- Node.js 24+
+- Node.js 24.22.1+ (Node 24 LTS)
 - npm
 - at least one supported provider CLI installed and authenticated
 - a Telegram bot token from BotFather

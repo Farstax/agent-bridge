@@ -625,6 +625,11 @@ export function createFixture(options: { pending?: number; unknownSchema?: boole
 
   writeFileSync(join(envDir, "agent-bridge-shared"), `DB_PATH=${dbPaths[0]}\n`, { mode: 0o600 });
   writeFileSync(join(envDir, "agent-bridge-release"), "# fixture release environment\n", { mode: 0o600 });
+  const nodeBin = join(root, "node-24.22.1");
+  executable(nodeBin, `#!/usr/bin/env bash
+if [[ "\${1:-}" == "-p" ]]; then echo 24.22.1; exit 0; fi
+exec "${process.execPath}" "$@"
+`);
   for (const unit of units) {
     const name = unit.replace(/\.service$/, "");
     let content = "";
@@ -638,7 +643,7 @@ export function createFixture(options: { pending?: number; unknownSchema?: boole
     `project_dir=${project}`,
     "runtime_user=rollout-test",
     "environment=production-content-crawler",
-    `node_bin=${process.execPath}`,
+    `node_bin=${nodeBin}`,
     `backup_dir=${backupDir}`,
     `log_dir=${logDir}`,
     ...units.map((unit) => `unit=${unit}`),

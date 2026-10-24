@@ -4,7 +4,7 @@ The Discord surface uses its own bot, source configuration and database, but the
 
 ## Prerequisites
 
-Node.js 24+, installed Agent Bridge dependencies, at least one authenticated provider CLI, a repository/project directory, and a Discord account permitted to create/install an application.
+Node.js 24.22.1+ (Node 24 LTS), installed Agent Bridge dependencies, at least one authenticated provider CLI, a repository/project directory, and a Discord account permitted to create/install an application.
 
 ## 1. Create and configure the Discord application
 

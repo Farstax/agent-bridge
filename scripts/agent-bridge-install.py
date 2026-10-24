@@ -401,14 +401,15 @@ def validate_host(runtime_user: str, node_bin: Path) -> pwd.struct_passwd:
     if not node_bin.is_absolute() or node_bin.is_symlink() or not node_bin.is_file() or not os.access(node_bin, os.X_OK):
         fail("node binary must be an absolute executable regular non-symlink file")
     try:
-        major = int(subprocess.run(
-            [str(node_bin), "-p", "process.versions.node.split('.')[0]"],
+        version = subprocess.run(
+            [str(node_bin), "-p", "process.versions.node"],
             check=True, capture_output=True, text=True,
-        ).stdout.strip())
+        ).stdout.strip()
+        parts = tuple(int(part) for part in version.split("."))
     except (OSError, ValueError, subprocess.CalledProcessError) as error:
         fail(f"unable to validate Node.js: {error}")
-    if major < 24:
-        fail(f"Node.js 24+ is required; found major {major}")
+    if len(parts) != 3 or parts[0] != 24 or parts < (24, 22, 1):
+        fail(f"Node.js 24.22.1+ in the Node 24 LTS line is required; found {version}")
     sudo_check = subprocess.run(
         ["/usr/sbin/runuser", "--user", runtime_user, "--", "/usr/bin/sudo", "-k", "-n", "true"],
         check=False, capture_output=True, text=True, timeout=5,

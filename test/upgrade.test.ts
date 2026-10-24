@@ -5,10 +5,22 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
 describe("upgrade CLI verification", () => {
+  it("rejects a vulnerable Node 24 runtime before attempting provider checks", () => {
+    const root = mkdtempSync(join(tmpdir(), "agent-bridge-upgrade-node-floor-"));
+    const node = join(root, "node");
+    writeFileSync(node, "#!/usr/bin/env bash\nif [ \"$1\" = \"-p\" ]; then echo 24.22.0; else exit 0; fi\n", { mode: 0o755 });
+    const result = spawnSync("bash", ["scripts/upgrade.sh", "--clis-only"], {
+      encoding: "utf8",
+      env: { ...process.env, NODE_BIN: node, PATH: `${root}:${process.env.PATH}` },
+    });
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain("Node.js 24.22.1+");
+  });
+
   it("fails when the release-owned Claude ACP runtime cannot be verified", () => {
     const root = mkdtempSync(join(tmpdir(), "agent-bridge-upgrade-"));
     const node = join(root, "node");
-    writeFileSync(node, "#!/usr/bin/env bash\nif [ \"$1\" = \"-p\" ]; then echo 24.0.0; else exit 0; fi\n", { mode: 0o755 });
+    writeFileSync(node, "#!/usr/bin/env bash\nif [ \"$1\" = \"-p\" ]; then echo 24.22.1; else exit 0; fi\n", { mode: 0o755 });
     chmodSync(node, 0o755);
     const claudeAcp = join(root, "claude-agent-acp");
     writeFileSync(claudeAcp, "#!/usr/bin/env bash\nexit 42\n", { mode: 0o755 });
@@ -24,7 +36,7 @@ describe("upgrade CLI verification", () => {
   it("requires a valid version from the Claude ACP runtime", () => {
     const root = mkdtempSync(join(tmpdir(), "agent-bridge-upgrade-"));
     const node = join(root, "node");
-    writeFileSync(node, "#!/usr/bin/env bash\nif [ \"$1\" = \"-p\" ]; then echo 24.0.0; else exit 0; fi\n", { mode: 0o755 });
+    writeFileSync(node, "#!/usr/bin/env bash\nif [ \"$1\" = \"-p\" ]; then echo 24.22.1; else exit 0; fi\n", { mode: 0o755 });
     chmodSync(node, 0o755);
     const claudeAcp = join(root, "claude-agent-acp");
     writeFileSync(claudeAcp, "#!/usr/bin/env bash\nif [ \"$1\" = --version ]; then echo 'no version here'; exit 0; fi\nexit 0\n", { mode: 0o755 });
@@ -43,7 +55,7 @@ describe("upgrade CLI verification", () => {
     const log = join(root, "qualification.log");
 
     writeFileSync(node, `#!/usr/bin/env bash
-if [ "$1" = "-p" ]; then echo 24.0.0; exit 0; fi
+if [ "$1" = "-p" ]; then echo 24.22.1; exit 0; fi
 printf '%s\\n' "$*" >> "${log}"
 exit 0
 `, { mode: 0o755 });
@@ -73,7 +85,7 @@ exit 0
     const log = join(root, "qualification.log");
 
     writeFileSync(node, `#!/usr/bin/env bash
-if [ "$1" = "-p" ]; then echo 24.0.0; exit 0; fi
+if [ "$1" = "-p" ]; then echo 24.22.1; exit 0; fi
 printf '%s\\n' "$*" >> "${log}"
 exit 0
 `, { mode: 0o755 });
@@ -100,7 +112,7 @@ exit 0
     const log = join(root, "qualification.log");
 
     writeFileSync(node, `#!/usr/bin/env bash
-if [ "$1" = "-p" ]; then echo 24.0.0; exit 0; fi
+if [ "$1" = "-p" ]; then echo 24.22.1; exit 0; fi
 printf '%s\\n' "$*" >> "${log}"
 exit 0
 `, { mode: 0o755 });
@@ -128,7 +140,7 @@ exit 0
     const claudeAcp = join(root, "claude-agent-acp");
 
     writeFileSync(node, `#!/usr/bin/env bash
-if [ "$1" = "-p" ]; then echo 24.0.0; exit 0; fi
+if [ "$1" = "-p" ]; then echo 24.22.1; exit 0; fi
 provider=claude
 if [[ " $* " == *" --provider codex "* ]]; then provider=codex; fi
 printf '{"ran":true,"provider":"%s","providerVersion":"0.89.1","overall":"fail","checks":[]}\\n' "$provider"
@@ -156,7 +168,7 @@ exit 0
     const claudeAcp = join(root, "claude-agent-acp");
 
     writeFileSync(node, `#!/usr/bin/env bash
-if [ "$1" = "-p" ]; then echo 24.0.0; exit 0; fi
+if [ "$1" = "-p" ]; then echo 24.22.1; exit 0; fi
 exit 1
 `, { mode: 0o755 });
     chmodSync(node, 0o755);

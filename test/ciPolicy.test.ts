@@ -30,11 +30,18 @@ describe("CI qualification ownership policy", () => {
   it("runs the PR and release qualification on the release Node version", () => {
     const ci = readFixtureFile(".github/workflows/ci.yml");
     const releaseArtifact = readFixtureFile(".github/workflows/release-artifact.yml");
-    const packageJson = JSON.parse(readFixtureFile("package.json")) as { engines?: { node?: string } };
+    const packageJson = JSON.parse(readFixtureFile("package.json")) as { engines?: { node?: string }; dependencies?: { undici?: string; zod?: string }; overrides?: { zod?: string } };
+    const nodeVersion = readFixtureFile(".nvmrc").trim();
 
-    expect(packageJson.engines?.node).toBe(">=24");
-    expect(ci).toContain("node-version: 24.15.0");
-    expect(releaseArtifact).toContain("node-version: 24.15.0");
+    expect(packageJson.engines?.node).toBe(">=24.22.1 <25");
+    expect(packageJson.dependencies?.undici).toBe("7.30.1");
+    expect(packageJson.dependencies?.zod).toBe("4.6.6");
+    expect(packageJson.overrides?.zod).toBe("$zod");
+    expect(nodeVersion).toBe("24.22.1");
+    for (const workflow of [ci, releaseArtifact, readFixtureFile(".github/workflows/historical-release-artifact.yml"), readFixtureFile(".github/workflows/resource-stress.yml")]) {
+      expect(workflow).toContain("node-version: 24.22.1");
+      expect(workflow).not.toContain("node-version: 24.15.0");
+    }
   });
 
   it("has one owner for test, typecheck and architecture checks at each qualification boundary", () => {

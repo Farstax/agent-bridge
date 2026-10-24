@@ -4,7 +4,7 @@ set -euo pipefail
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SYSTEMD_DIR="/etc/systemd/system"
 DEFAULTS_DIR="/etc/default"
-NODE_MIN_MAJOR=24
+NODE_MIN_VERSION=24.22.1
 TARGET_USER="${SUDO_USER:-${USER}}"
 TARGET_HOME="$(getent passwd "${TARGET_USER}" | cut -d: -f6)"
 
@@ -42,15 +42,20 @@ EOF
 
 require_node() {
   if [[ -z "${NODE_BIN}" || ! -x "${NODE_BIN}" ]]; then
-    echo "Node.js ${NODE_MIN_MAJOR}+ is required." >&2
+    echo "Node.js ${NODE_MIN_VERSION}+ in the Node 24 LTS line is required." >&2
     exit 1
   fi
 
-  local version major
+  local version minor patch
   version="$("${NODE_BIN}" -p 'process.versions.node')"
-  major="${version%%.*}"
-  if (( major < NODE_MIN_MAJOR )); then
-    echo "Node.js ${NODE_MIN_MAJOR}+ is required. Found ${version}." >&2
+  if [[ ! "${version}" =~ ^24\.([0-9]+)\.([0-9]+)$ ]]; then
+    echo "Node.js ${NODE_MIN_VERSION}+ in the Node 24 LTS line is required. Found ${version}." >&2
+    exit 1
+  fi
+  minor=$((10#${BASH_REMATCH[1]}))
+  patch=$((10#${BASH_REMATCH[2]}))
+  if (( minor < 22 || (minor == 22 && patch < 1) )); then
+    echo "Node.js ${NODE_MIN_VERSION}+ in the Node 24 LTS line is required. Found ${version}." >&2
     exit 1
   fi
 }
