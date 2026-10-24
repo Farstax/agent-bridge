@@ -86,10 +86,11 @@ describe("systemd templates", () => {
     }
   });
 
-  it("requires and records Node 24+ for service runtime", () => {
+  it("requires a patched Node runtime and records it for services", () => {
     const install = readFileSync(new URL("../scripts/install.sh", import.meta.url), "utf8");
 
-    expect(install).toContain("NODE_MIN_MAJOR=24");
+    expect(install).toContain("NODE_SECURITY_FLOORS=\"24.22.1 26.12.1\"");
+    expect(install).toContain("node_version_admitted \"${version}\"");
     expect(install).toContain("NODE_BIN=${NODE_BIN}");
     expect(install).toContain('"${NODE_BIN}" ./node_modules/tsx/dist/cli.mjs');
   });

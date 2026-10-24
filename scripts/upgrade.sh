@@ -3,7 +3,21 @@ set -euo pipefail
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SYSTEMD_DIR="/etc/systemd/system"
-NODE_MIN_MAJOR=24
+# Security floors per supported Node.js line (October 2026 security releases).
+NODE_SECURITY_FLOORS="24.22.1 26.12.1"
+node_version_admitted() {
+  local version="$1" floor major minor patch floor_major floor_minor floor_patch
+  [[ "$version" =~ ^v?([0-9]+)\.([0-9]+)\.([0-9]+)$ ]] || return 1
+  major=$((10#${BASH_REMATCH[1]})); minor=$((10#${BASH_REMATCH[2]})); patch=$((10#${BASH_REMATCH[3]}))
+  for floor in $NODE_SECURITY_FLOORS; do
+    IFS=. read -r floor_major floor_minor floor_patch <<<"$floor"
+    if (( major == floor_major )); then
+      (( minor > floor_minor || (minor == floor_minor && patch >= floor_patch) ))
+      return
+    fi
+  done
+  return 1
+}
 TARGET_USER="${SUDO_USER:-$(whoami)}"
 TARGET_HOME="$(getent passwd "${TARGET_USER}" | cut -d: -f6)"
 
@@ -24,15 +38,14 @@ fi
 
 require_node() {
   if [[ -z "${NODE_BIN}" || ! -x "${NODE_BIN}" ]]; then
-    echo "Node.js ${NODE_MIN_MAJOR}+ is required." >&2
+    echo "A patched Node.js runtime is required (minimum per line: ${NODE_SECURITY_FLOORS})." >&2
     exit 1
   fi
 
-  local version major
+  local version
   version="$("${NODE_BIN}" -p 'process.versions.node')"
-  major="${version%%.*}"
-  if (( major < NODE_MIN_MAJOR )); then
-    echo "Node.js ${NODE_MIN_MAJOR}+ is required. Found ${version}." >&2
+  if ! node_version_admitted "${version}"; then
+    echo "Node.js ${version} at ${NODE_BIN} is unsupported or has known vulnerabilities. Required minimum per line: ${NODE_SECURITY_FLOORS}." >&2
     exit 1
   fi
 }
