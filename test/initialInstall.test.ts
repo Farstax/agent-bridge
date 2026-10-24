@@ -29,6 +29,29 @@ ${body}
 }
 
 describe("exact-release initial installer", () => {
+  it("admits only patched Node 24 LTS binaries", () => {
+    const result = probe(`
+import types
+account = types.SimpleNamespace(pw_uid=1001, pw_gid=1001)
+module.pwd.getpwnam = lambda user: account
+with tempfile.TemporaryDirectory() as directory:
+  node = pathlib.Path(directory) / "node"
+  node.write_text("fixture")
+  node.chmod(0o700)
+  admitted = []
+  for version in ("24.22.0", "24.22.1", "25.1.0"):
+    module.subprocess.run = lambda *args, **kwargs: types.SimpleNamespace(returncode=0, stdout=version + "\\n")
+    try:
+      module.validate_host("bridge", node)
+      admitted.append(True)
+    except (SystemExit, RuntimeError):
+      admitted.append(False)
+  print(json.dumps({"admitted": admitted}))
+`) as { admitted: boolean[] };
+
+    expect(result.admitted).toEqual([false, true, false]);
+  });
+
   it("makes shared configuration traversable by the runtime account without broadening file access", () => {
     const result = probe(`
 calls = []

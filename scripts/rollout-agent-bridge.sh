@@ -219,6 +219,13 @@ fi
 (( ${#databases[@]} > 0 )) || die "fixed database allowlist must contain at least one entry"
 [[ "$node_bin" == /* && "$backup_dir" == /* && "$log_dir" == /* ]] || die "configured paths must be absolute"
 [[ -x "$node_bin" && ! -L "$node_bin" ]] || die "configured Node binary is missing or symlinked"
+node_version="$("$node_bin" -p 'process.versions.node')" || die "unable to read configured Node.js version"
+if [[ ! "$node_version" =~ ^24\.([0-9]+)\.([0-9]+)$ ]]; then
+  die "Node.js 24.22.1+ in the Node 24 LTS line is required; found $node_version"
+fi
+node_minor=$((10#${BASH_REMATCH[1]}))
+node_patch=$((10#${BASH_REMATCH[2]}))
+(( node_minor > 22 || (node_minor == 22 && node_patch >= 1) )) || die "Node.js 24.22.1+ in the Node 24 LTS line is required; found $node_version"
 [[ "$runtime_user" =~ ^[a-z_][a-z0-9_-]*[$]?$ ]] || die "invalid runtime user"
 export AGENT_BRIDGE_RUNTIME_USER="$runtime_user"
 if (( test_mode == 0 )); then /usr/bin/id -u "$runtime_user" >/dev/null || die "runtime user does not exist"; fi

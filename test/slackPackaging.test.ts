@@ -43,7 +43,7 @@ describe("slack packaging contract (#943)", () => {
     const pkg = JSON.parse(read("package.json"));
     expect(pkg.dependencies["@slack/socket-mode"]).toBe("3.1.0");
     expect(pkg.dependencies["@slack/web-api"]).toBe("8.2.0");
-    expect(pkg.dependencies.undici).toMatch(/^7\./);
+    expect(pkg.dependencies.undici).toBe("7.30.1");
   });
 
   it("contains no downstream product reference", () => {

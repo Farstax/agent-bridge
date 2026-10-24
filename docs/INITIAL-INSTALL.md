@@ -14,7 +14,7 @@ The initial installer requires:
 - an exact qualified `agent-bridge-<commit>.tar.gz` release archive;
 - `scripts/agent-bridge-install.py` and `scripts/release-stage.py` from the same trusted commit, placed together;
 - an existing non-root runtime account;
-- an absolute, regular Node.js 24+ binary;
+- an absolute, regular Node.js 24.22.1+ binary from the Node 24 LTS line;
 - the environment variables for each service that should be installed.
 
 The runtime account's existing unrestricted passwordless sudo rule is an installation invariant. The installer verifies it with a non-cached `sudo -k -n true` check and does not create, narrow or replace the rule.
@@ -30,7 +30,7 @@ sudo env \
   python3 scripts/agent-bridge-install.py \
     --release /root/agent-bridge-<commit>.tar.gz \
     --runtime-user agentbridge \
-    --node-bin /home/agentbridge/.nvm/versions/node/v24.15.0/bin/node \
+    --node-bin /home/agentbridge/.nvm/versions/node/v24.22.1/bin/node \
     --environment production-agent-bridge
 ```
 

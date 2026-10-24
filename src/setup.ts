@@ -53,10 +53,13 @@ export interface TelegramBotIdentity {
 export type CommandPathResolver = (command: string) => string | null;
 
 export function assertSupportedNodeVersion(version = process.versions.node): void {
-  const major = Number(version.split(".")[0]);
-  if (!Number.isInteger(major) || major < 24) {
-    throw new Error(`Agent Bridge source setup requires Node.js 24+ (current: ${version}).`);
+  const match = /^v?(\d+)\.(\d+)\.(\d+)$/.exec(version);
+  if (!match) {
+    throw new Error(`Agent Bridge source setup requires Node.js 24.22.1+ (current: ${version}).`);
   }
+  const [major, minor, patch] = match.slice(1).map(Number);
+  if (major !== 24) throw new Error(`Agent Bridge source setup requires the Node.js 24 LTS line (current: ${version}).`);
+  if (minor < 22 || (minor === 22 && patch < 1)) throw new Error(`Agent Bridge source setup requires Node.js 24.22.1+ (current: ${version}).`);
 }
 
 export function resolveCommandPath(command: string): string | null {

@@ -3,8 +3,10 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 
 const FILES = [
+  ".nvmrc",
   ".github/workflows/ci.yml",
   ".github/workflows/release-artifact.yml",
+  ".github/workflows/historical-release-artifact.yml",
   ".github/workflows/resource-stress.yml",
   "package.json",
   "scripts/qualify-local.sh",

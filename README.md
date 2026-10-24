@@ -16,7 +16,7 @@ losing the workstream.
 
 ## Run it yourself or use Farstax
 
-- **Self-host Agent Bridge (open source):** run the runtime on a host you control. The [Node.js 24+ source setup wizard](#quick-start-from-source) is for trying it from a checkout; [production installation](docs/INITIAL-INSTALL.md) uses a qualified release and managed services. You own the host, provider and messaging credentials, permissions, updates and recovery.
+- **Self-host Agent Bridge (open source):** run the runtime on a host you control. The [Node.js 24.22.1+ source setup wizard](#quick-start-from-source) is for trying it from a checkout; [production installation](docs/INITIAL-INSTALL.md) uses a qualified release and managed services. You own the host, provider and messaging credentials, permissions, updates and recovery.
 - **[Farstax managed workspaces](https://farstax.com/):** Farstax provisions and maintains the workspace infrastructure so your agents can keep their development environment available. You still connect and authorise your own coding providers, GitHub access and messaging identity, and remain responsible for consequential decisions. [Apply for beta](https://farstax.com/#beta-application).
 
 Agent Bridge does not replace your coding agents with another agent framework.
@@ -139,7 +139,7 @@ See the [FAQ](docs/FAQ.md) for the difference between agent Skills and enforced 
 
 Requirements:
 
-- Node.js 24+
+- Node.js 24.22.1+ (Node 24 LTS)
 - npm
 - at least one authenticated provider CLI
 - a Telegram bot token and your Telegram user ID for the Telegram quick start

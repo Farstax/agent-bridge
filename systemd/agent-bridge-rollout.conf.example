@@ -9,7 +9,7 @@ current_pointer=/opt/agent-bridge/releases/current
 # Stable deployment-environment identity; approvals must match it exactly.
 environment=production-content-crawler
 runtime_user=content-crawler
-node_bin=/home/content-crawler/.nvm/versions/node/v24.15.0/bin/node
+node_bin=/home/content-crawler/.nvm/versions/node/v24.22.1/bin/node
 backup_dir=/var/backups/agent-bridge
 log_dir=/var/log/agent-bridge-rollouts
 unit=agent-bridge-antigravity.service

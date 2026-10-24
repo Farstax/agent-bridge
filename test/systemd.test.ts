@@ -86,10 +86,15 @@ describe("systemd templates", () => {
     }
   });
 
-  it("requires and records Node 24+ for service runtime", () => {
+  it("requires the patched Node 24 LTS floor for service runtime", () => {
     const install = readFileSync(new URL("../scripts/install.sh", import.meta.url), "utf8");
+    const upgrade = readFileSync(new URL("../scripts/upgrade.sh", import.meta.url), "utf8");
+    const rollout = readFileSync(new URL("../scripts/rollout-agent-bridge.sh", import.meta.url), "utf8");
+    const bootstrap = readFileSync(new URL("../scripts/rollout-bootstrap.sh", import.meta.url), "utf8");
 
-    expect(install).toContain("NODE_MIN_MAJOR=24");
+    for (const script of [install, upgrade, rollout, bootstrap]) {
+      expect(script).toContain("24.22.1");
+    }
     expect(install).toContain("NODE_BIN=${NODE_BIN}");
     expect(install).toContain('"${NODE_BIN}" ./node_modules/tsx/dist/cli.mjs');
   });

@@ -98,10 +98,14 @@ describe("source setup", () => {
     }
   });
 
-  it("requires Node.js 24 or newer for source setup", () => {
-    expect(() => assertSupportedNodeVersion("24.0.0")).not.toThrow();
-    expect(() => assertSupportedNodeVersion("25.1.0")).not.toThrow();
-    expect(() => assertSupportedNodeVersion("20.19.0")).toThrow("requires Node.js 24+");
+  it("requires the patched Node.js 24 LTS floor for source setup", () => {
+    expect(() => assertSupportedNodeVersion("24.22.1")).not.toThrow();
+    expect(() => assertSupportedNodeVersion("24.22.2")).not.toThrow();
+    expect(() => assertSupportedNodeVersion("24.22.0")).toThrow("requires Node.js 24.22.1+");
+    expect(() => assertSupportedNodeVersion("24.15.0")).toThrow("requires Node.js 24.22.1+");
+    expect(() => assertSupportedNodeVersion("25.1.0")).toThrow("requires the Node.js 24 LTS line");
+    expect(() => assertSupportedNodeVersion("20.19.0")).toThrow("requires the Node.js 24 LTS line");
+    expect(() => assertSupportedNodeVersion("not-a-version")).toThrow("requires Node.js 24.22.1+");
   });
 
   it("validates the Telegram bot token before setup declares success", async () => {

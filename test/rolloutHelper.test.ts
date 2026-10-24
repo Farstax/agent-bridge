@@ -144,6 +144,21 @@ function runAuthorizedRollout(fixture: Fixture, authorizationFile: string, overr
 }
 
 describe("guarded rollout helper", { timeout: 30_000 }, () => {
+  it("refuses a vulnerable Node runtime before stopping any service", () => {
+    const fixture = createFixture();
+    const oldNode = join(fixture.root, "node-24.22.0");
+    executable(oldNode, `#!/usr/bin/env bash
+if [[ "\${1:-}" == "-p" ]]; then echo 24.22.0; exit 0; fi
+exec "${process.execPath}" "$@"
+`);
+    rewriteConfig(fixture, (lines) => lines.map((line) => line.startsWith("node_bin=") ? `node_bin=${oldNode}` : line));
+
+    const result = runRollout(fixture);
+    expect(result.status).not.toBe(0);
+    expect(`${result.stdout}\n${result.stderr}`).toContain("Node.js 24.22.1+");
+    expect(actions(fixture)).not.toContain("systemctl:stop");
+  });
+
   it.each(["missing", "extra", "reordered"])("rejects %s EnvironmentFiles inventory before stopping services", (mode) => {
     const fixture = createFixture();
     prepareImmutableRelease(fixture, fixture.previousCommit);

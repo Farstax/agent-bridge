@@ -47,6 +47,11 @@ function createFixture(options: { allowlist?: string[]; preExisting?: boolean } 
   mkdirSync(join(root, "etc", "agent-bridge"), { recursive: true, mode: 0o700 });
   mkdirSync(dbDir, { recursive: true, mode: 0o700 });
   mkdirSync(bin, { recursive: true });
+  const nodeBin = join(bin, "node");
+  executable(nodeBin, `#!/usr/bin/env bash
+if [[ "\${1:-}" == "-p" ]]; then echo 24.22.1; exit 0; fi
+exec "${process.execPath}" "$@"
+`);
   symlinkSync(sourceDir, join(project, "src"));
   symlinkSync(nodeModules, join(project, "node_modules"));
   symlinkSync(migrationScript, join(project, "scripts", "rollout-db.ts"));
@@ -58,7 +63,7 @@ function createFixture(options: { allowlist?: string[]; preExisting?: boolean } 
   writeFileSync(configFile, [
     `project_dir=${project}`,
     "runtime_user=rollout-test",
-    `node_bin=${process.execPath}`,
+    `node_bin=${nodeBin}`,
     ...allowlist.map((entry) => `bootstrap_role=${entry}`),
     "",
   ].join("\n"), { mode: 0o600 });
@@ -104,6 +109,21 @@ afterEach(() => {
 });
 
 describe("rollout-bootstrap.sh", () => {
+  it("refuses a vulnerable Node runtime before creating a database", () => {
+    const fixture = createFixture();
+    const oldNode = join(fixture.root, "bin", "node-24.22.0");
+    executable(oldNode, `#!/usr/bin/env bash
+if [[ "\${1:-}" == "-p" ]]; then echo 24.22.0; exit 0; fi
+exec "${process.execPath}" "$@"
+`);
+    const config = readFileSync(fixture.configFile, "utf8").replace(`node_bin=${join(fixture.root, "bin", "node")}`, `node_bin=${oldNode}`);
+    writeFileSync(fixture.configFile, config);
+    const result = runBootstrapHelper(fixture, "interactive", fixture.newRolePath, fixture.newRolePath);
+    expect(result.status).not.toBe(0);
+    expect(`${result.stdout}\n${result.stderr}`).toContain("Node.js 24.22.1+");
+    expect(existsSync(fixture.newRolePath)).toBe(false);
+  });
+
   it("is executable", () => {
     execFileSync("test", ["-x", helperPath]);
   });

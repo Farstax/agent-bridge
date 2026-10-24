@@ -50,7 +50,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 24.15.0
+          node-version: 24.22.1
           cache: npm
           cache-dependency-path: target-source/package-lock.json
 
@@ -168,7 +168,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 24.15.0
+          node-version: 24.22.1
 
       - name: Extract target materials into the release root
         shell: bash

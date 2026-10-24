@@ -70,6 +70,7 @@ exit 1
     for (const command of ["npm", "codex", "agy", "claude"]) {
       writeExecutable(bin, command, "exit 0");
     }
+    writeExecutable(bin, "node", `if [ "\${1:-}" = "-p" ]; then echo 24.22.1; else exec "${process.execPath}" "$@"; fi`);
     writeExecutable(bin, "sudo", `
 if [ "\${1:-}" = tee ]; then
   cat >/dev/null
@@ -84,7 +85,7 @@ exit 0
         HOME: home,
         USER: "agentbridge-test",
         SUDO_USER: "agentbridge-test",
-        NODE_BIN: process.execPath,
+        NODE_BIN: join(bin, "node"),
         PATH: `${bin}:${process.env.PATH}`,
       },
     });

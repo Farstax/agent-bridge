@@ -94,6 +94,8 @@ if [ "$1" = install ]; then exit 0; fi
 exit 0
 `);
       script(join(root, "systemctl"), "exit 1\n");
+      const nodeBin = join(root, "node-24.22.1");
+      script(nodeBin, `if [ "\${1:-}" = "-p" ]; then echo 24.22.1; else exec "${process.execPath}" "$@"; fi`);
       const sttLog = join(root, "stt-convergence.log");
       script(join(root, "sudo"), `
 printf '%s\\n' "$*" >> "${sttLog}"
@@ -115,7 +117,7 @@ exit 97
         env: {
           ...process.env,
           HOME: root,
-          NODE_BIN: process.execPath,
+          NODE_BIN: nodeBin,
           CLAUDE_ACP_COMMAND: claude,
           CODEX_ACP_COMMAND: codex,
           FAKE_ACP_STORE: join(root, "codex-acp-sessions.json"),
