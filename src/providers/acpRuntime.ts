@@ -1,6 +1,7 @@
 /** Provider-neutral ACP launch, lifecycle, presentation and result plumbing. */
-import { readFileSync, realpathSync } from "node:fs";
-import { extname } from "node:path";
+import { accessSync, constants as fsConstants, readFileSync, realpathSync, statSync } from "node:fs";
+import { basename, extname } from "node:path";
+import { pathToFileURL } from "node:url";
 import { createHash } from "node:crypto";
 import { homedir } from "node:os";
 import type { ContentBlock, Usage } from "@agentclientprotocol/sdk";
@@ -10,7 +11,8 @@ import type { AcpRetainedEvent, AcpSessionConfigRequest, AcpTurnResult } from ".
 import { replaceAcpSessionConfigSnapshot } from "../acp/sessionConfig.js";
 import { isAbortRequested, runSupervisedStdioSession } from "../cliSupervisor.js";
 import { cleanOutputDir } from "../fileOutput.js";
-import { appendOutputDirInstruction, wrapPromptContext } from "../promptWrapping.js";
+import { appendAttachmentAnnotations, appendOutputDirInstruction, wrapPromptContext } from "../promptWrapping.js";
+import { mimeTypeFromExtension } from "../fileDownload.js";
 import type { RunActivity } from "../runActivity.js";
 import type { BotKind, CliOptions, CliResult, RouteableBotKind, RunTelemetry } from "../types.js";
 import { type as bridgeEventType } from "../events/types.js";
@@ -377,23 +379,38 @@ function providerBotKind(providerId: string): RouteableBotKind {
   return (providerId === "agy" ? "antigravity" : providerId) as RouteableBotKind;
 }
 
-function promptBlocks(request: ProviderInvocationRequest): ContentBlock[] {
+export function promptBlocks(request: ProviderInvocationRequest): ContentBlock[] {
   // The delegation/execution contract is seeded upstream in
   // src/cli.ts::seedFreshExecutionContract() so it is present on ordinary
   // tool-enabled turns regardless of fresh/resume; do not add it again here.
+  // Only real images become image blocks. Every other file is handed over as a
+  // resource link plus an explicit readable path, so a tool-using agent opens
+  // the uploaded bytes itself instead of receiving them inline.
+  const files = request.attachments.map((path) => {
+    try {
+      accessSync(path, fsConstants.R_OK);
+      if (!statSync(path).isFile()) throw new Error("not a regular file");
+    } catch (error) {
+      throw new Error(`Attachment ${basename(path)} is not readable by the bridge: ${error instanceof Error ? error.message : String(error)}`);
+    }
+    const image = IMAGE_MIME[extname(path).toLowerCase()];
+    return { path, image };
+  });
+  const documents = files.filter((file) => !file.image).map((file) => file.path);
   const wrapped = appendOutputDirInstruction(
-    wrapPromptContext(request.prompt, request.soulContext, request.includeResponseContract, false),
+    appendAttachmentAnnotations(
+      wrapPromptContext(request.prompt, request.soulContext, request.includeResponseContract, false),
+      documents,
+    ),
     request.outputDir,
   );
   const blocks: ContentBlock[] = [{ type: "text", text: wrapped }];
-  for (const path of request.attachments) {
-    const mimeType = IMAGE_MIME[extname(path).toLowerCase()] ?? "application/octet-stream";
-    blocks.push({
-      type: "image",
-      data: readFileSync(path).toString("base64"),
-      mimeType,
-      uri: `file://${path}`,
-    });
+  for (const { path, image } of files) {
+    if (image) {
+      blocks.push({ type: "image", data: readFileSync(path).toString("base64"), mimeType: image, uri: pathToFileURL(path).href });
+    } else {
+      blocks.push({ type: "resource_link", name: basename(path), uri: pathToFileURL(path).href, mimeType: mimeTypeFromExtension(path) });
+    }
   }
   return blocks;
 }
