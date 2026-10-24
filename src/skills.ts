@@ -211,6 +211,14 @@ export function installSkillGlobal(skillName: string, options: InstallSkillOptio
     throw new Error(`Refusing to replace unowned shared skill path with bundled skill: ${skillName}`);
   }
 
+  const sharedDir = join(paths.agentsSkillsDir, skillName);
+  for (const nativeDir of nativeSkillDirs(paths)) {
+    assertReplaceableManagedProjection(join(nativeDir, skillName), sharedDir, previous);
+  }
+  if (options.projectCursor && previous?.cursorProjected === true) {
+    assertReplaceableManagedProjection(join(paths.cursorSkillsDir, skillName), sharedDir, previous);
+  }
+
   if (destinationExists) {
     const currentHash = hashDirectory(destDir);
     const sourceHash = hashDirectory(sourceDir);
@@ -291,6 +299,25 @@ export function verifySkillGlobal(skillName?: string, options: VerifySkillOption
       const problem = verifyNativeSkill({ nativePath, sharedDir, linkMode, expectedHash: sharedHash });
       if (!problem) continue;
       if (options.fix && ownership === "bundled") {
+        const safeToRepair = !pathExists(nativePath)
+          || (linkMode === "symlink" && (() => {
+            try {
+              return lstatSync(nativePath).isSymbolicLink();
+            } catch {
+              return false;
+            }
+          })())
+          || (linkMode === "copy" && Boolean(record.skillFolderHash) && (() => {
+            try {
+              return lstatSync(nativePath).isDirectory() && hashDirectory(nativePath) === record.skillFolderHash;
+            } catch {
+              return false;
+            }
+          })());
+        if (!safeToRepair) {
+          errors.push(`${problem}; refusing to overwrite an unmanaged native skill path: ${nativePath}`);
+          continue;
+        }
         projectNativeSkill({ skillName: name, sharedDir, nativeDir, linkMode, force: true });
         repaired.push(nativePath);
       } else if (options.fix) {
@@ -312,6 +339,13 @@ export function verifySkillGlobal(skillName?: string, options: VerifySkillOption
       if (options.fix && ownership === "bundled") {
         try {
           const canForceRepair = !pathExists(cursorPath) || isExpectedNativeEntry(cursorPath, sharedDir, linkMode)
+            || (linkMode === "copy" && Boolean(record.skillFolderHash) && (() => {
+              try {
+                return lstatSync(cursorPath).isDirectory() && hashDirectory(cursorPath) === record.skillFolderHash;
+              } catch {
+                return false;
+              }
+            })())
             || (() => {
               try {
                 return lstatSync(cursorPath).isSymbolicLink();
@@ -566,6 +600,23 @@ function projectNativeSkill(input: { skillName: string; sharedDir: string; nativ
   }
   const target = relative(input.nativeDir, input.sharedDir);
   symlinkSync(target, nativePath, "dir");
+}
+
+function assertReplaceableManagedProjection(nativePath: string, sharedDir: string, record: SkillLockRecord | undefined): void {
+  if (!pathExists(nativePath)) return;
+  if (!record) throw new Error(`Refusing to overwrite an unmanaged skill path: ${nativePath}`);
+
+  const previousMode = record.linkMode === "copy" ? "copy" : "symlink";
+  const previouslyManaged = previousMode === "symlink"
+    ? isExpectedNativeEntry(nativePath, sharedDir, "symlink")
+    : Boolean(record.skillFolderHash) && (() => {
+      try {
+        return lstatSync(nativePath).isDirectory() && hashDirectory(nativePath) === record.skillFolderHash;
+      } catch {
+        return false;
+      }
+    })();
+  if (!previouslyManaged) throw new Error(`Refusing to overwrite an unmanaged skill path: ${nativePath}`);
 }
 
 function isExpectedNativeEntry(nativePath: string, sharedDir: string, linkMode: SkillLinkMode): boolean {
