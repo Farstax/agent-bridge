@@ -32,9 +32,9 @@ describe("CI qualification ownership policy", () => {
     const releaseArtifact = readFixtureFile(".github/workflows/release-artifact.yml");
     const packageJson = JSON.parse(readFixtureFile("package.json")) as { engines?: { node?: string } };
 
-    expect(packageJson.engines?.node).toBe(">=24");
-    expect(ci).toContain("node-version: 24.15.0");
-    expect(releaseArtifact).toContain("node-version: 24.15.0");
+    expect(packageJson.engines?.node).toBe("^24.22.1 || ^26.12.1");
+    expect(ci).toContain("node-version: 24.22.1");
+    expect(releaseArtifact).toContain("node-version: 24.22.1");
   });
 
   it("has one owner for test, typecheck and architecture checks at each qualification boundary", () => {
