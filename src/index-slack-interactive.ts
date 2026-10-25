@@ -27,7 +27,6 @@ import {
   dispatchInteractiveTurnWithFallback,
   type CliKind,
 } from "./interactiveBot.js";
-import { runCli } from "./cli.js";
 import type { BridgeConfig, BotKind } from "./types.js";
 import { parseCliChain, interactiveChainKinds } from "./providers/selection.js";
 import { deriveConversationOwnerKey } from "./conversationOwnerKey.js";

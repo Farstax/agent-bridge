@@ -46,7 +46,7 @@ import {
 import { isAcpConfigControlCommand, prepareInteractiveAcpConfigControl } from "./interactiveAcpConfig.js";
 import { targetTelegramAbortUpdate } from "./telegramCommandTarget.js";
 import { resolveAutonomyRuntimeConfig, resolveTelegramRuntimePolicy } from "./providerLock.js";
-import { runCli, toUserMessage } from "./cli.js";
+import { toUserMessage } from "./cli.js";
 import { getExecutionProcessState } from "./cliSupervisor.js";
 import { resolveTimeoutsForKind } from "./timeouts.js";
 import type { BridgeConfig, BotKind, TelegramUpdate } from "./types.js";

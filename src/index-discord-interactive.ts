@@ -40,7 +40,6 @@ import {
   applyManualCliSwitchHandoff,
   type CliKind,
 } from "./interactiveBot.js";
-import { runCli } from "./cli.js";
 import type { BridgeConfig, BotKind } from "./types.js";
 import { adaptDiscordMessage, type InteractiveTurnInput } from "./interactiveIngress.js";
 import { busyMessageModeSettingKey, resolveLaneBusyMessageMode, type BusyMessageMode } from "./busyMessageMode.js";
