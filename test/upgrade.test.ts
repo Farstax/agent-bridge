@@ -63,7 +63,7 @@ exit 0
     chmodSync(node, 0o755);
     const claudeAcp = join(root, "claude-agent-acp");
     writeFileSync(claudeAcp, `#!/usr/bin/env bash
-if [ "$1" = --version ]; then echo '@agentclientprotocol/claude-agent-acp 0.90.0'; exit 0; fi
+if [ "$1" = --version ]; then echo '@agentclientprotocol/claude-agent-acp 0.95.0'; exit 0; fi
 exit 0
 `, { mode: 0o755 });
     chmodSync(claudeAcp, 0o755);
@@ -75,9 +75,9 @@ exit 0
 
     expect(result.status).toBe(0);
     const invocations = readFileSync(log, "utf8");
-    expect(invocations).toContain("provider-qualification.ts --provider claude --expected-version 0.90.0");
-    expect(invocations).toContain("--previous-version 0.90.0");
-    expect(result.stdout).toContain("[qualification] claude 0.90.0");
+    expect(invocations).toContain("provider-qualification.ts --provider claude --expected-version 0.95.0");
+    expect(invocations).toContain("--previous-version 0.95.0");
+    expect(result.stdout).toContain("[qualification] claude 0.95.0");
   });
 
   it("verifies and qualifies the active Claude ACP runtime in update mode", () => {
@@ -93,7 +93,7 @@ exit 0
     chmodSync(node, 0o755);
     const claudeAcp = join(root, "claude-agent-acp");
     writeFileSync(claudeAcp, `#!/usr/bin/env bash
-if [ "$1" = --version ]; then echo '@agentclientprotocol/claude-agent-acp 0.90.0'; exit 0; fi
+if [ "$1" = --version ]; then echo '@agentclientprotocol/claude-agent-acp 0.95.0'; exit 0; fi
 exit 0
 `, { mode: 0o755 });
     chmodSync(claudeAcp, 0o755);
@@ -104,7 +104,7 @@ exit 0
     });
 
     expect(result.status).toBe(0);
-    expect(readFileSync(log, "utf8")).toContain("provider-qualification.ts --provider claude --expected-version 0.90.0");
+    expect(readFileSync(log, "utf8")).toContain("provider-qualification.ts --provider claude --expected-version 0.95.0");
   });
 
   it("fails when the active Claude ACP runtime version cannot be verified after update", () => {
@@ -144,12 +144,12 @@ exit 0
 if [ "$1" = "-p" ]; then echo 24.22.1; exit 0; fi
 provider=claude
 if [[ " $* " == *" --provider codex "* ]]; then provider=codex; fi
-printf '{"ran":true,"provider":"%s","providerVersion":"0.90.0","overall":"fail","checks":[]}\\n' "$provider"
+printf '{"ran":true,"provider":"%s","providerVersion":"0.95.0","overall":"fail","checks":[]}\\n' "$provider"
 exit 1
 `, { mode: 0o755 });
     chmodSync(node, 0o755);
     writeFileSync(claudeAcp, `#!/usr/bin/env bash
-if [ "$1" = --version ]; then echo '@agentclientprotocol/claude-agent-acp 0.90.0'; exit 0; fi
+if [ "$1" = --version ]; then echo '@agentclientprotocol/claude-agent-acp 0.95.0'; exit 0; fi
 exit 0
 `, { mode: 0o755 });
     chmodSync(claudeAcp, 0o755);
@@ -174,7 +174,7 @@ exit 1
 `, { mode: 0o755 });
     chmodSync(node, 0o755);
     writeFileSync(claudeAcp, `#!/usr/bin/env bash
-if [ "$1" = --version ]; then echo '@agentclientprotocol/claude-agent-acp 0.90.0'; exit 0; fi
+if [ "$1" = --version ]; then echo '@agentclientprotocol/claude-agent-acp 0.95.0'; exit 0; fi
 exit 0
 `, { mode: 0o755 });
     chmodSync(claudeAcp, 0o755);

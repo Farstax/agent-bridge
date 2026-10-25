@@ -533,7 +533,7 @@ exit 7
     const previousCommand = process.env.CLAUDE_ACP_COMMAND;
     const previousArgs = process.env.CLAUDE_ACP_ARGS;
     const acp = executable(join(root, "claude-agent-acp"), `
-if [[ "\${1:-}" == "--version" ]]; then echo "@agentclientprotocol/claude-agent-acp 0.90.0"; exit 0; fi
+if [[ "\${1:-}" == "--version" ]]; then echo "@agentclientprotocol/claude-agent-acp 0.95.0"; exit 0; fi
 echo "acp should not be oneshot-parsed" >&2
 exit 7
 `);
@@ -558,8 +558,8 @@ exit 7
         ...process.env,
         CLAUDE_ACP_COMMAND: acp,
       }).runtimeIdentity);
-      expect(result.providerVersion).toBe("0.90.0");
-      expect(result.checks.find((check) => check.name === "version")?.diagnostic).toMatch(/claude-agent-acp 0\.90\.0/);
+      expect(result.providerVersion).toBe("0.95.0");
+      expect(result.checks.find((check) => check.name === "version")?.diagnostic).toMatch(/claude-agent-acp 0\.95\.0/);
     } finally {
       if (previousCommand === undefined) delete process.env.CLAUDE_ACP_COMMAND;
       else process.env.CLAUDE_ACP_COMMAND = previousCommand;
