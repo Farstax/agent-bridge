@@ -50,6 +50,8 @@ describe("sensors", { timeout: 30_000 }, () => {
       expect(report.summary.length).toBeLessThanOrEqual(500);
     }
     expect(bridge.checks.find((check) => check.name === "db-read")?.status).toBe("green");
+    // Qualification is evidence from release/CI runs, absent on other hosts. It must not drive runtime health.
+    expect(bridge.checks.some((check) => check.name.startsWith("provider-qualification"))).toBe(false);
     db.close();
   });
 
