@@ -43,8 +43,8 @@ describe("Cursor ACP provider", () => {
       distribution: {
         binary: expect.objectContaining({
           "linux-x86_64": {
-            archive: "https://downloads.cursor.com/lab/2026.10.01-14929f9/linux/x64/agent-cli-package.tar.gz",
-            sha256: "ba9a855f8f813c91b9f2707127572d2dc9ae5a62818e1c36719625d0fb8bd452",
+            archive: "https://downloads.cursor.com/lab/2026.10.22-27dcf5f/linux/x64/agent-cli-package.tar.gz",
+            sha256: "85296944e4600a83c4b764f578d1502bf9c416db200d33a593e8f3ecabfdc294",
             cmd: "./dist-package/cursor-agent",
             args: ["acp"],
           },
@@ -58,7 +58,7 @@ describe("Cursor ACP provider", () => {
       executable: "cursor-agent",
       args: ["acp"],
       versionArgs: ["--version"],
-      runtimeIdentity: expect.stringMatching(/^acp:cursor@2026\.10\.01-14929f9:[a-f0-9]{64}$/),
+      runtimeIdentity: expect.stringMatching(/^acp:cursor@2026\.10\.22-27dcf5f:[a-f0-9]{64}$/),
       toolFree: false,
       provisionalAnswers: true,
     }));
