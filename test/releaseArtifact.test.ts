@@ -118,7 +118,6 @@ describe("release artifact manifest", () => {
           "cleanup:check": "knip",
           skills: "tsx scripts/skill-manager.ts",
           "scan-token-savings": "tsx scripts/scan-token-savings.ts",
-          "smoke:advisor-fallback": "tsx scripts/smoke-advisor-fallback.ts",
         },
         dependencies: { "better-sqlite3": "^12.9.0", dotenv: "^17.2.3", tsx: "^4.21.0" },
       }),
