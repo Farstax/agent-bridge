@@ -221,7 +221,6 @@ print(json.dumps({"calls": calls}))
       "autonomous-work",
       "scheduled-routines",
       "sensors",
-      "advisor",
       "engineering-retro",
     ];
     expect(result.calls).toHaveLength(defaults.length * 2);
