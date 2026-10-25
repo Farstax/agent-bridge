@@ -287,7 +287,7 @@ Codex ACP's `read-only` agent mode is not equivalent to strict tool-free executi
 restricts mutation/network authority. The pinned adapter has no config knob
 that guarantees genuinely tool-free execution, so Codex provider policy fails
 closed (`CodexAcpToolFreeUnsupportedError`) for `toolMode: "none"` rather than
-silently weakening Advisor's tool-free contract to read-only.
+silently weakening the tool-free contract to read-only.
 
 Claude ACP supports strict tool-free execution through its provider metadata.
 Agent Bridge supplies an empty tool set, disables built-in tools and setting

@@ -2,7 +2,6 @@
   "$schema": "https://unpkg.com/knip@6/schema.json",
   "entry": [
     "src/index*.ts",
-    "scripts/agent-bridge-advisor.ts",
     "scripts/agent-bridge-context.ts",
     "scripts/autonomous-goal-operator.ts",
     "scripts/optimize-prompt-loop.ts",
@@ -10,8 +9,7 @@
     "scripts/qualify-logical-messages.ts",
     "scripts/rollout-db.ts",
     "scripts/scan-token-savings.ts",
-    "scripts/skill-manager.ts",
-    "scripts/smoke-advisor-fallback.ts"
+    "scripts/skill-manager.ts"
   ],
   "project": [
     "src/**/*.ts",

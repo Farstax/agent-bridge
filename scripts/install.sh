@@ -252,6 +252,14 @@ install_shared_skills() {
         bash -c 'cd "$1" && "$NODE_BIN" ./node_modules/tsx/dist/cli.mjs scripts/skill-manager.ts install "$2" --force --link-mode "$3"' bash "${REPO_DIR}" "${skill}" "${link_mode}"
     fi
   done
+  # Retired bundled skill: remove only a bundled-owned projection through the
+  # ownership-aware uninstall path. User-owned or absent entries are left alone.
+  if [[ "${USER}" == "${TARGET_USER}" ]]; then
+    (cd "${REPO_DIR}" && SHARED_MEMORY_HOME="${TARGET_HOME}" "${NODE_BIN}" ./node_modules/tsx/dist/cli.mjs scripts/skill-manager.ts uninstall advisor) >/dev/null 2>&1 || true
+  else
+    sudo -u "${TARGET_USER}" env HOME="${TARGET_HOME}" SHARED_MEMORY_HOME="${TARGET_HOME}" NODE_BIN="${NODE_BIN}" \
+      bash -c 'cd "$1" && "$NODE_BIN" ./node_modules/tsx/dist/cli.mjs scripts/skill-manager.ts uninstall advisor' bash "${REPO_DIR}" >/dev/null 2>&1 || true
+  fi
 }
 
 mkdir -p "${DEFAULTS_DIR}"

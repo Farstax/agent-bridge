@@ -295,6 +295,9 @@ def install_shared_skills(
         subprocess.run([
             *command_prefix, "verify", skill,
         ], check=True, capture_output=True, text=True)
+    # Retired bundled skill: the ownership-aware uninstall refuses user-owned or
+    # unregistered entries, which are intentionally left untouched.
+    subprocess.run([*command_prefix, "uninstall", "advisor"], check=False, capture_output=True, text=True)
 
 
 def remove_bootstrapped_databases(databases: Sequence[Path]) -> None:

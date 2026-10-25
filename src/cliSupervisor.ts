@@ -585,7 +585,7 @@ export async function runSupervisedStdioSession<T>(
 ): Promise<T> {
   const { timeoutMs, idleTimeoutMs } = resolveSupervisorTimeouts(options);
   const killGraceMs = options.killGraceMs ?? defaultKillGraceMs();
-  const redactionEnv = buildChildEnv(options.contextEnv, options.advisorChild);
+  const redactionEnv = buildChildEnv(options.contextEnv);
   const providerId: ProviderId | null = options.bot
     ? options.bot === "antigravity" ? "agy" : options.bot
     : null;
