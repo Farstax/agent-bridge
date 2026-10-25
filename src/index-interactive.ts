@@ -243,7 +243,7 @@ const engines = Object.fromEntries(
           pollIntervalMs,
           soulContext,
           fullConfig: config,
-                    maxConcurrentExecutions: executionCapacity.maxConcurrentExecutions,
+          maxConcurrentExecutions: executionCapacity.maxConcurrentExecutions,
           executionCapacityDb: executionCapacityDb ?? undefined,
           hooks: {
             onCommand: async (commandText, ctx) => {

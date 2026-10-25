@@ -182,7 +182,7 @@ const engines = Object.fromEntries(CLI_KINDS.map((kind) => [kind, new BridgeEngi
   pollIntervalMs: 1_000,
   soulContext,
   fullConfig: config,
-    maxConcurrentExecutions: executionCapacity.maxConcurrentExecutions,
+  maxConcurrentExecutions: executionCapacity.maxConcurrentExecutions,
   executionCapacityDb: executionCapacityDb ?? undefined,
   hooks: { onProviderFallbackRequested: async (chatKey, reason) => { fallbackRequests.set(chatKey, reason); } },
 }, db, client)])) as Record<CliKind, BridgeEngine>;

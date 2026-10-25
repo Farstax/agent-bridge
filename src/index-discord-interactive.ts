@@ -174,7 +174,7 @@ const engines = Object.fromEntries(
         pollIntervalMs: 1_000,
         soulContext,
         fullConfig: config,
-                maxConcurrentExecutions: executionCapacity.maxConcurrentExecutions,
+        maxConcurrentExecutions: executionCapacity.maxConcurrentExecutions,
         executionCapacityDb: executionCapacityDb ?? undefined,
         hooks: {
           onProviderFallbackRequested: async (chatKey, reason, context) => {
