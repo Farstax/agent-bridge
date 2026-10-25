@@ -78,7 +78,7 @@ The canonical continuity design is `docs/architecture/memory-and-handoff.md`.
 
 Fresh-only Soul, managed workspace context, handoff, and retained history remain one-time (see above). Independently of that, ordinary tool-enabled main-lane operator turns on the acting Run path — both fresh and resumed provider sessions — receive a concise, provider-neutral delegation/execution contract (`src/promptWrapping.ts::SESSION_EXECUTION_CONTRACT`, seeded through `src/cli.ts::seedFreshExecutionContract()`). It teaches the provider to treat the operator request as an objective it owns, to prefer acting/inspecting/waiting/retrying/repairing/validating over handing routine next steps back, to treat a fixable in-scope problem as work rather than a blocker, and to hand control back only for a genuine operator dependency (missing information, authority, credentials, a product decision, or an unauthorised irreversible/external-facing action).
 
-This is prompt/authority-contract posture, not workflow machinery: there is no task state machine, completion classifier, Worker abstraction, scheduler, or automatic Run-loop. Tool-free/advisory execution — `/btw` and the Frontier Advisor — is explicitly excluded (`toolMode: "none"`), since those paths must not act on shared provider state.
+This is prompt/authority-contract posture, not workflow machinery: there is no task state machine, completion classifier, Worker abstraction, scheduler, or automatic Run-loop. Tool-free execution (`/btw`) is explicitly excluded (`toolMode: "none"`), since that path must not act on shared provider state.
 
 ## Explicit Non-Responsibilities
 
