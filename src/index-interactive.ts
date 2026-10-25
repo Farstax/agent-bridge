@@ -50,7 +50,6 @@ import { runCli, toUserMessage } from "./cli.js";
 import { getExecutionProcessState } from "./cliSupervisor.js";
 import { resolveTimeoutsForKind } from "./timeouts.js";
 import type { BridgeConfig, BotKind, TelegramUpdate } from "./types.js";
-import { startConfiguredAdvisorBroker } from "./advisorBroker.js";
 import { SensorRegistry } from "./sensors/registry.js";
 import { buildSensorsKeyboard, handleSensorCallback, isSensorsCommand } from "./sensors/telegram.js";
 import { RunIngressServer, acceptRunIngressRequest, executeRunIngressRequest } from "./runIngress.js";
@@ -135,7 +134,6 @@ const executionCapacityDb = openExecutionCapacityCoordinator(executionCapacity, 
   requireInstallationIdentity: process.env.NODE_ENV === "production" && Boolean(process.env.AGENT_BRIDGE_INSTALLATION_ID?.trim()),
   databaseRole: runtimePolicy.databaseRole,
 });
-const advisorBroker = await startConfiguredAdvisorBroker({ db, bots: config.bots, runCli });
 const client = new TelegramClient(
   token,
   fetch,
@@ -245,8 +243,7 @@ const engines = Object.fromEntries(
           pollIntervalMs,
           soulContext,
           fullConfig: config,
-          advisorCapabilities: advisorBroker ?? undefined,
-          maxConcurrentExecutions: executionCapacity.maxConcurrentExecutions,
+                    maxConcurrentExecutions: executionCapacity.maxConcurrentExecutions,
           executionCapacityDb: executionCapacityDb ?? undefined,
           hooks: {
             onCommand: async (commandText, ctx) => {

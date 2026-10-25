@@ -70,7 +70,6 @@ import { DEFAULT_CONTEXT_MAX_CHARS } from "./db.js";
 import { linkScheduledOccurrenceRun, markScheduledOccurrenceFailed, SCHEDULED_OCCURRENCE_PREFIX } from "./scheduledRunCorrelation.js";
 import { resolveTimeoutsForKind } from "./timeouts.js";
 import { SCRATCHPAD_GUIDANCE, prependHandoffModel, prependProviderFallbackContinuation } from "./promptWrapping.js";
-import type { AdvisorCapabilityIssuer } from "./advisorBroker.js";
 import {
   executionLaneCoordinator,
   type ExecutionLaneCoordinator,
@@ -152,7 +151,6 @@ export interface BridgeEngineOptions {
   workspaceContext?: string | null;
   fullConfig?: BridgeConfig;
   hooks?: BridgeEngineHooks;
-  advisorCapabilities?: AdvisorCapabilityIssuer;
   /** Positive only when all participating surfaces share executionCapacityDb. */
   maxConcurrentExecutions?: number;
   executionCapacityDb?: BridgeDb;
@@ -1755,29 +1753,13 @@ export class BridgeEngine {
     const status = this.db.getConvStatus(chatKey, this.surfaceIdentity);
     const hasContext = !!dbPath && status.turnCount > 0;
     const commandPath = join(process.cwd(), "bin", "agent-bridge-context");
-    const advisorCommandPath = join(process.cwd(), "bin", "agent-bridge-advisor");
     const waitCommandPath = join(process.cwd(), "bin", "agent-bridge-wait");
     const outcomeCommandPath = join(process.cwd(), "bin", "agent-bridge-outcome");
     const canContinue = Boolean(dbPath && runId && this.kind !== "autonomous");
     const canOutcome = canContinue && outcomeEligible;
     const canScratch = Boolean(dbPath && runId && laneHandle);
     const scratchCommandPath = join(process.cwd(), "bin", "agent-bridge-scratch");
-    const turnKey = `${chatKey}:${randomUUID()}`;
-    let advisorCapability: string | null = null;
-    if (this.opts.advisorCapabilities) {
-      try {
-        advisorCapability = this.opts.advisorCapabilities.issue({
-          chatKey,
-          cliKind: this.kind,
-          turnKey,
-          taskKey: turnKey,
-          repoPath: this._workingDir(this._executionKind()),
-        });
-      } catch (error) {
-        console.warn("[advisor] capability unavailable:", error);
-      }
-    }
-    if (!hasContext && !advisorCapability && !canContinue && !canScratch) return null;
+    if (!hasContext && !canContinue && !canScratch) return null;
     const ownerKey = this._conversationOwnerKey();
     const contextPrompt = hasContext ? [
       "[Agent Bridge context]",
@@ -1844,10 +1826,6 @@ export class BridgeEngine {
           } : {}),
         } : {}),
         ...(canOutcome ? { AGENT_BRIDGE_OUTCOME_COMMAND: outcomeCommandPath } : {}),
-        ...(advisorCapability ? {
-          AGENT_BRIDGE_ADVISOR_COMMAND: advisorCommandPath,
-          AGENT_BRIDGE_ADVISOR_CAPABILITY: advisorCapability,
-        } : {}),
       },
     };
   }

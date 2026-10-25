@@ -43,7 +43,6 @@ import {
 import { runCli } from "./cli.js";
 import type { BridgeConfig, BotKind } from "./types.js";
 import { adaptDiscordMessage, type InteractiveTurnInput } from "./interactiveIngress.js";
-import { startConfiguredAdvisorBroker } from "./advisorBroker.js";
 import { busyMessageModeSettingKey, resolveLaneBusyMessageMode, type BusyMessageMode } from "./busyMessageMode.js";
 import { resolveDiscordStartInteraction } from "./discordStart.js";
 import { parseCliChain, interactiveChainKinds } from "./providers/selection.js";
@@ -107,7 +106,6 @@ const executionCapacityDb = openExecutionCapacityCoordinator(executionCapacity, 
   requireInstallationIdentity: process.env.NODE_ENV === "production" && Boolean(process.env.AGENT_BRIDGE_INSTALLATION_ID?.trim()),
   databaseRole: "discord",
 });
-const advisorBroker = await startConfiguredAdvisorBroker({ db, bots: config.bots, runCli });
 
 // ── Fallback chain ────────────────────────────────────────────────────────────
 
@@ -176,8 +174,7 @@ const engines = Object.fromEntries(
         pollIntervalMs: 1_000,
         soulContext,
         fullConfig: config,
-        advisorCapabilities: advisorBroker ?? undefined,
-        maxConcurrentExecutions: executionCapacity.maxConcurrentExecutions,
+                maxConcurrentExecutions: executionCapacity.maxConcurrentExecutions,
         executionCapacityDb: executionCapacityDb ?? undefined,
         hooks: {
           onProviderFallbackRequested: async (chatKey, reason, context) => {
@@ -566,7 +563,6 @@ const shutdown = async (signal: string) => {
   runContinuationRunner?.stop();
   client.destroy();
   shutdownCliProcesses();
-  await advisorBroker?.close();
   db.close();
   process.exit(0);
 };

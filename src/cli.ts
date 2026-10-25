@@ -34,7 +34,6 @@ import {
   runSupervisedStdioSession,
   getExecutionProcessState,
   buildSafeChildEnv,
-  buildAdvisorChildEnv,
   beginExecutionLifecycle,
   completeExecutionLifecycle,
   abortCliProcess,
@@ -61,7 +60,6 @@ export {
   getExecutionProcessState,
   runSupervisedStdioSession,
   buildSafeChildEnv,
-  buildAdvisorChildEnv,
   beginExecutionLifecycle,
   completeExecutionLifecycle,
   abortCliProcess,
@@ -96,7 +94,7 @@ export function scrubOutputDir(text: string, outDir: string | null | undefined):
  * `includeExecutionContract` is an explicit per-caller decision, not a proxy
  * for tool capability: ordinary interactive main-lane turns opt in; internal
  * infrastructure (autonomous Episode cycles, provider qualification probes)
- * and tool-free/advisory callers (/btw, Advisor) must not receive operator
+ * and tool-free callers (/btw) must not receive operator
  * delegation posture, so they leave it false. `toolMode: "none"` remains a
  * separate, mechanical prohibition on tool use and always forces it off too.
  */
