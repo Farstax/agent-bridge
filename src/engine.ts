@@ -766,8 +766,20 @@ export class BridgeEngine {
     // before the provider prompt is submitted, so a crash leaves a linked receipt.
     const receiptKeys = scheduledOccurrenceKeys.filter((key) => key.startsWith(EVENT_RECEIPT_CORRELATION_PREFIX));
     let receiptsCorrelated = receiptKeys.length === 0;
-    const collect = receiptsCorrelated ? collectEvent : (event: BridgeEvent) => {
+    const routineOccurrenceKeys = scheduledOccurrenceKeys.filter((key) => key.startsWith(SCHEDULED_OCCURRENCE_PREFIX));
+    let routineOccurrencesCorrelated = routineOccurrenceKeys.length === 0;
+    const collect = (event: BridgeEvent) => {
       collectEvent(event);
+      if (!routineOccurrencesCorrelated) {
+        try {
+          if (this.db.getRun(runId)) {
+            this._linkScheduledOccurrences(routineOccurrenceKeys, runId);
+            routineOccurrencesCorrelated = true;
+          }
+        } catch (error) {
+          console.error(`[${this.kind}] scheduled occurrence correlation failed at Run admission`, error);
+        }
+      }
       if (!receiptsCorrelated && this.db.getRun(runId)) {
         receiptsCorrelated = true;
         this._correlateEventReceipts(receiptKeys, runId);
