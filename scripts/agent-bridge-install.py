@@ -270,6 +270,8 @@ def install_shared_skills(
     skills = [name.strip() for name in configured.split(",") if name.strip()]
     if not skills:
         fail("AGENT_BRIDGE_SKILLS must name at least one skill, none, or skip")
+    # Legacy installations may still explicitly include this retired bundled skill.
+    skills = [name for name in skills if name != "advisor"]
     if "autonomous-work" not in skills:
         skills.append("autonomous-work")
     link_mode = env.get("AGENT_BRIDGE_SKILL_LINK_MODE", "symlink")

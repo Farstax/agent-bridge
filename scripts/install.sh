@@ -240,6 +240,10 @@ install_shared_skills() {
   for skill in "${skills[@]}"; do
     skill="$(echo "${skill}" | xargs)"
     [[ -n "${skill}" ]] || continue
+    if [[ "${skill}" == "advisor" ]]; then
+      echo "Skipping retired Advisor skill"
+      continue
+    fi
     echo "Installing shared skill: ${skill} (${link_mode})"
     if [[ "${USER}" == "${TARGET_USER}" ]]; then
       (cd "${REPO_DIR}" && SHARED_MEMORY_HOME="${TARGET_HOME}" "${NODE_BIN}" ./node_modules/tsx/dist/cli.mjs scripts/skill-manager.ts install "${skill}" --force --link-mode "${link_mode}")
