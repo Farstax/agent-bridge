@@ -17,6 +17,8 @@ const DEFAULT_SCAN_MS = 5_000;
 const MIN_DELAY_SECONDS = 5;
 const MAX_DELAY_SECONDS = 30 * 60;
 const MAX_LIFETIME_MS = 2 * 60 * 60 * 1_000;
+/** An explicit future wake may be requested up to one week ahead; it is for unfinished work, not a routine. */
+const MAX_WAKE_HORIZON_MS = 7 * 24 * 60 * 60 * 1_000;
 const MAX_CAPACITY_LIFETIME_MS = 7 * 24 * 60 * 60 * 1_000;
 const MAX_REASON_CHARS = 500;
 
@@ -75,7 +77,10 @@ export interface RequestRunContinuationInput {
   chatKey: string;
   provider: RouteableBotKind;
   reason: string;
-  afterSeconds: number;
+  /** Exactly one of afterSeconds or dueAtMs selects the wake time. */
+  afterSeconds?: number;
+  /** Absolute one-shot wake instant (epoch ms). Expiry is measured from this instant. */
+  dueAtMs?: number;
   /** Transport delivery coordinates, persisted as-is at request time. Omit only for legacy/test callers that rely on the one-time decode fallback in parse(). */
   delivery?: { chatId: string | number; chatType: string; threadId?: string | number };
   capacityWait?: boolean;
@@ -152,9 +157,19 @@ export function requestRunContinuation(
   input: RequestRunContinuationInput,
   nowMs = Date.now(),
 ): RunContinuation {
-  const maximumDelay = input.capacityWait ? MAX_CAPACITY_LIFETIME_MS / 1_000 : MAX_DELAY_SECONDS;
-  if (!Number.isInteger(input.afterSeconds) || input.afterSeconds < MIN_DELAY_SECONDS || input.afterSeconds > maximumDelay) {
-    throw new Error(`after-seconds must be an integer between ${MIN_DELAY_SECONDS} and ${maximumDelay}`);
+  if ((input.afterSeconds === undefined) === (input.dueAtMs === undefined)) {
+    throw new Error("specify either after-seconds or an explicit wake time");
+  }
+  if (input.dueAtMs !== undefined) {
+    if (input.capacityWait) throw new Error("a capacity wait cannot use an explicit wake time");
+    if (!Number.isInteger(input.dueAtMs) || input.dueAtMs < nowMs + MIN_DELAY_SECONDS * 1_000 || input.dueAtMs > nowMs + MAX_WAKE_HORIZON_MS) {
+      throw new Error(`wake time must be between ${MIN_DELAY_SECONDS} seconds and 7 days from now`);
+    }
+  } else {
+    const maximumDelay = input.capacityWait ? MAX_CAPACITY_LIFETIME_MS / 1_000 : MAX_DELAY_SECONDS;
+    if (!Number.isInteger(input.afterSeconds) || input.afterSeconds! < MIN_DELAY_SECONDS || input.afterSeconds! > maximumDelay) {
+      throw new Error(`after-seconds must be an integer between ${MIN_DELAY_SECONDS} and ${maximumDelay}`);
+    }
   }
   const originRunId = bounded(input.originRunId, "origin run id", 200);
   const surfaceIdentity = bounded(input.surfaceIdentity, "surface identity", 160);
@@ -162,8 +177,13 @@ export function requestRunContinuation(
   const reason = bounded(input.reason, "reason", MAX_REASON_CHARS);
   const provider = bounded(String(input.provider), "provider", 80) as RouteableBotKind;
   const requestedAt = new Date(nowMs).toISOString();
-  const dueAt = new Date(nowMs + input.afterSeconds * 1_000).toISOString();
-  const proposedExpiresAt = new Date(nowMs + (input.capacityWait ? MAX_CAPACITY_LIFETIME_MS : MAX_LIFETIME_MS)).toISOString();
+  const dueMs = input.dueAtMs ?? nowMs + input.afterSeconds! * 1_000;
+  const dueAt = new Date(dueMs).toISOString();
+  // An explicit wake keeps the ordinary two-hour admission grace, counted from
+  // the chosen instant so a valid future wake can never expire before it is due.
+  const proposedExpiresAt = new Date(input.dueAtMs !== undefined
+    ? dueMs + MAX_LIFETIME_MS
+    : nowMs + (input.capacityWait ? MAX_CAPACITY_LIFETIME_MS : MAX_LIFETIME_MS)).toISOString();
   const id = bounded(input.continuationId ?? originRunId, "continuation id", 240);
   const originRun = db.getRun(originRunId);
   if (originRun) {

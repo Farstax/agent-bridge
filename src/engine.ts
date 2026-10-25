@@ -1783,6 +1783,7 @@ export class BridgeEngine {
       "Before ending this Run, you MUST call \"$AGENT_BRIDGE_OUTCOME_COMMAND\" exactly once with a final disposition of the original user intent:",
       "  complete --evidence \"<verified outcome>\"  (all authorised work finished)",
       "  continue --after-seconds 60 --reason \"<remaining work and next action>\"  (work remains; bounded continuation is necessary)",
+      "  continue --at \"<RFC 3339 time with Z or offset, up to 7 days ahead>\" --reason \"<what to re-check>\"  (unfinished work of this task must wake once later; not a new routine or recurring task)",
       "  blocked --reason \"<specific genuine blocker>\"  (user action/authority or an unresolvable obstacle is required)",
       "Prefer finishing work and bounded waits within this Run. Failed CI or a pending bounded operation is not itself a terminal blocker.",
       "A normal final response and ACP end_turn do not count as an objective outcome.",
@@ -2188,7 +2189,7 @@ export class BridgeEngine {
           "The previous provider turn ended without a required objective disposition.",
           "Do not repeat earlier work or side effects. Reconcile the ORIGINAL user intent against evidence already gathered.",
           "Report the outcome now using \"$AGENT_BRIDGE_OUTCOME_COMMAND\" with exactly one of:",
-          "complete --evidence \"<verified result>\"; continue --after-seconds 60 --reason \"<remaining work>\"; blocked --reason \"<genuine blocker>\".",
+          "complete --evidence \"<verified result>\"; continue --after-seconds 60|--at \"<timestamp>\" --reason \"<remaining work>\"; blocked --reason \"<genuine blocker>\".",
           "This is the only reconciliation attempt. Do not claim completion while work remains.",
           "After calling the helper, provide a complete, accurate user-facing final answer reflecting the actual current outcome, including any correction to your previous answer.",
         ].join("\n");

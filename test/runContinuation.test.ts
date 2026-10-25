@@ -1366,3 +1366,78 @@ describe("ordinary Run continuation", () => {
     db.close();
   });
 });
+
+describe("explicit one-shot future wake", () => {
+  const DAY = 24 * 60 * 60 * 1_000;
+  const base = {
+    originRunId: "run-at",
+    surfaceIdentity: "telegram:interactive",
+    chatKey: "123",
+    provider: "codex" as const,
+    reason: "recheck release qualification",
+  };
+
+  it("keeps a wake beyond two hours pending until due, then dispatches exactly once", async () => {
+    const { db } = setup();
+    const dueAtMs = 1_000 + DAY;
+    const wake = requestForActiveRun(db, { ...base, dueAtMs }, 1_000);
+    expect(wake.dueAt).toBe(new Date(dueAtMs).toISOString());
+    expect(Date.parse(wake.expiresAt)).toBeGreaterThan(dueAtMs);
+    completeOriginRun(db, "run-at");
+    const dispatch = vi.fn(async () => undefined);
+    await scanRunContinuations(db, "telegram:interactive", dispatch, 1_000 + 3 * 60 * 60 * 1_000);
+    expect(dispatch).not.toHaveBeenCalled();
+    expect(listRunContinuations(db)[0].state).toBe("pending");
+    await scanRunContinuations(db, "telegram:interactive", dispatch, dueAtMs);
+    await scanRunContinuations(db, "telegram:interactive", dispatch, dueAtMs + 1_000);
+    expect(dispatch).toHaveBeenCalledTimes(1);
+    expect(listRunContinuations(db)[0].state).toBe("completed");
+    db.close();
+  });
+
+  it("survives a restart before the due instant and still fires once afterwards", async () => {
+    const { db, path } = setup();
+    const dueAtMs = 1_000 + 2 * DAY;
+    requestForActiveRun(db, { ...base, dueAtMs }, 1_000);
+    completeOriginRun(db, "run-at");
+    db.close();
+    const reopened = openDb(path, { serviceId: "run-continuation-test-reopen", runId: "test-process-2" });
+    const dispatch = vi.fn(async () => undefined);
+    await scanRunContinuations(reopened, "telegram:interactive", dispatch, dueAtMs - 1);
+    expect(dispatch).not.toHaveBeenCalled();
+    await scanRunContinuations(reopened, "telegram:interactive", dispatch, dueAtMs + 60_000);
+    expect(dispatch).toHaveBeenCalledTimes(1);
+    reopened.close();
+  });
+
+  it("expires a wake that stays undelivered for the admission grace after it was due", async () => {
+    const { db } = setup();
+    const dueAtMs = 1_000 + DAY;
+    requestForActiveRun(db, { ...base, dueAtMs }, 1_000);
+    const dispatch = vi.fn(async () => undefined);
+    await scanRunContinuations(db, "telegram:interactive", dispatch, dueAtMs + 2 * 60 * 60 * 1_000);
+    expect(dispatch).not.toHaveBeenCalled();
+    expect(listRunContinuations(db)[0].state).toBe("expired");
+    db.close();
+  });
+
+  it("bounds the wake to between five seconds and seven days from the request", () => {
+    const { db } = setup();
+    const now = 1_000_000;
+    expect(() => requestRunContinuation(db, { ...base, dueAtMs: now + 4_000 }, now)).toThrow(/between/);
+    expect(() => requestRunContinuation(db, { ...base, dueAtMs: now - 60_000 }, now)).toThrow(/between/);
+    expect(() => requestRunContinuation(db, { ...base, dueAtMs: now + 7 * DAY + 1_000 }, now)).toThrow(/between/);
+    expect(() => requestRunContinuation(db, { ...base, dueAtMs: now + 5_000.5 }, now)).toThrow(/between/);
+    expect(() => requestRunContinuation(db, { ...base, dueAtMs: now + 60_000, afterSeconds: 60 }, now)).toThrow(/either/);
+    expect(() => requestRunContinuation(db, { ...base }, now)).toThrow(/either/);
+    db.close();
+  });
+
+  it("leaves ordinary short continuations and their two-hour expiry unchanged", () => {
+    const { db } = setup();
+    const wake = requestForActiveRun(db, { ...base, afterSeconds: 60 }, 1_000);
+    expect(wake.dueAt).toBe(new Date(61_000).toISOString());
+    expect(wake.expiresAt).toBe(new Date(1_000 + 2 * 60 * 60 * 1_000).toISOString());
+    db.close();
+  });
+});
