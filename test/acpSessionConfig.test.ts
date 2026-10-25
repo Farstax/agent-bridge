@@ -112,7 +112,7 @@ describe("negotiated ACP session configuration", () => {
     });
   });
 
-  it("fails closed for a required Advisor target instead of translating it", () => {
+  it("fails closed for a required caller target instead of translating it", () => {
     expect(() => planAcpSessionConfig(configOptions, [
       { category: "model", explicitValue: "claude-sonnet-5", required: true },
     ])).toThrow(/does not support value/);
