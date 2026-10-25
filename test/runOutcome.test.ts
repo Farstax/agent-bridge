@@ -63,6 +63,64 @@ describe("Run-scoped provider outcomes", () => {
     db.close();
   });
 
+  it("schedules an explicit offset-aware future wake beyond thirty minutes", () => {
+    const { db, env } = setup();
+    const at = new Date(Date.now() + 26 * 60 * 60 * 1000);
+    const iso = at.toISOString().replace(/\.\d{3}Z$/, "Z");
+    expect(requestAgentBridgeOutcome(["continue", "--at", iso, "--reason", "recheck qualification"], env))
+      .toMatch(/Continuation scheduled for /);
+    expect(readRunOutcome(db, "run-1")).toEqual({ status: "continue", detail: "recheck qualification" });
+    const [wake] = listRunContinuations(db);
+    expect(wake.dueAt).toBe(at.toISOString().replace(/\.\d{3}Z$/, ".000Z"));
+    expect(Date.parse(wake.expiresAt)).toBeGreaterThan(Date.parse(wake.dueAt));
+    db.close();
+  });
+
+  it("accepts a numeric UTC offset and normalises it to the same instant", () => {
+    const { db, env } = setup();
+    const at = new Date(Date.now() + 3 * 60 * 60 * 1000);
+    const local = new Date(at.getTime() + 2 * 60 * 60 * 1000).toISOString().replace(/\.\d{3}Z$/, "+02:00");
+    requestAgentBridgeOutcome(["continue", "--at", local, "--reason", "offset wake"], env);
+    expect(Date.parse(listRunContinuations(db)[0].dueAt)).toBe(Math.floor(at.getTime() / 1000) * 1000);
+    db.close();
+  });
+
+  it.each([
+    ["no offset", () => new Date(Date.now() + 3_600_000).toISOString().slice(0, 19)],
+    ["date only", () => new Date(Date.now() + 86_400_000).toISOString().slice(0, 10)],
+    ["impossible calendar day", () => "2099-02-30T00:00:00Z"],
+    ["past instant", () => new Date(Date.now() - 3_600_000).toISOString()],
+    ["beyond seven days", () => new Date(Date.now() + 8 * 86_400_000).toISOString()],
+    ["free text", () => "tomorrow morning"],
+  ])("rejects %s before recording any outcome so the Run can still report a valid disposition", (_label, value) => {
+    const { db, env } = setup();
+    expect(() => requestAgentBridgeOutcome(["continue", "--at", value(), "--reason", "bad"], env)).toThrow();
+    expect(readRunOutcome(db, "run-1")).toBeNull();
+    expect(listRunContinuations(db)).toEqual([]);
+    expect(requestAgentBridgeOutcome(["complete", "--evidence", "finished anyway"], env)).toMatch(/complete/);
+    db.close();
+  });
+
+  it("rejects conflicting or misplaced wake flags", () => {
+    const { db, env } = setup();
+    const future = new Date(Date.now() + 3_600_000).toISOString();
+    expect(() => requestAgentBridgeOutcome(["continue", "--at", future, "--after-seconds", "60", "--reason", "x"], env)).toThrow(/either/);
+    expect(() => requestAgentBridgeOutcome(["continue", "--reason", "x"], env)).toThrow(/either/);
+    expect(() => requestAgentBridgeOutcome(["blocked", "--at", future, "--reason", "x"], env)).toThrow(/only valid for continue/);
+    expect(readRunOutcome(db, "run-1")).toBeNull();
+    db.close();
+  });
+
+  it("does not push the wake later when the identical future call is repeated", () => {
+    const { db, env } = setup();
+    const future = new Date(Date.now() + 3_600_000).toISOString();
+    requestAgentBridgeOutcome(["continue", "--at", future, "--reason", "same"], env);
+    const first = listRunContinuations(db)[0];
+    expect(requestAgentBridgeOutcome(["continue", "--at", future, "--reason", "same"], env)).toMatch(/already scheduled/);
+    expect(listRunContinuations(db)).toEqual([first]);
+    db.close();
+  });
+
   it("keeps the legacy wait helper usable without lane credentials", () => {
     const { db, env } = setup();
     const {

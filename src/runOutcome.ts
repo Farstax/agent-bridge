@@ -39,6 +39,22 @@ function option(args: string[], key: string): string | null {
   return value;
 }
 
+const WAKE_TIMESTAMP = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?(Z|[+-]\d{2}:\d{2})$/;
+
+/** RFC 3339 with an explicit offset only; local or ambiguous times and impossible dates are rejected. */
+export function parseWakeTimestamp(value: string): number {
+  const match = WAKE_TIMESTAMP.exec(value);
+  const ms = match ? Date.parse(value) : Number.NaN;
+  if (!match || Number.isNaN(ms)) throw new Error("--at requires an RFC 3339 timestamp with Z or an explicit UTC offset");
+  const [, year, month, day, hour, minute, second] = match.map(Number);
+  const calendar = new Date(Date.UTC(year, month - 1, day, hour, minute, second));
+  if (
+    month < 1 || month > 12 || hour > 23 || minute > 59 || second > 59
+    || calendar.getUTCFullYear() !== year || calendar.getUTCMonth() !== month - 1 || calendar.getUTCDate() !== day
+  ) throw new Error("--at is not a valid calendar time");
+  return ms;
+}
+
 /** The terminal outcome is a provider claim; ACP end_turn and CI verification remain distinct. */
 export function readRunOutcome(db: BridgeDb, runId: string): RunOutcome | null {
   const row = db.getRun(runId) as { outcome_status?: RunOutcomeStatus | null; outcome_detail?: string | null } | undefined;
@@ -106,10 +122,13 @@ export function requestAgentBridgeOutcome(args: string[], env: EnvLike = process
   };
   const detail = status === "complete" ? (option(flags, "--evidence") ?? "") : (option(flags, "--reason") ?? "");
   const secondsRaw = option(flags, "--after-seconds");
-  if (status === "continue" && (secondsRaw === null || !Number.isInteger(Number(secondsRaw)))) {
-    throw new Error("continue requires --after-seconds INTEGER");
+  const atRaw = option(flags, "--at");
+  if (status !== "continue" && (secondsRaw !== null || atRaw !== null)) throw new Error("--after-seconds and --at are only valid for continue");
+  if (status === "continue" && (secondsRaw === null) === (atRaw === null)) {
+    throw new Error("continue requires either --after-seconds INTEGER or --at TIMESTAMP");
   }
-  if (status !== "continue" && secondsRaw !== null) throw new Error("--after-seconds is only valid for continue");
+  if (secondsRaw !== null && !Number.isInteger(Number(secondsRaw))) throw new Error("continue requires --after-seconds INTEGER");
+  const dueAtMs = atRaw === null ? undefined : parseWakeTimestamp(atRaw);
 
   const deliveryChatId = env.AGENT_BRIDGE_DELIVERY_CHAT_ID?.trim();
   const deliveryChatType = env.AGENT_BRIDGE_DELIVERY_CHAT_TYPE?.trim();
@@ -135,7 +154,7 @@ export function requestAgentBridgeOutcome(args: string[], env: EnvLike = process
       if (status === "continue") {
         const c = requestRunContinuation(db, {
           originRunId: runId, surfaceIdentity, chatKey, provider, reason: detail,
-          afterSeconds: Number(secondsRaw), delivery,
+          ...(dueAtMs === undefined ? { afterSeconds: Number(secondsRaw) } : { dueAtMs }), delivery,
         });
         return `Continuation scheduled for ${c.dueAt}. Finish this Run without promising the user to check manually.`;
       }
@@ -166,7 +185,7 @@ export function requestAgentBridgeWait(args: string[], env: EnvLike = process.en
   const reason = option(args, "--reason") ?? "";
   const afterRaw = option(args, "--after-seconds");
   const afterSeconds = Number(afterRaw);
-  if (!Number.isInteger(afterSeconds)) throw new Error("--after-seconds requires an integer");
+  if (afterRaw === null || !Number.isInteger(afterSeconds)) throw new Error("--after-seconds requires an integer");
   const chatId = env.AGENT_BRIDGE_DELIVERY_CHAT_ID?.trim();
   const chatType = env.AGENT_BRIDGE_DELIVERY_CHAT_TYPE?.trim();
   const threadId = env.AGENT_BRIDGE_DELIVERY_THREAD_ID?.trim();

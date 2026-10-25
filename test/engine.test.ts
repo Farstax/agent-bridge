@@ -1875,6 +1875,8 @@ describe("BridgeEngine", () => {
       for (const capturedPrompt of capturedPrompts) {
         expect(capturedPrompt).toContain("[Agent Bridge outcome]");
         expect(capturedPrompt).toContain("$AGENT_BRIDGE_OUTCOME_COMMAND");
+        expect(capturedPrompt).toContain("continue --at");
+        expect(capturedPrompt).toContain("--after-seconds 60");
         expect(capturedPrompt).not.toContain("AGENT_BRIDGE_WAIT_SCRIPT");
         expect(capturedPrompt).not.toContain("node_modules/.bin/tsx");
         expect((capturedPrompt.match(/\[Agent Bridge outcome\]/g) ?? [])).toHaveLength(1);
