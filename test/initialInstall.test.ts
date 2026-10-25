@@ -221,10 +221,10 @@ print(json.dumps({"calls": calls}))
       "autonomous-work",
       "scheduled-routines",
       "sensors",
-      "advisor",
       "engineering-retro",
     ];
-    expect(result.calls).toHaveLength(defaults.length * 2);
+    expect(result.calls).toHaveLength(defaults.length * 2 + 1);
+    expect(result.calls.at(-1)).toEqual(expect.arrayContaining(["uninstall", "advisor"]));
     for (const [index, skill] of defaults.entries()) {
       const install = result.calls[index];
       const verify = result.calls[index + defaults.length];
@@ -265,7 +265,7 @@ def run_as_runtime_user(command, **kwargs):
   for entry in command[5:node_index]:
     key, value = entry.split("=", 1)
     child_env[key] = value
-  return real_run(command[node_index:], check=True, capture_output=True, text=True, env=child_env)
+  return real_run(command[node_index:], check=kwargs.get("check", True), capture_output=True, text=True, env=child_env)
 pathlib.Path.exists = catalogue_exists
 module.subprocess.run = run_as_runtime_user
 account = type("Account", (), {"pw_name": "agentbridge", "pw_dir": str(runtime_home)})()
@@ -277,7 +277,7 @@ finally:
 print(json.dumps({"commands": len(commands)}))
 `) as { commands: number };
 
-      expect(result.commands).toBe(defaults.length * 2);
+      expect(result.commands).toBe(defaults.length * 2 + 1);
       const lockfile = JSON.parse(readFileSync(join(home, ".agents/.skill-lock.json"), "utf8"));
       for (const skill of defaults) {
         const shared = join(home, ".agents/skills", skill);

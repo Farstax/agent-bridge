@@ -29,7 +29,7 @@ if [[ -z "${NODE_BIN:-}" ]]; then
     NODE_BIN="$(find "${TARGET_HOME}/.nvm/versions/node" -maxdepth 3 -name node -type f 2>/dev/null | sort -t/ -k7 -V | tail -1 || true)"
   fi
 fi
-DEFAULT_AGENT_BRIDGE_SKILLS="red-green-refactor-tdd,requirements-to-acceptance,release-readiness-review,systematic-debugging,delivery-directives,manage-skills,manage-mcp,ui-engineering,autonomous-work,advisor,engineering-retro,scheduled-routines,sensors"
+DEFAULT_AGENT_BRIDGE_SKILLS="red-green-refactor-tdd,requirements-to-acceptance,release-readiness-review,systematic-debugging,delivery-directives,manage-skills,manage-mcp,ui-engineering,autonomous-work,engineering-retro,scheduled-routines,sensors"
 
 if [[ -z "${NODE_BIN}" ]]; then
   echo "node not found on PATH" >&2
@@ -202,9 +202,6 @@ install_shared_skills() {
   if [[ ",${skills_csv}," != *",autonomous-work,"* ]]; then
     skills_csv="${skills_csv},autonomous-work"
   fi
-  if [[ ",${skills_csv}," != *",advisor,"* ]]; then
-    skills_csv="${skills_csv},advisor"
-  fi
   if [[ ",${skills_csv}," != *",scheduled-routines,"* ]]; then
     skills_csv="${skills_csv},scheduled-routines"
   fi
@@ -224,6 +221,10 @@ install_shared_skills() {
   for skill in "${skills[@]}"; do
     skill="$(echo "${skill}" | xargs)"
     [[ -n "${skill}" ]] || continue
+    if [[ "${skill}" == "advisor" ]]; then
+      echo "Skipping retired Advisor skill"
+      continue
+    fi
     echo "Installing shared skill: ${skill} (${link_mode})"
     if [[ "${USER}" == "${TARGET_USER}" ]]; then
       (cd "${REPO_DIR}" && SHARED_MEMORY_HOME="${TARGET_HOME}" "${NODE_BIN}" ./node_modules/tsx/dist/cli.mjs scripts/skill-manager.ts install "${skill}" --force --link-mode "${link_mode}")
@@ -232,6 +233,14 @@ install_shared_skills() {
         bash -c 'cd "$1" && "$NODE_BIN" ./node_modules/tsx/dist/cli.mjs scripts/skill-manager.ts install "$2" --force --link-mode "$3"' bash "${REPO_DIR}" "${skill}" "${link_mode}"
     fi
   done
+  # Retired bundled skill: remove only a bundled-owned projection through the
+  # ownership-aware uninstall path. User-owned or absent entries are left alone.
+  if [[ "${USER}" == "${TARGET_USER}" ]]; then
+    (cd "${REPO_DIR}" && SHARED_MEMORY_HOME="${TARGET_HOME}" "${NODE_BIN}" ./node_modules/tsx/dist/cli.mjs scripts/skill-manager.ts uninstall advisor) >/dev/null 2>&1 || true
+  else
+    sudo -u "${TARGET_USER}" env HOME="${TARGET_HOME}" SHARED_MEMORY_HOME="${TARGET_HOME}" NODE_BIN="${NODE_BIN}" \
+      bash -c 'cd "$1" && "$NODE_BIN" ./node_modules/tsx/dist/cli.mjs scripts/skill-manager.ts uninstall advisor' bash "${REPO_DIR}" >/dev/null 2>&1 || true
+  fi
 }
 
 require_node

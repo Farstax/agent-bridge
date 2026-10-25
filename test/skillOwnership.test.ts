@@ -80,6 +80,28 @@ describe("skill ownership", () => {
     expect(migrated.skills.advisor.ownership).toBe("bundled");
   });
 
+  it("retires a legacy bundled advisor projection but refuses a user-owned one", () => {
+    const home = makeTempDir("retire-advisor-home");
+    const repo = makeTempDir("retire-advisor-repo");
+    const paths = resolveSkillPaths(home);
+    writeSkill(join(repo, "skills", "advisor"), "advisor", "Legacy.\n");
+    installSkillGlobal("advisor", { homeDir: home, repoRoot: repo });
+    const lock = JSON.parse(readFileSync(paths.lockfilePath, "utf8"));
+    delete lock.skills.advisor.ownership;
+    lock.version = 3;
+    writeFileSync(paths.lockfilePath, `${JSON.stringify(lock, null, 2)}\n`);
+    rmSync(join(repo, "skills", "advisor"), { recursive: true, force: true });
+
+    uninstallSkillGlobal("advisor", { homeDir: home });
+    expect(existsSync(join(paths.agentsSkillsDir, "advisor"))).toBe(false);
+    expect(JSON.parse(readFileSync(paths.lockfilePath, "utf8")).skills?.advisor).toBeUndefined();
+
+    writeSkill(join(repo, "skills", "advisor"), "advisor", "User copy.\n");
+    installSkillGlobal("advisor", { homeDir: home, repoRoot: repo, ownership: "user" });
+    expect(() => uninstallSkillGlobal("advisor", { homeDir: home })).toThrow(/Refusing to uninstall user-owned/);
+    expect(existsSync(join(paths.agentsSkillsDir, "advisor"))).toBe(true);
+  });
+
   it("does not let project-user take over a bundled-owned skill through a different catalog root", () => {
     const home = makeTempDir("bundled-owner-home");
     const bundledRepo = makeTempDir("bundled-owner-repo");

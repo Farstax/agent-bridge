@@ -44,7 +44,6 @@ DEFAULT_AGENT_BRIDGE_SKILLS = (
     "autonomous-work",
     "scheduled-routines",
     "sensors",
-    "advisor",
     "engineering-retro",
 )
 
@@ -91,9 +90,6 @@ SHARED_KEYS = (
     "AGENT_BRIDGE_AUTONOMY_MAX_CYCLES",
     "AGENT_BRIDGE_AUTONOMY_REQUIRE_EPISODE_APPROVAL",
     "AGENT_BRIDGE_AUTONOMY_MAX_EPISODES_PER_DAY",
-    "BRIDGE_ADVISOR_ENABLED", "BRIDGE_ADVISOR_CHAIN",
-    "BRIDGE_ADVISOR_MAX_CALLS_PER_TURN", "BRIDGE_ADVISOR_MAX_CALLS_PER_TASK",
-    "BRIDGE_ADVISOR_TIMEOUT_MS", "BRIDGE_ADVISOR_CONTEXT_MAX_CHARS",
     "AGENT_BRIDGE_SENSOR_CONFIG",
     "AGENT_BRIDGE_MAX_CONCURRENT_EXECUTIONS",
     "CODEX_ACP_COMMAND", "CODEX_ACP_ARGS", "CLAUDE_ACP_COMMAND", "CLAUDE_ACP_ARGS",
@@ -274,6 +270,8 @@ def install_shared_skills(
     skills = [name.strip() for name in configured.split(",") if name.strip()]
     if not skills:
         fail("AGENT_BRIDGE_SKILLS must name at least one skill, none, or skip")
+    # Legacy installations may still explicitly include this retired bundled skill.
+    skills = [name for name in skills if name != "advisor"]
     if "autonomous-work" not in skills:
         skills.append("autonomous-work")
     link_mode = env.get("AGENT_BRIDGE_SKILL_LINK_MODE", "symlink")
@@ -297,6 +295,9 @@ def install_shared_skills(
         subprocess.run([
             *command_prefix, "verify", skill,
         ], check=True, capture_output=True, text=True)
+    # Retired bundled skill: the ownership-aware uninstall refuses user-owned or
+    # unregistered entries, which are intentionally left untouched.
+    subprocess.run([*command_prefix, "uninstall", "advisor"], check=False, capture_output=True, text=True)
 
 
 def remove_bootstrapped_databases(databases: Sequence[Path]) -> None:

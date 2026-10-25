@@ -28,83 +28,6 @@ The Companion Runtime owns:
 - capability invocation through the Shared Runtime
 - response rendering and delivery
 
-## Frontier Advisor
-
-The optional advisor lets a standard executor consult up to two ordered
-frontier provider/model targets without changing its active provider or native
-session. It is disabled by default.
-
-- `manual`: explicit `/advisor ask|review|plan|debug` commands and direct agent
-  calls through `AGENT_BRIDGE_ADVISOR_COMMAND` invoke the advisor.
-- `suggest`: complex, risky, or stuck prompts pause for explicit approval.
-- `auto`: those prompts consult the advisor and fold structured guidance into
-  the executor prompt. Operational advisor failure is fail-open.
-
-Fallback occurs only for authentication, capacity, unavailable model/provider,
-timeout, transient failure, or invalid structured output. A valid opinion is
-never retried merely because the executor disagrees. The advisor is trusted for
-reasoning; merge, deploy, approval, deletion, final-message, and session
-authority remain with Agent Bridge and its existing gates.
-
-When agent-direct access is validly configured, bridge-spawned CLI agents
-receive only `AGENT_BRIDGE_ADVISOR_COMMAND` and an opaque, expiring
-`AGENT_BRIDGE_ADVISOR_CAPABILITY`. The prompt advertises this command:
-
-```bash
-"$AGENT_BRIDGE_ADVISOR_COMMAND" --mode review --task "Review this plan"
-```
-
-Supported agent modes are `plan`, `review`, `debug`, `risk`, and `decision`.
-The helper sends only capability, mode, and task to a bridge-owned Unix-socket
-broker. Scope, CLI identity, turn/task keys, repository path, enablement,
-budgets, chain, executable, timeout, and database remain server-side. A new
-turn revokes the previous capability; unused capabilities expire after ten
-minutes. Provider children receive no advisor configuration or capability.
-
-Every advisor entry point, including manual `/advisor` and agent
-capability requests — resolves through one `AdvisorService` and its single
-private execution path, under one `tool_free` execution profile. `/advisor`
-and bounded evidence requests call `requestTrusted()` in-process; the Unix-socket
-broker is only the untrusted cross-process adapter for CLI agents, and its
-`requestWithCapability()` merely authenticates a capability and reconstructs
-trusted scope before entering the same path. `tool_free` requires every chain
-target to support verified tool-disabled execution: Claude runs with
-`--tools ""`, while Codex and Agy fail closed until a verified
-tool-disabled adapter exists. A two-model chain may use two Claude models.
-
-### Configuration source and deployment drift
-
-The running service process is authoritative. Under systemd, shared values are
-loaded from `/etc/default/agent-bridge-shared` before the bot-specific defaults
-file; a bot-specific value with the same key overrides the shared value.
-Repository `.env.shared` is an editable source file, but changing it alone does
-not update an already-running systemd service.
-
-`/advisor status` reports the effective chain from the process environment. A
-running process does not retain which environment file supplied a value, so the
-status output separately lists readable configuration files whose chain matches
-the effective value. It does not claim that a matching file was necessarily the
-origin when the same value could also have come from a bot-specific override or
-direct process environment.
-
-When both repository `.env.shared` and `/etc/default/agent-bridge-shared` are
-readable, the command compares the bounded `BRIDGE_ADVISOR_*` configuration keys
-and emits a drift warning naming only the conflicting keys. It never displays
-tokens, unrelated environment values, or file contents. If both files cannot be
-read, drift is reported as not evaluated rather than as a false clean result.
-
-After changing advisor configuration for a systemd deployment:
-
-1. update `/etc/default/agent-bridge-shared` through the approved installer or
-   deployment path;
-2. run `systemctl daemon-reload` when unit files changed;
-3. restart the affected Agent Bridge services;
-4. run `/advisor status` and confirm the effective chain, matching files, and
-   absence of drift warnings.
-
-Unreadable or absent source files are reported only as unavailable evidence;
-they do not create a false drift warning.
-
 ## Flow
 
 ```text
@@ -155,7 +78,7 @@ The canonical continuity design is `docs/architecture/memory-and-handoff.md`.
 
 Fresh-only Soul, managed workspace context, handoff, and retained history remain one-time (see above). Independently of that, ordinary tool-enabled main-lane operator turns on the acting Run path — both fresh and resumed provider sessions — receive a concise, provider-neutral delegation/execution contract (`src/promptWrapping.ts::SESSION_EXECUTION_CONTRACT`, seeded through `src/cli.ts::seedFreshExecutionContract()`). It teaches the provider to treat the operator request as an objective it owns, to prefer acting/inspecting/waiting/retrying/repairing/validating over handing routine next steps back, to treat a fixable in-scope problem as work rather than a blocker, and to hand control back only for a genuine operator dependency (missing information, authority, credentials, a product decision, or an unauthorised irreversible/external-facing action).
 
-This is prompt/authority-contract posture, not workflow machinery: there is no task state machine, completion classifier, Worker abstraction, scheduler, or automatic Run-loop. Tool-free/advisory execution — `/btw` and the Frontier Advisor — is explicitly excluded (`toolMode: "none"`), since those paths must not act on shared provider state.
+This is prompt/authority-contract posture, not workflow machinery: there is no task state machine, completion classifier, Worker abstraction, scheduler, or automatic Run-loop. Tool-free execution (`/btw`) is explicitly excluded (`toolMode: "none"`), since that path must not act on shared provider state.
 
 ## Explicit Non-Responsibilities
 
