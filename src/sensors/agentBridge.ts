@@ -2,7 +2,7 @@ import { existsSync } from "node:fs";
 import type { Sensor, SensorReport, SensorCheck } from "./types.js";
 import { normalizeSensorReport } from "./report.js";
 import type { BridgeDb } from "../db.js";
-import { getInstalledQualificationStatus, readInstalledProviderVersions } from "../providers/qualificationStatus.js";
+import { readInstalledProviderVersions } from "../providers/qualificationStatus.js";
 import { resolveProviderRuntime } from "../providers/acpRuntime.js";
 import { getProviderRuntimeAuthDegradedProviders } from "../providers/runtimeAvailability.js";
 import type { ProviderId } from "../providers/types.js";
@@ -98,13 +98,8 @@ export class AgentBridgeSensor implements Sensor {
         : "Provider runtime authentication healthy",
     });
 
-    for (const qualification of getInstalledQualificationStatus(undefined, runtimeVersions)) {
-      checks.push({
-        name: `provider-qualification-${qualification.provider}`,
-        status: qualification.status,
-        message: qualification.message,
-      });
-    }
+    // Provider qualification is release/CI evidence, not live runtime state.
+    // Hosts that did not run qualification have no evidence, so it is not sensed here.
 
     const worst = checks.some(c => c.status === "red") ? "red"
                 : checks.some(c => c.status === "amber") ? "amber"
