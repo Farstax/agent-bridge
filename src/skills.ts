@@ -215,9 +215,14 @@ export function installSkillGlobal(skillName: string, options: InstallSkillOptio
   for (const nativeDir of nativeSkillDirs(paths)) {
     assertReplaceableManagedProjection(join(nativeDir, skillName), sharedDir, previous);
   }
+  const cursorPath = join(paths.cursorSkillsDir, skillName);
   if (options.projectCursor && previous?.cursorProjected === true) {
-    assertReplaceableManagedProjection(join(paths.cursorSkillsDir, skillName), sharedDir, previous);
+    assertReplaceableManagedProjection(cursorPath, sharedDir, previous);
   }
+  // A managed Cursor copy follows its bundled Skill on update. A copy the user
+  // changed no longer matches the recorded hash and is left untouched.
+  const refreshManagedCursorCopy = !options.projectCursor && previous?.cursorProjected === true
+    && previous.linkMode === "copy" && isManagedProjection(cursorPath, sharedDir, previous);
 
   if (destinationExists) {
     const currentHash = hashDirectory(destDir);
@@ -249,7 +254,8 @@ export function installSkillGlobal(skillName: string, options: InstallSkillOptio
 
   writeJsonAtomic(paths.lockfilePath, lockfile);
 
-  if (options.projectCursor) {
+  if (refreshManagedCursorCopy) rmSync(cursorPath, { recursive: true, force: true });
+  if (options.projectCursor || refreshManagedCursorCopy) {
     projectManagedSkillToCursor(skillName, {
       homeDir: options.homeDir,
       linkMode,
@@ -602,21 +608,21 @@ function projectNativeSkill(input: { skillName: string; sharedDir: string; nativ
   symlinkSync(target, nativePath, "dir");
 }
 
+function isManagedProjection(nativePath: string, sharedDir: string, record: SkillLockRecord): boolean {
+  if (!pathExists(nativePath)) return false;
+  if (record.linkMode !== "copy") return isExpectedNativeEntry(nativePath, sharedDir, "symlink");
+  try {
+    return Boolean(record.skillFolderHash) && lstatSync(nativePath).isDirectory() && hashDirectory(nativePath) === record.skillFolderHash;
+  } catch {
+    return false;
+  }
+}
+
 function assertReplaceableManagedProjection(nativePath: string, sharedDir: string, record: SkillLockRecord | undefined): void {
   if (!pathExists(nativePath)) return;
-  if (!record) throw new Error(`Refusing to overwrite an unmanaged skill path: ${nativePath}`);
-
-  const previousMode = record.linkMode === "copy" ? "copy" : "symlink";
-  const previouslyManaged = previousMode === "symlink"
-    ? isExpectedNativeEntry(nativePath, sharedDir, "symlink")
-    : Boolean(record.skillFolderHash) && (() => {
-      try {
-        return lstatSync(nativePath).isDirectory() && hashDirectory(nativePath) === record.skillFolderHash;
-      } catch {
-        return false;
-      }
-    })();
-  if (!previouslyManaged) throw new Error(`Refusing to overwrite an unmanaged skill path: ${nativePath}`);
+  if (!record || !isManagedProjection(nativePath, sharedDir, record)) {
+    throw new Error(`Refusing to overwrite an unmanaged skill path: ${nativePath}`);
+  }
 }
 
 function isExpectedNativeEntry(nativePath: string, sharedDir: string, linkMode: SkillLinkMode): boolean {

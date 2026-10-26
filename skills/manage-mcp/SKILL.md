@@ -63,6 +63,8 @@ For headless web UI work, prefer the qualified Playwright MCP path when no stron
 
 The evidence captured for issue #554 qualified Playwright MCP `0.0.79` with headless Chromium. On 2026-10-06 the same server passed a deterministic click/form/submit fixture through ordinary Agent Bridge ACP turns for Codex, Agy, Grok (user scope) and Cursor (project `mcp.json`). These are historical version-specific results, not proof for later CLI or ACP adapter versions. Keep `0.0.79` pinned until a newer version is requalified.
 
+Current first-use qualification (PR #1063, 2026-10-24): Codex ACP 2.2.2 and Cursor ACP 2026.10.01 passed setup, same-task continuation, repeat and cancel. Antigravity ACP 1.3.0 passed fresh-Run browser use but same-task continuation is unverified. Grok 1.0.50 is blocked on missing authentication. Claude Playwright on current versions has not been run. The remaining qualification is tracked in Platform #931.
+
 For a first-use UI task, inspect the current Agent Bridge ACP session for an already usable browser tool, then inspect the selected provider's native MCP configuration. Do not infer ACP availability from a standalone provider command, an MCP list, or a package/browser cache. If registration is absent, configure only the selected provider with its native interface. Reuse an exact compatible cached package and browser when present. Otherwise use the pinned package below; do not use `latest` or install a separate browser framework. Before downloading Chromium, read the `playwright` dependency version declared by the selected `@playwright/mcp` release. Reuse a compatible system Chrome/Chromium when that Playwright version supports it; otherwise install only its matching Chromium build with `npx --yes playwright@<matching-version> install chromium`. Do not download a browser when an existing compatible one works.
 
 Use the provider's normal user-level configuration so the registration is not committed to the UI project. Provider syntax changes over time, so check the installed CLI's `mcp add` help before using these forms:
@@ -72,7 +74,7 @@ Use the provider's normal user-level configuration so the registration is not co
 codex mcp add playwright -- npx --yes @playwright/mcp@0.0.79 --headless --isolated --timeout-action 10000 --timeout-navigation 30000
 
 # Agy
-agy mcp add playwright npx --yes @playwright/mcp@0.0.79 --headless --isolated --timeout-action 10000 --timeout-navigation 30000
+agy mcp add playwright -- npx --yes @playwright/mcp@0.0.79 --headless --isolated --timeout-action 10000 --timeout-navigation 30000
 
 # Grok Build. MCP calls require the existing trusted execution mode when the
 # operator's normal policy requires it.
