@@ -29,7 +29,7 @@ Output is capped at 32,000 characters and arrays are bounded. It deliberately om
 - `autonomy`: bounded Episode identity/status/cycle budget and pending wake receipt correlation without objective or constraint text.
 - `surfaces`: Telegram/Discord current-surface readiness without probing another surface.
 - `health`: current aggregate status from fresh recorded reports plus missing/stale plugin evidence; no new polling.
-- `knowledge`: installed/bundled Skills and discovery pointers for retained context, advisor, scheduled routines, supported providers, and supported chat surfaces.
+- `knowledge`: installed/bundled Skills and discovery pointers for retained context, scheduled routines, supported providers, and supported chat surfaces.
 - `capabilities`: bounded `id`, `owner`, `status`, `reasonCode`, `scope`, `risk`, `authorityRequired`, and `interface` metadata describing what is available here now. Capability metadata never grants authority.
 
 The `capabilities --json` form returns only runtime identity plus the capability index for cheaper discovery.

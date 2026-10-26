@@ -35,7 +35,7 @@ function executable(path: string, body: string): void {
   chmodSync(path, 0o755);
 }
 
-function createFixture(options: { allowlist?: string[]; preExisting?: boolean } = {}): Fixture {
+function createFixture(options: { allowlist?: string[]; preExisting?: boolean; nodeVersion?: string } = {}): Fixture {
   const root = mkdtempSync(join(tmpdir(), "agent-bridge-bootstrap-"));
   roots.push(root);
   const project = join(root, "project");
@@ -54,11 +54,12 @@ function createFixture(options: { allowlist?: string[]; preExisting?: boolean } 
   const newRolePath = join(dbDir, "new-role.sqlite");
   if (options.preExisting) writeFileSync(newRolePath, "already here");
 
+  if (options.nodeVersion) executable(join(root, "fake-node"), `#!/usr/bin/env bash\necho ${options.nodeVersion}\n`);
   const allowlist = options.allowlist ?? [`interactive:${newRolePath}`];
   writeFileSync(configFile, [
     `project_dir=${project}`,
     "runtime_user=rollout-test",
-    `node_bin=${process.execPath}`,
+    `node_bin=${options.nodeVersion ? join(root, "fake-node") : process.execPath}`,
     ...allowlist.map((entry) => `bootstrap_role=${entry}`),
     "",
   ].join("\n"), { mode: 0o600 });
@@ -116,6 +117,14 @@ describe("rollout-bootstrap.sh", () => {
     const db = new Database(fixture.newRolePath, { readonly: true });
     expect(Number(db.pragma("user_version", { simple: true }))).toBeGreaterThan(0);
     db.close();
+  });
+
+  it.each(["24.22.0", "24.15.0", "25.9.0"])("refuses a configured Node.js %s before touching any database", (version) => {
+    const fixture = createFixture({ nodeVersion: version });
+    const res = runBootstrapHelper(fixture, "interactive", fixture.newRolePath, fixture.newRolePath);
+    expect(res.status).not.toBe(0);
+    expect(res.stderr).toContain(`configured Node.js ${version} is unsupported or has known vulnerabilities`);
+    expect(existsSync(fixture.newRolePath)).toBe(false);
   });
 
   it("refuses an unrecognized role name", () => {

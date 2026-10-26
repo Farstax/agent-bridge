@@ -76,6 +76,7 @@ export async function verifyClaudeAcpApiKey(
 function sessionSettings(
   request: ProviderInvocationRequest,
   env: Record<string, string | undefined>,
+  cwd?: string,
 ): AcpProviderSessionSettings {
   const config = acpSessionConfigIntents("claude", request, {
     model: splitPreference(env.CLAUDE_MODEL_PREFERENCE),
@@ -96,10 +97,11 @@ function sessionSettings(
           // that the Claude SDK evaluates before canUseTool. Exclude them so a
           // repository cannot bypass Agent Bridge's ACP permission decision.
           // strictMcpConfig keeps Claude from merging those files' MCP servers.
-          // The explicit map is only the workspace projection helper's servers.
+          // The explicit map holds Bridge-managed servers and, in trusted Runs,
+          // servers the agent registered in Claude's user/local scope.
           settingSources: [],
           strictMcpConfig: true,
-          mcpServers: request.toolMode === "none" ? {} : loadProjectedClaudeMcpServers(env),
+          mcpServers: request.toolMode === "none" ? {} : loadProjectedClaudeMcpServers(env, { cwd, executionMode: request.executionMode }),
           ...(request.toolMode === "none" ? { tools: [] } : {}),
         },
       },
@@ -198,7 +200,7 @@ export const claudeAcpPolicy: AcpProviderPolicy = {
   providerId: "claude",
   registryAgentId: "claude-acp",
   toolFree: true,
-  // Issue #748: claude-agent-acp@0.89.1 carries the host-owned idle fallback
+  // Issue #748: claude-agent-acp@0.89.1+ carries the host-owned idle fallback
   // (upstream fix agentclientprotocol/claude-agent-acp#919) — on an idle
   // session with `idleBehavior: "promptRequired"` it returns `promptRequired`
   // without starting any detached work, so Bridge safely keeps ownership of

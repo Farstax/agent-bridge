@@ -50,8 +50,8 @@ export interface ProviderInvocationRequest {
   command: string;
   model: string | null;
   /**
-   * ACP-only: this model is a required caller target (for example an Advisor
-   * provider:model target), not a stale-tolerant interactive user override.
+   * ACP-only: this model is a required caller target, not a stale-tolerant
+   * interactive user override.
    */
   modelRequired?: boolean;
   executionMode: "safe" | "trusted";

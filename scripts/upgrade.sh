@@ -3,7 +3,21 @@ set -euo pipefail
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SYSTEMD_DIR="/etc/systemd/system"
-NODE_MIN_MAJOR=24
+# Security floors per supported Node.js line (October 2026 security releases).
+NODE_SECURITY_FLOORS="24.22.1 26.12.1"
+node_version_admitted() {
+  local version="$1" floor major minor patch floor_major floor_minor floor_patch
+  [[ "$version" =~ ^v?([0-9]+)\.([0-9]+)\.([0-9]+)$ ]] || return 1
+  major=$((10#${BASH_REMATCH[1]})); minor=$((10#${BASH_REMATCH[2]})); patch=$((10#${BASH_REMATCH[3]}))
+  for floor in $NODE_SECURITY_FLOORS; do
+    IFS=. read -r floor_major floor_minor floor_patch <<<"$floor"
+    if (( major == floor_major )); then
+      (( minor > floor_minor || (minor == floor_minor && patch >= floor_patch) ))
+      return
+    fi
+  done
+  return 1
+}
 TARGET_USER="${SUDO_USER:-$(whoami)}"
 TARGET_HOME="$(getent passwd "${TARGET_USER}" | cut -d: -f6)"
 
@@ -15,7 +29,7 @@ if [[ -z "${NODE_BIN:-}" ]]; then
     NODE_BIN="$(find "${TARGET_HOME}/.nvm/versions/node" -maxdepth 3 -name node -type f 2>/dev/null | sort -t/ -k7 -V | tail -1 || true)"
   fi
 fi
-DEFAULT_AGENT_BRIDGE_SKILLS="red-green-refactor-tdd,requirements-to-acceptance,release-readiness-review,systematic-debugging,delivery-directives,manage-skills,manage-mcp,ui-engineering,autonomous-work,advisor,engineering-retro,scheduled-routines,sensors"
+DEFAULT_AGENT_BRIDGE_SKILLS="red-green-refactor-tdd,requirements-to-acceptance,release-readiness-review,systematic-debugging,delivery-directives,manage-skills,manage-mcp,ui-engineering,autonomous-work,engineering-retro,scheduled-routines,sensors"
 
 if [[ -z "${NODE_BIN}" ]]; then
   echo "node not found on PATH" >&2
@@ -24,15 +38,14 @@ fi
 
 require_node() {
   if [[ -z "${NODE_BIN}" || ! -x "${NODE_BIN}" ]]; then
-    echo "Node.js ${NODE_MIN_MAJOR}+ is required." >&2
+    echo "A patched Node.js runtime is required (minimum per line: ${NODE_SECURITY_FLOORS})." >&2
     exit 1
   fi
 
-  local version major
+  local version
   version="$("${NODE_BIN}" -p 'process.versions.node')"
-  major="${version%%.*}"
-  if (( major < NODE_MIN_MAJOR )); then
-    echo "Node.js ${NODE_MIN_MAJOR}+ is required. Found ${version}." >&2
+  if ! node_version_admitted "${version}"; then
+    echo "Node.js ${version} at ${NODE_BIN} is unsupported or has known vulnerabilities. Required minimum per line: ${NODE_SECURITY_FLOORS}." >&2
     exit 1
   fi
 }
@@ -189,9 +202,6 @@ install_shared_skills() {
   if [[ ",${skills_csv}," != *",autonomous-work,"* ]]; then
     skills_csv="${skills_csv},autonomous-work"
   fi
-  if [[ ",${skills_csv}," != *",advisor,"* ]]; then
-    skills_csv="${skills_csv},advisor"
-  fi
   if [[ ",${skills_csv}," != *",scheduled-routines,"* ]]; then
     skills_csv="${skills_csv},scheduled-routines"
   fi
@@ -211,6 +221,10 @@ install_shared_skills() {
   for skill in "${skills[@]}"; do
     skill="$(echo "${skill}" | xargs)"
     [[ -n "${skill}" ]] || continue
+    if [[ "${skill}" == "advisor" ]]; then
+      echo "Skipping retired Advisor skill"
+      continue
+    fi
     echo "Installing shared skill: ${skill} (${link_mode})"
     if [[ "${USER}" == "${TARGET_USER}" ]]; then
       (cd "${REPO_DIR}" && SHARED_MEMORY_HOME="${TARGET_HOME}" "${NODE_BIN}" ./node_modules/tsx/dist/cli.mjs scripts/skill-manager.ts install "${skill}" --force --link-mode "${link_mode}")
@@ -219,6 +233,14 @@ install_shared_skills() {
         bash -c 'cd "$1" && "$NODE_BIN" ./node_modules/tsx/dist/cli.mjs scripts/skill-manager.ts install "$2" --force --link-mode "$3"' bash "${REPO_DIR}" "${skill}" "${link_mode}"
     fi
   done
+  # Retired bundled skill: remove only a bundled-owned projection through the
+  # ownership-aware uninstall path. User-owned or absent entries are left alone.
+  if [[ "${USER}" == "${TARGET_USER}" ]]; then
+    (cd "${REPO_DIR}" && SHARED_MEMORY_HOME="${TARGET_HOME}" "${NODE_BIN}" ./node_modules/tsx/dist/cli.mjs scripts/skill-manager.ts uninstall advisor) >/dev/null 2>&1 || true
+  else
+    sudo -u "${TARGET_USER}" env HOME="${TARGET_HOME}" SHARED_MEMORY_HOME="${TARGET_HOME}" NODE_BIN="${NODE_BIN}" \
+      bash -c 'cd "$1" && "$NODE_BIN" ./node_modules/tsx/dist/cli.mjs scripts/skill-manager.ts uninstall advisor' bash "${REPO_DIR}" >/dev/null 2>&1 || true
+  fi
 }
 
 require_node

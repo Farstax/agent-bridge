@@ -76,10 +76,10 @@ export function linkScheduledOccurrenceRun(db: BridgeDb, key: string, runId: str
     const row = db.raw.prepare("SELECT value FROM settings WHERE key = ?").get(key) as { value?: string } | undefined;
     const evidence = parseScheduledOccurrenceEvidence(row?.value);
     if (!row?.value || !evidence) return false;
-    if (evidence.runId === runId) return true;
-    if (evidence.runId && !canReplaceLinkedRun(db, evidence.runId)) return false;
     const run = db.getRun(runId);
     const status = run?.status === "done" ? "completed" : run?.status === "failed" ? "failed" : run?.status === "cancelled" ? "fenced" : "running";
+    if (evidence.runId === runId && evidence.status === status && evidence.error === run?.error) return true;
+    if (evidence.runId && evidence.runId !== runId && !canReplaceLinkedRun(db, evidence.runId)) return false;
     const next = encodeScheduledOccurrenceEvidence(evidence.claimedAt, runId, status, run?.error ?? undefined);
     return db.raw.prepare("UPDATE settings SET value = ? WHERE key = ? AND value = ?")
       .run(next, key, row.value).changes === 1;

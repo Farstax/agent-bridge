@@ -88,22 +88,19 @@ afterEach(async () => {
 });
 
 describe("1. env-scrub parity", () => {
-  it("runCli and runCliAsync apply identical Telegram-secret and advisor-secret scrubbing", async () => {
+  it("runCli and runCliAsync apply identical Telegram-secret scrubbing", async () => {
     const envDump = "console.log(JSON.stringify(process.env))";
     const fakeEnv = {
       ...process.env,
       TELEGRAM_BOT_TOKEN: "leaked-telegram-secret",
       TELEGRAM_ALLOWED_USER_IDS: "123,456",
-      AGENT_BRIDGE_ADVISOR_CAPABILITY: "leaked-advisor-capability",
-      BRIDGE_ADVISOR_ENABLED: "true",
-      BRIDGE_ADVISOR_API_KEY: "leaked-advisor-key",
     };
     const previous = { ...process.env };
     Object.assign(process.env, fakeEnv);
     try {
       const [syncRaw, asyncRaw] = await Promise.all([
-        runCli(process.execPath, ["-e", envDump], cliTestCwd, { advisorChild: true }),
-        runCliAsync(process.execPath, ["-e", envDump], cliTestCwd, { advisorChild: true }),
+        runCli(process.execPath, ["-e", envDump], cliTestCwd, {}),
+        runCliAsync(process.execPath, ["-e", envDump], cliTestCwd, {}),
       ]);
       const syncEnv = JSON.parse(syncRaw);
       const asyncEnv = JSON.parse((asyncRaw as { text: string }).text);
@@ -111,9 +108,6 @@ describe("1. env-scrub parity", () => {
       for (const env of [syncEnv, asyncEnv]) {
         expect(env.TELEGRAM_BOT_TOKEN).toBeUndefined();
         expect(env.TELEGRAM_ALLOWED_USER_IDS).toBeUndefined();
-        expect(env.AGENT_BRIDGE_ADVISOR_CAPABILITY).toBeUndefined();
-        expect(env.BRIDGE_ADVISOR_ENABLED).toBeUndefined();
-        expect(env.BRIDGE_ADVISOR_API_KEY).toBeUndefined();
       }
       expect(Object.keys(syncEnv).sort()).toEqual(Object.keys(asyncEnv).sort());
     } finally {

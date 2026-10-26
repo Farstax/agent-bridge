@@ -44,7 +44,6 @@ DEFAULT_AGENT_BRIDGE_SKILLS = (
     "autonomous-work",
     "scheduled-routines",
     "sensors",
-    "advisor",
     "engineering-retro",
 )
 
@@ -91,9 +90,6 @@ SHARED_KEYS = (
     "AGENT_BRIDGE_AUTONOMY_MAX_CYCLES",
     "AGENT_BRIDGE_AUTONOMY_REQUIRE_EPISODE_APPROVAL",
     "AGENT_BRIDGE_AUTONOMY_MAX_EPISODES_PER_DAY",
-    "BRIDGE_ADVISOR_ENABLED", "BRIDGE_ADVISOR_CHAIN",
-    "BRIDGE_ADVISOR_MAX_CALLS_PER_TURN", "BRIDGE_ADVISOR_MAX_CALLS_PER_TASK",
-    "BRIDGE_ADVISOR_TIMEOUT_MS", "BRIDGE_ADVISOR_CONTEXT_MAX_CHARS",
     "AGENT_BRIDGE_SENSOR_CONFIG",
     "AGENT_BRIDGE_MAX_CONCURRENT_EXECUTIONS",
     "CODEX_ACP_COMMAND", "CODEX_ACP_ARGS", "CLAUDE_ACP_COMMAND", "CLAUDE_ACP_ARGS",
@@ -274,6 +270,8 @@ def install_shared_skills(
     skills = [name.strip() for name in configured.split(",") if name.strip()]
     if not skills:
         fail("AGENT_BRIDGE_SKILLS must name at least one skill, none, or skip")
+    # Legacy installations may still explicitly include this retired bundled skill.
+    skills = [name for name in skills if name != "advisor"]
     if "autonomous-work" not in skills:
         skills.append("autonomous-work")
     link_mode = env.get("AGENT_BRIDGE_SKILL_LINK_MODE", "symlink")
@@ -297,6 +295,9 @@ def install_shared_skills(
         subprocess.run([
             *command_prefix, "verify", skill,
         ], check=True, capture_output=True, text=True)
+    # Retired bundled skill: the ownership-aware uninstall refuses user-owned or
+    # unregistered entries, which are intentionally left untouched.
+    subprocess.run([*command_prefix, "uninstall", "advisor"], check=False, capture_output=True, text=True)
 
 
 def remove_bootstrapped_databases(databases: Sequence[Path]) -> None:
@@ -391,6 +392,19 @@ def install_file(source: Path, destination: Path, mode: int) -> None:
         temporary.unlink(missing_ok=True)
 
 
+# Security floors per supported Node.js line (October 2026 security releases).
+NODE_SECURITY_FLOORS = {24: (24, 22, 1), 26: (26, 12, 1)}
+
+
+def node_version_admitted(version: str) -> bool:
+    match = re.fullmatch(r"v?(\d+)\.(\d+)\.(\d+)", version)
+    if not match:
+        return False
+    parsed = tuple(int(part) for part in match.groups())
+    floor = NODE_SECURITY_FLOORS.get(parsed[0])
+    return floor is not None and parsed >= floor
+
+
 def validate_host(runtime_user: str, node_bin: Path) -> pwd.struct_passwd:
     if not USERNAME.fullmatch(runtime_user) or runtime_user == "root":
         fail("runtime user must be an existing non-root account")
@@ -401,14 +415,15 @@ def validate_host(runtime_user: str, node_bin: Path) -> pwd.struct_passwd:
     if not node_bin.is_absolute() or node_bin.is_symlink() or not node_bin.is_file() or not os.access(node_bin, os.X_OK):
         fail("node binary must be an absolute executable regular non-symlink file")
     try:
-        major = int(subprocess.run(
-            [str(node_bin), "-p", "process.versions.node.split('.')[0]"],
+        version = subprocess.run(
+            [str(node_bin), "-p", "process.versions.node"],
             check=True, capture_output=True, text=True,
-        ).stdout.strip())
-    except (OSError, ValueError, subprocess.CalledProcessError) as error:
+        ).stdout.strip()
+    except (OSError, subprocess.CalledProcessError) as error:
         fail(f"unable to validate Node.js: {error}")
-    if major < 24:
-        fail(f"Node.js 24+ is required; found major {major}")
+    if not node_version_admitted(version):
+        floors = " ".join(".".join(map(str, floor)) for floor in NODE_SECURITY_FLOORS.values())
+        fail(f"Node.js {version} is unsupported or has known vulnerabilities; required minimum per line: {floors}")
     sudo_check = subprocess.run(
         ["/usr/sbin/runuser", "--user", runtime_user, "--", "/usr/bin/sudo", "-k", "-n", "true"],
         check=False, capture_output=True, text=True, timeout=5,

@@ -22,7 +22,7 @@ export interface AcpSessionConfigIntent {
   readonly preferredValues?: readonly string[];
   /** Explicit Bridge policy to leave the provider's current/default value untouched. */
   readonly useProviderDefault?: boolean;
-  /** Required callers (for example Advisor provider:model targets) fail closed. */
+  /** Required callers (an explicit provider:model target) fail closed. */
   readonly required?: boolean;
 }
 
@@ -146,7 +146,7 @@ export function acpSessionConfigIntents(
   preferences: AcpSessionConfigPreferences = {},
 ): readonly AcpSessionConfigIntent[] {
   const intents: AcpSessionConfigIntent[] = [];
-  // Required caller targets (notably Advisor provider:model) are explicit
+  // Required caller targets (an explicit provider:model) are explicit
   // authority and must not be shadowed by the interactive user's default choice.
   const forceModelDefault = !request.modelRequired && hasAcpProviderDefaultIntent(providerId, "model");
   const modelPreference = forceModelDefault ? [] : preferences.model ?? [];

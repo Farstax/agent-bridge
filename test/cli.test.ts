@@ -1,6 +1,6 @@
 import { describe, expect, it, vi, afterAll, afterEach } from "vitest";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { runCli, runCliAsync, abortCliProcess, abortCliProcessAndWait, shutdownCliProcesses, shutdownCliProcessesAndWait, isCapacityExhaustedError, getNextFallbackModel, parseCliResult, buildCliInvocation, buildSafeChildEnv, buildAdvisorChildEnv } from "../src/cli.js";
+import { runCli, runCliAsync, abortCliProcess, abortCliProcessAndWait, shutdownCliProcesses, shutdownCliProcessesAndWait, isCapacityExhaustedError, getNextFallbackModel, parseCliResult, buildCliInvocation, buildSafeChildEnv } from "../src/cli.js";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -33,26 +33,6 @@ describe("CLI Runner", () => {
     expect(env.AGENT_BRIDGE_CONTEXT_AVAILABLE).toBe("1");
     expect(env.AGENT_BRIDGE_CONTEXT_COMMAND).toBe("agent-bridge-context");
     expect(env.AGENT_BRIDGE_CHAT_KEY).toBe("chat:1");
-  });
-
-  it("buildAdvisorChildEnv strips advisor capability and trusted configuration", () => {
-    const env = buildAdvisorChildEnv({
-      HOME: "/home/test",
-      PATH: "/bin",
-      ANTHROPIC_API_KEY: "provider-auth",
-      AGENT_BRIDGE_ADVISOR_CAPABILITY: "capability",
-      AGENT_BRIDGE_ADVISOR_COMMAND: "command",
-      BRIDGE_ADVISOR_ENABLED: "true",
-      BRIDGE_ADVISOR_CHAIN: "claude:model",
-      TELEGRAM_BOT_TOKEN: "telegram-secret",
-    });
-    expect(env.HOME).toBe("/home/test");
-    expect(env.ANTHROPIC_API_KEY).toBe("provider-auth");
-    expect(env.AGENT_BRIDGE_ADVISOR_CAPABILITY).toBeUndefined();
-    expect(env.AGENT_BRIDGE_ADVISOR_COMMAND).toBeUndefined();
-    expect(env.BRIDGE_ADVISOR_ENABLED).toBeUndefined();
-    expect(env.BRIDGE_ADVISOR_CHAIN).toBeUndefined();
-    expect(env.TELEGRAM_BOT_TOKEN).toBeUndefined();
   });
 
   it("rejects unsupported tool-free providers", () => {

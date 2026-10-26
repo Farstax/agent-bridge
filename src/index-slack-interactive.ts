@@ -27,9 +27,7 @@ import {
   dispatchInteractiveTurnWithFallback,
   type CliKind,
 } from "./interactiveBot.js";
-import { runCli } from "./cli.js";
 import type { BridgeConfig, BotKind } from "./types.js";
-import { startConfiguredAdvisorBroker } from "./advisorBroker.js";
 import { parseCliChain, interactiveChainKinds } from "./providers/selection.js";
 import { deriveConversationOwnerKey } from "./conversationOwnerKey.js";
 import { ScheduledRoutineRunner, buildScheduledInteractiveTurn } from "./scheduledRoutines.js";
@@ -160,7 +158,6 @@ try {
 } catch (error) {
   fail("database_unavailable", error instanceof Error ? error.message : "database unavailable", status);
 }
-const advisorBroker = await startConfiguredAdvisorBroker({ db, bots: config.bots, runCli });
 const executionCapacityDb = openExecutionCapacityCoordinator(executionCapacity, dbPath, db, {
   serviceId: "slack:interactive",
   installationId: process.env.AGENT_BRIDGE_INSTALLATION_ID,
@@ -184,7 +181,6 @@ const engines = Object.fromEntries(CLI_KINDS.map((kind) => [kind, new BridgeEngi
   pollIntervalMs: 1_000,
   soulContext,
   fullConfig: config,
-  advisorCapabilities: advisorBroker ?? undefined,
   maxConcurrentExecutions: executionCapacity.maxConcurrentExecutions,
   executionCapacityDb: executionCapacityDb ?? undefined,
   hooks: { onProviderFallbackRequested: async (chatKey, reason) => { fallbackRequests.set(chatKey, reason); } },
@@ -305,7 +301,6 @@ const shutdown = async (signal: string) => {
   await socket.disconnect().catch(() => undefined);
   status.stop("disconnected");
   shutdownCliProcesses();
-  await advisorBroker?.close();
   db.close();
   process.exit(0);
 };

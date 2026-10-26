@@ -21,6 +21,22 @@ umask 077
 # directory discipline, and coordination with the main rollout lock so a
 # bootstrap can never race an active migrate rollout.
 
+# Security floors per supported Node.js line (October 2026 security releases).
+NODE_SECURITY_FLOORS="24.22.1 26.12.1"
+node_version_admitted() {
+  local version="$1" floor major minor patch floor_major floor_minor floor_patch
+  [[ "$version" =~ ^v?([0-9]+)\.([0-9]+)\.([0-9]+)$ ]] || return 1
+  major=$((10#${BASH_REMATCH[1]})); minor=$((10#${BASH_REMATCH[2]})); patch=$((10#${BASH_REMATCH[3]}))
+  for floor in $NODE_SECURITY_FLOORS; do
+    IFS=. read -r floor_major floor_minor floor_patch <<<"$floor"
+    if (( major == floor_major )); then
+      (( minor > floor_minor || (minor == floor_minor && patch >= floor_patch) ))
+      return
+    fi
+  done
+  return 1
+}
+
 die() {
   echo "rollout-bootstrap: $*" >&2
   exit 1
@@ -106,6 +122,8 @@ done
 [[ -d "$project_dir" && ! -L "$project_dir" ]] || die "project directory is missing or symlinked"
 [[ "$(/usr/bin/realpath -e "$project_dir")" == "$project_dir" ]] || die "project directory is not canonical"
 [[ -x "$node_bin" && ! -L "$node_bin" ]] || die "configured Node binary is missing or symlinked"
+node_version="$("$node_bin" -p 'process.versions.node')" || die "unable to read configured Node.js version"
+node_version_admitted "$node_version" || die "configured Node.js $node_version is unsupported or has known vulnerabilities; required minimum per line: $NODE_SECURITY_FLOORS"
 [[ "$runtime_user" =~ ^[a-z_][a-z0-9_-]*[$]?$ ]] || die "invalid runtime user"
 if (( test_mode == 0 )); then /usr/bin/id -u "$runtime_user" >/dev/null || die "runtime user does not exist"; fi
 

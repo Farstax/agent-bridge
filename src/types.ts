@@ -138,8 +138,6 @@ export interface CliOptions {
   stdin?: string;
   /** Extra non-secret env vars to expose to the child CLI process. */
   contextEnv?: Record<string, string>;
-  /** Strip advisor authority from nested provider children. */
-  advisorChild?: boolean;
   bot?: RouteableBotKind;
   /** Context for BridgeEvent emission. When provided, runCliAsync emits lifecycle events. */
   eventContext?: { runId: string; bot: RouteableBotKind; chatId: string; chatKey: string; threadId?: string; serviceId?: string; acquisitionId?: string };

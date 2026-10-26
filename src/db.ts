@@ -22,7 +22,6 @@ import { AcpSessionRepository } from "./repositories/acpSessionRepository.js";
 import type { AcpSessionBinding } from "./acp/sessionMap.js";
 import { SettingsRepository } from "./repositories/settingsRepository.js";
 import { EventReceiptRepository } from "./repositories/eventReceiptRepository.js";
-import { AdvisorRepository } from "./repositories/advisorRepository.js";
 import { getRunOwnedProcessState } from "./runOwnedProcesses.js";
 
 type OrphanProcessState = "live" | "absent" | "ambiguous";
@@ -273,7 +272,6 @@ export class BridgeDb {
   private readonly settings: SettingsRepository;
   private readonly runs: RunRepository;
   private readonly eventReceipts: EventReceiptRepository;
-  private readonly advisorCalls: AdvisorRepository;
   private readonly conversations: ConversationRepository;
 
   constructor(raw: Database.Database, lockOptions: {
@@ -288,7 +286,6 @@ export class BridgeDb {
     this.settings = new SettingsRepository(raw);
     this.runs = new RunRepository(raw);
     this.eventReceipts = new EventReceiptRepository(raw);
-    this.advisorCalls = new AdvisorRepository(raw);
     this.conversations = new ConversationRepository(raw);
   }
 
@@ -409,33 +406,6 @@ export class BridgeDb {
 
   setSetting(key: string, value: string | null): void {
     this.settings.setSetting(key, value);
-  }
-
-  reserveAdvisorCall(input: {
-    requestId: string; scopeKey: string; turnKey?: string; taskKey?: string;
-    mode: string; trigger: string; contextChars: number;
-    maxCallsPerTurn: number; maxCallsPerTask: number;
-  }): boolean {
-    return this.advisorCalls.reserveAdvisorCall(input);
-  }
-
-  addAdvisorAttempt(input: {
-    requestId: string; ordinal: number; provider: string; model: string;
-    status: string; errorKind?: string; durationMs: number;
-  }): void {
-    this.advisorCalls.addAdvisorAttempt(input);
-  }
-
-  completeAdvisorCall(requestId: string, provider: string, model: string, confidence: string): void {
-    this.advisorCalls.completeAdvisorCall(requestId, provider, model, confidence);
-  }
-
-  failAdvisorCall(requestId: string, errorKind: string): void {
-    this.advisorCalls.failAdvisorCall(requestId, errorKind);
-  }
-
-  getAdvisorAttempts(requestId: string): Array<Record<string, unknown>> {
-    return this.advisorCalls.getAdvisorAttempts(requestId);
   }
 
   insertRun(

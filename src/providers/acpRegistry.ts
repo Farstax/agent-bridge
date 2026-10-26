@@ -67,14 +67,14 @@ const RELEASE_LOCKED_ACP_REGISTRY_ENTRIES: Readonly<Partial<Record<ProviderId, A
   claude: {
     id: "claude-acp",
     name: "Claude Agent",
-    version: "0.89.1",
+    version: "0.95.0",
     description: "ACP adapter for the Claude Agent SDK",
     repository: "https://github.com/agentclientprotocol/claude-agent-acp",
     license: "Apache-2.0",
-    license_url: "https://github.com/agentclientprotocol/claude-agent-acp/blob/v0.89.1/LICENSE",
+    license_url: "https://github.com/agentclientprotocol/claude-agent-acp/blob/v0.95.0/LICENSE",
     distribution: {
       npx: {
-        package: "@agentclientprotocol/claude-agent-acp@0.89.1",
+        package: "@agentclientprotocol/claude-agent-acp@0.95.0",
       },
     },
   },
@@ -126,8 +126,8 @@ const RELEASE_LOCKED_ACP_REGISTRY_ENTRIES: Readonly<Partial<Record<ProviderId, A
     distribution: {
       binary: {
         "linux-x86_64": {
-          archive: "https://downloads.cursor.com/lab/2026.10.01-14929f9/linux/x64/agent-cli-package.tar.gz",
-          sha256: "ba9a855f8f813c91b9f2707127572d2dc9ae5a62818e1c36719625d0fb8bd452",
+          archive: "https://downloads.cursor.com/lab/2026.10.22-27dcf5f/linux/x64/agent-cli-package.tar.gz",
+          sha256: "85296944e4600a83c4b764f578d1502bf9c416db200d33a593e8f3ecabfdc294",
           cmd: "./dist-package/cursor-agent",
           args: ["acp"],
         },

@@ -56,13 +56,9 @@ describe("systemd templates", () => {
     expect(shared).toContain("NODE_BIN");
   });
 
-  it("projects Claude Opus 5 as the primary advisor with Codex GPT-5.6 Sol fallback", () => {
-    // Fable 5 was unsuitable as the configured advisor; a fresh install
-    // (scripts/install.sh copies this file verbatim into .env.shared when
-    // no override already exists) must default new deployments to Opus 5.
+  it("ships no Advisor configuration in the shared environment example", () => {
     const shared = readFileSync(new URL("../.env.shared.example", import.meta.url), "utf8");
-    expect(shared).toContain("BRIDGE_ADVISOR_CHAIN=claude:claude-opus-5,codex:gpt-5.6-sol");
-    expect(shared).not.toContain("claude-fable-5");
+    expect(shared).not.toMatch(/ADVISOR/i);
   });
 
   it("all service templates include KillMode=control-group", () => {
@@ -86,10 +82,11 @@ describe("systemd templates", () => {
     }
   });
 
-  it("requires and records Node 24+ for service runtime", () => {
+  it("requires a patched Node runtime and records it for services", () => {
     const install = readFileSync(new URL("../scripts/install.sh", import.meta.url), "utf8");
 
-    expect(install).toContain("NODE_MIN_MAJOR=24");
+    expect(install).toContain("NODE_SECURITY_FLOORS=\"24.22.1 26.12.1\"");
+    expect(install).toContain("node_version_admitted \"${version}\"");
     expect(install).toContain("NODE_BIN=${NODE_BIN}");
     expect(install).toContain('"${NODE_BIN}" ./node_modules/tsx/dist/cli.mjs');
   });

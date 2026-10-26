@@ -367,7 +367,6 @@ function capabilityIndex(s: ReturnType<typeof scope>, env: Env, sk: ReturnType<t
   return [
     cap("runtime-inspection","ready",null,"runtime","read-only","none",`${inspect} --json`),
     cap("retained-context",scoped?"ready":"unavailable",scoped?null:"conversation_scope_unavailable","conversation","read-only","current conversation or proved owner",context),
-    cap("advisor",env.AGENT_BRIDGE_ADVISOR_COMMAND&&env.AGENT_BRIDGE_ADVISOR_CAPABILITY?"ready":"unavailable",env.AGENT_BRIDGE_ADVISOR_COMMAND&&env.AGENT_BRIDGE_ADVISOR_CAPABILITY?null:"turn_capability_unavailable","turn","read-only-advice","turn capability",env.AGENT_BRIDGE_ADVISOR_COMMAND?.trim()||"agent-bridge-advisor"),
     cap("scheduled-routines",scoped&&routineExecutable?"ready":"unavailable",!scoped?"conversation_scope_unavailable":routineExecutable?null:"routine_command_unavailable","conversation","state-change","authenticated owner",routine),
     cap("autonomous-work",s.surface==="telegram:interactive"&&a.status==="ready"?"ready":"unavailable",s.surface!=="telegram:interactive"?"surface_not_supported":a.status==="ready"?null:a.reasonCode,"goal","execution","authenticated owner","first-class autonomy"),
     cap("sensors",sensorsAvailable?"ready":"unavailable",sensorsAvailable?null:"sensor_command_unavailable","runtime","read-only","none",`bash ${sensors}`),
@@ -415,7 +414,6 @@ export function buildAgentBridgeInspection(env: Env = process.env) {
         skills:{installedStatus:sk.installedStatus,installedReasonCode:sk.installedReasonCode,installed:sk.installed,bundled:sk.bundled},
         retainedContext:{interface:runtimeCommand(env,"agent-bridge-context"),scopeKnown:Boolean(s.chatKey&&s.surface)},
         scheduledRoutines:{interface:runtimeCommand(env,"agent-bridge-routines",env.AGENT_BRIDGE_ROUTINES_COMMAND)},
-        advisor:{availableForTurn:Boolean(env.AGENT_BRIDGE_ADVISOR_COMMAND&&env.AGENT_BRIDGE_ADVISOR_CAPABILITY)},
         supportedProviders:getProviderAdapters().map((x)=>x.id),
         supportedChatSurfaces:["telegram","discord"],
       },

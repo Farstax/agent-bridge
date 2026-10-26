@@ -4,7 +4,21 @@ set -euo pipefail
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SYSTEMD_DIR="/etc/systemd/system"
 DEFAULTS_DIR="/etc/default"
-NODE_MIN_MAJOR=24
+# Security floors per supported Node.js line (October 2026 security releases).
+NODE_SECURITY_FLOORS="24.22.1 26.12.1"
+node_version_admitted() {
+  local version="$1" floor major minor patch floor_major floor_minor floor_patch
+  [[ "$version" =~ ^v?([0-9]+)\.([0-9]+)\.([0-9]+)$ ]] || return 1
+  major=$((10#${BASH_REMATCH[1]})); minor=$((10#${BASH_REMATCH[2]})); patch=$((10#${BASH_REMATCH[3]}))
+  for floor in $NODE_SECURITY_FLOORS; do
+    IFS=. read -r floor_major floor_minor floor_patch <<<"$floor"
+    if (( major == floor_major )); then
+      (( minor > floor_minor || (minor == floor_minor && patch >= floor_patch) ))
+      return
+    fi
+  done
+  return 1
+}
 TARGET_USER="${SUDO_USER:-${USER}}"
 TARGET_HOME="$(getent passwd "${TARGET_USER}" | cut -d: -f6)"
 
@@ -16,7 +30,7 @@ if [[ -z "${NODE_BIN:-}" ]]; then
     NODE_BIN="$(find "${TARGET_HOME}/.nvm/versions/node" -maxdepth 3 -name node -type f 2>/dev/null | sort -t/ -k7 -V | tail -1 || true)"
   fi
 fi
-DEFAULT_AGENT_BRIDGE_SKILLS="red-green-refactor-tdd,requirements-to-acceptance,release-readiness-review,systematic-debugging,delivery-directives,manage-skills,manage-mcp,ui-engineering,git-sandbox,cli-auth-telegram,autonomous-work,sensors,advisor,engineering-retro,scheduled-routines"
+DEFAULT_AGENT_BRIDGE_SKILLS="red-green-refactor-tdd,requirements-to-acceptance,release-readiness-review,systematic-debugging,delivery-directives,manage-skills,manage-mcp,ui-engineering,git-sandbox,cli-auth-telegram,autonomous-work,sensors,engineering-retro,scheduled-routines"
 
 # Parse flags
 NON_INTERACTIVE=0
@@ -42,15 +56,14 @@ EOF
 
 require_node() {
   if [[ -z "${NODE_BIN}" || ! -x "${NODE_BIN}" ]]; then
-    echo "Node.js ${NODE_MIN_MAJOR}+ is required." >&2
+    echo "A patched Node.js runtime is required (minimum per line: ${NODE_SECURITY_FLOORS})." >&2
     exit 1
   fi
 
-  local version major
+  local version
   version="$("${NODE_BIN}" -p 'process.versions.node')"
-  major="${version%%.*}"
-  if (( major < NODE_MIN_MAJOR )); then
-    echo "Node.js ${NODE_MIN_MAJOR}+ is required. Found ${version}." >&2
+  if ! node_version_admitted "${version}"; then
+    echo "Node.js ${version} at ${NODE_BIN} is unsupported or has known vulnerabilities. Required minimum per line: ${NODE_SECURITY_FLOORS}." >&2
     exit 1
   fi
 }
@@ -74,14 +87,6 @@ env_file_get() {
   ' "${file}"
 }
 
-env_file_has_key() {
-  local file="$1" key="$2"
-  [[ -f "${file}" ]] || return 1
-  awk -F= -v key="${key}" '
-    $0 !~ /^[[:space:]]*#/ && $1 == key { found = 1; exit }
-    END { exit(found ? 0 : 1) }
-  ' "${file}"
-}
 
 seed_from_env_file() {
   local file="$1"
@@ -97,20 +102,13 @@ seed_from_env_file() {
               CODEX_PROJECT_DIR ANTIGRAVITY_PROJECT_DIR CLAUDE_PROJECT_DIR \
               AGENT_BRIDGE_SKILLS AGENT_BRIDGE_SKILL_LINK_MODE \
               BRIDGE_EXECUTION_MODE POLL_INTERVAL_MS FETCH_TIMEOUT_MS \
-              BRIDGE_ADVISOR_ENABLED BRIDGE_ADVISOR_CHAIN \
-              BRIDGE_ADVISOR_MAX_CALLS_PER_TURN BRIDGE_ADVISOR_MAX_CALLS_PER_TASK \
-              BRIDGE_ADVISOR_TIMEOUT_MS BRIDGE_ADVISOR_CONTEXT_MAX_CHARS \
               AGENT_BRIDGE_SOUL_PATH AGENT_BRIDGE_SOUL_MODE \
               AGENT_BRIDGE_AUTONOMY_DIR AGENT_BRIDGE_AUTONOMY_DB_PATH AGENT_BRIDGE_AUTONOMY_MAX_CYCLES \
               AGENT_BRIDGE_SENSOR_CONFIG BRIDGE_RUN_INGRESS_SOCKET BRIDGE_RUN_INGRESS_TOKEN \
               DISCORD_BOT_TOKEN DISCORD_APPLICATION_ID DISCORD_GUILD_ID DISCORD_ALLOWED_USER_IDS \
               DISCORD_CLI CLI_COMMAND CLI_MODEL_PREFERENCE INTERACTIVE_DEFAULT_CLI INTERACTIVE_CLI_CHAIN; do
     value="$(env_file_get "${file}" "${key}")"
-    if [[ "${key}" == BRIDGE_ADVISOR_* ]]; then
-      if env_file_has_key "${file}" "${key}" && ! declare -p "${key}" >/dev/null 2>&1; then
-        export "${key}=${value}"
-      fi
-    elif [[ -n "${value}" && -z "${!key:-}" ]]; then
+    if [[ -n "${value}" && -z "${!key:-}" ]]; then
       export "${key}=${value}"
     fi
   done
@@ -125,8 +123,7 @@ seed_from_env_file() {
 
 # write_env_file <example> <target>
 # Reads the example line-by-line. For each KEY= line, substitutes the current
-# shell value if set; otherwise keeps the example's default verbatim. Advisor
-# settings are copied only when explicitly configured, including an empty chain.
+# shell value if set; otherwise keeps the example's default verbatim.
 write_env_file() {
   local example="$1"
   local target="$2"
@@ -136,11 +133,7 @@ write_env_file() {
     if [[ "${line}" =~ ^([A-Z_][A-Z0-9_]*)= ]]; then
       local key="${BASH_REMATCH[1]}"
       local envval="${!key:-}"
-      if [[ "${key}" == BRIDGE_ADVISOR_* ]]; then
-        if declare -p "${key}" >/dev/null 2>&1; then
-          printf '%s=%s\n' "${key}" "${!key}"
-        fi
-      elif [[ -n "${envval}" ]]; then
+      if [[ -n "${envval}" ]]; then
         printf '%s=%s\n' "${key}" "${envval}"
       else
         printf '%s\n' "${line}"
@@ -232,9 +225,6 @@ install_shared_skills() {
   if [[ ",${skills_csv}," != *",autonomous-work,"* ]]; then
     skills_csv="${skills_csv},autonomous-work"
   fi
-  if [[ ",${skills_csv}," != *",advisor,"* ]]; then
-    skills_csv="${skills_csv},advisor"
-  fi
   if [[ ",${skills_csv}," != *",scheduled-routines,"* ]]; then
     skills_csv="${skills_csv},scheduled-routines"
   fi
@@ -250,6 +240,10 @@ install_shared_skills() {
   for skill in "${skills[@]}"; do
     skill="$(echo "${skill}" | xargs)"
     [[ -n "${skill}" ]] || continue
+    if [[ "${skill}" == "advisor" ]]; then
+      echo "Skipping retired Advisor skill"
+      continue
+    fi
     echo "Installing shared skill: ${skill} (${link_mode})"
     if [[ "${USER}" == "${TARGET_USER}" ]]; then
       (cd "${REPO_DIR}" && SHARED_MEMORY_HOME="${TARGET_HOME}" "${NODE_BIN}" ./node_modules/tsx/dist/cli.mjs scripts/skill-manager.ts install "${skill}" --force --link-mode "${link_mode}")
@@ -258,6 +252,14 @@ install_shared_skills() {
         bash -c 'cd "$1" && "$NODE_BIN" ./node_modules/tsx/dist/cli.mjs scripts/skill-manager.ts install "$2" --force --link-mode "$3"' bash "${REPO_DIR}" "${skill}" "${link_mode}"
     fi
   done
+  # Retired bundled skill: remove only a bundled-owned projection through the
+  # ownership-aware uninstall path. User-owned or absent entries are left alone.
+  if [[ "${USER}" == "${TARGET_USER}" ]]; then
+    (cd "${REPO_DIR}" && SHARED_MEMORY_HOME="${TARGET_HOME}" "${NODE_BIN}" ./node_modules/tsx/dist/cli.mjs scripts/skill-manager.ts uninstall advisor) >/dev/null 2>&1 || true
+  else
+    sudo -u "${TARGET_USER}" env HOME="${TARGET_HOME}" SHARED_MEMORY_HOME="${TARGET_HOME}" NODE_BIN="${NODE_BIN}" \
+      bash -c 'cd "$1" && "$NODE_BIN" ./node_modules/tsx/dist/cli.mjs scripts/skill-manager.ts uninstall advisor' bash "${REPO_DIR}" >/dev/null 2>&1 || true
+  fi
 }
 
 mkdir -p "${DEFAULTS_DIR}"
@@ -345,11 +347,6 @@ _write_shared_defaults() {
     echo "BRIDGE_ASYNC_ENABLED=true"
     echo "POLL_INTERVAL_MS=${POLL_INTERVAL_MS:-1000}"
     echo "FETCH_TIMEOUT_MS=${FETCH_TIMEOUT_MS:-45000}"
-    for key in BRIDGE_ADVISOR_ENABLED BRIDGE_ADVISOR_CHAIN \
-               BRIDGE_ADVISOR_MAX_CALLS_PER_TURN BRIDGE_ADVISOR_MAX_CALLS_PER_TASK \
-               BRIDGE_ADVISOR_TIMEOUT_MS BRIDGE_ADVISOR_CONTEXT_MAX_CHARS; do
-      write_optional_env "${key}"
-    done
     [[ -n "${AGENT_BRIDGE_SOUL_PATH:-}" ]]  && echo "AGENT_BRIDGE_SOUL_PATH=${AGENT_BRIDGE_SOUL_PATH}"
     [[ -n "${AGENT_BRIDGE_SOUL_MODE:-}" ]]  && echo "AGENT_BRIDGE_SOUL_MODE=${AGENT_BRIDGE_SOUL_MODE}"
     [[ -n "${AGENT_BRIDGE_AUTONOMY_DIR:-}" ]] && echo "AGENT_BRIDGE_AUTONOMY_DIR=${AGENT_BRIDGE_AUTONOMY_DIR}"

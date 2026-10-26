@@ -30,7 +30,7 @@ sudo env \
   python3 scripts/agent-bridge-install.py \
     --release /root/agent-bridge-<commit>.tar.gz \
     --runtime-user agentbridge \
-    --node-bin /home/agentbridge/.nvm/versions/node/v24.15.0/bin/node \
+    --node-bin /home/agentbridge/.nvm/versions/node/v24.22.1/bin/node \
     --environment production-agent-bridge
 ```
 

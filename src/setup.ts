@@ -52,10 +52,25 @@ export interface TelegramBotIdentity {
 
 export type CommandPathResolver = (command: string) => string | null;
 
+// Security floors per supported Node.js line (October 2026 security releases).
+export const NODE_SECURITY_FLOORS: Readonly<Record<number, readonly [number, number, number]>> = {
+  24: [24, 22, 1],
+  26: [26, 12, 1],
+};
+
+export function isNodeVersionAdmitted(version: string): boolean {
+  const match = /^v?(\d+)\.(\d+)\.(\d+)$/.exec(version);
+  if (!match) return false;
+  const [major, minor, patch] = match.slice(1).map(Number);
+  const floor = NODE_SECURITY_FLOORS[major];
+  if (!floor) return false;
+  return minor > floor[1] || (minor === floor[1] && patch >= floor[2]);
+}
+
 export function assertSupportedNodeVersion(version = process.versions.node): void {
-  const major = Number(version.split(".")[0]);
-  if (!Number.isInteger(major) || major < 24) {
-    throw new Error(`Agent Bridge source setup requires Node.js 24+ (current: ${version}).`);
+  if (!isNodeVersionAdmitted(version)) {
+    const floors = Object.values(NODE_SECURITY_FLOORS).map((floor) => floor.join(".")).join(", ");
+    throw new Error(`Agent Bridge source setup requires a patched Node.js runtime (minimum per line: ${floors}; current: ${version}).`);
   }
 }
 

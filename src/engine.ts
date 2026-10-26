@@ -70,7 +70,6 @@ import { DEFAULT_CONTEXT_MAX_CHARS } from "./db.js";
 import { linkScheduledOccurrenceRun, markScheduledOccurrenceFailed, SCHEDULED_OCCURRENCE_PREFIX } from "./scheduledRunCorrelation.js";
 import { resolveTimeoutsForKind } from "./timeouts.js";
 import { SCRATCHPAD_GUIDANCE, prependHandoffModel, prependProviderFallbackContinuation } from "./promptWrapping.js";
-import type { AdvisorCapabilityIssuer } from "./advisorBroker.js";
 import {
   executionLaneCoordinator,
   type ExecutionLaneCoordinator,
@@ -152,7 +151,6 @@ export interface BridgeEngineOptions {
   workspaceContext?: string | null;
   fullConfig?: BridgeConfig;
   hooks?: BridgeEngineHooks;
-  advisorCapabilities?: AdvisorCapabilityIssuer;
   /** Positive only when all participating surfaces share executionCapacityDb. */
   maxConcurrentExecutions?: number;
   executionCapacityDb?: BridgeDb;
@@ -766,8 +764,20 @@ export class BridgeEngine {
     // before the provider prompt is submitted, so a crash leaves a linked receipt.
     const receiptKeys = scheduledOccurrenceKeys.filter((key) => key.startsWith(EVENT_RECEIPT_CORRELATION_PREFIX));
     let receiptsCorrelated = receiptKeys.length === 0;
-    const collect = receiptsCorrelated ? collectEvent : (event: BridgeEvent) => {
+    const routineOccurrenceKeys = scheduledOccurrenceKeys.filter((key) => key.startsWith(SCHEDULED_OCCURRENCE_PREFIX));
+    let routineOccurrencesCorrelated = routineOccurrenceKeys.length === 0;
+    const collect = (event: BridgeEvent) => {
       collectEvent(event);
+      if (!routineOccurrencesCorrelated) {
+        try {
+          if (this.db.getRun(runId)) {
+            this._linkScheduledOccurrences(routineOccurrenceKeys, runId);
+            routineOccurrencesCorrelated = true;
+          }
+        } catch (error) {
+          console.error(`[${this.kind}] scheduled occurrence correlation failed at Run admission`, error);
+        }
+      }
       if (!receiptsCorrelated && this.db.getRun(runId)) {
         receiptsCorrelated = true;
         this._correlateEventReceipts(receiptKeys, runId);
@@ -1755,29 +1765,13 @@ export class BridgeEngine {
     const status = this.db.getConvStatus(chatKey, this.surfaceIdentity);
     const hasContext = !!dbPath && status.turnCount > 0;
     const commandPath = join(process.cwd(), "bin", "agent-bridge-context");
-    const advisorCommandPath = join(process.cwd(), "bin", "agent-bridge-advisor");
     const waitCommandPath = join(process.cwd(), "bin", "agent-bridge-wait");
     const outcomeCommandPath = join(process.cwd(), "bin", "agent-bridge-outcome");
     const canContinue = Boolean(dbPath && runId && this.kind !== "autonomous");
     const canOutcome = canContinue && outcomeEligible;
     const canScratch = Boolean(dbPath && runId && laneHandle);
     const scratchCommandPath = join(process.cwd(), "bin", "agent-bridge-scratch");
-    const turnKey = `${chatKey}:${randomUUID()}`;
-    let advisorCapability: string | null = null;
-    if (this.opts.advisorCapabilities) {
-      try {
-        advisorCapability = this.opts.advisorCapabilities.issue({
-          chatKey,
-          cliKind: this.kind,
-          turnKey,
-          taskKey: turnKey,
-          repoPath: this._workingDir(this._executionKind()),
-        });
-      } catch (error) {
-        console.warn("[advisor] capability unavailable:", error);
-      }
-    }
-    if (!hasContext && !advisorCapability && !canContinue && !canScratch) return null;
+    if (!hasContext && !canContinue && !canScratch) return null;
     const ownerKey = this._conversationOwnerKey();
     const contextPrompt = hasContext ? [
       "[Agent Bridge context]",
@@ -1801,6 +1795,7 @@ export class BridgeEngine {
       "Before ending this Run, you MUST call \"$AGENT_BRIDGE_OUTCOME_COMMAND\" exactly once with a final disposition of the original user intent:",
       "  complete --evidence \"<verified outcome>\"  (all authorised work finished)",
       "  continue --after-seconds 60 --reason \"<remaining work and next action>\"  (work remains; bounded continuation is necessary)",
+      "  continue --at \"<RFC 3339 time with Z or offset, up to 7 days ahead>\" --reason \"<what to re-check>\"  (unfinished work of this task must wake once later; not a new routine or recurring task)",
       "  blocked --reason \"<specific genuine blocker>\"  (user action/authority or an unresolvable obstacle is required)",
       "Prefer finishing work and bounded waits within this Run. Failed CI or a pending bounded operation is not itself a terminal blocker.",
       "A normal final response and ACP end_turn do not count as an objective outcome.",
@@ -1844,10 +1839,6 @@ export class BridgeEngine {
           } : {}),
         } : {}),
         ...(canOutcome ? { AGENT_BRIDGE_OUTCOME_COMMAND: outcomeCommandPath } : {}),
-        ...(advisorCapability ? {
-          AGENT_BRIDGE_ADVISOR_COMMAND: advisorCommandPath,
-          AGENT_BRIDGE_ADVISOR_CAPABILITY: advisorCapability,
-        } : {}),
       },
     };
   }
@@ -2210,7 +2201,7 @@ export class BridgeEngine {
           "The previous provider turn ended without a required objective disposition.",
           "Do not repeat earlier work or side effects. Reconcile the ORIGINAL user intent against evidence already gathered.",
           "Report the outcome now using \"$AGENT_BRIDGE_OUTCOME_COMMAND\" with exactly one of:",
-          "complete --evidence \"<verified result>\"; continue --after-seconds 60 --reason \"<remaining work>\"; blocked --reason \"<genuine blocker>\".",
+          "complete --evidence \"<verified result>\"; continue --after-seconds 60|--at \"<timestamp>\" --reason \"<remaining work>\"; blocked --reason \"<genuine blocker>\".",
           "This is the only reconciliation attempt. Do not claim completion while work remains.",
           "After calling the helper, provide a complete, accurate user-facing final answer reflecting the actual current outcome, including any correction to your previous answer.",
         ].join("\n");

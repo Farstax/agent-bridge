@@ -85,12 +85,12 @@ describe("provider qualification routing", () => {
       CLAUDE_ACP_COMMAND: claudeAcp,
     };
     try {
-      writeFileSync(claudeAcp, "#!/usr/bin/env bash\nprintf '0.89.1\\n'\n", { mode: 0o755 });
+      writeFileSync(claudeAcp, "#!/usr/bin/env bash\nprintf '0.95.0\\n'\n", { mode: 0o755 });
       chmodSync(claudeAcp, 0o755);
       writeQualificationRecord({
         provider: "claude",
         executionRuntime: resolveProviderRuntime("claude", env).runtimeIdentity,
-        providerVersion: "0.89.1",
+        providerVersion: "0.95.0",
         previousVersion: null,
         bridgeCommit: "e".repeat(40),
         contractVersion: PROVIDER_CONTRACT_VERSION,
@@ -171,7 +171,7 @@ describe("provider qualification routing", () => {
         commandExists: (command) => Object.values(env).includes(command),
         agyRuntimeReady: () => true,
         readCursorStatus: () => ({ isAuthenticated: true }),
-        readCursorVersion: () => "2026.10.01-14929f9",
+        readCursorVersion: () => "2026.10.22-27dcf5f",
       });
 
       expect([...available]).toEqual(["codex", "claude", "antigravity", "grok", "cursor"]);
@@ -233,7 +233,7 @@ describe("provider qualification routing", () => {
       commandExists: () => true,
       failedProviders: new Set(["codex", "agy"]),
       readCursorStatus: () => ({ isAuthenticated: true }),
-      readCursorVersion: () => "2026.10.01-14929f9",
+      readCursorVersion: () => "2026.10.22-27dcf5f",
     });
 
     expect([...available]).toEqual(["claude", "grok", "cursor"]);
@@ -247,7 +247,7 @@ describe("provider qualification routing", () => {
       commandExists: () => true,
       failedProviders: new Set(["codex", "grok", "cursor"]),
       readCursorStatus: () => ({ isAuthenticated: true }),
-      readCursorVersion: () => "2026.10.01-14929f9",
+      readCursorVersion: () => "2026.10.22-27dcf5f",
     });
 
     expect([...available]).toEqual(["claude"]);
@@ -261,7 +261,7 @@ describe("provider qualification routing", () => {
       commandExists: () => true,
       failedProviders: new Set(["codex", "agy", "grok"]),
       readCursorStatus: () => ({ isAuthenticated: true }),
-      readCursorVersion: () => "2026.10.01-14929f9",
+      readCursorVersion: () => "2026.10.22-27dcf5f",
     });
 
     expect([...available]).toEqual(["claude", "cursor"]);

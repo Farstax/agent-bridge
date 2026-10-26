@@ -45,7 +45,6 @@ const activeExecutions = new Map<number | string, ActiveExecution>();
 const abortedChildren = new WeakSet<ChildProcess>();
 
 const STRIPPED_ENV_KEYS = /^TELEGRAM_BOT_TOKEN|^TELEGRAM_ALLOWED_USER_IDS/;
-const ADVISOR_SECRET_ENV_KEYS = /^(?:AGENT_)?BRIDGE_.*(?:TOKEN|SECRET|PASSWORD|API_KEY|PRIVATE_KEY|CREDENTIAL)/i;
 
 export function buildSafeChildEnv(env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
   return Object.fromEntries(
@@ -53,23 +52,8 @@ export function buildSafeChildEnv(env: NodeJS.ProcessEnv = process.env): NodeJS.
   );
 }
 
-export function buildAdvisorChildEnv(env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
-  return Object.fromEntries(
-    Object.entries(buildSafeChildEnv(env)).filter(([key]) =>
-      !key.startsWith("AGENT_BRIDGE_ADVISOR_")
-      && !key.startsWith("BRIDGE_ADVISOR_")
-      && !ADVISOR_SECRET_ENV_KEYS.test(key),
-    ),
-  );
-}
-
-function buildChildEnv(extraEnv?: Record<string, string>, advisorChild = false): NodeJS.ProcessEnv {
-  const base = advisorChild ? buildAdvisorChildEnv() : buildSafeChildEnv();
-  const merged = {
-    ...base,
-    ...(extraEnv ?? {}),
-  };
-  return advisorChild ? buildAdvisorChildEnv(merged) : merged;
+function buildChildEnv(extraEnv?: Record<string, string>): NodeJS.ProcessEnv {
+  return { ...buildSafeChildEnv(), ...(extraEnv ?? {}) };
 }
 
 function defaultKillGraceMs(): number {
@@ -364,7 +348,7 @@ export async function runSupervisedProcess(
   const killGraceMs = options.killGraceMs ?? defaultKillGraceMs();
   const onEvent = options.onEvent;
   const evtCtx = options.eventContext;
-  const redactionEnv = buildChildEnv(options.contextEnv, options.advisorChild);
+  const redactionEnv = buildChildEnv(options.contextEnv);
   const providerId: ProviderId | null = options.bot
     ? options.bot === "antigravity" ? "agy" : options.bot
     : null;
@@ -601,7 +585,7 @@ export async function runSupervisedStdioSession<T>(
 ): Promise<T> {
   const { timeoutMs, idleTimeoutMs } = resolveSupervisorTimeouts(options);
   const killGraceMs = options.killGraceMs ?? defaultKillGraceMs();
-  const redactionEnv = buildChildEnv(options.contextEnv, options.advisorChild);
+  const redactionEnv = buildChildEnv(options.contextEnv);
   const providerId: ProviderId | null = options.bot
     ? options.bot === "antigravity" ? "agy" : options.bot
     : null;
