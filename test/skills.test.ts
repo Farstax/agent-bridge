@@ -35,6 +35,17 @@ afterEach(() => {
 });
 
 describe("shared skills catalog", () => {
+  it("uses supported bounded flags for the pinned Playwright MCP setup", () => {
+    const instructions = readFileSync(join(process.cwd(), "skills", "manage-mcp", "SKILL.md"), "utf8");
+
+    // Playwright MCP 0.0.79 has action/navigation/settle timeouts, but no
+    // --idle-timeout option. An unknown option makes its stdio server exit.
+    expect(instructions).not.toMatch(/--idle-timeout\b/);
+    expect(instructions).toContain("--timeout-action 10000");
+    expect(instructions).toContain("--timeout-navigation 30000");
+    expect(instructions).toContain("--isolated");
+  });
+
   it("lists the consolidated SDLC skills without the retired compatibility alias", () => {
     const names = listLocalCatalog().map((entry) => entry.name);
     expect(names).toContain("requirements-to-acceptance");
@@ -211,6 +222,59 @@ describe("shared skills verify and uninstall", () => {
     expect(verifySkillGlobal("requirements-to-acceptance", { homeDir: home }).ok).toBe(false);
     expect(verifySkillGlobal("requirements-to-acceptance", { homeDir: home, fix: true }).repaired.length).toBe(1);
     expect(readlinkSync(join(paths.codexSkillsDir, "requirements-to-acceptance"))).toBe("../../.agents/skills/requirements-to-acceptance");
+  });
+
+  it("preserves a changed native copy instead of treating it as an older managed projection", () => {
+    const home = makeHome();
+    installSkillGlobal("requirements-to-acceptance", { homeDir: home, linkMode: "copy" });
+    const paths = resolveSkillPaths(home);
+    const nativeSkill = join(paths.codexSkillsDir, "requirements-to-acceptance");
+    const skillFile = join(nativeSkill, "SKILL.md");
+    writeFileSync(skillFile, "operator-owned content\n");
+
+    const result = verifySkillGlobal("requirements-to-acceptance", { homeDir: home, fix: true });
+
+    expect(result.ok).toBe(false);
+    expect(result.errors.join("\n")).toMatch(/refusing to overwrite.*native skill/i);
+    expect(readFileSync(skillFile, "utf8")).toBe("operator-owned content\n");
+  });
+
+  it("does not overwrite an unrecognized native path during a forced bundled-skill update", () => {
+    const repoRoot = makeHome();
+    const home = makeHome();
+    writeSkill(repoRoot, "portable-skill", "Old bundled content.");
+    installSkillGlobal("portable-skill", { repoRoot, homeDir: home, linkMode: "copy" });
+
+    const paths = resolveSkillPaths(home);
+    const nativeSkill = join(paths.codexSkillsDir, "portable-skill");
+    const nativeFile = join(nativeSkill, "SKILL.md");
+    writeFileSync(nativeFile, "unrecognized local content\n");
+    writeSkill(repoRoot, "portable-skill", "Updated bundled content.");
+
+    expect(() => installSkillGlobal("portable-skill", { repoRoot, homeDir: home, linkMode: "copy", force: true }))
+      .toThrow(/refusing to overwrite an unmanaged skill path/i);
+    expect(readFileSync(nativeFile, "utf8")).toBe("unrecognized local content\n");
+    expect(readFileSync(join(paths.agentsSkillsDir, "portable-skill", "SKILL.md"), "utf8"))
+      .toContain("Old bundled content.");
+  });
+
+  it("reconciles recorded older copies on update and remains idempotent", () => {
+    const repoRoot = makeHome();
+    const home = makeHome();
+    writeSkill(repoRoot, "portable-skill", "Old bundled content.");
+    installSkillGlobal("portable-skill", { repoRoot, homeDir: home, linkMode: "copy" });
+    writeSkill(repoRoot, "portable-skill", "Updated bundled content.");
+
+    installSkillGlobal("portable-skill", { repoRoot, homeDir: home, linkMode: "copy", force: true });
+    const paths = resolveSkillPaths(home);
+    const nativeSkill = join(paths.codexSkillsDir, "portable-skill");
+    expect(readFileSync(join(nativeSkill, "SKILL.md"), "utf8")).toContain("Updated bundled content.");
+    expect(verifySkillGlobal("portable-skill", { homeDir: home }).ok).toBe(true);
+
+    const installedHash = readFileSync(join(nativeSkill, "SKILL.md"), "utf8");
+    installSkillGlobal("portable-skill", { repoRoot, homeDir: home, linkMode: "copy", force: true });
+    expect(readFileSync(join(nativeSkill, "SKILL.md"), "utf8")).toBe(installedHash);
+    expect(verifySkillGlobal("portable-skill", { homeDir: home }).ok).toBe(true);
   });
 
   it("uninstalls artifacts while preserving unrelated lockfile fields", () => {

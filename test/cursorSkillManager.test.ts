@@ -78,6 +78,40 @@ describe("skill-manager Cursor projection workflow", () => {
     expect(lockfile.skills[skillName]?.cursorProjected).toBe(true);
   });
 
+  it("does not let an unrelated install update rewrite or depend on a changed Cursor path", () => {
+    const home = makeTempDir("cursor-skill-unrelated-update");
+    installSkillGlobal(skillName, { homeDir: home, force: true, projectCursor: true });
+    const paths = resolveSkillPaths(home);
+    const cursorSkill = join(paths.cursorSkillsDir, skillName);
+    rmSync(cursorSkill, { recursive: true, force: true });
+    mkdirSync(cursorSkill, { recursive: true });
+    writeFileSync(join(cursorSkill, "SKILL.md"), "locally managed Cursor content\n");
+
+    expect(() => installSkillGlobal(skillName, { homeDir: home, force: true })).not.toThrow();
+    expect(readFileSync(join(cursorSkill, "SKILL.md"), "utf8")).toBe("locally managed Cursor content\n");
+    expect(existsSync(join(paths.codexSkillsDir, skillName, "SKILL.md"))).toBe(true);
+  });
+
+  it("keeps a managed Cursor copy current when the bundled Skill is updated", () => {
+    const home = makeTempDir("cursor-skill-copy-update-home");
+    const repo = makeTempDir("cursor-skill-copy-update-repo");
+    const write = (suffix: string) => {
+      mkdirSync(join(repo, "skills", "cursor-copy"), { recursive: true });
+      writeFileSync(join(repo, "skills", "cursor-copy", "SKILL.md"), `---\nname: cursor-copy\ndescription: Cursor copy update.\n---\n\n${suffix}\n`);
+    };
+    write("Version one.");
+    installSkillGlobal("cursor-copy", { homeDir: home, repoRoot: repo, force: true, linkMode: "copy", projectCursor: true });
+    const paths = resolveSkillPaths(home);
+    const cursorSkill = join(paths.cursorSkillsDir, "cursor-copy", "SKILL.md");
+    expect(readFileSync(cursorSkill, "utf8")).toContain("Version one.");
+
+    write("Version two.");
+    installSkillGlobal("cursor-copy", { homeDir: home, repoRoot: repo, force: true, linkMode: "copy" });
+
+    expect(readFileSync(cursorSkill, "utf8")).toContain("Version two.");
+    expect(verifySkillGlobal("cursor-copy", { homeDir: home })).toMatchObject({ ok: true });
+  });
+
   it("projects Cursor through the explicit project-cursor command", () => {
     const home = makeTempDir("cursor-skill-project-cmd");
     expect(runSkillManager(["install", skillName, "--force"], home).status).toBe(0);
