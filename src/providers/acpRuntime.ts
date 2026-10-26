@@ -108,6 +108,7 @@ export interface AcpProviderPolicy {
   readonly sessionSettings?: (
     request: ProviderInvocationRequest,
     env: Record<string, string | undefined>,
+    cwd?: string,
   ) => AcpProviderSessionSettings;
   /** Runtime-affecting env keys that qualification must compare with the active process. */
   readonly qualificationEnvKeys?: readonly string[];
@@ -556,7 +557,7 @@ export async function runResolvedAcpProviderTurn(
   if (runtime.transport !== "acp-stdio") throw new Error(`Provider ${providerId} is not an ACP runtime`);
   policy.validateRuntime?.(runtime, effectiveEnv);
   const providerEnv = policy.buildChildEnv?.(request, effectiveEnv) ?? {};
-  const sessionSettings = policy.sessionSettings?.(request, effectiveEnv);
+  const sessionSettings = policy.sessionSettings?.(request, effectiveEnv, cwd);
   const contextEnv = { ...(options.contextEnv ?? {}), ...providerEnv };
   const redactionEnv = { ...process.env, ...contextEnv };
   const secretValues = getProviderApiKeySecretValues(redactionEnv);
