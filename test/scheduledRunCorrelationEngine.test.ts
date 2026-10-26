@@ -76,6 +76,70 @@ afterEach(() => {
 });
 
 describe("authoritative scheduled Run correlation", () => {
+  it("links the occurrence when the Run is admitted, before provider execution completes", { timeout: 20_000 }, async () => {
+    const path = join(tmpdir(), `scheduled-run-inflight-${Date.now()}-${Math.random()}.sqlite`);
+    paths.push(path);
+    const db = openDb(path, { serviceId: "scheduled-inflight-test", runId: "process-test" });
+    try {
+      const routine = routineFixture({ id: "inflight-correlation" });
+      createScheduledRoutine(db, routine);
+      const intendedAt = "2026-09-01T19:55:00.000Z";
+      expect(claimScheduledRoutineOccurrence(db, routine.id, intendedAt)).toBe(true);
+      const occurrenceKey = scheduledOccurrenceKey(routine.id, intendedAt);
+      let notifyStarted!: () => void;
+      let allowProviderToFinish!: () => void;
+      const providerStarted = new Promise<void>((resolve) => { notifyStarted = resolve; });
+      const providerMayFinish = new Promise<void>((resolve) => { allowProviderToFinish = resolve; });
+      const runCli = vi.fn().mockImplementation(async (_command: string, _args: string[], _cwd: string, options: any) => {
+        options?.onEvent?.({
+          type: "run.started",
+          version: 1,
+          id: "evt-inflight-start",
+          runId: options.eventContext.runId,
+          timestamp: new Date().toISOString(),
+          bot: "cursor",
+          chatId: String(routine.chatKey),
+          chatKey: routine.chatKey,
+          command: "cursor",
+          cwd: "/tmp",
+          model: null,
+        });
+        notifyStarted();
+        await providerMayFinish;
+        return [
+          JSON.stringify({ type: "text", data: "ROUTINE_TEST_OK" }),
+          JSON.stringify({ type: "end", sessionId: "inflight-session", stopReason: "end_turn" }),
+        ].join("\n") + "\n";
+      });
+      const engine = new BridgeEngine({
+        surfaceIdentity: "telegram:interactive",
+        kind: "cursor",
+        botConfig: { command: "cursor", modelPreference: [] },
+        allowedUserIds: new Set(["42"]),
+        executionMode: "safe",
+        pollIntervalMs: 1000,
+        workingDir: process.cwd(),
+      }, db, mockClient(), acpEngineExec(runCli));
+
+      const execution = engine.handleInteractiveTurn(buildScheduledInteractiveTurn(routine, intendedAt, "42", occurrenceKey));
+      await providerStarted;
+      try {
+        const evidence = parseScheduledOccurrenceEvidence(db.getSetting(occurrenceKey));
+        expect(evidence).toEqual(expect.objectContaining({ runId: expect.any(String), status: "running" }));
+        expect(db.getRun(evidence!.runId!)).toEqual(expect.objectContaining({ status: "running" }));
+      } finally {
+        allowProviderToFinish();
+        await execution;
+      }
+
+      const evidence = parseScheduledOccurrenceEvidence(db.getSetting(occurrenceKey));
+      expect(evidence?.status).toBe("completed");
+      expect(db.getRun(evidence!.runId!)?.status).toBe("done");
+    } finally {
+      db.close();
+    }
+  });
+
   it("carries one claimed occurrence through BridgeEngine to its exact terminal Run", async () => {
     const path = join(tmpdir(), `scheduled-run-correlation-${Date.now()}-${Math.random()}.sqlite`);
     paths.push(path);
