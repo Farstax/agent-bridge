@@ -38,7 +38,7 @@ export async function discoverAcpProviderConfig(input: AcpProviderConfigDiscover
     outputDir: null, effort: null, toolMode: "default",
   };
   const providerEnv = policy.buildChildEnv?.(request, effectiveEnv) ?? {};
-  const sessionSettings = policy.sessionSettings?.(request, effectiveEnv);
+  const sessionSettings = policy.sessionSettings?.(request, effectiveEnv, input.cwd);
   const contextEnv = Object.fromEntries(
     Object.entries(input.env ?? {}).filter((entry): entry is [string, string] => entry[1] !== undefined),
   );
