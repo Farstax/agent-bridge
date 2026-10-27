@@ -78,7 +78,7 @@ export function isolateRecoveryCopyDatabase(
   const tx = db.transaction(() => {
     const surfaces = new Set<string>();
     const addSurfaces = (table: string, column: string, condition = ""): void => {
-        const rows = db.prepare(`SELECT DISTINCT ${column} AS identity FROM ${table} ${condition}`).all() as Array<{ identity: string | null }>;
+      const rows = db.prepare(`SELECT DISTINCT ${column} AS identity FROM ${table} ${condition}`).all() as Array<{ identity: string | null }>;
       for (const row of rows) if (typeof row.identity === "string" && row.identity.startsWith("telegram:")) surfaces.add(row.identity);
     };
     addSurfaces("bridge_state", "surface_identity");
@@ -91,7 +91,9 @@ export function isolateRecoveryCopyDatabase(
     addSurfaces("execution_locks", "surface");
 
     let runsFenced = 0;
-    const staleRuns = db.prepare("SELECT run_id FROM bridge_runs WHERE status = 'running' AND started_at < ?").all(cutoff) as Array<{ run_id: string }>;
+    // Only Telegram Runs belong to this copy-specific surface migration; other
+    // interactive surfaces retain their own runtime identity and execution state.
+    const staleRuns = db.prepare("SELECT run_id FROM bridge_runs WHERE status = 'running' AND started_at < ? AND surface_identity LIKE 'telegram:%'").all(cutoff) as Array<{ run_id: string }>;
     for (const { run_id: runId } of staleRuns) {
       const seq = (db.prepare("SELECT COALESCE(MAX(seq), 0) + 1 AS next FROM bridge_events WHERE run_id = ?").get(runId) as { next: number }).next;
       const result = db.prepare(`UPDATE bridge_runs SET status = 'cancelled', ended_at = ?, error = ? WHERE run_id = ? AND status = 'running'`)
@@ -241,7 +243,9 @@ export function isolateRecoveryCopyDatabase(
     let capacityClaimsArchived = 0;
     const capacityTable = db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'execution_capacity_claims'").get();
     if (capacityTable) {
-      const claims = db.prepare("SELECT * FROM execution_capacity_claims WHERE acquired_at < ?").all(cutoff) as Array<Record<string, unknown>>;
+      // Capacity claims are process-owned leases, not durable activity. None
+      // can be transferred to a recovered execution, even if acquired post-cutoff.
+      const claims = db.prepare("SELECT * FROM execution_capacity_claims").all() as Array<Record<string, unknown>>;
       const archive = db.prepare(`INSERT OR IGNORE INTO recovery_copy_execution_archive (copy_id, record_type, record_key, payload_json, archived_at) VALUES (?, 'execution_capacity_claim', ?, ?, ?)`);
       for (const claim of claims) {
         const key = String(claim.claim_id);
@@ -249,6 +253,14 @@ export function isolateRecoveryCopyDatabase(
         db.prepare("DELETE FROM execution_capacity_claims WHERE claim_id = ?").run(key);
         capacityClaimsArchived += 1;
       }
+    }
+
+    const routineRows = db.prepare("SELECT key, value FROM settings WHERE key LIKE 'scheduled-routine:v1:%'").all() as Array<{ key: string; value: string }>;
+    for (const row of routineRows) {
+      const routine = parseRecord(row.value);
+      if (!routine || typeof routine.surfaceIdentity !== "string" || !routine.surfaceIdentity.startsWith("telegram:")) continue;
+      routine.surfaceIdentity = isolatedIdentity(routine.surfaceIdentity, copyId);
+      db.prepare("UPDATE settings SET value = ? WHERE key = ?").run(JSON.stringify(routine), row.key);
     }
 
     const markerValue = {
