@@ -52,7 +52,7 @@ export function buildAcpReviewEnvironment(options: ReviewInvocationOptions): Nod
 export type ReviewResult =
   | { result: "pass"; reviewedHead: string }
   | { result: "findings"; reviewedHead: string }
-  | { result: "incomplete"; failure: "missing tools"; reviewerResult: "pass" | "findings"; missingToolKinds: string[]; reviewedHead: string };
+  | { result: "incomplete"; failure: "missing tools"; reviewerResult: "pass" | "findings" | null; missingToolKinds: string[]; reviewedHead: string | null };
 
 export function buildReviewOutput(input: {
   implementer: string;
@@ -75,9 +75,19 @@ export function qualifyReviewResult(input: {
   expectedHead: string;
   toolKinds: readonly string[];
 }): ReviewResult {
+  const missingToolKinds = ["read", "search"].filter((kind) => !input.toolKinds.includes(kind));
   const heads = [...input.text.matchAll(/^REVIEWED_HEAD:\s*([a-f0-9]{40})\s*$/gim)].map((match) => match[1]);
   const results = [...input.text.matchAll(/^REVIEW_RESULT:\s*(PASS|FINDINGS)\s*$/gim)].map((match) => match[1]);
   if (heads.length !== 1 || results.length !== 1) {
+    if (missingToolKinds.length > 0) {
+      return {
+        result: "incomplete",
+        failure: "missing tools",
+        reviewerResult: results.length === 1 ? results[0]!.toLowerCase() as "pass" | "findings" : null,
+        missingToolKinds,
+        reviewedHead: null,
+      };
+    }
     throw new Error("review result must contain exactly one qualified head and result");
   }
   const reviewedHead = heads[0];
@@ -89,7 +99,6 @@ export function qualifyReviewResult(input: {
   const precedingLine = input.text.trim().split(/\r?\n/).at(-2);
   if (precedingLine !== `REVIEWED_HEAD: ${reviewedHead}`) throw new Error("review markers must be the final two lines");
   const result = results[0];
-  const missingToolKinds = ["read", "search"].filter((kind) => !input.toolKinds.includes(kind));
   if (missingToolKinds.length > 0) {
     return {
       result: "incomplete",
@@ -217,6 +226,21 @@ export function collectSuccessfulToolKinds(updates: readonly acp.SessionUpdate[]
     .map((call) => call.kind!))];
 }
 
+export function joinReviewMessageParts(parts: readonly (string | null)[]): string {
+  let text = "";
+  let separatedByTool = false;
+  for (const part of parts) {
+    if (part === null) {
+      separatedByTool = true;
+      continue;
+    }
+    if (separatedByTool && text && !text.endsWith("\n") && !part.startsWith("\n")) text += "\n";
+    text += part;
+    separatedByTool = false;
+  }
+  return text;
+}
+
 export function findReviewRunId(db: Database.Database, sessionId: string): string | null {
   const session = db.prepare(`
     SELECT conversation_id FROM outward_acp_sessions WHERE session_id = ?
@@ -228,6 +252,10 @@ export function findReviewRunId(db: Database.Database, sessionId: string): strin
     ORDER BY started_at DESC LIMIT 1
   `).get(session.conversation_id) as { run_id?: string } | undefined;
   return run?.run_id ?? null;
+}
+
+export function openReadOnlyReviewDatabase(dbPath: string): Database.Database {
+  return new Database(dbPath, { readonly: true, fileMustExist: true });
 }
 
 function bridgeRunIdFromError(error: unknown): string | null {
@@ -329,7 +357,7 @@ async function runReview(options: CliOptions): Promise<void> {
   let child: ChildProcess | null = null;
   let providerSessionId: string | null = null;
   const toolUpdates: acp.SessionUpdate[] = [];
-  const chunks: string[] = [];
+  const messageParts: Array<string | null> = [];
   const serverOutput: string[] = [];
   let stopReason: string | null = null;
 
@@ -377,14 +405,15 @@ async function runReview(options: CliOptions): Promise<void> {
             }
             if (message.update.sessionUpdate === "tool_call" || message.update.sessionUpdate === "tool_call_update") {
               toolUpdates.push(message.update);
+              messageParts.push(null);
             }
             const update = message.update;
             if (update.sessionUpdate === "agent_message_chunk" && update.content.type === "text") {
-              chunks.push(update.content.text);
+              messageParts.push(update.content.text);
             }
           }
           await promptResult;
-          return chunks.join("");
+          return joinReviewMessageParts(messageParts);
         });
       });
     } catch (error) {
@@ -398,21 +427,19 @@ async function runReview(options: CliOptions): Promise<void> {
     }
 
     if (stopReason !== "end_turn") throw new Error(`reviewer stopped without a completed turn (${stopReason ?? "unknown"})`);
-    const text = result ?? chunks.join("");
+    const text = result ?? joinReviewMessageParts(messageParts);
     const observedToolKinds = collectSuccessfulToolKinds(toolUpdates);
-    const runtimeDb = await import(pathToFileURL(join(runtime.root, "dist/db.js")).href);
-    const { openProductionDb } = runtimeDb as typeof import("./db.js");
-    const db = openProductionDb(dbPath, { serviceId: "acp:review-result", databaseRole: "interactive" });
+    const db = openReadOnlyReviewDatabase(dbPath);
     let runId: string | null = null;
-    let actualProvider = options.provider;
+    let actualProvider: string = options.provider;
     let model: string | null = null;
     let innerSessionIds: string[] = [];
     try {
-      runId = providerSessionId ? findReviewRunId(db.raw, providerSessionId) : null;
+      runId = providerSessionId ? findReviewRunId(db, providerSessionId) : null;
       if (runId) {
-        const events = db.getEventsForRun(runId);
+        const events = db.prepare("SELECT payload_json FROM bridge_events WHERE run_id = ? ORDER BY seq ASC").all(runId) as Array<{ payload_json: string }>;
         for (const event of events) {
-          const payload = typeof event.payload_json === "string" ? JSON.parse(event.payload_json) : event.payload_json;
+          const payload = JSON.parse(event.payload_json) as { type?: string; bot?: string; model?: string; telemetry?: { model?: string }; event?: { acpSessionId?: unknown } };
           if (payload.type === "run.started" || payload.type === "run.completed") {
             actualProvider = payload.bot ?? actualProvider;
             model = payload.model ?? payload.telemetry?.model ?? model;
@@ -422,7 +449,7 @@ async function runReview(options: CliOptions): Promise<void> {
             if (typeof acpId === "string" && !innerSessionIds.includes(acpId)) innerSessionIds.push(acpId);
           }
         }
-        const run = db.getRun(runId);
+        const run = db.prepare("SELECT status, bot FROM bridge_runs WHERE run_id = ?").get(runId) as { status?: string; bot?: string } | undefined;
         if (run?.status !== "done") throw new Error(`ACP reviewer Bridge Run ended with ${run?.status ?? "unknown"}`);
         if (run.bot !== options.provider) throw new Error(`Bridge Run provider mismatch: expected ${options.provider}, got ${run.bot}`);
       }

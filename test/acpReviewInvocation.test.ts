@@ -11,6 +11,8 @@ import {
   classifyUnavailableProviderStatus,
   collectSuccessfulToolKinds,
   findReviewRunId,
+  joinReviewMessageParts,
+  openReadOnlyReviewDatabase,
   qualifyReviewResult,
   reviewRuntime,
 } from "../src/acpReview.js";
@@ -101,6 +103,43 @@ describe("cross-provider ACP review invocation", () => {
     }
   });
 
+  it("opens production review evidence without database write authority", async () => {
+    const root = await mkdtemp(join(tmpdir(), "acp-review-readonly-db-"));
+    const dbPath = join(root, "bridge.sqlite");
+    const writable = openDb(dbPath, { serviceId: "acp:review-test", databaseRole: "interactive" });
+    writable.close();
+    const readonly = openReadOnlyReviewDatabase(dbPath);
+    try {
+      expect(() => readonly.prepare("INSERT INTO settings (key, value) VALUES ('review-test', 'write')").run()).toThrow(/readonly/i);
+    } finally {
+      readonly.close();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("reads completed review telemetry without opening the Bridge database for writes", async () => {
+    const root = await mkdtemp(join(tmpdir(), "acp-review-readonly-db-"));
+    const dbPath = join(root, "bridge.sqlite");
+    const writable = openDb(dbPath, { serviceId: "acp:review-test", databaseRole: "interactive" });
+    try {
+      writable.raw.prepare("INSERT INTO outward_acp_sessions (session_id, conversation_id, cwd) VALUES (?, ?, ?)")
+        .run("session-1", "acp:conversation-1", "/tmp/review-test");
+      writable.raw.prepare(`INSERT INTO bridge_runs (run_id, surface_identity, chat_id, bot, status, started_at)
+        VALUES (?, ?, ?, ?, ?, ?)`)
+        .run("run-1", "acp:outward", "acp:conversation-1", "claude", "done", "2026-10-27T00:00:00Z");
+    } finally {
+      writable.close();
+    }
+    const readonly = openReadOnlyReviewDatabase(dbPath);
+    try {
+      expect(findReviewRunId(readonly, "session-1")).toBe("run-1");
+      expect(() => readonly.prepare("INSERT INTO settings (key, value) VALUES ('review-test', 'write')").run()).toThrow(/readonly/i);
+    } finally {
+      readonly.close();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("refuses same-provider reviews and only qualifies an exact-head PASS with read/search tool evidence", () => {
     expect(() => buildAcpReviewEnvironment({
       provider: "codex",
@@ -126,6 +165,13 @@ describe("cross-provider ACP review invocation", () => {
       reviewerResult: "findings",
       missingToolKinds: ["read", "search"],
       reviewedHead: head,
+    });
+    expect(qualifyReviewResult({ text: "", expectedHead: head, toolKinds: [] })).toEqual({
+      result: "incomplete",
+      failure: "missing tools",
+      reviewerResult: null,
+      missingToolKinds: ["read", "search"],
+      reviewedHead: null,
     });
     const output = JSON.parse(JSON.stringify(buildReviewOutput({
       implementer: "codex",
@@ -194,8 +240,20 @@ describe("cross-provider ACP review invocation", () => {
     ])).toEqual(["read"]);
   });
 
+  it("keeps final result markers on separate lines across ACP tool boundaries", () => {
+    expect(joinReviewMessageParts([
+      "The review found one issue.",
+      null,
+      `REVIEWED_HEAD: ${head}`,
+      null,
+      "REVIEW_RESULT: FINDINGS",
+    ])).toBe(`The review found one issue.\nREVIEWED_HEAD: ${head}\nREVIEW_RESULT: FINDINGS`);
+    expect(joinReviewMessageParts(["Text", " continues"])).toBe("Text continues");
+  });
+
   it("keeps ACP launch, authentication, model, capacity, and review outcomes distinct", () => {
     expect(classifyAcpReviewFailure("spawn ENOENT")).toBe("launch");
+    expect(classifyAcpReviewFailure("ACP review server exited before launch (1)")).toBe("launch");
     expect(classifyAcpReviewFailure("authentication required by ACP adapter")).toBe("authentication");
     expect(classifyAcpReviewFailure("unsupported model before prompt submission")).toBe("unsupported model");
     expect(classifyAcpReviewFailure("model not found by ACP provider")).toBe("unsupported model");
