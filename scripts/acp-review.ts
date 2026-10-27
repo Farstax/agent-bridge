@@ -57,12 +57,12 @@ export function qualifyReviewResult(input: {
   return { result: result.toLowerCase() as "pass" | "findings", reviewedHead };
 }
 
-function failureClass(dbPath: string, error: unknown): string {
+function failureClass(dbPath: string, error: unknown, serverOutput = ""): string {
   const data = error && typeof error === "object" ? (error as { data?: unknown }).data : null;
   const runId = data && typeof data === "object" && typeof (data as { runId?: unknown }).runId === "string"
     ? (data as { runId: string }).runId
     : null;
-  if (!runId) return "launch";
+  if (!runId) return classifyFailureMessage(serverOutput) ?? "launch";
   let db: Database.Database | null = null;
   try {
     db = new Database(dbPath, { readonly: true, fileMustExist: true });
@@ -76,13 +76,30 @@ function failureClass(dbPath: string, error: unknown): string {
       case "fatal":
       case "transient":
       case "unknown": return `provider ${diagnostic.classification}`;
-      default: return "provider execution";
+      default: return classifyFailureMessage(serverOutput) ?? "provider execution";
     }
   } catch {
     return "provider execution";
   } finally {
     db?.close();
   }
+}
+
+function classifyFailureMessage(value: string): string | null {
+  if (/authentication|auth required|not logged in|oauth|api key/i.test(value)) return "authentication";
+  if (/unsupported model|model unavailable/i.test(value)) return "unsupported model";
+  if (/capacity|rate limit|quota|session limit/i.test(value)) return "capacity";
+  if (/spawn|not found|enoent|exited before launch/i.test(value)) return "launch";
+  return null;
+}
+
+function safeErrorHints(value: string): string {
+  return value.split(/\r?\n/)
+    .filter((line) => /error|failed|exception|unsupported/i.test(line))
+    .map((line) => line.replace(/(token|secret|api[-_ ]?key)\s*[:=]\s*\S+/gi, "$1=[redacted]"))
+    .slice(-3)
+    .join(" | ")
+    .slice(0, 600);
 }
 
 function bridgeRunIdFromError(error: unknown): string | null {
@@ -165,13 +182,20 @@ async function runReview(options: CliOptions): Promise<void> {
   let providerSessionId: string | null = null;
   const observedToolKinds: string[] = [];
   const chunks: string[] = [];
+  const serverOutput: string[] = [];
   let stopReason: string | null = null;
 
   try {
+    const { bootstrapSourceInteractiveDb } = await import("../src/db.js");
+    bootstrapSourceInteractiveDb(dbPath);
     child = spawn(process.execPath, [join(projectRoot, "node_modules/tsx/dist/cli.mjs"), "src/acpServer/stdio.ts"], {
       cwd: projectRoot,
       env: childEnv,
-      stdio: ["pipe", "pipe", "ignore"],
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+    child.stderr?.on("data", (chunk: Buffer) => {
+      serverOutput.push(chunk.toString("utf8"));
+      if (serverOutput.join("").length > 16_384) serverOutput.shift();
     });
     await new Promise<void>((resolveReady, rejectReady) => {
       child!.once("spawn", () => resolveReady());
@@ -213,9 +237,11 @@ async function runReview(options: CliOptions): Promise<void> {
         });
       });
     } catch (error) {
-      const classification = failureClass(dbPath, error);
+      const classification = failureClass(dbPath, error, serverOutput.join(""));
       const runId = bridgeRunIdFromError(error);
-      throw new Error(`ACP reviewer ${classification} failure${runId ? ` (Bridge Run ${runId})` : ""}`);
+      const detail = error instanceof Error ? error.message : "ACP request failed";
+      const hints = safeErrorHints(serverOutput.join(""));
+      throw new Error(`ACP reviewer ${classification} failure${runId ? ` (Bridge Run ${runId})` : ""}: ${detail}${hints ? `; ${hints}` : ""}`);
     }
 
     const text = result ?? chunks.join("");
