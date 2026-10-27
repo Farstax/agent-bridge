@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { mkdtemp, mkdir, rm, symlink, writeFile } from "node:fs/promises";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
+import { execFileSync, spawn } from "node:child_process";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 import {
   buildAcpReviewEnvironment,
@@ -10,12 +12,17 @@ import {
   classifyAcpReviewFailureFromEvidence,
   classifyUnavailableProviderStatus,
   collectSuccessfulToolKinds,
+  createReviewCheckout,
   findReviewRunId,
   formatReviewResultFailure,
   joinReviewMessageParts,
   openReadOnlyReviewDatabase,
   qualifyReviewResult,
+  readImplementingProvider,
+  removeReviewCheckout,
+  resolveImplementingRun,
   reviewRuntime,
+  verifyReviewCheckout,
 } from "../src/acpReview.js";
 import { openDb } from "../src/db.js";
 
@@ -283,4 +290,139 @@ describe("cross-provider ACP review invocation", () => {
     expect(skill).not.toContain("npm run acp:review");
     expect(packageJson.scripts?.["acp:review"]).toBeUndefined();
   });
+  it("reviews only the committed candidate tree and refuses a checkout that changes", async () => {
+    const repo = await mkdtemp(join(tmpdir(), "acp-review-repo-"));
+    const git = (...args: string[]) => execFileSync("git", args, { cwd: repo, encoding: "utf8" }).trim();
+    try {
+      git("init", "--quiet");
+      git("-c", "user.email=t@example.com", "-c", "user.name=t", "commit", "--quiet", "--allow-empty", "-m", "base");
+      await writeFile(join(repo, "reviewed.txt"), "committed\n");
+      git("add", "reviewed.txt");
+      git("-c", "user.email=t@example.com", "-c", "user.name=t", "commit", "--quiet", "-m", "candidate");
+      const candidate = git("rev-parse", "HEAD");
+      // Dirty edits and untracked files with an unchanged HEAD.
+      await writeFile(join(repo, "reviewed.txt"), "uncommitted\n");
+      await writeFile(join(repo, "untracked.txt"), "untracked\n");
+      expect(() => verifyReviewCheckout(repo, candidate)).toThrow(/changed during review/);
+
+      const checkout = await createReviewCheckout(repo, candidate);
+      try {
+        expect(readFileSync(join(checkout, "reviewed.txt"), "utf8")).toBe("committed\n");
+        expect(existsSync(join(checkout, "untracked.txt"))).toBe(false);
+        expect(() => verifyReviewCheckout(checkout, candidate)).not.toThrow();
+        await writeFile(join(checkout, "reviewed.txt"), "edited by reviewer\n");
+        expect(() => verifyReviewCheckout(checkout, candidate)).toThrow(/changed during review/);
+      } finally {
+        await removeReviewCheckout(repo, checkout);
+      }
+      expect(existsSync(checkout)).toBe(false);
+      expect(git("worktree", "list", "--porcelain").match(/^worktree /gm)).toHaveLength(1);
+      await expect(createReviewCheckout(repo, "b".repeat(40))).rejects.toThrow();
+    } finally {
+      await rm(repo, { recursive: true, force: true });
+    }
+  });
+
+  it("derives the implementer from the Bridge-started ancestor, not caller-controlled environment", () => {
+    const procs = (table: Record<number, { ppid: number; env: Record<string, string> }>) =>
+      (pid: number) => table[pid] ? { ppid: table[pid]!.ppid, environ: table[pid]!.env } : null;
+    const bridge = { ppid: 1, env: { DB_PATH: "/db" } };
+    const adapter = { ppid: 10, env: { AGENT_BRIDGE_RUN_ID: "codex-run", AGENT_BRIDGE_PROVIDER: "codex", DB_PATH: "/db" } };
+
+    // A shell that only relabels the provider still resolves to the real Run.
+    expect(resolveImplementingRun(30, procs({
+      10: bridge, 20: adapter,
+      30: { ppid: 20, env: { AGENT_BRIDGE_RUN_ID: "codex-run", AGENT_BRIDGE_PROVIDER: "claude", DB_PATH: "/db" } },
+    }))).toEqual({ runId: "codex-run", dbPath: "/db" });
+    // Relabelling the Run or database below the Bridge-started process fails closed.
+    expect(() => resolveImplementingRun(30, procs({
+      10: bridge, 20: adapter,
+      30: { ppid: 20, env: { AGENT_BRIDGE_RUN_ID: "claude-run", AGENT_BRIDGE_PROVIDER: "claude", DB_PATH: "/db" } },
+    }))).toThrow(/inconsistent/);
+    expect(() => resolveImplementingRun(30, procs({
+      10: bridge, 20: adapter,
+      30: { ppid: 20, env: { AGENT_BRIDGE_RUN_ID: "codex-run", DB_PATH: "/forged.sqlite" } },
+    }))).toThrow(/inconsistent/);
+    // No Bridge-started ancestor at all.
+    expect(() => resolveImplementingRun(30, procs({
+      30: { ppid: 1, env: { AGENT_BRIDGE_PROVIDER: "codex" } },
+    }))).toThrow(/cannot be established/);
+
+    const db = openDb(":memory:", { serviceId: "acp:review-test", databaseRole: "interactive" });
+    try {
+      const insert = db.raw.prepare(`INSERT INTO bridge_runs (run_id, surface_identity, chat_id, bot, status, started_at)
+        VALUES (?, 'telegram', 'chat', ?, ?, '2026-10-27T00:00:00Z')`);
+      insert.run("codex-run", "codex", "running");
+      insert.run("old-run", "claude", "done");
+      const implementer = readImplementingProvider(db.raw, "codex-run");
+      expect(implementer).toBe("codex");
+      // Asking Codex to review its own Run fails regardless of a spoofed AGENT_BRIDGE_PROVIDER.
+      expect(() => buildAcpReviewEnvironment({
+        provider: "codex", implementer, base: { DB_PATH: "/db", AGENT_BRIDGE_PROVIDER: "claude" },
+        projectDir: "/repo", releaseDir: "/release",
+      })).toThrow(/different provider/);
+      expect(() => readImplementingProvider(db.raw, "old-run")).toThrow(/not active/);
+      expect(() => readImplementingProvider(db.raw, "missing")).toThrow(/not recorded/);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("bounds an unresponsive ACP server that ignores SIGTERM and cleans up the review checkout", async () => {
+    const root = await mkdtemp(join(tmpdir(), "acp-review-stall-"));
+    const repo = join(root, "repo");
+    const release = join(root, "release");
+    const git = (...args: string[]) => execFileSync("git", args, { cwd: repo, encoding: "utf8" }).trim();
+    try {
+      await mkdir(repo);
+      git("init", "--quiet");
+      git("-c", "user.email=t@example.com", "-c", "user.name=t", "commit", "--quiet", "--allow-empty", "-m", "candidate");
+      const candidate = git("rev-parse", "HEAD");
+      await mkdir(join(release, "dist/acpServer"), { recursive: true });
+      await writeFile(join(release, "manifest.json"), JSON.stringify({ commit: "c".repeat(40) }));
+      const pidFile = join(root, "server.pid");
+      await writeFile(join(release, "dist/acpServer/stdio.js"),
+        `require("fs").writeFileSync(${JSON.stringify(pidFile)}, String(process.pid));
+process.on("SIGTERM", () => {}); process.stdin.resume(); setInterval(() => {}, 1000);\n`);
+      await writeFile(join(release, "package.json"), JSON.stringify({ type: "commonjs" }));
+      await writeFile(join(root, "prompt.md"), "Review it.\n");
+      const dbPath = join(root, "bridge.sqlite");
+      const db = openDb(dbPath, { serviceId: "acp:review-test", databaseRole: "interactive" });
+      db.raw.prepare(`INSERT INTO bridge_runs (run_id, surface_identity, chat_id, bot, status, started_at)
+        VALUES ('codex-run', 'telegram', 'chat', 'codex', 'running', '2026-10-27T00:00:00Z')`).run();
+      db.close();
+
+      const helper = fileURLToPath(new URL("../src/acpReview.ts", import.meta.url));
+      const out = join(root, "out.txt");
+      // Detach through a short-lived shell so the helper's only Bridge-marked
+      // ancestry is its own exec-time environment, as under a Bridge provider.
+      const launcher = spawn("/bin/sh", ["-c", `"$@" >${JSON.stringify(out)} 2>&1 & echo $!`, "sh",
+        process.execPath, "--import", "tsx", helper,
+        "--provider", "claude", "--head", candidate, "--cwd", repo,
+        "--prompt-file", join(root, "prompt.md"), "--timeout-seconds", "2"], {
+        cwd: fileURLToPath(new URL("..", import.meta.url)),
+        env: {
+          PATH: process.env.PATH, HOME: process.env.HOME,
+          AGENT_BRIDGE_RUN_ID: "codex-run", AGENT_BRIDGE_PROVIDER: "claude", DB_PATH: dbPath,
+          BRIDGE_CURRENT_RELEASE_DIR: release,
+        },
+        stdio: ["ignore", "pipe", "inherit"],
+      });
+      let helperPid = "";
+      launcher.stdout.on("data", (chunk: Buffer) => { helperPid += chunk.toString(); });
+      await new Promise((resolveExit) => launcher.once("exit", resolveExit));
+      const started = Date.now();
+      const alive = (pid: number) => { try { process.kill(pid, 0); return true; } catch { return false; } };
+      while (alive(Number(helperPid.trim())) && Date.now() - started < 20_000) {
+        await new Promise((resolveWait) => setTimeout(resolveWait, 100));
+      }
+      expect(alive(Number(helperPid.trim()))).toBe(false);
+      expect(Date.now() - started).toBeLessThan(15_000);
+      expect(readFileSync(out, "utf8")).toContain("ACP reviewer timed out after 2000ms");
+      expect(alive(Number(readFileSync(pidFile, "utf8")))).toBe(false);
+      expect(git("worktree", "list", "--porcelain").match(/^worktree /gm)).toHaveLength(1);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  }, 30_000);
 });

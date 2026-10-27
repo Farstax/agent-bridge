@@ -84,7 +84,7 @@ export function resolveSupervisorTimeouts(options: Pick<CliOptions, "timeoutMs" 
   };
 }
 
-function killChildTree(child: ChildProcess, graceMs: number = defaultKillGraceMs()): Promise<void> {
+export function killChildTree(child: ChildProcess, graceMs: number = defaultKillGraceMs()): Promise<void> {
   const pid = child.pid;
   const signal = (sig: NodeJS.Signals) => {
     if (pid) {

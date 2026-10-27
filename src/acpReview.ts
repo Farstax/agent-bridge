@@ -3,12 +3,14 @@
 import * as acp from "@agentclientprotocol/sdk";
 import { spawn, type ChildProcess } from "node:child_process";
 import { execFileSync } from "node:child_process";
-import { readFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { existsSync, readFileSync, realpathSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Readable, Writable } from "node:stream";
 import Database from "better-sqlite3";
+import { killChildTree } from "./cliSupervisor.js";
 import { commandExistsOnPath, resolveInteractiveCliAuthPaths } from "./interactiveCliAuth.js";
 import { resolveProviderRuntime } from "./providers/acpRuntime.js";
 import { isProviderApiKeyConfigured } from "./providers/apiKeyAuth.js";
@@ -26,6 +28,62 @@ export interface ReviewInvocationOptions {
 
 const RUN_SCOPED_AGENT_BRIDGE_ENV = /^AGENT_BRIDGE_(?:RUN_ID|SERVICE_ID|ACQUISITION_ID|LOCK_|OUTCOME_COMMAND|WAIT_COMMAND|SCRATCH_COMMAND|CHAT_KEY|SURFACE_IDENTITY|OWNER_KEY|CONTEXT_(?:DB|AVAILABLE|COMMAND)|DELIVERY_)/;
 
+
+export interface ProcessRecord {
+  ppid: number;
+  environ: Record<string, string>;
+}
+
+function readProcRecord(pid: number): ProcessRecord | null {
+  try {
+    const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+    const ppid = Number(stat.slice(stat.lastIndexOf(")") + 2).split(" ")[1]);
+    const environ: Record<string, string> = {};
+    for (const entry of readFileSync(`/proc/${pid}/environ`, "utf8").split("\0")) {
+      const split = entry.indexOf("=");
+      if (split > 0) environ[entry.slice(0, split)] = entry.slice(split + 1);
+    }
+    return Number.isInteger(ppid) ? { ppid, environ } : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Bridge starts the provider adapter with AGENT_BRIDGE_RUN_ID and DB_PATH.
+ * Exec-time environments are held by the kernel, so a descendant can relabel
+ * only itself. The outermost marked ancestor is the process Bridge started;
+ * any disagreement below it is a relabelled descendant and fails closed.
+ */
+export function resolveImplementingRun(
+  startPid: number = process.pid,
+  readProcess: (pid: number) => ProcessRecord | null = readProcRecord,
+): { runId: string; dbPath: string } {
+  const marked: Array<{ runId: string; dbPath: string | undefined }> = [];
+  const seen = new Set<number>();
+  for (let pid = startPid; pid > 1 && !seen.has(pid);) {
+    seen.add(pid);
+    const record = readProcess(pid);
+    if (!record) break;
+    const runId = record.environ.AGENT_BRIDGE_RUN_ID?.trim();
+    if (runId) marked.push({ runId, dbPath: record.environ.DB_PATH?.trim() || undefined });
+    pid = record.ppid;
+  }
+  const origin = marked.at(-1);
+  if (!origin) throw new Error("implementing Bridge Run cannot be established from process ancestry");
+  if (marked.some((entry) => entry.runId !== origin.runId || (entry.dbPath ?? origin.dbPath) !== origin.dbPath)) {
+    throw new Error("implementing Bridge Run identity is inconsistent across process ancestry");
+  }
+  if (!origin.dbPath) throw new Error("DB_PATH is required for durable Bridge review evidence");
+  return { runId: origin.runId, dbPath: origin.dbPath };
+}
+
+export function readImplementingProvider(db: Database.Database, runId: string): string {
+  const run = db.prepare("SELECT bot, status FROM bridge_runs WHERE run_id = ?").get(runId) as { bot?: string; status?: string } | undefined;
+  if (!run?.bot) throw new Error("implementing Bridge Run is not recorded");
+  if (run.status !== "running") throw new Error(`implementing Bridge Run is not active (${run.status ?? "unknown"})`);
+  return run.bot;
+}
 
 export function buildAcpReviewEnvironment(options: ReviewInvocationOptions): NodeJS.ProcessEnv {
   if (options.provider === options.implementer) {
@@ -258,7 +316,11 @@ interface CliOptions {
   head: string;
   cwd: string;
   promptFile: string;
+  timeoutMs: number;
 }
+
+const DEFAULT_REVIEW_TIMEOUT_SECONDS = 1_800;
+const REVIEW_KILL_GRACE_MS = 3_000;
 
 export function reviewRuntime(base: NodeJS.ProcessEnv, candidateHead: string): { root: string; commit: string } {
   const configured = base.BRIDGE_CURRENT_RELEASE_DIR?.trim();
@@ -306,11 +368,40 @@ function parseArgs(argv: readonly string[]): CliOptions {
   if (!isAbsolute(cwd)) throw new Error("--cwd must be an absolute path");
   const promptFile = values.get("--prompt-file");
   if (!promptFile) throw new Error("--prompt-file is required");
-  return { provider, head, cwd, promptFile: resolve(promptFile) };
+  const timeoutSeconds = Number(values.get("--timeout-seconds") ?? DEFAULT_REVIEW_TIMEOUT_SECONDS);
+  if (!Number.isInteger(timeoutSeconds) || timeoutSeconds < 1) throw new Error("--timeout-seconds must be a positive integer");
+  return { provider, head, cwd, promptFile: resolve(promptFile), timeoutMs: timeoutSeconds * 1_000 };
 }
 
-function currentHead(cwd: string): string {
-  return execFileSync("git", ["rev-parse", "HEAD"], { cwd, encoding: "utf8" }).trim();
+function git(cwd: string, args: string[]): string {
+  return execFileSync("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
+}
+
+/** The reviewer sees only the committed tree: a fresh detached worktree at the exact head. */
+export async function createReviewCheckout(repository: string, head: string): Promise<string> {
+  const checkout = await mkdtemp(join(tmpdir(), "agent-bridge-review-"));
+  try {
+    git(repository, ["worktree", "add", "--detach", "--quiet", checkout, `${head}^{commit}`]);
+    verifyReviewCheckout(checkout, head);
+    return checkout;
+  } catch (error) {
+    await removeReviewCheckout(repository, checkout);
+    throw error;
+  }
+}
+
+export function verifyReviewCheckout(checkout: string, head: string): void {
+  const observed = git(checkout, ["rev-parse", "HEAD"]);
+  if (observed !== head) throw new Error(`candidate checkout mismatch: expected ${head}, found ${observed}`);
+  if (git(checkout, ["status", "--porcelain", "--untracked-files=all", "--ignored=no"])) {
+    throw new Error("candidate checkout changed during review");
+  }
+}
+
+export async function removeReviewCheckout(repository: string, checkout: string): Promise<void> {
+  try { git(repository, ["worktree", "remove", "--force", checkout]); } catch { /* not registered */ }
+  await rm(checkout, { recursive: true, force: true });
+  try { git(repository, ["worktree", "prune"]); } catch { /* best effort */ }
 }
 
 async function reviewPrompt(promptFile: string, expectedHead: string, runtimeCommit: string): Promise<string> {
@@ -319,7 +410,7 @@ async function reviewPrompt(promptFile: string, expectedHead: string, runtimeCom
   return [
     request,
     "",
-    `The launcher verified that git rev-parse HEAD matched ${expectedHead} before sending this prompt. Confirm the branch/ref using repository tools if available; do not require shell access.`,
+    `The working directory is a clean detached checkout of commit ${expectedHead} created by the launcher; it contains only that committed tree.`,
     `The Agent Bridge ACP server and review helper are running from installed release commit ${runtimeCommit}.`,
     "Read the repository instructions and inspect the candidate yourself. Use both ACP repository tools categorized as read and search. Do not use shell/Bash/execute as a substitute. If either category is unavailable, stop and report which one is missing. Do not modify files, commit, push, merge, deploy, or change infrastructure.",
     `After all review findings, put exactly one line REVIEWED_HEAD: ${expectedHead} followed by exactly one line REVIEW_RESULT: PASS or REVIEW_RESULT: FINDINGS as the final two lines. Include actionable findings before these markers.`,
@@ -327,20 +418,38 @@ async function reviewPrompt(promptFile: string, expectedHead: string, runtimeCom
 }
 
 async function runReview(options: CliOptions): Promise<void> {
-  const observedHead = currentHead(options.cwd);
-  if (observedHead !== options.head) throw new Error(`candidate checkout mismatch: expected ${options.head}, found ${observedHead}`);
-  const implementer = process.env.AGENT_BRIDGE_PROVIDER?.trim();
-  if (!implementer) throw new Error("Agent Bridge implementer provider is unavailable in this environment");
+  const origin = resolveImplementingRun();
+  const dbPath = origin.dbPath;
+  const originDb = openReadOnlyReviewDatabase(dbPath);
+  let implementer: string;
+  try {
+    implementer = readImplementingProvider(originDb, origin.runId);
+  } finally {
+    originDb.close();
+  }
   const runtime = reviewRuntime(process.env, options.head);
-  const dbPath = process.env.DB_PATH?.trim();
-  if (!dbPath) throw new Error("DB_PATH is required for durable Bridge review evidence");
   const childEnv = buildAcpReviewEnvironment({
     provider: options.provider,
     implementer,
-    base: process.env,
+    base: { ...process.env, DB_PATH: dbPath },
     projectDir: options.cwd,
     releaseDir: runtime.root,
   });
+  const repository = git(options.cwd, ["rev-parse", "--show-toplevel"]);
+  const checkout = await createReviewCheckout(repository, options.head);
+  try {
+    await runReviewSession(options, { implementer, dbPath, runtime, childEnv, checkout });
+    verifyReviewCheckout(checkout, options.head);
+  } finally {
+    await removeReviewCheckout(repository, checkout);
+  }
+}
+
+async function runReviewSession(
+  options: CliOptions,
+  context: { implementer: string; dbPath: string; runtime: { root: string; commit: string }; childEnv: NodeJS.ProcessEnv; checkout: string },
+): Promise<void> {
+  const { implementer, dbPath, runtime, childEnv } = context;
   const prompt = await reviewPrompt(options.promptFile, options.head, runtime.commit);
   let child: ChildProcess | null = null;
   let providerSessionId: string | null = null;
@@ -348,6 +457,11 @@ async function runReview(options: CliOptions): Promise<void> {
   const messageParts: Array<string | null> = [];
   const serverOutput: string[] = [];
   let stopReason: string | null = null;
+  let deadline: NodeJS.Timeout | null = null;
+  let cancelled: string | null = null;
+  const stopSignals: NodeJS.Signals[] = ["SIGINT", "SIGTERM", "SIGHUP"];
+  let interrupt: (reason: string) => void = () => undefined;
+  const onSignal = (signal: NodeJS.Signals) => interrupt(`interrupted by ${signal}`);
 
   try {
     try {
@@ -355,6 +469,7 @@ async function runReview(options: CliOptions): Promise<void> {
         cwd: runtime.root,
         env: childEnv,
         stdio: ["pipe", "pipe", "pipe"],
+        detached: true,
       });
       child.stderr?.on("data", (chunk: Buffer) => {
         serverOutput.push(chunk.toString("utf8"));
@@ -371,10 +486,20 @@ async function runReview(options: CliOptions): Promise<void> {
     } catch {
       throw new Error("ACP reviewer launch failure");
     }
+    const interrupted = new Promise<never>((_, reject) => {
+      interrupt = (reason) => {
+        if (cancelled) return;
+        cancelled = reason;
+        reject(new Error(`ACP reviewer ${reason}`));
+      };
+    });
+    interrupted.catch(() => undefined);
+    deadline = setTimeout(() => interrupt(`timed out after ${options.timeoutMs}ms`), options.timeoutMs);
+    for (const signal of stopSignals) process.once(signal, onSignal);
     const stream = acp.ndJsonStream(Writable.toWeb(child.stdin), Readable.toWeb(child.stdout) as ReadableStream<Uint8Array>);
     let result: string | undefined;
     try {
-      result = await acp.client({ name: "agent-bridge-review-client" })
+      const review = acp.client({ name: "agent-bridge-review-client" })
       .onRequest(acp.methods.client.session.requestPermission, () => ({ outcome: { outcome: "cancelled" } }))
       .connectWith(stream, async (ctx) => {
         await ctx.request(acp.methods.agent.initialize, {
@@ -382,8 +507,11 @@ async function runReview(options: CliOptions): Promise<void> {
           clientCapabilities: {},
           clientInfo: { name: "agent-bridge-review-client", version: "1" },
         });
-        return ctx.buildSession({ cwd: options.cwd, mcpServers: [] }).withSession(async (session) => {
+        return ctx.buildSession({ cwd: context.checkout, mcpServers: [] }).withSession(async (session) => {
           providerSessionId = session.sessionId;
+          interrupted.catch(() => {
+            void ctx.notify(acp.methods.agent.session.cancel, { sessionId: session.sessionId }).catch(() => undefined);
+          });
           const promptResult = session.prompt(prompt);
           for (;;) {
             const message = await session.nextUpdate();
@@ -404,7 +532,11 @@ async function runReview(options: CliOptions): Promise<void> {
           return joinReviewMessageParts(messageParts);
         });
       });
+      // Teardown after an interrupt rejects the abandoned client; that is expected.
+      review.catch(() => undefined);
+      result = await Promise.race([interrupted, review]);
     } catch (error) {
+      if (cancelled) throw new Error(`ACP reviewer ${cancelled}${providerSessionId ? ` (ACP session ${providerSessionId})` : ""}`);
       const detail = error instanceof Error ? error.message : "ACP request failed";
       let classification = failureClass(dbPath, error, serverOutput.join(""), detail);
       if (classification === "provider unavailable") {
@@ -469,12 +601,14 @@ async function runReview(options: CliOptions): Promise<void> {
     }), null, 2)}\n`);
     if (qualified.result === "incomplete") process.exitCode = 1;
   } finally {
-    if (child && child.exitCode === null) {
-      child.kill("SIGTERM");
-      await new Promise<void>((resolveExit) => {
-        if (child!.exitCode !== null) resolveExit();
-        else child!.once("exit", () => resolveExit());
-      });
+    if (deadline) clearTimeout(deadline);
+    for (const signal of stopSignals) process.off(signal, onSignal);
+    if (child) {
+      try { child.stdin?.end(); } catch { /* already closed */ }
+      // Allow a short cancellation window, then reuse the supervisor's bounded
+      // SIGTERM -> SIGKILL process-group teardown.
+      if (cancelled) await new Promise((resolveWait) => setTimeout(resolveWait, 250));
+      await killChildTree(child, REVIEW_KILL_GRACE_MS);
     }
   }
 }
