@@ -80,7 +80,7 @@ import {
   type FinalDeliveryPhase,
 } from "./executionLaneCoordinator.js";
 import { scheduleDurableQueueRecovery } from "./durableQueueRecovery.js";
-import { cancelPendingRunContinuation, cancelPendingRunContinuationsForChat, RUN_CONTINUATION_PREFIX, linkRunContinuationRun, settleRunContinuation, hasPendingCapacityWait } from "./runContinuation.js";
+import { cancelPendingRunContinuation, cancelPendingRunContinuationsForChat, clearContinuationLimitNotice, peekContinuationLimitNotice, RUN_CONTINUATION_PREFIX, linkRunContinuationRun, settleRunContinuation, hasPendingCapacityWait } from "./runContinuation.js";
 import { capacityRetryAfterSeconds } from "./providers/capacityRetryTiming.js";
 
 export interface HookContext {
@@ -766,8 +766,21 @@ export class BridgeEngine {
     let receiptsCorrelated = receiptKeys.length === 0;
     const routineOccurrenceKeys = scheduledOccurrenceKeys.filter((key) => key.startsWith(SCHEDULED_OCCURRENCE_PREFIX));
     let routineOccurrencesCorrelated = routineOccurrenceKeys.length === 0;
+    // The continuation chain depth (#1084) is read from this link, so it must
+    // exist before the provider can request another continuation.
+    const continuationKeys = scheduledOccurrenceKeys.filter((key) => key.startsWith(RUN_CONTINUATION_PREFIX));
+    let continuationsLinked = continuationKeys.length === 0;
     const collect = (event: BridgeEvent) => {
       collectEvent(event);
+      if (!continuationsLinked && this.db.getRun(runId)) {
+        try {
+          // Retried on later events until it succeeds: a missed link would reset the chain depth.
+          for (const key of continuationKeys) linkRunContinuationRun(this.db, key.slice(RUN_CONTINUATION_PREFIX.length), runId);
+          continuationsLinked = true;
+        } catch (error) {
+          console.error(`[${this.kind}] continuation correlation failed at Run admission`, error);
+        }
+      }
       if (!routineOccurrencesCorrelated) {
         try {
           if (this.db.getRun(runId)) {
@@ -797,6 +810,7 @@ export class BridgeEngine {
       }
       finalize();
       this._linkScheduledOccurrences(scheduledOccurrenceKeys, runId);
+      await this._deliverContinuationLimitNotice(chatKey, chatId, threadId);
       if (activePendingIds.length && !this.db.completePendingMsgs(laneHandle, activePendingIds)) throw new LostExecutionLeaseError();
       activeTaskCommitted = true;
       outcome = "committed";
@@ -1145,6 +1159,25 @@ export class BridgeEngine {
       if (status === "done") this.db.finishEventReceipt(receiptId, { status: "completed", result_reference: runId });
       else if (status === "failed") this.db.finishEventReceipt(receiptId, { status: "failed", result_reference: runId });
       else if (status === "cancelled") this.db.finishEventReceipt(receiptId, { status: "cancelled", result_reference: runId });
+    }
+  }
+
+  /** Mechanical owner notice when the provider hit the automatic-continuation cap (#1084). Cleared only after it was sent. */
+  private async _deliverContinuationLimitNotice(chatKey: string, chatId: number | string, threadId: number | string | undefined): Promise<void> {
+    try {
+      if (!peekContinuationLimitNotice(this.db, this.surfaceIdentity, chatKey)) return;
+      await sendSurfaceMessage({
+        client: this.client,
+        kind: this._deliveryKind(),
+        chatId,
+        body: {
+          text: "Automatic continuation stopped after 20 consecutive follow-ups. Your conversation and the work done so far are kept. Send a message to continue.",
+          message_thread_id: threadId,
+        },
+      });
+      clearContinuationLimitNotice(this.db, this.surfaceIdentity, chatKey);
+    } catch (error) {
+      console.error(`[${this.kind}] continuation limit notice failed`, error);
     }
   }
 

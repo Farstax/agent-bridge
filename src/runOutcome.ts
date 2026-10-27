@@ -1,6 +1,6 @@
 import Database from "better-sqlite3";
 import { BridgeDb } from "./db.js";
-import { requestRunContinuation } from "./runContinuation.js";
+import { RunContinuationLimitError, recordContinuationLimitNotice, requestRunContinuation } from "./runContinuation.js";
 import type { RouteableBotKind } from "./types.js";
 
 /** Original provider turn may already have executed side effects. Never replay it merely because reconciliation failed. */
@@ -106,10 +106,11 @@ export function clearRunOutcomeForProviderRetry(db: BridgeDb, runId: string): vo
 
 /** Shared owner for the new command and the legacy wait alias. */
 export function requestAgentBridgeOutcome(args: string[], env: EnvLike = process.env): string {
-  const [status, ...flags] = args;
-  if (status !== "complete" && status !== "continue" && status !== "blocked") {
+  const [requestedStatus, ...flags] = args;
+  if (requestedStatus !== "complete" && requestedStatus !== "continue" && requestedStatus !== "blocked") {
     throw new Error("expected complete, continue or blocked");
   }
+  const status: RunOutcomeStatus = requestedStatus;
   const dbPath = required(env, "AGENT_BRIDGE_CONTEXT_DB");
   const runId = required(env, "AGENT_BRIDGE_RUN_ID");
   const surfaceIdentity = required(env, "AGENT_BRIDGE_SURFACE_IDENTITY");
@@ -141,6 +142,28 @@ export function requestAgentBridgeOutcome(args: string[], env: EnvLike = process
   raw.pragma("foreign_keys = ON");
   const db = new BridgeDb(raw, { serviceId: "run-outcome-helper", runId, leaseMs: 90_000 });
   try {
+    try {
+      return requestOutcomeAtomically();
+    } catch (error) {
+      if (!(error instanceof RunContinuationLimitError)) throw error;
+      // The refused transaction rolled back, so no `continue` was recorded.
+      // Stop the chain honestly: record a blocker and ask the engine to tell the owner.
+      db.runInTransaction(() => {
+        if (!readRunOutcome(db, runId)) {
+          recordRunOutcome(db, {
+            runId, surfaceIdentity, chatKey, provider, status: "blocked",
+            detail: "automatic continuation limit reached; owner input required", lock,
+          });
+        }
+        recordContinuationLimitNotice(db, runId, surfaceIdentity, chatKey);
+      });
+      throw error;
+    }
+  } finally {
+    db.close();
+  }
+
+  function requestOutcomeAtomically(): string {
     return db.runInTransaction(() => {
       // A retried identical helper invocation must not refresh the existing
       // continuation's due time/expiry or create a new scheduling decision.
@@ -160,8 +183,6 @@ export function requestAgentBridgeOutcome(args: string[], env: EnvLike = process
       }
       return status === "complete" ? "Run outcome recorded: complete." : "Run outcome recorded: blocked.";
     });
-  } finally {
-    db.close();
   }
 }
 
@@ -200,6 +221,9 @@ export function requestAgentBridgeWait(args: string[], env: EnvLike = process.en
       originRunId, surfaceIdentity, chatKey, provider, reason, afterSeconds, delivery,
     });
     return `Continuation scheduled for ${continuation.dueAt}. Finish this Run without promising the user to check manually.`;
+  } catch (error) {
+    if (error instanceof RunContinuationLimitError) recordContinuationLimitNotice(db, originRunId, surfaceIdentity, chatKey);
+    throw error;
   } finally {
     db.close();
   }
