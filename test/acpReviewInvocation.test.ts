@@ -28,6 +28,16 @@ describe("cross-provider ACP review invocation", () => {
         CLAUDE_MODEL_PREFERENCE: "unavailable-model",
         CLAUDE_COMMAND: "native-login-failing-command",
         DB_PATH: "/var/lib/agent-bridge/interactive/bridge.sqlite",
+        AGENT_BRIDGE_INSTALLATION_ID: "installation-1",
+        AGENT_BRIDGE_RUN_ID: "implementer-run",
+        AGENT_BRIDGE_LOCK_RUN_ID: "implementer-lock",
+        AGENT_BRIDGE_OUTCOME_COMMAND: "/usr/local/bin/outcome",
+        AGENT_BRIDGE_WAIT_COMMAND: "/usr/local/bin/wait",
+        AGENT_BRIDGE_SCRATCH_COMMAND: "/usr/local/bin/scratch",
+        AGENT_BRIDGE_CONTEXT_DB: "/var/lib/agent-bridge/context.sqlite",
+        AGENT_BRIDGE_CHAT_KEY: "implementer-chat",
+        AGENT_BRIDGE_OWNER_KEY: "implementer-owner",
+        AGENT_BRIDGE_DELIVERY_CHAT_ID: "123",
       },
       projectDir: "/workspace/repo",
       releaseDir: "/opt/agent-bridge/releases/current",
@@ -43,6 +53,12 @@ describe("cross-provider ACP review invocation", () => {
     expect(env.DB_PATH).toBe("/var/lib/agent-bridge/interactive/bridge.sqlite");
     expect(env.CLAUDE_MODEL_PREFERENCE).toBeUndefined();
     expect(env.CLAUDE_COMMAND).toBeUndefined();
+    expect(env.AGENT_BRIDGE_INSTALLATION_ID).toBe("installation-1");
+    for (const key of [
+      "AGENT_BRIDGE_RUN_ID", "AGENT_BRIDGE_LOCK_RUN_ID", "AGENT_BRIDGE_OUTCOME_COMMAND",
+      "AGENT_BRIDGE_WAIT_COMMAND", "AGENT_BRIDGE_SCRATCH_COMMAND", "AGENT_BRIDGE_CONTEXT_DB",
+      "AGENT_BRIDGE_CHAT_KEY", "AGENT_BRIDGE_OWNER_KEY", "AGENT_BRIDGE_DELIVERY_CHAT_ID",
+    ]) expect(env[key]).toBeUndefined();
   });
 
   it("requires a configured durable Bridge database and uses the installed release runtime", () => {
@@ -200,6 +216,7 @@ describe("cross-provider ACP review invocation", () => {
     expect(workflow).toContain("bin/agent-bridge-review");
     expect(workflow).toContain('test -f "$verify_root/dist/acpReview.js"');
     expect(helper).toContain("$RELEASE_DIR/dist/acpReview.js");
+    expect(helper).toContain('RELEASE_DIR="$(realpath -e "$RELEASE_DIR")"');
     expect(helper).toContain('export BRIDGE_CURRENT_RELEASE_DIR="$RELEASE_DIR"');
     expect(skill).toContain("$BRIDGE_CURRENT_RELEASE_DIR/bin/agent-bridge-review");
     expect(skill).not.toContain("npm run acp:review");

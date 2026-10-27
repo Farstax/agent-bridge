@@ -20,6 +20,9 @@ export interface ReviewInvocationOptions {
   releaseDir: string;
 }
 
+const RUN_SCOPED_AGENT_BRIDGE_ENV = /^AGENT_BRIDGE_(?:RUN_ID|SERVICE_ID|ACQUISITION_ID|LOCK_|OUTCOME_COMMAND|WAIT_COMMAND|SCRATCH_COMMAND|CHAT_KEY|SURFACE_IDENTITY|OWNER_KEY|CONTEXT_(?:DB|AVAILABLE|COMMAND)|DELIVERY_)/;
+
+
 export function buildAcpReviewEnvironment(options: ReviewInvocationOptions): NodeJS.ProcessEnv {
   if (options.provider === options.implementer) {
     throw new Error("independent review requires a different provider");
@@ -37,6 +40,9 @@ export function buildAcpReviewEnvironment(options: ReviewInvocationOptions): Nod
     BRIDGE_CURRENT_RELEASE_DIR: options.releaseDir,
     BRIDGE_ACP_REVIEW_MODE: "1",
   };
+  for (const key of Object.keys(env)) {
+    if (RUN_SCOPED_AGENT_BRIDGE_ENV.test(key)) delete env[key];
+  }
   env[`${options.provider.toUpperCase()}_EXECUTION_MODE`] = "safe";
   delete env[`${options.provider.toUpperCase()}_MODEL_PREFERENCE`];
   if (options.provider === "claude") delete env.CLAUDE_COMMAND;
@@ -328,23 +334,27 @@ async function runReview(options: CliOptions): Promise<void> {
   let stopReason: string | null = null;
 
   try {
-    child = spawn(process.execPath, [join(runtime.root, "dist/acpServer/stdio.js")], {
-      cwd: runtime.root,
-      env: childEnv,
-      stdio: ["pipe", "pipe", "pipe"],
-    });
-    child.stderr?.on("data", (chunk: Buffer) => {
-      serverOutput.push(chunk.toString("utf8"));
-      if (serverOutput.join("").length > 16_384) serverOutput.shift();
-    });
-    await new Promise<void>((resolveReady, rejectReady) => {
-      child!.once("spawn", () => resolveReady());
-      child!.once("error", rejectReady);
-      child!.once("exit", (code) => {
-        if (code !== null) rejectReady(new Error(`ACP review server exited before launch (${code})`));
+    try {
+      child = spawn(process.execPath, [join(runtime.root, "dist/acpServer/stdio.js")], {
+        cwd: runtime.root,
+        env: childEnv,
+        stdio: ["pipe", "pipe", "pipe"],
       });
-    });
-    if (!child.stdin || !child.stdout) throw new Error("ACP review server did not provide stdio pipes");
+      child.stderr?.on("data", (chunk: Buffer) => {
+        serverOutput.push(chunk.toString("utf8"));
+        if (serverOutput.join("").length > 16_384) serverOutput.shift();
+      });
+      await new Promise<void>((resolveReady, rejectReady) => {
+        child!.once("spawn", () => resolveReady());
+        child!.once("error", rejectReady);
+        child!.once("exit", (code) => {
+          if (code !== null) rejectReady(new Error(`ACP review server exited before launch (${code})`));
+        });
+      });
+      if (!child.stdin || !child.stdout) throw new Error("ACP review server did not provide stdio pipes");
+    } catch {
+      throw new Error("ACP reviewer launch failure");
+    }
     const stream = acp.ndJsonStream(Writable.toWeb(child.stdin), Readable.toWeb(child.stdout) as ReadableStream<Uint8Array>);
     let result: string | undefined;
     try {

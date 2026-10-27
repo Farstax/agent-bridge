@@ -2,5 +2,6 @@
 set -euo pipefail
 
 RELEASE_DIR="${BRIDGE_CURRENT_RELEASE_DIR:-/opt/agent-bridge/releases/current}"
+RELEASE_DIR="$(realpath -e "$RELEASE_DIR")"
 export BRIDGE_CURRENT_RELEASE_DIR="$RELEASE_DIR"
 exec node "$RELEASE_DIR/dist/acpReview.js" "$@"
