@@ -320,7 +320,8 @@ interface CliOptions {
 }
 
 const DEFAULT_REVIEW_TIMEOUT_SECONDS = 1_800;
-const REVIEW_KILL_GRACE_MS = 3_000;
+const REVIEW_CLOSE_GRACE_MS = 5_000;
+const REVIEW_KILL_GRACE_MS = 2_000;
 
 export function reviewRuntime(base: NodeJS.ProcessEnv, candidateHead: string): { root: string; commit: string } {
   const configured = base.BRIDGE_CURRENT_RELEASE_DIR?.trim();
@@ -604,10 +605,14 @@ async function runReviewSession(
     if (deadline) clearTimeout(deadline);
     for (const signal of stopSignals) process.off(signal, onSignal);
     if (child) {
+      // Closing stdin lets the ACP server cancel and finalize its Bridge Run;
+      // after a bounded wait, reuse the supervisor's SIGTERM -> SIGKILL
+      // process-group teardown.
+      const exited = child.exitCode !== null || child.signalCode !== null
+        ? Promise.resolve()
+        : new Promise<void>((resolveExit) => child!.once("exit", () => resolveExit()));
       try { child.stdin?.end(); } catch { /* already closed */ }
-      // Allow a short cancellation window, then reuse the supervisor's bounded
-      // SIGTERM -> SIGKILL process-group teardown.
-      if (cancelled) await new Promise((resolveWait) => setTimeout(resolveWait, 250));
+      await Promise.race([exited, new Promise((resolveWait) => setTimeout(resolveWait, REVIEW_CLOSE_GRACE_MS).unref())]);
       await killChildTree(child, REVIEW_KILL_GRACE_MS);
     }
   }

@@ -383,7 +383,8 @@ describe("cross-provider ACP review invocation", () => {
       const pidFile = join(root, "server.pid");
       await writeFile(join(release, "dist/acpServer/stdio.js"),
         `require("fs").writeFileSync(${JSON.stringify(pidFile)}, String(process.pid));
-process.on("SIGTERM", () => {}); process.stdin.resume(); setInterval(() => {}, 1000);\n`);
+process.on("SIGTERM", () => {}); setInterval(() => {}, 1000);
+process.stdin.on("end", () => require("fs").writeFileSync(${JSON.stringify(pidFile)} + ".closed", "")).resume();\n`);
       await writeFile(join(release, "package.json"), JSON.stringify({ type: "commonjs" }));
       await writeFile(join(root, "prompt.md"), "Review it.\n");
       const dbPath = join(root, "bridge.sqlite");
@@ -419,6 +420,8 @@ process.on("SIGTERM", () => {}); process.stdin.resume(); setInterval(() => {}, 1
       expect(alive(Number(helperPid.trim()))).toBe(false);
       expect(Date.now() - started).toBeLessThan(15_000);
       expect(readFileSync(out, "utf8")).toContain("ACP reviewer timed out after 2000ms");
+      // stdin closed first so a real server can finalize its Run, then forced stop.
+      expect(existsSync(`${pidFile}.closed`)).toBe(true);
       expect(alive(Number(readFileSync(pidFile, "utf8")))).toBe(false);
       expect(git("worktree", "list", "--porcelain").match(/^worktree /gm)).toHaveLength(1);
     } finally {
