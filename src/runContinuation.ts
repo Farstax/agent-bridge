@@ -272,7 +272,7 @@ export function requestRunContinuation(
  * removed only after the notice was sent (at-least-once).
  */
 export function recordContinuationLimitNotice(db: BridgeDb, runId: string, surfaceIdentity: string, chatKey: string): void {
-  db.raw.prepare("INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)")
+  db.raw.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)")
     .run(`${LIMIT_NOTICE_PREFIX}${surfaceIdentity}:${chatKey}`, JSON.stringify({ runId, at: new Date().toISOString() }));
 }
 

@@ -8,6 +8,7 @@ import {
   RunContinuationLimitError,
   clearContinuationLimitNotice,
   peekContinuationLimitNotice,
+  recordContinuationLimitNotice,
   linkRunContinuationRun,
   listRunContinuations,
   requestRunContinuation,
@@ -156,6 +157,11 @@ describe("consecutive agent-initiated continuation limit", () => {
     expect(peekContinuationLimitNotice(db, scope.surfaceIdentity, scope.chatKey)).toEqual({ runId: "run-20" });
     expect(peekContinuationLimitNotice(db, scope.surfaceIdentity, scope.chatKey)).toEqual({ runId: "run-20" });
     expect(peekContinuationLimitNotice(db, scope.surfaceIdentity, scope.chatKey, Date.now() + 25 * 3_600_000)).toBeNull();
+    // A later refusal refreshes an older, nearly expired notice.
+    db.raw.prepare("UPDATE settings SET value = ? WHERE key LIKE 'run-continuation-limit:v1:%'")
+      .run(JSON.stringify({ runId: "old-run", at: new Date(Date.now() - 23 * 3_600_000).toISOString() }));
+    recordContinuationLimitNotice(db, "run-20", scope.surfaceIdentity, scope.chatKey);
+    expect(peekContinuationLimitNotice(db, scope.surfaceIdentity, scope.chatKey, Date.now() + 2 * 3_600_000)).toEqual({ runId: "run-20" });
     clearContinuationLimitNotice(db, scope.surfaceIdentity, scope.chatKey);
     expect(peekContinuationLimitNotice(db, scope.surfaceIdentity, scope.chatKey)).toBeNull();
     db.close();
