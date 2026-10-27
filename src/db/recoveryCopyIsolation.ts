@@ -145,18 +145,15 @@ export function isolateRecoveryCopyDatabase(
 
     const lockRows = db.prepare("SELECT surface, chat_key, acquired_at FROM execution_locks WHERE surface LIKE 'telegram:%'").all() as Array<{ surface: string; chat_key: string; acquired_at: string }>;
     for (const lock of lockRows) {
-      if (!isAfterCutoff(lock.acquired_at, cutoff)) {
-        const fullLock = db.prepare("SELECT * FROM execution_locks WHERE surface = ? AND chat_key = ?").get(lock.surface, lock.chat_key);
-        if (fullLock) {
-          db.prepare(`INSERT OR IGNORE INTO recovery_copy_execution_archive
-            (copy_id, record_type, record_key, payload_json, archived_at) VALUES (?, 'execution_lock', ?, ?, ?)`)
-            .run(copyId, `${lock.surface}:${lock.chat_key}`, JSON.stringify(fullLock), now);
-        }
-        db.prepare("DELETE FROM execution_locks WHERE surface = ? AND chat_key = ?").run(lock.surface, lock.chat_key);
-        continue;
+      // Locks are leases owned by an in-flight process, never durable copy activity.
+      // Preserve their evidence, but do not transfer any lock across recovery points.
+      const fullLock = db.prepare("SELECT * FROM execution_locks WHERE surface = ? AND chat_key = ?").get(lock.surface, lock.chat_key);
+      if (fullLock) {
+        db.prepare(`INSERT OR IGNORE INTO recovery_copy_execution_archive
+          (copy_id, record_type, record_key, payload_json, archived_at) VALUES (?, 'execution_lock', ?, ?, ?)`)
+          .run(copyId, `${lock.surface}:${lock.chat_key}`, JSON.stringify(fullLock), now);
       }
-      db.prepare("UPDATE execution_locks SET surface = ? WHERE surface = ? AND chat_key = ?")
-        .run(isolatedIdentity(lock.surface, copyId), lock.surface, lock.chat_key);
+      db.prepare("DELETE FROM execution_locks WHERE surface = ? AND chat_key = ?").run(lock.surface, lock.chat_key);
     }
 
     const stateRows = db.prepare("SELECT * FROM bridge_state WHERE surface_identity LIKE 'telegram:%'").all() as Array<Record<string, unknown>>;
@@ -209,13 +206,13 @@ export function isolateRecoveryCopyDatabase(
       }
       const placeholders = destinationColumns.map(() => "?").join(", ");
       const sessionUpdates = sessionColumns.flatMap((provider) => [
-        `${provider}_session_id = COALESCE(excluded.${provider}_session_id, bridge_state.${provider}_session_id)`,
-        `${provider}_session_created_at = COALESCE(excluded.${provider}_session_created_at, bridge_state.${provider}_session_created_at)`,
+        `${provider}_session_id = excluded.${provider}_session_id`,
+        `${provider}_session_created_at = excluded.${provider}_session_created_at`,
       ]);
       db.prepare(`INSERT INTO bridge_state (${destinationColumns.join(", ")}) VALUES (${placeholders})
         ON CONFLICT(surface_identity, chat_id) DO UPDATE SET
           ${sessionUpdates.join(", ")},
-          last_update_id = MAX(bridge_state.last_update_id, excluded.last_update_id),
+          last_update_id = excluded.last_update_id,
           interactive_cli_preference = COALESCE(excluded.interactive_cli_preference, bridge_state.interactive_cli_preference)`)
         .run(...destinationColumns.map((column) => copy[column] ?? null));
     }

@@ -40,6 +40,8 @@ function seed(raw: Database.Database): void {
     VALUES (?, '456', 'claude', 'post-copy-acp-session', 'copy-run', '2026-10-25T12:00:00.000Z', '2026-10-25T12:00:00.000Z')`).run(sourceIdentity);
   raw.prepare(`INSERT INTO execution_capacity_claims (claim_id, service_id, run_id, acquisition_id, execution_id, acquired_at, lease_expires_at)
     VALUES ('inherited-claim', 'telegram:interactive', 'inherited-run', 'acq', 'exec', '2026-10-23T12:00:00.000Z', '2026-10-27T12:00:00.000Z')`).run();
+  raw.prepare(`INSERT INTO execution_locks (surface, chat_key, service_id, run_id, acquisition_id, acquired_at, lease_expires_at)
+    VALUES (?, '456', 'telegram:interactive', 'copy-run', 'copy-acq', '2026-10-25T12:00:00.000Z', '2026-10-27T12:00:00.000Z')`).run(sourceIdentity);
   raw.prepare("INSERT INTO settings (key, value) VALUES (?, ?)").run("run-continuation:v1:inherited", JSON.stringify({
     version: 1, id: "inherited", originRunId: "inherited-run", surfaceIdentity: sourceIdentity, chatKey: "456",
     provider: "claude", reason: "pending inherited task", requestedAt: "2026-10-23T12:00:00.000Z",
@@ -89,6 +91,8 @@ describe("recovery-copy execution isolation", () => {
       claude_session_id: null, gemini_session_id: null, kimchi_session_id: null, last_update_id: 91,
     });
     expect(db.raw.prepare("SELECT count(*) AS n FROM execution_capacity_claims").get()).toEqual({ n: 0 });
+    expect(db.raw.prepare("SELECT count(*) AS n FROM execution_locks").get()).toEqual({ n: 0 });
+    expect(db.raw.prepare("SELECT record_type FROM recovery_copy_execution_archive WHERE record_type = 'execution_lock'").get()).toEqual({ record_type: "execution_lock" });
     expect(db.raw.prepare("SELECT record_type, record_key FROM recovery_copy_execution_archive").get()).toEqual({ record_type: "execution_capacity_claim", record_key: "inherited-claim" });
     const inherited = JSON.parse((db.raw.prepare("SELECT value FROM settings WHERE key = 'run-continuation:v1:inherited'").get() as { value: string }).value);
     const recent = JSON.parse((db.raw.prepare("SELECT value FROM settings WHERE key = 'run-continuation:v1:copy'").get() as { value: string }).value);
