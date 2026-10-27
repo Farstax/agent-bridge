@@ -69,6 +69,7 @@ import {
 } from "./runContinuation.js";
 import { fetchCodexCapacityResetAt } from "./codexUsage.js";
 import { capacityRetryAfterSeconds, combineCapacityRetryOpportunities } from "./providers/capacityRetryTiming.js";
+import { recoveryCopySurfaceIdentity } from "./db/recoveryCopyIsolation.js";
 
 loadInteractiveEnvFile();
 
@@ -128,6 +129,7 @@ const db = openProductionDb(dbPath, {
   requireInstallationIdentity: process.env.NODE_ENV === "production" && Boolean(process.env.AGENT_BRIDGE_INSTALLATION_ID?.trim()),
   databaseRole: runtimePolicy.databaseRole,
 });
+runtimePolicy.surfaceIdentity = recoveryCopySurfaceIdentity(db.raw, runtimePolicy.surfaceIdentity);
 const executionCapacityDb = openExecutionCapacityCoordinator(executionCapacity, dbPath, db, {
   serviceId: runtimePolicy.databaseServiceId,
   installationId: process.env.AGENT_BRIDGE_INSTALLATION_ID,
