@@ -89,4 +89,40 @@ describe("ACP permission mapping", () => {
       abortRequested: false,
     }).outcome).toEqual({ outcome: "selected", optionId: "reject" });
   });
+
+  describe("safe mode tool-kind authority (#1173)", () => {
+    type Kind = NonNullable<RequestPermissionRequest["toolCall"]["kind"]>;
+    const allKinds: Kind[] = ["read", "edit", "delete", "move", "search", "execute", "think", "fetch", "switch_mode", "other"];
+    const safeKinds = new Set<Kind>(["read", "search", "think"]);
+
+    it.each(allKinds)("maps kind %s deterministically in safe mode", (kind) => {
+      const response = mapAcpPermissionRequest(request(kind), { executionMode: "safe", abortRequested: false });
+      expect(response.outcome).toEqual({ outcome: "selected", optionId: safeKinds.has(kind) ? "allow" : "reject" });
+    });
+
+    it("treats an omitted kind as 'other' and rejects it in safe mode", () => {
+      const req = request("read");
+      delete (req.toolCall as { kind?: unknown }).kind;
+      expect(mapAcpPermissionRequest(req, { executionMode: "safe", abortRequested: false }).outcome)
+        .toEqual({ outcome: "selected", optionId: "reject" });
+    });
+
+    it("does not let titles or raw input claiming a safe operation upgrade a non-safe kind", () => {
+      const req = request("execute");
+      req.toolCall.title = "Read file (read-only, safe)";
+      (req.toolCall as { rawInput?: unknown }).rawInput = { command: "cat README.md", kind: "read" };
+      expect(mapAcpPermissionRequest(req, { executionMode: "safe", abortRequested: false }).outcome)
+        .toEqual({ outcome: "selected", optionId: "reject" });
+    });
+
+    it("never selects an allow option for a non-safe kind even when only allow options are offered", () => {
+      const req = request("execute");
+      req.options = [
+        { optionId: "allow", name: "Allow once", kind: "allow_once" },
+        { optionId: "allow-always", name: "Allow always", kind: "allow_always" },
+      ];
+      expect(mapAcpPermissionRequest(req, { executionMode: "safe", abortRequested: false }).outcome)
+        .toEqual({ outcome: "cancelled" });
+    });
+  });
 });
