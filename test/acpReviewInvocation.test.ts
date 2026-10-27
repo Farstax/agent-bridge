@@ -28,7 +28,7 @@ describe("cross-provider ACP review invocation", () => {
     expect(env.CLAUDE_EXECUTION_MODE).toBe("safe");
     expect(env.DB_PATH).toBe("/tmp/review/bridge.sqlite");
     expect(env.CLAUDE_MODEL_PREFERENCE).toBeUndefined();
-    expect(env.CLAUDE_COMMAND).toBe("native-login-failing-command");
+    expect(env.CLAUDE_COMMAND).toBeUndefined();
   });
 
   it("refuses same-provider reviews and only qualifies an exact-head PASS with read/search tool evidence", () => {

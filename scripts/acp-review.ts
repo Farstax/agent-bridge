@@ -35,6 +35,7 @@ export function buildAcpReviewEnvironment(options: ReviewInvocationOptions): Nod
   };
   env[`${options.provider.toUpperCase()}_EXECUTION_MODE`] = "safe";
   delete env[`${options.provider.toUpperCase()}_MODEL_PREFERENCE`];
+  if (options.provider === "claude") delete env.CLAUDE_COMMAND;
   return env;
 }
 
