@@ -48,6 +48,22 @@ export type ReviewResult =
   | { result: "findings"; reviewedHead: string }
   | { result: "incomplete"; failure: "missing tools"; reviewerResult: "pass" | "findings"; missingToolKinds: string[]; reviewedHead: string };
 
+export function buildReviewOutput(input: {
+  implementer: string;
+  provider: string;
+  model: string;
+  runtimeCommit: string;
+  bridgeRunId: string;
+  outwardSessionId: string;
+  providerSessionIds: string[];
+  qualified: ReviewResult;
+  toolKinds: string[];
+  text: string;
+}): Record<string, unknown> {
+  const { qualified, ...evidence } = input;
+  return { ...evidence, ...qualified };
+}
+
 export function qualifyReviewResult(input: {
   text: string;
   expectedHead: string;
@@ -404,10 +420,11 @@ async function runReview(options: CliOptions): Promise<void> {
       db.close();
     }
     if (!runId) throw new Error("Bridge did not record an independent review Run");
+    if (!providerSessionId) throw new Error("Bridge did not return an independent review ACP session");
     if (actualProvider !== options.provider) throw new Error(`provider lock mismatch: expected ${options.provider}, got ${actualProvider}`);
     const qualified = qualifyReviewResult({ text, expectedHead: options.head, toolKinds: observedToolKinds });
 
-    process.stdout.write(`${JSON.stringify({
+    process.stdout.write(`${JSON.stringify(buildReviewOutput({
       implementer,
       provider: actualProvider,
       model: model ?? "provider-default",
@@ -415,11 +432,10 @@ async function runReview(options: CliOptions): Promise<void> {
       bridgeRunId: runId,
       outwardSessionId: providerSessionId,
       providerSessionIds: innerSessionIds,
-      reviewedHead: qualified.reviewedHead,
-      result: qualified.result,
+      qualified,
       toolKinds: observedToolKinds,
       text,
-    }, null, 2)}\n`);
+    }), null, 2)}\n`);
     if (qualified.result === "incomplete") process.exitCode = 1;
   } finally {
     if (child && child.exitCode === null) {

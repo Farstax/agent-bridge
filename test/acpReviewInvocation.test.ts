@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import {
   buildAcpReviewEnvironment,
+  buildReviewOutput,
   classifyAcpReviewFailure,
   classifyAcpReviewFailureFromEvidence,
   classifyUnavailableProviderStatus,
@@ -98,16 +99,36 @@ describe("cross-provider ACP review invocation", () => {
       expectedHead: head,
       toolKinds: ["read", "search"],
     })).toEqual({ result: "pass", reviewedHead: head });
-    expect(qualifyReviewResult({
+    const incomplete = qualifyReviewResult({
       text: `Actionable issue\nREVIEWED_HEAD: ${head}\nREVIEW_RESULT: FINDINGS`,
       expectedHead: head,
       toolKinds: [],
-    })).toEqual({
+    });
+    expect(incomplete).toEqual({
       result: "incomplete",
       failure: "missing tools",
       reviewerResult: "findings",
       missingToolKinds: ["read", "search"],
       reviewedHead: head,
+    });
+    const output = JSON.parse(JSON.stringify(buildReviewOutput({
+      implementer: "codex",
+      provider: "claude",
+      model: "provider-default",
+      runtimeCommit: "b".repeat(40),
+      bridgeRunId: "run-1",
+      outwardSessionId: "session-1",
+      providerSessionIds: ["inner-1"],
+      qualified: incomplete,
+      toolKinds: [],
+      text: `Actionable issue\nREVIEWED_HEAD: ${head}\nREVIEW_RESULT: FINDINGS`,
+    })));
+    expect(output).toMatchObject({
+      result: "incomplete",
+      failure: "missing tools",
+      reviewerResult: "findings",
+      missingToolKinds: ["read", "search"],
+      bridgeRunId: "run-1",
     });
     expect(() => qualifyReviewResult({
       text: `REVIEWED_HEAD: ${head}\nExample: REVIEW_RESULT: PASS\nREVIEWED_HEAD: ${head}\nREVIEW_RESULT: FINDINGS`,
