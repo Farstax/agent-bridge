@@ -34,6 +34,8 @@ function seed(raw: Database.Database): void {
     VALUES ('copy-run', ?, '456', 'claude', 'done', '2026-10-25T12:00:00.000Z')`).run(sourceIdentity);
   raw.prepare(`INSERT INTO bridge_runs (run_id, surface_identity, chat_id, bot, status, started_at)
     VALUES ('unrelated-running-run', 'slack:workspace', 'C123', 'claude', 'running', '2026-10-23T12:00:00.000Z')`).run();
+  raw.prepare(`INSERT INTO bridge_runs (run_id, surface_identity, chat_id, bot, status, started_at)
+    VALUES ('post-cutoff-running-run', ?, '456', 'claude', 'running', '2026-10-25T12:00:00.000Z')`).run(sourceIdentity);
   raw.prepare(`INSERT INTO pending_messages (surface, chat_key, prompt, chat_id, state, created_at)
     VALUES (?, '456', 'inherited pending', 456, 'queued', '2026-10-23T12:00:00.000Z')`).run(sourceIdentity);
   raw.prepare(`INSERT INTO pending_messages (surface, chat_key, prompt, chat_id, state, created_at)
@@ -58,7 +60,7 @@ function seed(raw: Database.Database): void {
   }));
   raw.prepare("INSERT INTO settings (key, value) VALUES (?, ?)").run("scheduled-routine:v1:daily", JSON.stringify({
     id: "daily", name: "Daily check", instruction: "routine instruction", kind: "companion",
-    surfaceIdentity: sourceIdentity, chatKey: "456", ownerKey: "owner", timezone: "Etc/UTC",
+    surfaceIdentity: sourceIdentity, chatKey: "456", ownerKey: JSON.stringify([sourceIdentity, "42"]), timezone: "Etc/UTC",
     schedule: { type: "weekly", weekdays: [1, 2, 3, 4, 5], time: "09:00" }, enabled: true,
     createdAt: "2026-10-20T12:00:00.000Z", delivery: { chatId: 456, chatType: "private" },
   }));
@@ -83,10 +85,11 @@ describe("recovery-copy execution isolation", () => {
     seed(db.raw);
     const result = isolateRecoveryCopyDatabase(db.raw, { copyId, recoveryPointCreatedAt: cutoff, now: "2026-10-27T12:00:00.000Z" });
 
-    expect(result).toMatchObject({ copyId, runsFenced: 1, continuationsFenced: 1, capacityClaimsArchived: 2, alreadyApplied: false });
+    expect(result).toMatchObject({ copyId, runsFenced: 2, continuationsFenced: 1, capacityClaimsArchived: 2, alreadyApplied: false });
     expect(recoveryCopySurfaceIdentity(db.raw, sourceIdentity)).toBe(copyIdentity);
     expect(db.raw.prepare("SELECT status, error FROM bridge_runs WHERE run_id = 'inherited-run'").get()).toMatchObject({ status: "cancelled", error: expect.stringContaining("inherited execution fenced") });
     expect(db.raw.prepare("SELECT status FROM bridge_runs WHERE run_id = 'unrelated-running-run'").get()).toEqual({ status: "running" });
+    expect(db.raw.prepare("SELECT status FROM bridge_runs WHERE run_id = 'post-cutoff-running-run'").get()).toEqual({ status: "cancelled" });
     expect(db.raw.prepare("SELECT surface_identity FROM bridge_runs WHERE run_id = 'copy-run'").get()).toEqual({ surface_identity: copyIdentity });
     expect(db.raw.prepare("SELECT text FROM conversation_turns WHERE surface_identity = ? ORDER BY id").all(copyIdentity)).toEqual([
       { text: "historical prompt retained" }, { text: "post-copy Hello retained" },
@@ -114,7 +117,7 @@ describe("recovery-copy execution isolation", () => {
     expect(inherited.state).toBe("cancelled");
     expect(recent).toMatchObject({ state: "pending", surfaceIdentity: copyIdentity });
     const routine = JSON.parse((db.raw.prepare("SELECT value FROM settings WHERE key = 'scheduled-routine:v1:daily'").get() as { value: string }).value);
-    expect(routine).toMatchObject({ id: "daily", surfaceIdentity: copyIdentity, enabled: true });
+    expect(routine).toMatchObject({ id: "daily", surfaceIdentity: copyIdentity, ownerKey: JSON.stringify([copyIdentity, "42"]), enabled: true });
     expect(db.raw.prepare("SELECT value FROM settings WHERE key = 'scheduled-routine-trigger:v1:daily'").get()).toEqual({ value: "2026-10-25T12:00:00.000Z" });
     expect(db.raw.prepare("SELECT claude_session_id FROM bridge_state WHERE surface_identity = ? AND chat_id = '456'").get(copyIdentity)).toEqual({ claude_session_id: null });
   });
@@ -222,7 +225,7 @@ describe("recovery-copy execution isolation", () => {
     ], { cwd: process.cwd(), encoding: "utf8", env: { ...process.env, NODE_ENV: "test" } });
 
     expect(cli.status, cli.stderr).toBe(0);
-    expect(JSON.parse(cli.stdout)).toMatchObject({ copyId, runsFenced: 1, alreadyApplied: false });
+    expect(JSON.parse(cli.stdout)).toMatchObject({ copyId, runsFenced: 2, alreadyApplied: false });
     db = openDb(path, { databaseRole: "interactive" });
     expect(db.raw.prepare("SELECT status FROM bridge_runs WHERE run_id = 'inherited-run'").get()).toEqual({ status: "cancelled" });
   }, 15_000);

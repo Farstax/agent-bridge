@@ -93,7 +93,7 @@ export function isolateRecoveryCopyDatabase(
     let runsFenced = 0;
     // Only Telegram Runs belong to this copy-specific surface migration; other
     // interactive surfaces retain their own runtime identity and execution state.
-    const staleRuns = db.prepare("SELECT run_id FROM bridge_runs WHERE status = 'running' AND started_at < ? AND surface_identity LIKE 'telegram:%'").all(cutoff) as Array<{ run_id: string }>;
+    const staleRuns = db.prepare("SELECT run_id FROM bridge_runs WHERE status = 'running' AND surface_identity LIKE 'telegram:%'").all() as Array<{ run_id: string }>;
     for (const { run_id: runId } of staleRuns) {
       const seq = (db.prepare("SELECT COALESCE(MAX(seq), 0) + 1 AS next FROM bridge_events WHERE run_id = ?").get(runId) as { next: number }).next;
       const result = db.prepare(`UPDATE bridge_runs SET status = 'cancelled', ended_at = ?, error = ? WHERE run_id = ? AND status = 'running'`)
@@ -259,7 +259,19 @@ export function isolateRecoveryCopyDatabase(
     for (const row of routineRows) {
       const routine = parseRecord(row.value);
       if (!routine || typeof routine.surfaceIdentity !== "string" || !routine.surfaceIdentity.startsWith("telegram:")) continue;
-      routine.surfaceIdentity = isolatedIdentity(routine.surfaceIdentity, copyId);
+      const priorSurface = routine.surfaceIdentity;
+      const nextSurface = isolatedIdentity(priorSurface, copyId);
+      routine.surfaceIdentity = nextSurface;
+      if (typeof routine.ownerKey === "string") {
+        try {
+          const owner = JSON.parse(routine.ownerKey) as unknown;
+          if (Array.isArray(owner) && owner.length === 2 && owner[0] === priorSurface && typeof owner[1] === "string") {
+            routine.ownerKey = JSON.stringify([nextSurface, owner[1]]);
+          }
+        } catch {
+          // Preserve malformed legacy owner evidence; it remains fail-closed at dispatch.
+        }
+      }
       db.prepare("UPDATE settings SET value = ? WHERE key = ?").run(JSON.stringify(routine), row.key);
     }
 
