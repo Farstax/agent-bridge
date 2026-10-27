@@ -91,6 +91,7 @@ export function isolateRecoveryCopyDatabase(
     addSurfaces("execution_locks", "surface");
 
     let runsFenced = 0;
+    const fencedRunIds = new Set<string>();
     // Only Telegram Runs belong to this copy-specific surface migration; other
     // interactive surfaces retain their own runtime identity and execution state.
     const staleRuns = db.prepare("SELECT run_id FROM bridge_runs WHERE status = 'running' AND surface_identity LIKE 'telegram:%'").all() as Array<{ run_id: string }>;
@@ -101,6 +102,7 @@ export function isolateRecoveryCopyDatabase(
       if (result.changes !== 1) continue;
       db.prepare(`INSERT INTO bridge_events (id, run_id, seq, type, timestamp, payload_json) VALUES (?, ?, ?, ?, ?, ?)`)
         .run(`${runId}:${seq}`, runId, seq, "recovery_copy.inherited_run_fenced", now, JSON.stringify({ copyId, recoveryPointCreatedAt: cutoff }));
+      fencedRunIds.add(runId);
       runsFenced += 1;
     }
 
@@ -229,11 +231,15 @@ export function isolateRecoveryCopyDatabase(
       const continuation = parseRecord(row.value);
       if (!continuation || typeof continuation.surfaceIdentity !== "string") continue;
       if (!continuation.surfaceIdentity.startsWith("telegram:")) continue;
-      if (!isAfterCutoff(continuation.requestedAt, cutoff)
-        && (continuation.state === "pending" || continuation.state === "claimed")) {
+      const active = continuation.state === "pending" || continuation.state === "claimed";
+      if (active && (!isAfterCutoff(continuation.requestedAt, cutoff) || fencedRunIds.has(String(continuation.originRunId)))) {
         continuation.state = "cancelled";
         continuation.error = "inherited continuation fenced during recovery-copy isolation";
         continuation.completedAt = now;
+        delete continuation.claimedAt;
+        delete continuation.claimRunId;
+        delete continuation.claimToken;
+        delete continuation.claimExpiresAt;
         continuationsFenced += 1;
       }
       continuation.surfaceIdentity = isolatedIdentity(continuation.surfaceIdentity, copyId);

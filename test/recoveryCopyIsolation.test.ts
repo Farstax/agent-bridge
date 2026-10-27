@@ -58,6 +58,12 @@ function seed(raw: Database.Database): void {
     provider: "claude", reason: "copy activity", requestedAt: "2026-10-25T12:00:00.000Z",
     dueAt: "2026-10-28T12:00:00.000Z", expiresAt: "2026-10-29T12:00:00.000Z", state: "pending",
   }));
+  raw.prepare("INSERT INTO settings (key, value) VALUES (?, ?)").run("run-continuation:v1:post-run", JSON.stringify({
+    version: 1, id: "post-run", originRunId: "post-cutoff-running-run", surfaceIdentity: sourceIdentity, chatKey: "456",
+    provider: "claude", reason: "continuation from interrupted run", requestedAt: "2026-10-25T12:00:00.000Z",
+    dueAt: "2026-10-28T12:00:00.000Z", expiresAt: "2026-10-29T12:00:00.000Z", state: "claimed",
+    claimedAt: "2026-10-25T12:01:00.000Z", claimRunId: "claim-run", claimToken: "claim-token", claimExpiresAt: "2026-10-25T12:05:00.000Z",
+  }));
   raw.prepare("INSERT INTO settings (key, value) VALUES (?, ?)").run("scheduled-routine:v1:daily", JSON.stringify({
     id: "daily", name: "Daily check", instruction: "routine instruction", kind: "companion",
     surfaceIdentity: sourceIdentity, chatKey: "456", ownerKey: JSON.stringify([sourceIdentity, "42"]), timezone: "Etc/UTC",
@@ -85,7 +91,7 @@ describe("recovery-copy execution isolation", () => {
     seed(db.raw);
     const result = isolateRecoveryCopyDatabase(db.raw, { copyId, recoveryPointCreatedAt: cutoff, now: "2026-10-27T12:00:00.000Z" });
 
-    expect(result).toMatchObject({ copyId, runsFenced: 2, continuationsFenced: 1, capacityClaimsArchived: 2, alreadyApplied: false });
+    expect(result).toMatchObject({ copyId, runsFenced: 2, continuationsFenced: 2, capacityClaimsArchived: 2, alreadyApplied: false });
     expect(recoveryCopySurfaceIdentity(db.raw, sourceIdentity)).toBe(copyIdentity);
     expect(db.raw.prepare("SELECT status, error FROM bridge_runs WHERE run_id = 'inherited-run'").get()).toMatchObject({ status: "cancelled", error: expect.stringContaining("inherited execution fenced") });
     expect(db.raw.prepare("SELECT status FROM bridge_runs WHERE run_id = 'unrelated-running-run'").get()).toEqual({ status: "running" });
@@ -116,6 +122,11 @@ describe("recovery-copy execution isolation", () => {
     const recent = JSON.parse((db.raw.prepare("SELECT value FROM settings WHERE key = 'run-continuation:v1:copy'").get() as { value: string }).value);
     expect(inherited.state).toBe("cancelled");
     expect(recent).toMatchObject({ state: "pending", surfaceIdentity: copyIdentity });
+    const postRunContinuation = JSON.parse((db.raw.prepare("SELECT value FROM settings WHERE key = 'run-continuation:v1:post-run'").get() as { value: string }).value);
+    expect(postRunContinuation).toMatchObject({ state: "cancelled", surfaceIdentity: copyIdentity });
+    expect(postRunContinuation.claimRunId).toBeUndefined();
+    expect(postRunContinuation.claimToken).toBeUndefined();
+    expect(postRunContinuation.claimExpiresAt).toBeUndefined();
     const routine = JSON.parse((db.raw.prepare("SELECT value FROM settings WHERE key = 'scheduled-routine:v1:daily'").get() as { value: string }).value);
     expect(routine).toMatchObject({ id: "daily", surfaceIdentity: copyIdentity, ownerKey: JSON.stringify([copyIdentity, "42"]), enabled: true });
     expect(db.raw.prepare("SELECT value FROM settings WHERE key = 'scheduled-routine-trigger:v1:daily'").get()).toEqual({ value: "2026-10-25T12:00:00.000Z" });
