@@ -66,12 +66,12 @@ export function qualifyReviewResult(input: {
   return { result: result.toLowerCase() as "pass" | "findings", reviewedHead };
 }
 
-function failureClass(dbPath: string, error: unknown, serverOutput = ""): string {
+function failureClass(dbPath: string, error: unknown, serverOutput = "", detail = ""): string {
   const data = error && typeof error === "object" ? (error as { data?: unknown }).data : null;
   const runId = data && typeof data === "object" && typeof (data as { runId?: unknown }).runId === "string"
     ? (data as { runId: string }).runId
     : null;
-  if (!runId) return classifyAcpReviewFailure(serverOutput) ?? "launch";
+  if (!runId) return classifyAcpReviewFailureFromEvidence(detail, serverOutput);
   let db: Database.Database | null = null;
   try {
     db = new Database(dbPath, { readonly: true, fileMustExist: true });
@@ -85,7 +85,7 @@ function failureClass(dbPath: string, error: unknown, serverOutput = ""): string
       case "fatal":
       case "transient":
       case "unknown": return `provider ${diagnostic.classification}`;
-      default: return classifyAcpReviewFailure(serverOutput) ?? "provider execution";
+      default: return classifyAcpReviewFailureFromEvidence(detail, serverOutput) ?? "provider execution";
     }
   } catch {
     return "provider execution";
@@ -98,9 +98,19 @@ export function classifyAcpReviewFailure(value: string): string | null {
   if (/authentication|auth required|not logged in|oauth|api key/i.test(value)) return "authentication";
   if (/unsupported model|model unavailable|\bmodel\b.{0,40}\b(?:not found|unknown|unavailable)\b/i.test(value)) return "unsupported model";
   if (/capacity|rate limit|quota|session limit/i.test(value)) return "capacity";
-  if (/no available provider in (?:the )?configured chain|no available provider in chain/i.test(value)) return "provider unavailable";
+  if (/no available provider in (?:the )?configured chain|no available provider in chain|unsupported outward ACP provider lock/i.test(value)) return "provider unavailable";
   if (/spawn|enoent|exited before launch|command not found|executable.{0,20}not found/i.test(value)) return "launch";
   return null;
+}
+
+export function classifyAcpReviewFailureFromEvidence(detail: string, serverOutput = ""): string {
+  const direct = classifyAcpReviewFailure(detail);
+  if (direct) return direct;
+  for (const line of serverOutput.split(/\r?\n/).reverse()) {
+    const classification = classifyAcpReviewFailure(line);
+    if (classification) return classification;
+  }
+  return "provider execution";
 }
 
 export function collectSuccessfulToolKinds(updates: readonly acp.SessionUpdate[]): string[] {
@@ -215,7 +225,7 @@ async function reviewPrompt(promptFile: string, expectedHead: string): Promise<s
     "",
     `The exact candidate commit is ${expectedHead}. Verify the output of git rev-parse HEAD matches this value before reviewing.`,
     "Read the repository instructions and inspect the candidate yourself. Use both ACP repository tools categorized as read and search. Do not use shell/Bash/execute as a substitute. If either category is unavailable, stop and report which one is missing. Do not modify files, commit, push, merge, deploy, or change infrastructure.",
-    `After all review findings, put exactly one line REVIEWED_HEAD: ${expectedHead} followed by exactly one line REVIEW_RESULT: PASS or REVIEW_RESULT: FINDINGS as the final two non-empty lines. Include actionable findings before these markers.`,
+    `After all review findings, put exactly one line REVIEWED_HEAD: ${expectedHead} followed by exactly one line REVIEW_RESULT: PASS or REVIEW_RESULT: FINDINGS as the final two lines. Include actionable findings before these markers.`,
   ].join("\n");
 }
 
@@ -294,7 +304,7 @@ async function runReview(options: CliOptions): Promise<void> {
       });
     } catch (error) {
       const detail = error instanceof Error ? error.message : "ACP request failed";
-      const classification = failureClass(dbPath, error, `${serverOutput.join("")}\n${detail}`);
+      const classification = failureClass(dbPath, error, serverOutput.join(""), detail);
       const runId = bridgeRunIdFromError(error);
       const hints = safeErrorHints(serverOutput.join(""));
       throw new Error(`ACP reviewer ${classification} failure${runId ? ` (Bridge Run ${runId})` : ""}: ${detail}${hints ? `; ${hints}` : ""}`);

@@ -7,6 +7,7 @@ import { tmpdir } from "node:os";
 import {
   buildAcpReviewEnvironment,
   classifyAcpReviewFailure,
+  classifyAcpReviewFailureFromEvidence,
   collectSuccessfulToolKinds,
   findReviewRunId,
   qualifyReviewResult,
@@ -145,6 +146,8 @@ describe("cross-provider ACP review invocation", () => {
     expect(classifyAcpReviewFailure("model not found by ACP provider")).toBe("unsupported model");
     expect(classifyAcpReviewFailure("You've hit your session limit")).toBe("capacity");
     expect(classifyAcpReviewFailure("no available provider in the configured chain")).toBe("provider unavailable");
+    expect(classifyAcpReviewFailure("unsupported outward ACP provider lock: claude")).toBe("provider unavailable");
+    expect(classifyAcpReviewFailureFromEvidence("outward ACP prompt execution failed", "startup OAuth warning\nACP server spawn ENOENT")).toBe("launch");
     expect(classifyAcpReviewFailure("REVIEW_RESULT: FINDINGS")).toBeNull();
   });
 
@@ -152,11 +155,13 @@ describe("cross-provider ACP review invocation", () => {
     const workflow = readFileSync(new URL("../.github/workflows/release-artifact.yml", import.meta.url), "utf8");
     const helper = readFileSync(new URL("../bin/agent-bridge-review", import.meta.url), "utf8");
     const skill = readFileSync(new URL("../skills/release-readiness-review/SKILL.md", import.meta.url), "utf8");
+    const packageJson = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as { scripts?: Record<string, string> };
     expect(workflow).toContain("bin/agent-bridge-review");
     expect(workflow).toContain('test -f "$verify_root/dist/acpReview.js"');
     expect(helper).toContain("$RELEASE_DIR/dist/acpReview.js");
     expect(helper).toContain('export BRIDGE_CURRENT_RELEASE_DIR="$RELEASE_DIR"');
     expect(skill).toContain("$BRIDGE_CURRENT_RELEASE_DIR/bin/agent-bridge-review");
-    expect(skill).not.toContain("npm run acp:review --");
+    expect(skill).not.toContain("npm run acp:review");
+    expect(packageJson.scripts?.["acp:review"]).toBeUndefined();
   });
 });
