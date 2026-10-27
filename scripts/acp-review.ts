@@ -62,7 +62,7 @@ function failureClass(dbPath: string, error: unknown, serverOutput = ""): string
   const runId = data && typeof data === "object" && typeof (data as { runId?: unknown }).runId === "string"
     ? (data as { runId: string }).runId
     : null;
-  if (!runId) return classifyFailureMessage(serverOutput) ?? "launch";
+  if (!runId) return classifyAcpReviewFailure(serverOutput) ?? "launch";
   let db: Database.Database | null = null;
   try {
     db = new Database(dbPath, { readonly: true, fileMustExist: true });
@@ -76,7 +76,7 @@ function failureClass(dbPath: string, error: unknown, serverOutput = ""): string
       case "fatal":
       case "transient":
       case "unknown": return `provider ${diagnostic.classification}`;
-      default: return classifyFailureMessage(serverOutput) ?? "provider execution";
+      default: return classifyAcpReviewFailure(serverOutput) ?? "provider execution";
     }
   } catch {
     return "provider execution";
@@ -85,7 +85,7 @@ function failureClass(dbPath: string, error: unknown, serverOutput = ""): string
   }
 }
 
-function classifyFailureMessage(value: string): string | null {
+export function classifyAcpReviewFailure(value: string): string | null {
   if (/authentication|auth required|not logged in|oauth|api key/i.test(value)) return "authentication";
   if (/unsupported model|model unavailable/i.test(value)) return "unsupported model";
   if (/capacity|rate limit|quota|session limit/i.test(value)) return "capacity";
@@ -237,9 +237,9 @@ async function runReview(options: CliOptions): Promise<void> {
         });
       });
     } catch (error) {
-      const classification = failureClass(dbPath, error, serverOutput.join(""));
-      const runId = bridgeRunIdFromError(error);
       const detail = error instanceof Error ? error.message : "ACP request failed";
+      const classification = failureClass(dbPath, error, `${serverOutput.join("")}\n${detail}`);
+      const runId = bridgeRunIdFromError(error);
       const hints = safeErrorHints(serverOutput.join(""));
       throw new Error(`ACP reviewer ${classification} failure${runId ? ` (Bridge Run ${runId})` : ""}: ${detail}${hints ? `; ${hints}` : ""}`);
     }

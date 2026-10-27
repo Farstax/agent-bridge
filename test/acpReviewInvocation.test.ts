@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   buildAcpReviewEnvironment,
+  classifyAcpReviewFailure,
   qualifyReviewResult,
 } from "../scripts/acp-review.js";
 
@@ -54,5 +55,13 @@ describe("cross-provider ACP review invocation", () => {
       expectedHead: head,
       toolKinds: [],
     })).toThrow(/read\/search tools/);
+  });
+
+  it("keeps ACP launch, authentication, model, capacity, and review outcomes distinct", () => {
+    expect(classifyAcpReviewFailure("spawn ENOENT")).toBe("launch");
+    expect(classifyAcpReviewFailure("authentication required by ACP adapter")).toBe("authentication");
+    expect(classifyAcpReviewFailure("unsupported model before prompt submission")).toBe("unsupported model");
+    expect(classifyAcpReviewFailure("You've hit your session limit")).toBe("capacity");
+    expect(classifyAcpReviewFailure("REVIEW_RESULT: FINDINGS")).toBeNull();
   });
 });
