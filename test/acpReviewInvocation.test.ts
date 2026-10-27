@@ -1,12 +1,14 @@
 import { describe, expect, it } from "vitest";
 import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { readFileSync } from "node:fs";
+import Database from "better-sqlite3";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import {
   buildAcpReviewEnvironment,
   classifyAcpReviewFailure,
   collectSuccessfulToolKinds,
+  findReviewRunId,
   qualifyReviewResult,
   reviewRuntime,
 } from "../src/acpReview.js";
@@ -58,6 +60,19 @@ describe("cross-provider ACP review invocation", () => {
       expect(() => reviewRuntime({ BRIDGE_CURRENT_RELEASE_DIR: root }, "b".repeat(40))).toThrow(/independent of the candidate/);
     } finally {
       await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("correlates the Bridge run through the durable outward-session conversation identity", () => {
+    const db = new Database(":memory:");
+    try {
+      db.exec(`CREATE TABLE outward_acp_sessions (session_id TEXT, conversation_id TEXT);
+        CREATE TABLE bridge_runs (run_id TEXT, surface_identity TEXT, chat_id TEXT, started_at TEXT);
+        INSERT INTO outward_acp_sessions VALUES ('session-1', 'acp:conversation-1');
+        INSERT INTO bridge_runs VALUES ('run-1', 'acp:outward', 'acp:conversation-1', '2026-10-27');`);
+      expect(findReviewRunId(db, "session-1")).toBe("run-1");
+    } finally {
+      db.close();
     }
   });
 
@@ -120,6 +135,7 @@ describe("cross-provider ACP review invocation", () => {
     expect(workflow).toContain("bin/agent-bridge-review");
     expect(workflow).toContain('test -f "$verify_root/dist/acpReview.js"');
     expect(helper).toContain("$RELEASE_DIR/dist/acpReview.js");
+    expect(helper).toContain('export BRIDGE_CURRENT_RELEASE_DIR="$RELEASE_DIR"');
     expect(skill).toContain("$BRIDGE_CURRENT_RELEASE_DIR/bin/agent-bridge-review");
     expect(skill).not.toContain("npm run acp:review --");
   });

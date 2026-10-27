@@ -122,6 +122,19 @@ export function collectSuccessfulToolKinds(updates: readonly acp.SessionUpdate[]
     .map((call) => call.kind!))];
 }
 
+export function findReviewRunId(db: Database.Database, sessionId: string): string | null {
+  const session = db.prepare(`
+    SELECT conversation_id FROM outward_acp_sessions WHERE session_id = ?
+  `).get(sessionId) as { conversation_id?: string } | undefined;
+  if (!session?.conversation_id) return null;
+  const run = db.prepare(`
+    SELECT run_id FROM bridge_runs
+    WHERE chat_id = ? AND surface_identity = 'acp:outward'
+    ORDER BY started_at DESC LIMIT 1
+  `).get(session.conversation_id) as { run_id?: string } | undefined;
+  return run?.run_id ?? null;
+}
+
 function safeErrorHints(value: string): string {
   return value.split(/\r?\n/)
     .filter((line) => /error|failed|exception|unsupported/i.test(line))
@@ -297,12 +310,7 @@ async function runReview(options: CliOptions): Promise<void> {
     let model: string | null = null;
     let innerSessionIds: string[] = [];
     try {
-      const row = providerSessionId ? db.raw.prepare(`
-        SELECT run_id FROM bridge_runs
-        WHERE chat_id = ? AND surface_identity = 'acp:outward'
-        ORDER BY started_at DESC LIMIT 1
-      `).get(providerSessionId) as { run_id?: string } | undefined : undefined;
-      runId = row?.run_id ?? null;
+      runId = providerSessionId ? findReviewRunId(db.raw, providerSessionId) : null;
       if (runId) {
         const events = db.getEventsForRun(runId);
         for (const event of events) {
