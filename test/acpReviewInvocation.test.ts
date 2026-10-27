@@ -37,6 +37,8 @@ describe("cross-provider ACP review invocation", () => {
     expect(env.INTERACTIVE_CLI_CHAIN).toBe("claude");
     expect(env.BRIDGE_EXECUTION_MODE).toBe("safe");
     expect(env.CLAUDE_EXECUTION_MODE).toBe("safe");
+    expect(env.BRIDGE_PROJECT_DIR).toBe("/opt/agent-bridge/releases/current");
+    expect(env.BRIDGE_ACP_REVIEW_MODE).toBe("1");
     expect(env.DB_PATH).toBe("/var/lib/agent-bridge/interactive/bridge.sqlite");
     expect(env.CLAUDE_MODEL_PREFERENCE).toBeUndefined();
     expect(env.CLAUDE_COMMAND).toBeUndefined();

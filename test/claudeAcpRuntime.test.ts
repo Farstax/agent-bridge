@@ -90,6 +90,23 @@ describe("Claude ACP provider", () => {
     expect((claudeAcpPolicy.sessionSettings?.(request({ toolMode: "none" }), {})?.meta as any).claudeCode.options.tools).toEqual([]);
   });
 
+  it("disables Bridge-managed MCP tools only for bounded review Runs", () => {
+    const home = mkdtempSync(join(tmpdir(), "claude-review-mcp-"));
+    writeFileSync(join(home, ".claude.json"), JSON.stringify({
+      mcpServers: {
+        managed: {
+          command: "node",
+          args: ["/usr/local/bin/agent-bridge-mcp-adapter.cjs", "--socket", "/run/agent-bridge/managed-mcp/conn_1.sock"],
+        },
+      },
+    }));
+
+    const ordinary = claudeAcpPolicy.sessionSettings?.(request(), { HOME: home });
+    const review = claudeAcpPolicy.sessionSettings?.(request(), { HOME: home, BRIDGE_ACP_REVIEW_MODE: "1" });
+    expect((ordinary?.meta as any).claudeCode.options.mcpServers).toHaveProperty("managed");
+    expect((review?.meta as any).claudeCode.options.mcpServers).toEqual({});
+  });
+
   it("expresses model and effort as semantic ACP intents without provider-id translation", () => {
     expect(claudeAcpPolicy.sessionSettings?.(request({
       model: null,

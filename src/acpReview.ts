@@ -31,8 +31,11 @@ export function buildAcpReviewEnvironment(options: ReviewInvocationOptions): Nod
     BRIDGE_PROVIDER_LOCK: options.provider,
     INTERACTIVE_CLI_CHAIN: options.provider,
     BRIDGE_EXECUTION_MODE: "safe",
-    BRIDGE_PROJECT_DIR: options.projectDir,
+    // Runtime context injected by Bridge must resolve to trusted release-owned
+    // helpers. The ACP session itself still opens the candidate at its cwd.
+    BRIDGE_PROJECT_DIR: options.releaseDir,
     BRIDGE_CURRENT_RELEASE_DIR: options.releaseDir,
+    BRIDGE_ACP_REVIEW_MODE: "1",
   };
   env[`${options.provider.toUpperCase()}_EXECUTION_MODE`] = "safe";
   delete env[`${options.provider.toUpperCase()}_MODEL_PREFERENCE`];
