@@ -88,7 +88,7 @@ function failureClass(dbPath: string, error: unknown, serverOutput = "", detail 
       default: return classifyAcpReviewFailureFromEvidence(detail, serverOutput) ?? "provider execution";
     }
   } catch {
-    return "provider execution";
+    return classifyAcpReviewFailureFromEvidence(detail, serverOutput);
   } finally {
     db?.close();
   }
@@ -107,10 +107,58 @@ export function classifyAcpReviewFailureFromEvidence(detail: string, serverOutpu
   const direct = classifyAcpReviewFailure(detail);
   if (direct) return direct;
   for (const line of serverOutput.split(/\r?\n/).reverse()) {
+    if (!/error|failed|exception|no available provider|unsupported outward ACP provider lock|\bENOENT\b/i.test(line)) continue;
     const classification = classifyAcpReviewFailure(line);
     if (classification) return classification;
   }
   return "provider execution";
+}
+
+export function classifyUnavailableProviderStatus(input: {
+  runtimeAvailable: boolean;
+  credentialAvailable: boolean;
+  authenticationDegraded: boolean;
+}): string {
+  if (!input.runtimeAvailable) return "launch";
+  if (input.authenticationDegraded || !input.credentialAvailable) return "authentication";
+  return "provider unavailable";
+}
+
+async function classifyUnavailableProvider(
+  provider: ReviewProvider,
+  env: NodeJS.ProcessEnv,
+  releaseRoot: string,
+): Promise<string> {
+  try {
+    const providerId = provider === "antigravity" ? "agy" : provider;
+    const [auth, apiKeyAuth, runtimeAvailability, acpRuntime] = await Promise.all([
+      import(pathToFileURL(join(releaseRoot, "dist/interactiveCliAuth.js")).href),
+      import(pathToFileURL(join(releaseRoot, "dist/providers/apiKeyAuth.js")).href),
+      import(pathToFileURL(join(releaseRoot, "dist/providers/runtimeAvailability.js")).href),
+      import(pathToFileURL(join(releaseRoot, "dist/providers/acpRuntime.js")).href),
+    ]);
+    const home = env.HOME?.trim() || undefined;
+    const authPaths = auth.resolveInteractiveCliAuthPaths(home, env) as Record<string, string | string[]>;
+    const candidatePaths = authPaths[provider] ?? [];
+    const paths = Array.isArray(candidatePaths) ? candidatePaths : [candidatePaths];
+    const credentialAvailable = paths.some((path) => typeof path === "string" && existsSync(path))
+      || apiKeyAuth.isProviderApiKeyConfigured(providerId, env);
+    const authenticationDegraded = runtimeAvailability.getProviderRuntimeAuthDegradedProviders(home).has(providerId);
+    const command = acpRuntime.resolveProviderRuntime(providerId, env).executable as string;
+    const runtimeAvailable = isAbsolute(command) ? existsSync(command) : commandExists(command);
+    return classifyUnavailableProviderStatus({ runtimeAvailable, credentialAvailable, authenticationDegraded });
+  } catch {
+    return "provider unavailable";
+  }
+}
+
+function commandExists(command: string): boolean {
+  try {
+    execFileSync("which", [command], { stdio: "ignore" });
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 export function collectSuccessfulToolKinds(updates: readonly acp.SessionUpdate[]): string[] {
@@ -304,7 +352,10 @@ async function runReview(options: CliOptions): Promise<void> {
       });
     } catch (error) {
       const detail = error instanceof Error ? error.message : "ACP request failed";
-      const classification = failureClass(dbPath, error, serverOutput.join(""), detail);
+      let classification = failureClass(dbPath, error, serverOutput.join(""), detail);
+      if (classification === "provider unavailable") {
+        classification = await classifyUnavailableProvider(options.provider, childEnv, runtime.root);
+      }
       const runId = bridgeRunIdFromError(error);
       const hints = safeErrorHints(serverOutput.join(""));
       throw new Error(`ACP reviewer ${classification} failure${runId ? ` (Bridge Run ${runId})` : ""}: ${detail}${hints ? `; ${hints}` : ""}`);

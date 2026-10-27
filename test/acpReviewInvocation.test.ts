@@ -1,18 +1,19 @@
 import { describe, expect, it } from "vitest";
 import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { readFileSync } from "node:fs";
-import Database from "better-sqlite3";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import {
   buildAcpReviewEnvironment,
   classifyAcpReviewFailure,
   classifyAcpReviewFailureFromEvidence,
+  classifyUnavailableProviderStatus,
   collectSuccessfulToolKinds,
   findReviewRunId,
   qualifyReviewResult,
   reviewRuntime,
 } from "../src/acpReview.js";
+import { openDb } from "../src/db.js";
 
 describe("cross-provider ACP review invocation", () => {
   const head = "a".repeat(40);
@@ -65,13 +66,14 @@ describe("cross-provider ACP review invocation", () => {
   });
 
   it("correlates the Bridge run through the durable outward-session conversation identity", () => {
-    const db = new Database(":memory:");
+    const db = openDb(":memory:", { serviceId: "acp:review-test", databaseRole: "interactive" });
     try {
-      db.exec(`CREATE TABLE outward_acp_sessions (session_id TEXT, conversation_id TEXT);
-        CREATE TABLE bridge_runs (run_id TEXT, surface_identity TEXT, chat_id TEXT, started_at TEXT);
-        INSERT INTO outward_acp_sessions VALUES ('session-1', 'acp:conversation-1');
-        INSERT INTO bridge_runs VALUES ('run-1', 'acp:outward', 'acp:conversation-1', '2026-10-27');`);
-      expect(findReviewRunId(db, "session-1")).toBe("run-1");
+      db.raw.prepare("INSERT INTO outward_acp_sessions (session_id, conversation_id, cwd) VALUES (?, ?, ?)")
+        .run("session-1", "acp:conversation-1", "/tmp/review-test");
+      db.raw.prepare(`INSERT INTO bridge_runs (run_id, surface_identity, chat_id, bot, status, started_at)
+        VALUES (?, ?, ?, ?, ?, ?)`)
+        .run("run-1", "acp:outward", "acp:conversation-1", "claude", "done", "2026-10-27T00:00:00Z");
+      expect(findReviewRunId(db.raw, "session-1")).toBe("run-1");
     } finally {
       db.close();
     }
@@ -148,6 +150,8 @@ describe("cross-provider ACP review invocation", () => {
     expect(classifyAcpReviewFailure("no available provider in the configured chain")).toBe("provider unavailable");
     expect(classifyAcpReviewFailure("unsupported outward ACP provider lock: claude")).toBe("provider unavailable");
     expect(classifyAcpReviewFailureFromEvidence("outward ACP prompt execution failed", "startup OAuth warning\nACP server spawn ENOENT")).toBe("launch");
+    expect(classifyUnavailableProviderStatus({ runtimeAvailable: true, credentialAvailable: false, authenticationDegraded: false })).toBe("authentication");
+    expect(classifyUnavailableProviderStatus({ runtimeAvailable: false, credentialAvailable: true, authenticationDegraded: false })).toBe("launch");
     expect(classifyAcpReviewFailure("REVIEW_RESULT: FINDINGS")).toBeNull();
   });
 
