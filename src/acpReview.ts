@@ -6,9 +6,13 @@ import { execFileSync } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { isAbsolute, join, resolve } from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { fileURLToPath } from "node:url";
 import { Readable, Writable } from "node:stream";
 import Database from "better-sqlite3";
+import { commandExistsOnPath, resolveInteractiveCliAuthPaths } from "./interactiveCliAuth.js";
+import { resolveProviderRuntime } from "./providers/acpRuntime.js";
+import { isProviderApiKeyConfigured } from "./providers/apiKeyAuth.js";
+import { getProviderRuntimeAuthDegradedProviders } from "./providers/runtimeAvailability.js";
 
 export type ReviewProvider = "claude" | "codex" | "antigravity" | "grok" | "cursor";
 
@@ -176,38 +180,18 @@ export function classifyUnavailableProviderStatus(input: {
 async function classifyUnavailableProvider(
   provider: ReviewProvider,
   env: NodeJS.ProcessEnv,
-  releaseRoot: string,
 ): Promise<string> {
-  try {
-    const providerId = provider === "antigravity" ? "agy" : provider;
-    const [auth, apiKeyAuth, runtimeAvailability, acpRuntime] = await Promise.all([
-      import(pathToFileURL(join(releaseRoot, "dist/interactiveCliAuth.js")).href),
-      import(pathToFileURL(join(releaseRoot, "dist/providers/apiKeyAuth.js")).href),
-      import(pathToFileURL(join(releaseRoot, "dist/providers/runtimeAvailability.js")).href),
-      import(pathToFileURL(join(releaseRoot, "dist/providers/acpRuntime.js")).href),
-    ]);
-    const home = env.HOME?.trim() || undefined;
-    const authPaths = auth.resolveInteractiveCliAuthPaths(home, env) as Record<string, string | string[]>;
-    const candidatePaths = authPaths[provider] ?? [];
-    const paths = Array.isArray(candidatePaths) ? candidatePaths : [candidatePaths];
-    const credentialAvailable = paths.some((path) => typeof path === "string" && existsSync(path))
-      || apiKeyAuth.isProviderApiKeyConfigured(providerId, env);
-    const authenticationDegraded = runtimeAvailability.getProviderRuntimeAuthDegradedProviders(home).has(providerId);
-    const command = acpRuntime.resolveProviderRuntime(providerId, env).executable as string;
-    const runtimeAvailable = isAbsolute(command) ? existsSync(command) : commandExists(command);
-    return classifyUnavailableProviderStatus({ runtimeAvailable, credentialAvailable, authenticationDegraded });
-  } catch {
-    return "provider unavailable";
-  }
-}
-
-function commandExists(command: string): boolean {
-  try {
-    execFileSync("which", [command], { stdio: "ignore" });
-    return true;
-  } catch {
-    return false;
-  }
+  const providerId = provider === "antigravity" ? "agy" : provider;
+  const home = env.HOME?.trim() || undefined;
+  const authPaths = resolveInteractiveCliAuthPaths(home, env);
+  const candidatePaths = authPaths[provider];
+  const paths = Array.isArray(candidatePaths) ? candidatePaths : [candidatePaths];
+  const credentialAvailable = paths.some((path) => typeof path === "string" && existsSync(path))
+    || isProviderApiKeyConfigured(providerId, env);
+  const authenticationDegraded = getProviderRuntimeAuthDegradedProviders(home).has(providerId);
+  const command = resolveProviderRuntime(providerId, env).executable;
+  const runtimeAvailable = isAbsolute(command) ? existsSync(command) : commandExistsOnPath(command);
+  return classifyUnavailableProviderStatus({ runtimeAvailable, credentialAvailable, authenticationDegraded });
 }
 
 export function collectSuccessfulToolKinds(updates: readonly acp.SessionUpdate[]): string[] {
@@ -424,7 +408,7 @@ async function runReview(options: CliOptions): Promise<void> {
       const detail = error instanceof Error ? error.message : "ACP request failed";
       let classification = failureClass(dbPath, error, serverOutput.join(""), detail);
       if (classification === "provider unavailable") {
-        classification = await classifyUnavailableProvider(options.provider, childEnv, runtime.root);
+        classification = await classifyUnavailableProvider(options.provider, childEnv);
       }
       const runId = bridgeRunIdFromError(error);
       throw new Error(`ACP reviewer ${classification} failure${runId ? ` (Bridge Run ${runId})` : ""}`);
