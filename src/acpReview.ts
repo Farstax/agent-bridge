@@ -1,14 +1,14 @@
 #!/usr/bin/env node
 
 import * as acp from "@agentclientprotocol/sdk";
-import Database from "better-sqlite3";
 import { spawn, type ChildProcess } from "node:child_process";
 import { execFileSync } from "node:child_process";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { dirname, isAbsolute, join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { readFile } from "node:fs/promises";
+import { existsSync, readFileSync } from "node:fs";
+import { isAbsolute, join, resolve } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { Readable, Writable } from "node:stream";
+import Database from "better-sqlite3";
 
 export type ReviewProvider = "claude" | "codex" | "antigravity" | "grok" | "cursor";
 
@@ -16,22 +16,23 @@ export interface ReviewInvocationOptions {
   provider: ReviewProvider;
   implementer: string;
   base: Record<string, string | undefined>;
-  dbPath: string;
   projectDir: string;
+  releaseDir: string;
 }
 
 export function buildAcpReviewEnvironment(options: ReviewInvocationOptions): NodeJS.ProcessEnv {
   if (options.provider === options.implementer) {
     throw new Error("independent review requires a different provider");
   }
+  if (!options.base.DB_PATH?.trim()) throw new Error("DB_PATH is required for durable Bridge review evidence");
   const env: NodeJS.ProcessEnv = {
     ...options.base,
     AGENT_BRIDGE_PROVIDER: options.implementer,
     BRIDGE_PROVIDER_LOCK: options.provider,
     INTERACTIVE_CLI_CHAIN: options.provider,
     BRIDGE_EXECUTION_MODE: "safe",
-    DB_PATH: options.dbPath,
     BRIDGE_PROJECT_DIR: options.projectDir,
+    BRIDGE_CURRENT_RELEASE_DIR: options.releaseDir,
   };
   env[`${options.provider.toUpperCase()}_EXECUTION_MODE`] = "safe";
   delete env[`${options.provider.toUpperCase()}_MODEL_PREFERENCE`];
@@ -49,12 +50,18 @@ export function qualifyReviewResult(input: {
   if (!input.toolKinds.some((kind) => kind === "read" || kind === "search")) {
     throw new Error("independent reviewer did not use repository read/search tools");
   }
-  const reviewedHead = input.text.match(/^REVIEWED_HEAD:\s*([a-f0-9]{40})\s*$/im)?.[1];
+  const heads = [...input.text.matchAll(/^REVIEWED_HEAD:\s*([a-f0-9]{40})\s*$/gim)].map((match) => match[1]);
+  const results = [...input.text.matchAll(/^REVIEW_RESULT:\s*(PASS|FINDINGS)\s*$/gim)].map((match) => match[1]);
+  if (heads.length !== 1 || results.length !== 1) {
+    throw new Error("review result must contain exactly one qualified head and result");
+  }
+  const reviewedHead = heads[0];
   if (reviewedHead !== input.expectedHead) {
     throw new Error("review result is not bound to the exact candidate head");
   }
-  const result = input.text.match(/^REVIEW_RESULT:\s*(PASS|FINDINGS)\s*$/im)?.[1];
-  if (!result) throw new Error("reviewer returned no qualified PASS or findings result");
+  const finalLine = input.text.trim().split(/\r?\n/).at(-1);
+  if (finalLine !== `REVIEW_RESULT: ${results[0]}`) throw new Error("review result must be the final line");
+  const result = results[0];
   return { result: result.toLowerCase() as "pass" | "findings", reviewedHead };
 }
 
@@ -69,7 +76,7 @@ function failureClass(dbPath: string, error: unknown, serverOutput = ""): string
     db = new Database(dbPath, { readonly: true, fileMustExist: true });
     const rows = db.prepare("SELECT payload_json FROM bridge_events WHERE run_id = ? ORDER BY seq ASC").all(runId) as Array<{ payload_json: string }>;
     const diagnostic = rows.map((row) => JSON.parse(row.payload_json) as { type?: string; classification?: string })
-      .findLast((event) => event.type === "run.diagnostic");
+      .reverse().find((event) => event.type === "run.diagnostic");
     switch (diagnostic?.classification) {
       case "auth_required": return "authentication";
       case "model_unavailable": return "unsupported model";
@@ -90,8 +97,29 @@ export function classifyAcpReviewFailure(value: string): string | null {
   if (/authentication|auth required|not logged in|oauth|api key/i.test(value)) return "authentication";
   if (/unsupported model|model unavailable/i.test(value)) return "unsupported model";
   if (/capacity|rate limit|quota|session limit/i.test(value)) return "capacity";
+  if (/no available provider in (?:the )?configured chain|no available provider in chain/i.test(value)) return "provider unavailable";
   if (/spawn|not found|enoent|exited before launch/i.test(value)) return "launch";
   return null;
+}
+
+export function collectSuccessfulToolKinds(updates: readonly acp.SessionUpdate[]): string[] {
+  const calls = new Map<string, { kind: string | null; status: string | null }>();
+  for (const update of updates) {
+    if (update.sessionUpdate !== "tool_call" && update.sessionUpdate !== "tool_call_update") continue;
+    const candidate = update as { toolCall?: { toolCallId?: unknown; kind?: unknown; status?: unknown }; toolCallId?: unknown; kind?: unknown; status?: unknown };
+    const id = candidate.toolCall?.toolCallId ?? candidate.toolCallId;
+    if (typeof id !== "string") continue;
+    const previous = calls.get(id) ?? { kind: null, status: null };
+    const kind = candidate.toolCall?.kind ?? candidate.kind;
+    const status = candidate.toolCall?.status ?? candidate.status;
+    calls.set(id, {
+      kind: typeof kind === "string" ? kind : previous.kind,
+      status: typeof status === "string" ? status : previous.status,
+    });
+  }
+  return [...new Set([...calls.values()]
+    .filter((call) => call.status === "completed" && call.kind !== null)
+    .map((call) => call.kind!))];
 }
 
 function safeErrorHints(value: string): string {
@@ -115,6 +143,27 @@ interface CliOptions {
   head: string;
   cwd: string;
   promptFile: string;
+}
+
+export function reviewRuntime(base: NodeJS.ProcessEnv, candidateHead: string): { root: string; commit: string } {
+  const configured = base.BRIDGE_CURRENT_RELEASE_DIR?.trim();
+  if (!configured) throw new Error("installed Agent Bridge release directory is unavailable");
+  const root = resolve(configured);
+  const manifestPath = join(root, "manifest.json");
+  const runtimeServer = join(root, "dist/acpServer/stdio.js");
+  if (!existsSync(manifestPath) || !existsSync(runtimeServer)) {
+    throw new Error("installed Agent Bridge release runtime is incomplete");
+  }
+  let manifest: { commit?: unknown };
+  try {
+    manifest = JSON.parse(readFileSync(manifestPath, "utf8")) as { commit?: unknown };
+  } catch {
+    throw new Error("installed Agent Bridge release manifest is invalid");
+  }
+  const commit = typeof manifest.commit === "string" ? manifest.commit : "";
+  if (!/^[a-f0-9]{40}$/.test(commit)) throw new Error("installed Agent Bridge release commit is invalid");
+  if (commit === candidateHead) throw new Error("review runtime must be independent of the candidate commit");
+  return { root, commit };
 }
 
 function parseArgs(argv: readonly string[]): CliOptions {
@@ -144,13 +193,6 @@ function currentHead(cwd: string): string {
   return execFileSync("git", ["rev-parse", "HEAD"], { cwd, encoding: "utf8" }).trim();
 }
 
-function toolKind(update: acp.SessionUpdate): string | null {
-  if (update.sessionUpdate !== "tool_call" && update.sessionUpdate !== "tool_call_update") return null;
-  const candidate = update as { kind?: unknown; toolCall?: { kind?: unknown } };
-  const kind = candidate.toolCall?.kind ?? candidate.kind;
-  return typeof kind === "string" ? kind : null;
-}
-
 async function reviewPrompt(promptFile: string, expectedHead: string): Promise<string> {
   const request = (await readFile(promptFile, "utf8")).trim();
   if (!request) throw new Error("review prompt is empty");
@@ -168,29 +210,27 @@ async function runReview(options: CliOptions): Promise<void> {
   if (observedHead !== options.head) throw new Error(`candidate checkout mismatch: expected ${options.head}, found ${observedHead}`);
   const implementer = process.env.AGENT_BRIDGE_PROVIDER?.trim();
   if (!implementer) throw new Error("Agent Bridge implementer provider is unavailable in this environment");
-  const temporary = await mkdtemp(join(tmpdir(), "agent-bridge-acp-review-"));
-  const dbPath = join(temporary, "bridge.sqlite");
-  const projectRoot = dirname(fileURLToPath(import.meta.url)).replace(/\/scripts$/, "");
+  const runtime = reviewRuntime(process.env, options.head);
+  const dbPath = process.env.DB_PATH?.trim();
+  if (!dbPath) throw new Error("DB_PATH is required for durable Bridge review evidence");
   const childEnv = buildAcpReviewEnvironment({
     provider: options.provider,
     implementer,
     base: process.env,
-    dbPath,
     projectDir: options.cwd,
+    releaseDir: runtime.root,
   });
   const prompt = await reviewPrompt(options.promptFile, options.head);
   let child: ChildProcess | null = null;
   let providerSessionId: string | null = null;
-  const observedToolKinds: string[] = [];
+  const toolUpdates: acp.SessionUpdate[] = [];
   const chunks: string[] = [];
   const serverOutput: string[] = [];
   let stopReason: string | null = null;
 
   try {
-    const { bootstrapSourceInteractiveDb } = await import("../src/db.js");
-    bootstrapSourceInteractiveDb(dbPath);
-    child = spawn(process.execPath, [join(projectRoot, "node_modules/tsx/dist/cli.mjs"), "src/acpServer/stdio.ts"], {
-      cwd: projectRoot,
+    child = spawn(process.execPath, [join(runtime.root, "dist/acpServer/stdio.js")], {
+      cwd: runtime.root,
       env: childEnv,
       stdio: ["pipe", "pipe", "pipe"],
     });
@@ -209,7 +249,7 @@ async function runReview(options: CliOptions): Promise<void> {
     const stream = acp.ndJsonStream(Writable.toWeb(child.stdin), Readable.toWeb(child.stdout) as ReadableStream<Uint8Array>);
     let result: string | undefined;
     try {
-      result = await acp.client({ name: "agent-bridge-review-client", version: "1" })
+      result = await acp.client({ name: "agent-bridge-review-client" })
       .onRequest(acp.methods.client.session.requestPermission, () => ({ outcome: { outcome: "cancelled" } }))
       .connectWith(stream, async (ctx) => {
         await ctx.request(acp.methods.agent.initialize, {
@@ -226,8 +266,9 @@ async function runReview(options: CliOptions): Promise<void> {
               stopReason = message.stopReason;
               break;
             }
-            const kind = toolKind(message.update);
-            if (kind) observedToolKinds.push(kind);
+            if (message.update.sessionUpdate === "tool_call" || message.update.sessionUpdate === "tool_call_update") {
+              toolUpdates.push(message.update);
+            }
             const update = message.update;
             if (update.sessionUpdate === "agent_message_chunk" && update.content.type === "text") {
               chunks.push(update.content.text);
@@ -245,16 +286,22 @@ async function runReview(options: CliOptions): Promise<void> {
       throw new Error(`ACP reviewer ${classification} failure${runId ? ` (Bridge Run ${runId})` : ""}: ${detail}${hints ? `; ${hints}` : ""}`);
     }
 
+    if (stopReason !== "end_turn") throw new Error(`reviewer stopped without a completed turn (${stopReason ?? "unknown"})`);
     const text = result ?? chunks.join("");
-    const qualified = qualifyReviewResult({ text, expectedHead: options.head, toolKinds: observedToolKinds });
-    const { openProductionDb } = await import("../src/db.js");
+    const observedToolKinds = collectSuccessfulToolKinds(toolUpdates);
+    const runtimeDb = await import(pathToFileURL(join(runtime.root, "dist/db.js")).href);
+    const { openProductionDb } = runtimeDb as typeof import("./db.js");
     const db = openProductionDb(dbPath, { serviceId: "acp:review-result", databaseRole: "interactive" });
     let runId: string | null = null;
     let actualProvider = options.provider;
     let model: string | null = null;
     let innerSessionIds: string[] = [];
     try {
-      const row = db.raw.prepare("SELECT run_id FROM bridge_runs ORDER BY started_at DESC LIMIT 1").get() as { run_id?: string } | undefined;
+      const row = providerSessionId ? db.raw.prepare(`
+        SELECT run_id FROM bridge_runs
+        WHERE chat_id = ? AND surface_identity = 'acp:outward'
+        ORDER BY started_at DESC LIMIT 1
+      `).get(providerSessionId) as { run_id?: string } | undefined : undefined;
       runId = row?.run_id ?? null;
       if (runId) {
         const events = db.getEventsForRun(runId);
@@ -271,24 +318,26 @@ async function runReview(options: CliOptions): Promise<void> {
         }
         const run = db.getRun(runId);
         if (run?.status !== "done") throw new Error(`ACP reviewer Bridge Run ended with ${run?.status ?? "unknown"}`);
+        if (run.bot !== options.provider) throw new Error(`Bridge Run provider mismatch: expected ${options.provider}, got ${run.bot}`);
       }
     } finally {
       db.close();
     }
     if (!runId) throw new Error("Bridge did not record an independent review Run");
     if (actualProvider !== options.provider) throw new Error(`provider lock mismatch: expected ${options.provider}, got ${actualProvider}`);
-    if (stopReason !== "end_turn") throw new Error(`reviewer stopped without a completed turn (${stopReason ?? "unknown"})`);
+    const qualified = qualifyReviewResult({ text, expectedHead: options.head, toolKinds: observedToolKinds });
 
     process.stdout.write(`${JSON.stringify({
       implementer,
       provider: actualProvider,
       model: model ?? "provider-default",
+      runtimeCommit: runtime.commit,
       bridgeRunId: runId,
       outwardSessionId: providerSessionId,
       providerSessionIds: innerSessionIds,
       reviewedHead: qualified.reviewedHead,
       result: qualified.result,
-      toolKinds: [...new Set(observedToolKinds)],
+      toolKinds: observedToolKinds,
       text,
     }, null, 2)}\n`);
   } finally {
@@ -299,7 +348,6 @@ async function runReview(options: CliOptions): Promise<void> {
         else child!.once("exit", () => resolveExit());
       });
     }
-    await rm(temporary, { recursive: true, force: true });
   }
 }
 

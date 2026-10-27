@@ -30,7 +30,7 @@
     "start": "tsx src/index-interactive.ts",
     "setup": "tsx src/setupCli.ts",
     "acp:serve": "tsx src/acpServer/stdio.ts",
-    "acp:review": "tsx scripts/acp-review.ts",
+    "acp:review": "tsx src/acpReview.ts",
     "build": "tsc",
     "test": "vitest run",
     "test:resources": "vitest run --detect-async-leaks",

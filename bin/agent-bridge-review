@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+RELEASE_DIR="${BRIDGE_CURRENT_RELEASE_DIR:-/opt/agent-bridge/releases/current}"
+exec node "$RELEASE_DIR/dist/acpReview.js" "$@"

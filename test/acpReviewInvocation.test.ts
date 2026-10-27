@@ -1,9 +1,15 @@
 import { describe, expect, it } from "vitest";
+import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 import {
   buildAcpReviewEnvironment,
   classifyAcpReviewFailure,
+  collectSuccessfulToolKinds,
   qualifyReviewResult,
-} from "../scripts/acp-review.js";
+  reviewRuntime,
+} from "../src/acpReview.js";
 
 describe("cross-provider ACP review invocation", () => {
   const head = "a".repeat(40);
@@ -16,9 +22,10 @@ describe("cross-provider ACP review invocation", () => {
         BRIDGE_EXECUTION_MODE: "trusted",
         CLAUDE_MODEL_PREFERENCE: "unavailable-model",
         CLAUDE_COMMAND: "native-login-failing-command",
+        DB_PATH: "/var/lib/agent-bridge/interactive/bridge.sqlite",
       },
-      dbPath: "/tmp/review/bridge.sqlite",
       projectDir: "/workspace/repo",
+      releaseDir: "/opt/agent-bridge/releases/current",
     });
 
     expect(env.AGENT_BRIDGE_PROVIDER).toBe("codex");
@@ -26,9 +33,32 @@ describe("cross-provider ACP review invocation", () => {
     expect(env.INTERACTIVE_CLI_CHAIN).toBe("claude");
     expect(env.BRIDGE_EXECUTION_MODE).toBe("safe");
     expect(env.CLAUDE_EXECUTION_MODE).toBe("safe");
-    expect(env.DB_PATH).toBe("/tmp/review/bridge.sqlite");
+    expect(env.DB_PATH).toBe("/var/lib/agent-bridge/interactive/bridge.sqlite");
     expect(env.CLAUDE_MODEL_PREFERENCE).toBeUndefined();
     expect(env.CLAUDE_COMMAND).toBeUndefined();
+  });
+
+  it("requires a configured durable Bridge database and uses the installed release runtime", () => {
+    expect(() => buildAcpReviewEnvironment({
+      provider: "claude",
+      implementer: "codex",
+      base: {},
+      projectDir: "/workspace/repo",
+      releaseDir: "/opt/agent-bridge/releases/current",
+    })).toThrow(/DB_PATH/);
+  });
+
+  it("selects only a manifest-bound installed release distinct from the candidate", async () => {
+    const root = await mkdtemp(join(tmpdir(), "acp-review-runtime-"));
+    try {
+      await mkdir(join(root, "dist/acpServer"), { recursive: true });
+      await writeFile(join(root, "manifest.json"), JSON.stringify({ commit: "b".repeat(40) }));
+      await writeFile(join(root, "dist/acpServer/stdio.js"), "");
+      expect(reviewRuntime({ BRIDGE_CURRENT_RELEASE_DIR: root }, "a".repeat(40))).toEqual({ root, commit: "b".repeat(40) });
+      expect(() => reviewRuntime({ BRIDGE_CURRENT_RELEASE_DIR: root }, "b".repeat(40))).toThrow(/independent of the candidate/);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   });
 
   it("refuses same-provider reviews and only qualifies an exact-head PASS with read/search tool evidence", () => {
@@ -46,6 +76,16 @@ describe("cross-provider ACP review invocation", () => {
       toolKinds: ["read"],
     })).toEqual({ result: "pass", reviewedHead: head });
     expect(() => qualifyReviewResult({
+      text: `REVIEWED_HEAD: ${head}\nExample: REVIEW_RESULT: PASS\nREVIEWED_HEAD: ${head}\nREVIEW_RESULT: FINDINGS`,
+      expectedHead: head,
+      toolKinds: ["read"],
+    })).toThrow(/exactly one/);
+    expect(() => qualifyReviewResult({
+      text: `REVIEWED_HEAD: ${head}\nREVIEW_RESULT: PASS\nREVIEW_RESULT: FINDINGS`,
+      expectedHead: head,
+      toolKinds: ["read"],
+    })).toThrow(/exactly one/);
+    expect(() => qualifyReviewResult({
       text: `REVIEWED_HEAD: ${"b".repeat(40)}\nREVIEW_RESULT: PASS`,
       expectedHead: head,
       toolKinds: ["read", "search"],
@@ -57,11 +97,30 @@ describe("cross-provider ACP review invocation", () => {
     })).toThrow(/read\/search tools/);
   });
 
+  it("requires a completed read or search tool call", () => {
+    expect(collectSuccessfulToolKinds([
+      { sessionUpdate: "tool_call", toolCall: { toolCallId: "denied", kind: "read", status: "failed" } },
+      { sessionUpdate: "tool_call_update", toolCall: { toolCallId: "success", kind: "search", status: "completed" } },
+    ])).toEqual(["search"]);
+  });
+
   it("keeps ACP launch, authentication, model, capacity, and review outcomes distinct", () => {
     expect(classifyAcpReviewFailure("spawn ENOENT")).toBe("launch");
     expect(classifyAcpReviewFailure("authentication required by ACP adapter")).toBe("authentication");
     expect(classifyAcpReviewFailure("unsupported model before prompt submission")).toBe("unsupported model");
     expect(classifyAcpReviewFailure("You've hit your session limit")).toBe("capacity");
+    expect(classifyAcpReviewFailure("no available provider in the configured chain")).toBe("provider unavailable");
     expect(classifyAcpReviewFailure("REVIEW_RESULT: FINDINGS")).toBeNull();
+  });
+
+  it("ships a source-independent review entrypoint in the release artifact", () => {
+    const workflow = readFileSync(new URL("../.github/workflows/release-artifact.yml", import.meta.url), "utf8");
+    const helper = readFileSync(new URL("../bin/agent-bridge-review", import.meta.url), "utf8");
+    const skill = readFileSync(new URL("../skills/release-readiness-review/SKILL.md", import.meta.url), "utf8");
+    expect(workflow).toContain("bin/agent-bridge-review");
+    expect(workflow).toContain('test -f "$verify_root/dist/acpReview.js"');
+    expect(helper).toContain("$RELEASE_DIR/dist/acpReview.js");
+    expect(skill).toContain("$BRIDGE_CURRENT_RELEASE_DIR/bin/agent-bridge-review");
+    expect(skill).not.toContain("npm run acp:review --");
   });
 });
