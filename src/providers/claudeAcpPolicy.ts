@@ -24,6 +24,7 @@ const REPOSITORY_GROUNDING_APPEND = [
 const CLAUDE_DISABLE_BACKGROUND_TASKS_ENV = "CLAUDE_CODE_DISABLE_BACKGROUND_TASKS";
 const CLAUDE_REFRESH_DIAGNOSTIC_PREFIX = `Failed to refresh OAuth token: ${CLAUDE_OAUTH_REFRESH_CONTENTION_MARKER}`;
 const CLAUDE_REFRESH_DIAGNOSTIC_LEAD = "failed to refresh oauth token:";
+const CLAUDE_SAFE_REPOSITORY_TOOLS = ["Read", "Glob", "Grep"] as const;
 
 function claudeCredentialExecutionLock(
   env: Record<string, string | undefined>,
@@ -93,6 +94,11 @@ function sessionSettings(
         : { systemPrompt: { append: REPOSITORY_GROUNDING_APPEND } }),
       claudeCode: {
         options: {
+          ...(request.toolMode === "none"
+            ? { tools: [] }
+            : request.executionMode === "safe"
+              ? { tools: [...CLAUDE_SAFE_REPOSITORY_TOOLS] }
+              : {}),
           // File-backed user/project/local settings can contain permission rules
           // that the Claude SDK evaluates before canUseTool. Exclude them so a
           // repository cannot bypass Agent Bridge's ACP permission decision.
@@ -102,7 +108,6 @@ function sessionSettings(
           settingSources: [],
           strictMcpConfig: true,
           mcpServers: request.toolMode === "none" ? {} : loadProjectedClaudeMcpServers(env, { cwd, executionMode: request.executionMode }),
-          ...(request.toolMode === "none" ? { tools: [] } : {}),
         },
       },
     },

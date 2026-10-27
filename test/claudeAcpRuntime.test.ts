@@ -69,20 +69,25 @@ describe("Claude ACP provider", () => {
   });
 
   it("keeps Bridge permission authority in Claude manual mode for safe and trusted Runs", () => {
-    expect(claudeAcpPolicy.sessionSettings?.(request({ executionMode: "safe" }), {})).toMatchObject({
+    const safe = claudeAcpPolicy.sessionSettings?.(request({ executionMode: "safe" }), {});
+    const trusted = claudeAcpPolicy.sessionSettings?.(request({ executionMode: "trusted" }), {});
+    expect(safe).toMatchObject({
       modeId: "default",
       meta: {
         systemPrompt: { append: expect.any(String) },
         claudeCode: { options: { settingSources: [] } },
       },
     });
-    expect(claudeAcpPolicy.sessionSettings?.(request({ executionMode: "trusted" }), {})).toMatchObject({
+    expect((safe?.meta as any).claudeCode.options.tools).toEqual(["Read", "Glob", "Grep"]);
+    expect(trusted).toMatchObject({
       modeId: "default",
       meta: {
         systemPrompt: { append: expect.any(String) },
         claudeCode: { options: { settingSources: [] } },
       },
     });
+    expect((trusted?.meta as any).claudeCode.options.tools).toBeUndefined();
+    expect((claudeAcpPolicy.sessionSettings?.(request({ toolMode: "none" }), {})?.meta as any).claudeCode.options.tools).toEqual([]);
   });
 
   it("expresses model and effort as semantic ACP intents without provider-id translation", () => {
@@ -121,6 +126,7 @@ describe("Claude ACP provider", () => {
       systemPrompt: { append: expect.any(String) },
       claudeCode: {
         options: {
+          tools: ["Read", "Glob", "Grep"],
           settingSources: [],
           strictMcpConfig: true,
           mcpServers: {},

@@ -88,7 +88,7 @@ describe("cross-provider ACP review invocation", () => {
     expect(qualifyReviewResult({
       text: `REVIEWED_HEAD: ${head}\nREVIEW_RESULT: PASS`,
       expectedHead: head,
-      toolKinds: ["read", "search"],
+      toolKinds: ["read"],
     })).toEqual({ result: "pass", reviewedHead: head });
     expect(() => qualifyReviewResult({
       text: `REVIEWED_HEAD: ${head}\nExample: REVIEW_RESULT: PASS\nREVIEWED_HEAD: ${head}\nREVIEW_RESULT: FINDINGS`,
@@ -101,6 +101,11 @@ describe("cross-provider ACP review invocation", () => {
       toolKinds: ["read", "search"],
     })).toThrow(/exactly one/);
     expect(() => qualifyReviewResult({
+      text: `REVIEWED_HEAD: ${head}\nSummary text after the head\nREVIEW_RESULT: PASS`,
+      expectedHead: head,
+      toolKinds: ["read", "search"],
+    })).toThrow(/final two lines/);
+    expect(() => qualifyReviewResult({
       text: `REVIEWED_HEAD: ${"b".repeat(40)}\nREVIEW_RESULT: PASS`,
       expectedHead: head,
       toolKinds: ["read", "search"],
@@ -109,12 +114,7 @@ describe("cross-provider ACP review invocation", () => {
       text: `REVIEWED_HEAD: ${head}\nREVIEW_RESULT: PASS`,
       expectedHead: head,
       toolKinds: [],
-    })).toThrow(/repository read tool/);
-    expect(() => qualifyReviewResult({
-      text: `REVIEWED_HEAD: ${head}\nREVIEW_RESULT: PASS`,
-      expectedHead: head,
-      toolKinds: ["read"],
-    })).toThrow(/repository search tool/);
+    })).toThrow(/repository read\/search tools/);
   });
 
   it("requires a completed read or search tool call", () => {

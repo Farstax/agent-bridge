@@ -68,6 +68,7 @@ describe("trusted Claude MCP projection", () => {
       systemPrompt: { append: expect.any(String) },
       claudeCode: {
         options: {
+          tools: ["Read", "Glob", "Grep"],
           settingSources: [],
           strictMcpConfig: true,
           mcpServers: {
