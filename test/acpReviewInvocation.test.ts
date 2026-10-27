@@ -11,6 +11,7 @@ import {
   classifyUnavailableProviderStatus,
   collectSuccessfulToolKinds,
   findReviewRunId,
+  formatReviewResultFailure,
   joinReviewMessageParts,
   openReadOnlyReviewDatabase,
   qualifyReviewResult,
@@ -264,6 +265,8 @@ describe("cross-provider ACP review invocation", () => {
     expect(classifyUnavailableProviderStatus({ runtimeAvailable: true, credentialAvailable: false, authenticationDegraded: false })).toBe("authentication");
     expect(classifyUnavailableProviderStatus({ runtimeAvailable: false, credentialAvailable: true, authenticationDegraded: false })).toBe("launch");
     expect(classifyAcpReviewFailure("REVIEW_RESULT: FINDINGS")).toBeNull();
+    expect(formatReviewResultFailure("review result must contain exactly one qualified head and result"))
+      .toBe("ACP reviewer review result failure: review result must contain exactly one qualified head and result");
   });
 
   it("ships a source-independent review entrypoint in the release artifact", () => {

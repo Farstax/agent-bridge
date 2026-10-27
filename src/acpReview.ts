@@ -70,6 +70,10 @@ export function buildReviewOutput(input: {
   return { ...evidence, ...qualified };
 }
 
+export function formatReviewResultFailure(reason: string): string {
+  return `ACP reviewer review result failure: ${reason}`;
+}
+
 export function qualifyReviewResult(input: {
   text: string;
   expectedHead: string;
@@ -331,7 +335,7 @@ async function reviewPrompt(promptFile: string, expectedHead: string, runtimeCom
   return [
     request,
     "",
-    `The exact candidate commit is ${expectedHead}. Verify the output of git rev-parse HEAD matches this value before reviewing.`,
+    `The launcher verified that git rev-parse HEAD matched ${expectedHead} before sending this prompt. Confirm the branch/ref using repository tools if available; do not require shell access.`,
     `The Agent Bridge ACP server and review helper are running from installed release commit ${runtimeCommit}.`,
     "Read the repository instructions and inspect the candidate yourself. Use both ACP repository tools categorized as read and search. Do not use shell/Bash/execute as a substitute. If either category is unavailable, stop and report which one is missing. Do not modify files, commit, push, merge, deploy, or change infrastructure.",
     `After all review findings, put exactly one line REVIEWED_HEAD: ${expectedHead} followed by exactly one line REVIEW_RESULT: PASS or REVIEW_RESULT: FINDINGS as the final two lines. Include actionable findings before these markers.`,
@@ -459,7 +463,13 @@ async function runReview(options: CliOptions): Promise<void> {
     if (!runId) throw new Error("Bridge did not record an independent review Run");
     if (!providerSessionId) throw new Error("Bridge did not return an independent review ACP session");
     if (actualProvider !== options.provider) throw new Error(`provider lock mismatch: expected ${options.provider}, got ${actualProvider}`);
-    const qualified = qualifyReviewResult({ text, expectedHead: options.head, toolKinds: observedToolKinds });
+    let qualified: ReviewResult;
+    try {
+      qualified = qualifyReviewResult({ text, expectedHead: options.head, toolKinds: observedToolKinds });
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : "malformed review output";
+      throw new Error(formatReviewResultFailure(reason));
+    }
 
     process.stdout.write(`${JSON.stringify(buildReviewOutput({
       implementer,
