@@ -7,6 +7,7 @@
  */
 
 import { createHash, randomBytes } from "node:crypto";
+import { execFileSync } from "node:child_process";
 import { closeSync, copyFileSync, existsSync, fsyncSync, linkSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import Database from "better-sqlite3";
@@ -14,11 +15,12 @@ import { BridgeDb, openDb, openProductionDb } from "../src/db.js";
 import { CURRENT_SCHEMA_VERSION, migrationGrowthClass } from "../src/db/schema.js";
 import { assertDatabaseForeignKeyIntegrity } from "../src/db/roleAssignmentsMigration.js";
 import { applyRoleSchema, canonicalSchemaTablesForRole, type DatabaseRole } from "../src/db/schemaContract.js";
+import { isolateRecoveryCopyDatabase } from "../src/db/recoveryCopyIsolation.js";
 
 /** The active database roles. */
 const VALID_ROLES = new Set(["shared", "discord", "health", "interactive", "slack"]);
 
-type Mode = "inspect" | "checkpoint" | "prune" | "migrate" | "validate" | "reconcile" | "growth" | "relocate" | "bootstrap";
+type Mode = "inspect" | "checkpoint" | "prune" | "migrate" | "validate" | "reconcile" | "growth" | "relocate" | "bootstrap" | "isolate-recovery-copy";
 
 interface Options {
   mode: Mode;
@@ -29,6 +31,8 @@ interface Options {
   allowRetiredHealthTable: boolean;
   reason: string | null;
   restartBoundary: string | null;
+  copyId: string | null;
+  recoveryPointCreatedAt: string | null;
 }
 
 interface DbEvidence {
@@ -99,8 +103,8 @@ const CURRENT_LOCK_COLUMNS = new Set([
 
 function parseArgs(argv: string[]): Options {
   const mode = argv.shift() as Mode | undefined;
-  if (!mode || !["inspect", "checkpoint", "prune", "migrate", "validate", "reconcile", "growth", "relocate"].includes(mode)) {
-    throw new Error("usage: rollout-db.ts <inspect|checkpoint|prune|migrate|validate|reconcile> --db PATH [--db PATH ...]");
+  if (!mode || !["inspect", "checkpoint", "prune", "migrate", "validate", "reconcile", "growth", "relocate", "isolate-recovery-copy"].includes(mode)) {
+    throw new Error("usage: rollout-db.ts <inspect|checkpoint|prune|migrate|validate|reconcile|isolate-recovery-copy> --db PATH [options]");
   }
   const databases: string[] = [];
   let evidencePath: string | null = null;
@@ -109,6 +113,8 @@ function parseArgs(argv: string[]): Options {
   let allowRetiredHealthTable = false;
   let reason: string | null = null;
   let restartBoundary: string | null = null;
+  let copyId: string | null = null;
+  let recoveryPointCreatedAt: string | null = null;
   while (argv.length > 0) {
     const flag = argv.shift();
     if (flag === "--allow-retired-health") {
@@ -140,12 +146,20 @@ function parseArgs(argv: string[]): Options {
     }
     else if (flag === "--reason") reason = value;
     else if (flag === "--restart-boundary") restartBoundary = value;
+    else if (flag === "--copy-id") copyId = value;
+    else if (flag === "--recovery-point-created-at") recoveryPointCreatedAt = value;
     else throw new Error(`unknown argument: ${flag}`);
   }
   if (databases.length === 0) throw new Error("at least one --db path is required");
   if (mode === "reconcile" && !reason?.trim()) throw new Error("reconcile requires --reason");
+  if (mode === "isolate-recovery-copy" && (!copyId || !recoveryPointCreatedAt || databases.length !== 1)) {
+    throw new Error("isolate-recovery-copy requires exactly one --db, --copy-id and --recovery-point-created-at");
+  }
+  if (mode === "isolate-recovery-copy" && databaseRoles.get(databases[0]!) !== "interactive") {
+    throw new Error("isolate-recovery-copy requires the interactive database role");
+  }
   if (restartBoundary && !/^[0-9T:.Z-]+$/.test(restartBoundary)) throw new Error("invalid --restart-boundary");
-  return { mode, databases, evidencePath, resolvingUnits, databaseRoles, allowRetiredHealthTable, reason, restartBoundary };
+  return { mode, databases, evidencePath, resolvingUnits, databaseRoles, allowRetiredHealthTable, reason, restartBoundary, copyId, recoveryPointCreatedAt };
 }
 
 function parseRelocationArgs(argv: string[]): { source: string; target: string } {
@@ -1058,6 +1072,24 @@ function writeEvidence(path: string | null, mode: Mode, databases: DbEvidence[],
   writeFileSync(path, content, { mode: 0o600 });
 }
 
+function assertRecoveryCopyExecutionServicesStopped(): void {
+  if (process.env.NODE_ENV === "test") return;
+  let activeUnits: string;
+  try {
+    activeUnits = execFileSync("systemctl", ["list-units", "--type=service", "--state=active", "--no-legend", "--plain"], {
+      encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], timeout: 5_000,
+    });
+  } catch {
+    throw new Error("recovery-copy isolation requires a readable systemd service state");
+  }
+  const executionUnits = activeUnits.split(/\r?\n/)
+    .map((line) => line.trim().split(/\s+/, 1)[0] ?? "")
+    .filter((unit) => /^agent-bridge-.*\.service$/.test(unit));
+  if (executionUnits.length > 0) {
+    throw new Error(`recovery-copy isolation requires stopped Agent Bridge services: ${executionUnits.join(",")}`);
+  }
+}
+
 async function main(): Promise<void> {
   const argv = process.argv.slice(2);
   if (argv[0] === "bootstrap") {
@@ -1086,6 +1118,27 @@ async function main(): Promise<void> {
   const options = parseArgs(argv);
   const unitsFor = (path: string) => options.resolvingUnits.get(path) ?? [];
   const roleFor = (path: string): DatabaseRole => options.databaseRoles.get(path) ?? "shared";
+  if (options.mode === "isolate-recovery-copy") {
+    const path = options.databases[0]!;
+    assertRecoveryCopyExecutionServicesStopped();
+    const raw = new Database(path, { fileMustExist: true });
+    try {
+      const version = Number(raw.pragma("user_version", { simple: true }));
+      if (version !== CURRENT_SCHEMA_VERSION) throw new Error("recovery-copy isolation requires the current database schema");
+      assertDatabaseForeignKeyIntegrity(raw);
+      const result = isolateRecoveryCopyDatabase(raw, {
+        copyId: options.copyId!,
+        recoveryPointCreatedAt: options.recoveryPointCreatedAt!,
+      });
+      assertDatabaseForeignKeyIntegrity(raw);
+      const integrity = raw.pragma("integrity_check", { simple: true });
+      if (integrity !== "ok") throw new Error("recovery-copy isolation database integrity check failed");
+      process.stdout.write(`${JSON.stringify(result)}\n`);
+    } finally {
+      raw.close();
+    }
+    return;
+  }
   if (options.mode === "growth") {
     const databases = options.databases.map((path) => {
       const raw = new Database(path, { readonly: true, fileMustExist: true });
