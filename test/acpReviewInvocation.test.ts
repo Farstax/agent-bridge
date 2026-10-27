@@ -81,8 +81,8 @@ describe("cross-provider ACP review invocation", () => {
       provider: "codex",
       implementer: "codex",
       base: {},
-      dbPath: "/tmp/review/bridge.sqlite",
       projectDir: "/workspace/repo",
+      releaseDir: "/opt/agent-bridge/releases/current",
     })).toThrow(/different provider/);
 
     expect(qualifyReviewResult({
@@ -114,15 +114,20 @@ describe("cross-provider ACP review invocation", () => {
 
   it("requires a completed read or search tool call", () => {
     expect(collectSuccessfulToolKinds([
-      { sessionUpdate: "tool_call", toolCall: { toolCallId: "denied", kind: "read", status: "failed" } },
-      { sessionUpdate: "tool_call_update", toolCall: { toolCallId: "success", kind: "search", status: "completed" } },
+      { sessionUpdate: "tool_call", toolCallId: "denied", kind: "read", status: "failed" },
+      { sessionUpdate: "tool_call_update", toolCallId: "success", kind: "search", status: "completed" },
     ])).toEqual(["search"]);
+    expect(collectSuccessfulToolKinds([
+      { sessionUpdate: "tool_call", toolCallId: "read-1", kind: "read", status: "pending" },
+      { sessionUpdate: "tool_call_update", toolCallId: "read-1", status: "completed" },
+    ])).toEqual(["read"]);
   });
 
   it("keeps ACP launch, authentication, model, capacity, and review outcomes distinct", () => {
     expect(classifyAcpReviewFailure("spawn ENOENT")).toBe("launch");
     expect(classifyAcpReviewFailure("authentication required by ACP adapter")).toBe("authentication");
     expect(classifyAcpReviewFailure("unsupported model before prompt submission")).toBe("unsupported model");
+    expect(classifyAcpReviewFailure("model not found by ACP provider")).toBe("unsupported model");
     expect(classifyAcpReviewFailure("You've hit your session limit")).toBe("capacity");
     expect(classifyAcpReviewFailure("no available provider in the configured chain")).toBe("provider unavailable");
     expect(classifyAcpReviewFailure("REVIEW_RESULT: FINDINGS")).toBeNull();

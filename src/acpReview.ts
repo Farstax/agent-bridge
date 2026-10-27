@@ -95,10 +95,10 @@ function failureClass(dbPath: string, error: unknown, serverOutput = ""): string
 
 export function classifyAcpReviewFailure(value: string): string | null {
   if (/authentication|auth required|not logged in|oauth|api key/i.test(value)) return "authentication";
-  if (/unsupported model|model unavailable/i.test(value)) return "unsupported model";
+  if (/unsupported model|model unavailable|\bmodel\b.{0,40}\b(?:not found|unknown|unavailable)\b/i.test(value)) return "unsupported model";
   if (/capacity|rate limit|quota|session limit/i.test(value)) return "capacity";
   if (/no available provider in (?:the )?configured chain|no available provider in chain/i.test(value)) return "provider unavailable";
-  if (/spawn|not found|enoent|exited before launch/i.test(value)) return "launch";
+  if (/spawn|enoent|exited before launch|command not found|executable.{0,20}not found/i.test(value)) return "launch";
   return null;
 }
 
@@ -213,7 +213,7 @@ async function reviewPrompt(promptFile: string, expectedHead: string): Promise<s
     request,
     "",
     `The exact candidate commit is ${expectedHead}. Verify the output of git rev-parse HEAD matches this value before reviewing.`,
-    "Read the repository instructions and inspect the candidate yourself. Use repository read/search tools. Do not modify files, commit, push, merge, deploy, or change infrastructure.",
+    "Read the repository instructions and inspect the candidate yourself. Use ACP repository tools categorized as read or search for inspection. Do not use shell/Bash/execute as a substitute. If read/search tools are unavailable, stop and report that. Do not modify files, commit, push, merge, deploy, or change infrastructure.",
     `Finish with exactly one line REVIEWED_HEAD: ${expectedHead} and one line REVIEW_RESULT: PASS or REVIEW_RESULT: FINDINGS. Include actionable findings when present.`,
   ].join("\n");
 }
