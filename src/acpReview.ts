@@ -47,9 +47,8 @@ export function qualifyReviewResult(input: {
   expectedHead: string;
   toolKinds: readonly string[];
 }): ReviewResult {
-  if (!input.toolKinds.some((kind) => kind === "read" || kind === "search")) {
-    throw new Error("independent reviewer did not use repository read/search tools");
-  }
+  if (!input.toolKinds.includes("read")) throw new Error("independent reviewer did not use a completed repository read tool");
+  if (!input.toolKinds.includes("search")) throw new Error("independent reviewer did not use a completed repository search tool");
   const heads = [...input.text.matchAll(/^REVIEWED_HEAD:\s*([a-f0-9]{40})\s*$/gim)].map((match) => match[1]);
   const results = [...input.text.matchAll(/^REVIEW_RESULT:\s*(PASS|FINDINGS)\s*$/gim)].map((match) => match[1]);
   if (heads.length !== 1 || results.length !== 1) {
@@ -213,8 +212,8 @@ async function reviewPrompt(promptFile: string, expectedHead: string): Promise<s
     request,
     "",
     `The exact candidate commit is ${expectedHead}. Verify the output of git rev-parse HEAD matches this value before reviewing.`,
-    "Read the repository instructions and inspect the candidate yourself. Use ACP repository tools categorized as read or search for inspection. Do not use shell/Bash/execute as a substitute. If read/search tools are unavailable, stop and report that. Do not modify files, commit, push, merge, deploy, or change infrastructure.",
-    `Finish with exactly one line REVIEWED_HEAD: ${expectedHead} and one line REVIEW_RESULT: PASS or REVIEW_RESULT: FINDINGS. Include actionable findings when present.`,
+    "Read the repository instructions and inspect the candidate yourself. Use both ACP repository tools categorized as read and search for inspection. Do not use shell/Bash/execute as a substitute. Call a search tool before reporting. If either tool category is unavailable, stop and report which one is missing. Do not modify files, commit, push, merge, deploy, or change infrastructure.",
+    `After all review findings, put exactly one line REVIEWED_HEAD: ${expectedHead} followed by exactly one line REVIEW_RESULT: PASS or REVIEW_RESULT: FINDINGS as the final two non-empty lines. Include actionable findings before these markers.`,
   ].join("\n");
 }
 
