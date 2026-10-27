@@ -78,11 +78,13 @@ export function isolateRecoveryCopyDatabase(
   const tx = db.transaction(() => {
     const surfaces = new Set<string>();
     const addSurfaces = (table: string, column: string, condition = ""): void => {
-      const rows = db.prepare(`SELECT DISTINCT ${column} AS identity FROM ${table} ${condition}`).all() as Array<{ identity: string | null }>;
+        const rows = db.prepare(`SELECT DISTINCT ${column} AS identity FROM ${table} ${condition}`).all() as Array<{ identity: string | null }>;
       for (const row of rows) if (typeof row.identity === "string" && row.identity.startsWith("telegram:")) surfaces.add(row.identity);
     };
     addSurfaces("bridge_state", "surface_identity");
-    addSurfaces("conversation_turns", "surface_identity");
+    // arch-lint-allow-legacy-sql: recovery identity migration owns this bounded read.
+    const conversationSurfaces = db.prepare("SELECT DISTINCT surface_identity AS identity FROM conversation_turns").all() as Array<{ identity: string | null }>;
+    for (const row of conversationSurfaces) if (typeof row.identity === "string" && row.identity.startsWith("telegram:")) surfaces.add(row.identity);
     addSurfaces("bridge_runs", "surface_identity");
     addSurfaces("acp_session_bindings", "surface_identity");
     addSurfaces("pending_messages", "surface");
@@ -106,8 +108,10 @@ export function isolateRecoveryCopyDatabase(
         .run(isolatedIdentity(run.surface_identity, copyId), run.run_id);
     }
 
+    // arch-lint-allow-legacy-sql: recovery identity migration owns this bounded read.
     const turnRows = db.prepare("SELECT id, surface_identity, created_at FROM conversation_turns WHERE surface_identity LIKE 'telegram:%'").all() as Array<{ id: number; surface_identity: string; created_at: string }>;
     for (const turn of turnRows) {
+      // arch-lint-allow-legacy-sql: recovery identity migration owns this scoped rewrite.
       db.prepare("UPDATE conversation_turns SET surface_identity = ? WHERE id = ?")
         .run(isolatedIdentity(turn.surface_identity, copyId), turn.id);
     }
@@ -193,6 +197,7 @@ export function isolateRecoveryCopyDatabase(
         }
       }
       const hasPostCutoffActivity = Boolean(
+        // arch-lint-allow-legacy-sql: recovery identity migration owns this bounded read.
         db.prepare("SELECT 1 FROM conversation_turns WHERE surface_identity = ? AND created_at >= ? LIMIT 1").get(isolatedIdentity(identity, copyId), cutoff)
         || db.prepare("SELECT 1 FROM bridge_runs WHERE surface_identity = ? AND started_at >= ? LIMIT 1").get(isolatedIdentity(identity, copyId), cutoff)
         || db.prepare("SELECT 1 FROM pending_messages WHERE surface = ? AND created_at >= ? LIMIT 1").get(isolatedIdentity(identity, copyId), cutoff),
