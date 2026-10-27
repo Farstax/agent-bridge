@@ -43,7 +43,10 @@ export function buildAcpReviewEnvironment(options: ReviewInvocationOptions): Nod
   return env;
 }
 
-export type ReviewResult = { result: "pass"; reviewedHead: string } | { result: "findings"; reviewedHead: string };
+export type ReviewResult =
+  | { result: "pass"; reviewedHead: string }
+  | { result: "findings"; reviewedHead: string }
+  | { result: "incomplete"; failure: "missing tools"; reviewerResult: "pass" | "findings"; missingToolKinds: string[]; reviewedHead: string };
 
 export function qualifyReviewResult(input: {
   text: string;
@@ -64,11 +67,15 @@ export function qualifyReviewResult(input: {
   const precedingLine = input.text.trim().split(/\r?\n/).at(-2);
   if (precedingLine !== `REVIEWED_HEAD: ${reviewedHead}`) throw new Error("review markers must be the final two lines");
   const result = results[0];
-  if (result === "PASS" && !input.toolKinds.includes("read")) {
-    throw new Error("independent reviewer did not use a completed repository read tool");
-  }
-  if (result === "PASS" && !input.toolKinds.includes("search")) {
-    throw new Error("independent reviewer did not use a completed repository search tool");
+  const missingToolKinds = ["read", "search"].filter((kind) => !input.toolKinds.includes(kind));
+  if (missingToolKinds.length > 0) {
+    return {
+      result: "incomplete",
+      failure: "missing tools",
+      reviewerResult: result.toLowerCase() as "pass" | "findings",
+      missingToolKinds,
+      reviewedHead,
+    };
   }
   return { result: result.toLowerCase() as "pass" | "findings", reviewedHead };
 }
@@ -268,13 +275,14 @@ function currentHead(cwd: string): string {
   return execFileSync("git", ["rev-parse", "HEAD"], { cwd, encoding: "utf8" }).trim();
 }
 
-async function reviewPrompt(promptFile: string, expectedHead: string): Promise<string> {
+async function reviewPrompt(promptFile: string, expectedHead: string, runtimeCommit: string): Promise<string> {
   const request = (await readFile(promptFile, "utf8")).trim();
   if (!request) throw new Error("review prompt is empty");
   return [
     request,
     "",
     `The exact candidate commit is ${expectedHead}. Verify the output of git rev-parse HEAD matches this value before reviewing.`,
+    `The Agent Bridge ACP server and review helper are running from installed release commit ${runtimeCommit}.`,
     "Read the repository instructions and inspect the candidate yourself. Use both ACP repository tools categorized as read and search. Do not use shell/Bash/execute as a substitute. If either category is unavailable, stop and report which one is missing. Do not modify files, commit, push, merge, deploy, or change infrastructure.",
     `After all review findings, put exactly one line REVIEWED_HEAD: ${expectedHead} followed by exactly one line REVIEW_RESULT: PASS or REVIEW_RESULT: FINDINGS as the final two lines. Include actionable findings before these markers.`,
   ].join("\n");
@@ -295,7 +303,7 @@ async function runReview(options: CliOptions): Promise<void> {
     projectDir: options.cwd,
     releaseDir: runtime.root,
   });
-  const prompt = await reviewPrompt(options.promptFile, options.head);
+  const prompt = await reviewPrompt(options.promptFile, options.head, runtime.commit);
   let child: ChildProcess | null = null;
   let providerSessionId: string | null = null;
   const toolUpdates: acp.SessionUpdate[] = [];
@@ -412,6 +420,7 @@ async function runReview(options: CliOptions): Promise<void> {
       toolKinds: observedToolKinds,
       text,
     }, null, 2)}\n`);
+    if (qualified.result === "incomplete") process.exitCode = 1;
   } finally {
     if (child && child.exitCode === null) {
       child.kill("SIGTERM");
