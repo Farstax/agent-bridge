@@ -97,7 +97,7 @@ function sessionSettings(
         options: {
           ...(request.toolMode === "none"
             ? { tools: [] }
-            : request.executionMode === "safe"
+            : request.executionMode === "safe" && env[BRIDGE_ACP_REVIEW_MODE_ENV] === "1"
               ? { tools: [...CLAUDE_SAFE_REPOSITORY_TOOLS] }
               : {}),
           // File-backed user/project/local settings can contain permission rules

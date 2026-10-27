@@ -4,7 +4,7 @@ import * as acp from "@agentclientprotocol/sdk";
 import { spawn, type ChildProcess } from "node:child_process";
 import { execFileSync } from "node:child_process";
 import { readFile } from "node:fs/promises";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { Readable, Writable } from "node:stream";
@@ -50,8 +50,6 @@ export function qualifyReviewResult(input: {
   expectedHead: string;
   toolKinds: readonly string[];
 }): ReviewResult {
-  if (!input.toolKinds.includes("read")) throw new Error("independent reviewer did not use a completed repository read tool");
-  if (!input.toolKinds.includes("search")) throw new Error("independent reviewer did not use a completed repository search tool");
   const heads = [...input.text.matchAll(/^REVIEWED_HEAD:\s*([a-f0-9]{40})\s*$/gim)].map((match) => match[1]);
   const results = [...input.text.matchAll(/^REVIEW_RESULT:\s*(PASS|FINDINGS)\s*$/gim)].map((match) => match[1]);
   if (heads.length !== 1 || results.length !== 1) {
@@ -66,6 +64,12 @@ export function qualifyReviewResult(input: {
   const precedingLine = input.text.trim().split(/\r?\n/).at(-2);
   if (precedingLine !== `REVIEWED_HEAD: ${reviewedHead}`) throw new Error("review markers must be the final two lines");
   const result = results[0];
+  if (result === "PASS" && !input.toolKinds.includes("read")) {
+    throw new Error("independent reviewer did not use a completed repository read tool");
+  }
+  if (result === "PASS" && !input.toolKinds.includes("search")) {
+    throw new Error("independent reviewer did not use a completed repository search tool");
+  }
   return { result: result.toLowerCase() as "pass" | "findings", reviewedHead };
 }
 
@@ -197,15 +201,6 @@ export function findReviewRunId(db: Database.Database, sessionId: string): strin
   return run?.run_id ?? null;
 }
 
-function safeErrorHints(value: string): string {
-  return value.split(/\r?\n/)
-    .filter((line) => /error|failed|exception|unsupported/i.test(line))
-    .map((line) => line.replace(/(token|secret|api[-_ ]?key)\s*[:=]\s*\S+/gi, "$1=[redacted]"))
-    .slice(-3)
-    .join(" | ")
-    .slice(0, 600);
-}
-
 function bridgeRunIdFromError(error: unknown): string | null {
   const data = error && typeof error === "object" ? (error as { data?: unknown }).data : null;
   return data && typeof data === "object" && typeof (data as { runId?: unknown }).runId === "string"
@@ -223,7 +218,12 @@ interface CliOptions {
 export function reviewRuntime(base: NodeJS.ProcessEnv, candidateHead: string): { root: string; commit: string } {
   const configured = base.BRIDGE_CURRENT_RELEASE_DIR?.trim();
   if (!configured) throw new Error("installed Agent Bridge release directory is unavailable");
-  const root = resolve(configured);
+  let root: string;
+  try {
+    root = realpathSync(configured);
+  } catch {
+    throw new Error("installed Agent Bridge release directory cannot be resolved");
+  }
   const manifestPath = join(root, "manifest.json");
   const runtimeServer = join(root, "dist/acpServer/stdio.js");
   if (!existsSync(manifestPath) || !existsSync(runtimeServer)) {
@@ -360,8 +360,7 @@ async function runReview(options: CliOptions): Promise<void> {
         classification = await classifyUnavailableProvider(options.provider, childEnv, runtime.root);
       }
       const runId = bridgeRunIdFromError(error);
-      const hints = safeErrorHints(serverOutput.join(""));
-      throw new Error(`ACP reviewer ${classification} failure${runId ? ` (Bridge Run ${runId})` : ""}: ${detail}${hints ? `; ${hints}` : ""}`);
+      throw new Error(`ACP reviewer ${classification} failure${runId ? ` (Bridge Run ${runId})` : ""}`);
     }
 
     if (stopReason !== "end_turn") throw new Error(`reviewer stopped without a completed turn (${stopReason ?? "unknown"})`);

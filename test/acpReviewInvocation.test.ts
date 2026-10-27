@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, rm, symlink, writeFile } from "node:fs/promises";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -56,12 +56,15 @@ describe("cross-provider ACP review invocation", () => {
 
   it("selects only a manifest-bound installed release distinct from the candidate", async () => {
     const root = await mkdtemp(join(tmpdir(), "acp-review-runtime-"));
+    const pointer = join(root, "current");
+    const release = join(root, "release");
     try {
-      await mkdir(join(root, "dist/acpServer"), { recursive: true });
-      await writeFile(join(root, "manifest.json"), JSON.stringify({ commit: "b".repeat(40) }));
-      await writeFile(join(root, "dist/acpServer/stdio.js"), "");
-      expect(reviewRuntime({ BRIDGE_CURRENT_RELEASE_DIR: root }, "a".repeat(40))).toEqual({ root, commit: "b".repeat(40) });
-      expect(() => reviewRuntime({ BRIDGE_CURRENT_RELEASE_DIR: root }, "b".repeat(40))).toThrow(/independent of the candidate/);
+      await mkdir(join(release, "dist/acpServer"), { recursive: true });
+      await writeFile(join(release, "manifest.json"), JSON.stringify({ commit: "b".repeat(40) }));
+      await writeFile(join(release, "dist/acpServer/stdio.js"), "");
+      await symlink(release, pointer);
+      expect(reviewRuntime({ BRIDGE_CURRENT_RELEASE_DIR: pointer }, "a".repeat(40))).toEqual({ root: release, commit: "b".repeat(40) });
+      expect(() => reviewRuntime({ BRIDGE_CURRENT_RELEASE_DIR: pointer }, "b".repeat(40))).toThrow(/independent of the candidate/);
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -95,6 +98,11 @@ describe("cross-provider ACP review invocation", () => {
       expectedHead: head,
       toolKinds: ["read", "search"],
     })).toEqual({ result: "pass", reviewedHead: head });
+    expect(qualifyReviewResult({
+      text: `Actionable issue\nREVIEWED_HEAD: ${head}\nREVIEW_RESULT: FINDINGS`,
+      expectedHead: head,
+      toolKinds: [],
+    })).toEqual({ result: "findings", reviewedHead: head });
     expect(() => qualifyReviewResult({
       text: `REVIEWED_HEAD: ${head}\nExample: REVIEW_RESULT: PASS\nREVIEWED_HEAD: ${head}\nREVIEW_RESULT: FINDINGS`,
       expectedHead: head,

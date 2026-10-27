@@ -78,7 +78,9 @@ describe("Claude ACP provider", () => {
         claudeCode: { options: { settingSources: [] } },
       },
     });
-    expect((safe?.meta as any).claudeCode.options.tools).toEqual(["Read", "Glob", "Grep"]);
+    expect((safe?.meta as any).claudeCode.options.tools).toBeUndefined();
+    const review = claudeAcpPolicy.sessionSettings?.(request({ executionMode: "safe" }), { BRIDGE_ACP_REVIEW_MODE: "1" });
+    expect((review?.meta as any).claudeCode.options.tools).toEqual(["Read", "Glob", "Grep"]);
     expect(trusted).toMatchObject({
       modeId: "default",
       meta: {
@@ -104,7 +106,9 @@ describe("Claude ACP provider", () => {
     const ordinary = claudeAcpPolicy.sessionSettings?.(request(), { HOME: home });
     const review = claudeAcpPolicy.sessionSettings?.(request(), { HOME: home, BRIDGE_ACP_REVIEW_MODE: "1" });
     expect((ordinary?.meta as any).claudeCode.options.mcpServers).toHaveProperty("managed");
+    expect((ordinary?.meta as any).claudeCode.options.tools).toBeUndefined();
     expect((review?.meta as any).claudeCode.options.mcpServers).toEqual({});
+    expect((review?.meta as any).claudeCode.options.tools).toEqual(["Read", "Glob", "Grep"]);
   });
 
   it("expresses model and effort as semantic ACP intents without provider-id translation", () => {
@@ -143,7 +147,6 @@ describe("Claude ACP provider", () => {
       systemPrompt: { append: expect.any(String) },
       claudeCode: {
         options: {
-          tools: ["Read", "Glob", "Grep"],
           settingSources: [],
           strictMcpConfig: true,
           mcpServers: {},
