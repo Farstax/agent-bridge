@@ -80,7 +80,7 @@ import {
   type FinalDeliveryPhase,
 } from "./executionLaneCoordinator.js";
 import { scheduleDurableQueueRecovery } from "./durableQueueRecovery.js";
-import { cancelPendingRunContinuation, cancelPendingRunContinuationsForChat, claimContinuationLimitNotice, RUN_CONTINUATION_PREFIX, linkRunContinuationRun, settleRunContinuation, hasPendingCapacityWait } from "./runContinuation.js";
+import { cancelPendingRunContinuation, cancelPendingRunContinuationsForChat, clearContinuationLimitNotice, peekContinuationLimitNotice, RUN_CONTINUATION_PREFIX, linkRunContinuationRun, settleRunContinuation, hasPendingCapacityWait } from "./runContinuation.js";
 import { capacityRetryAfterSeconds } from "./providers/capacityRetryTiming.js";
 
 export interface HookContext {
@@ -773,9 +773,10 @@ export class BridgeEngine {
     const collect = (event: BridgeEvent) => {
       collectEvent(event);
       if (!continuationsLinked && this.db.getRun(runId)) {
-        continuationsLinked = true;
         try {
+          // Retried on later events until it succeeds: a missed link would reset the chain depth.
           for (const key of continuationKeys) linkRunContinuationRun(this.db, key.slice(RUN_CONTINUATION_PREFIX.length), runId);
+          continuationsLinked = true;
         } catch (error) {
           console.error(`[${this.kind}] continuation correlation failed at Run admission`, error);
         }
@@ -809,7 +810,7 @@ export class BridgeEngine {
       }
       finalize();
       this._linkScheduledOccurrences(scheduledOccurrenceKeys, runId);
-      await this._deliverContinuationLimitNotice(runId, chatId, threadId);
+      await this._deliverContinuationLimitNotice(chatKey, chatId, threadId);
       if (activePendingIds.length && !this.db.completePendingMsgs(laneHandle, activePendingIds)) throw new LostExecutionLeaseError();
       activeTaskCommitted = true;
       outcome = "committed";
@@ -1161,10 +1162,10 @@ export class BridgeEngine {
     }
   }
 
-  /** Mechanical owner notice when the provider hit the automatic-continuation cap (#1084). */
-  private async _deliverContinuationLimitNotice(runId: string, chatId: number | string, threadId: number | string | undefined): Promise<void> {
+  /** Mechanical owner notice when the provider hit the automatic-continuation cap (#1084). Cleared only after it was sent. */
+  private async _deliverContinuationLimitNotice(chatKey: string, chatId: number | string, threadId: number | string | undefined): Promise<void> {
     try {
-      if (!claimContinuationLimitNotice(this.db, runId)) return;
+      if (!peekContinuationLimitNotice(this.db, this.surfaceIdentity, chatKey)) return;
       await sendSurfaceMessage({
         client: this.client,
         kind: this._deliveryKind(),
@@ -1174,6 +1175,7 @@ export class BridgeEngine {
           message_thread_id: threadId,
         },
       });
+      clearContinuationLimitNotice(this.db, this.surfaceIdentity, chatKey);
     } catch (error) {
       console.error(`[${this.kind}] continuation limit notice failed`, error);
     }

@@ -266,24 +266,32 @@ export function requestRunContinuation(
   });
 }
 
-/** Durable, one-shot request for the engine to tell the owner that automatic continuation stopped. */
+/**
+ * Durable owner-notice request, keyed by conversation rather than Run so a
+ * provider-fallback or retry Run (a new Run id) can still deliver it. It is
+ * removed only after the notice was sent (at-least-once).
+ */
 export function recordContinuationLimitNotice(db: BridgeDb, runId: string, surfaceIdentity: string, chatKey: string): void {
   db.raw.prepare("INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)")
-    .run(`${LIMIT_NOTICE_PREFIX}${runId}`, JSON.stringify({ surfaceIdentity, chatKey, at: new Date().toISOString() }));
+    .run(`${LIMIT_NOTICE_PREFIX}${surfaceIdentity}:${chatKey}`, JSON.stringify({ runId, at: new Date().toISOString() }));
 }
 
-export function claimContinuationLimitNotice(db: BridgeDb, runId: string): { surfaceIdentity: string; chatKey: string } | null {
-  return db.runInTransaction(() => {
-    const row = db.raw.prepare("SELECT value FROM settings WHERE key = ?").get(`${LIMIT_NOTICE_PREFIX}${runId}`) as { value: string } | undefined;
-    if (!row) return null;
-    db.raw.prepare("DELETE FROM settings WHERE key = ?").run(`${LIMIT_NOTICE_PREFIX}${runId}`);
-    try {
-      const parsed = JSON.parse(row.value) as { surfaceIdentity?: string; chatKey?: string };
-      return parsed.surfaceIdentity && parsed.chatKey ? { surfaceIdentity: parsed.surfaceIdentity, chatKey: parsed.chatKey } : null;
-    } catch {
-      return null;
-    }
-  });
+const LIMIT_NOTICE_MAX_AGE_MS = 24 * 60 * 60 * 1_000;
+
+export function peekContinuationLimitNotice(db: BridgeDb, surfaceIdentity: string, chatKey: string, nowMs = Date.now()): { runId: string } | null {
+  const noticeKey = `${LIMIT_NOTICE_PREFIX}${surfaceIdentity}:${chatKey}`;
+  const row = db.raw.prepare("SELECT value FROM settings WHERE key = ?").get(noticeKey) as { value: string } | undefined;
+  if (!row) return null;
+  try {
+    const parsed = JSON.parse(row.value) as { runId?: string; at?: string };
+    if (parsed.runId && parsed.at && nowMs - Date.parse(parsed.at) <= LIMIT_NOTICE_MAX_AGE_MS) return { runId: parsed.runId };
+  } catch { /* fall through to discard */ }
+  db.raw.prepare("DELETE FROM settings WHERE key = ?").run(noticeKey);
+  return null;
+}
+
+export function clearContinuationLimitNotice(db: BridgeDb, surfaceIdentity: string, chatKey: string): void {
+  db.raw.prepare("DELETE FROM settings WHERE key = ?").run(`${LIMIT_NOTICE_PREFIX}${surfaceIdentity}:${chatKey}`);
 }
 
 /** Mark before external delivery so a restart cannot emit a second wait notice. */

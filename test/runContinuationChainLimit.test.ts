@@ -6,7 +6,8 @@ import { openDb } from "../src/db.js";
 import {
   MAX_CONSECUTIVE_AGENT_CONTINUATIONS,
   RunContinuationLimitError,
-  claimContinuationLimitNotice,
+  clearContinuationLimitNotice,
+  peekContinuationLimitNotice,
   linkRunContinuationRun,
   listRunContinuations,
   requestRunContinuation,
@@ -151,9 +152,12 @@ describe("consecutive agent-initiated continuation limit", () => {
     // The legacy wait alias shares the same boundary.
     expect(() => requestAgentBridgeWait(["--after-seconds", "60", "--reason", "again"], env)).toThrow(/continuation limit|already recorded/i);
     expect(readRunOutcome(db, "run-20")?.status).toBe("blocked");
-    const notice = claimContinuationLimitNotice(db, "run-20");
-    expect(notice).toMatchObject({ surfaceIdentity: scope.surfaceIdentity, chatKey: scope.chatKey });
-    expect(claimContinuationLimitNotice(db, "run-20")).toBeNull();
+    // Keyed by conversation so a fallback/retry Run can deliver it; it survives until cleared after sending.
+    expect(peekContinuationLimitNotice(db, scope.surfaceIdentity, scope.chatKey)).toEqual({ runId: "run-20" });
+    expect(peekContinuationLimitNotice(db, scope.surfaceIdentity, scope.chatKey)).toEqual({ runId: "run-20" });
+    expect(peekContinuationLimitNotice(db, scope.surfaceIdentity, scope.chatKey, Date.now() + 25 * 3_600_000)).toBeNull();
+    clearContinuationLimitNotice(db, scope.surfaceIdentity, scope.chatKey);
+    expect(peekContinuationLimitNotice(db, scope.surfaceIdentity, scope.chatKey)).toBeNull();
     db.close();
   });
 });
