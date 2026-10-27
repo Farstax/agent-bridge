@@ -21,6 +21,16 @@ const MAX_LIFETIME_MS = 2 * 60 * 60 * 1_000;
 const MAX_WAKE_HORIZON_MS = 7 * 24 * 60 * 60 * 1_000;
 const MAX_CAPACITY_LIFETIME_MS = 7 * 24 * 60 * 60 * 1_000;
 const MAX_REASON_CHARS = 500;
+/** Hard cap on consecutive agent-initiated continuations since the last independently authorised task origin. */
+export const MAX_CONSECUTIVE_AGENT_CONTINUATIONS = 20;
+const LIMIT_NOTICE_PREFIX = "run-continuation-limit:v1:";
+
+export class RunContinuationLimitError extends Error {
+  constructor() {
+    super(`automatic continuation limit reached (${MAX_CONSECUTIVE_AGENT_CONTINUATIONS} consecutive agent-initiated continuations); stop and ask the owner for further input`);
+    this.name = "RunContinuationLimitError";
+  }
+}
 
 export type RunContinuationState = "pending" | "claimed" | "completed" | "failed" | "expired" | "cancelled";
 
@@ -59,6 +69,11 @@ export interface RunContinuation {
   rolloutProvenance?: RolloutProvenance;
   /** Ordinary continuation run admitted after its durable queue handoff. */
   successorRunId?: string;
+  /**
+   * Consecutive agent-initiated continuations in this chain, including this one.
+   * A capacity wait carries its origin Run's depth unchanged. Absent on legacy records.
+   */
+  depth?: number;
   /** A settled capacity rejection may re-enter the existing fallback path. */
   capacityWait?: true;
   /** The initial capacity notice is a durable one-shot delivery decision. */
@@ -98,6 +113,22 @@ function bounded(value: string, label: string, max: number): string {
   return normalized;
 }
 
+/**
+ * Chain depth of a Run: the depth of the continuation record it was admitted
+ * from, or 0 for a Run with no continuation provenance (an owner message,
+ * scheduled routine or other independently authorised origin). The engine links
+ * a continuation to its successor Run at admission, before the provider runs.
+ */
+function runChainDepth(db: BridgeDb, runId: string): number {
+  const rows = db.raw.prepare("SELECT value FROM settings WHERE key LIKE ?").all(`${PREFIX}%`) as Array<{ value: string }>;
+  let depth = 0;
+  for (const row of rows) {
+    const record = parse(row.value);
+    if (record?.successorRunId === runId) depth = Math.max(depth, record.depth ?? 0);
+  }
+  return depth;
+}
+
 function parse(value: string): RunContinuation | null {
   try {
     const candidate = JSON.parse(value) as RunContinuation;
@@ -111,6 +142,7 @@ function parse(value: string): RunContinuation | null {
       || !candidate.reason
       || !["pending", "claimed", "completed", "failed", "expired", "cancelled"].includes(candidate.state)
     ) return null;
+    if (candidate.depth !== undefined && (!Number.isSafeInteger(candidate.depth) || candidate.depth < 0)) return null;
     if (candidate.capacityWait !== undefined && candidate.capacityWait !== true) return null;
     if (candidate.capacityNoticeSent !== undefined && candidate.capacityNoticeSent !== true) return null;
     if (candidate.expiryDeliveryPending !== undefined && candidate.expiryDeliveryPending !== true) return null;
@@ -200,10 +232,16 @@ export function requestRunContinuation(
     if (input.capacityWait && existing?.capacityWait && (
       existing.surfaceIdentity !== surfaceIdentity || existing.chatKey !== chatKey
     )) throw new Error("capacity wait task identity changed");
+    // The depth is decided inside the same transaction that persists the
+    // record, so racing requests cannot both slip under the cap.
+    const parentDepth = runChainDepth(db, originRunId);
+    const depth = input.capacityWait ? (existing?.depth ?? parentDepth) : (existing?.depth ?? parentDepth + 1);
+    if (!input.capacityWait && !existing && depth > MAX_CONSECUTIVE_AGENT_CONTINUATIONS) throw new RunContinuationLimitError();
     const continuation: RunContinuation = {
       version: 1,
       id,
       originRunId,
+      depth,
       surfaceIdentity,
       chatKey,
       provider,
@@ -225,6 +263,26 @@ export function requestRunContinuation(
     if (!persisted) throw new Error("continuation delivery coordinates are invalid");
     db.raw.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)").run(key(id), JSON.stringify(persisted));
     return persisted;
+  });
+}
+
+/** Durable, one-shot request for the engine to tell the owner that automatic continuation stopped. */
+export function recordContinuationLimitNotice(db: BridgeDb, runId: string, surfaceIdentity: string, chatKey: string): void {
+  db.raw.prepare("INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)")
+    .run(`${LIMIT_NOTICE_PREFIX}${runId}`, JSON.stringify({ surfaceIdentity, chatKey, at: new Date().toISOString() }));
+}
+
+export function claimContinuationLimitNotice(db: BridgeDb, runId: string): { surfaceIdentity: string; chatKey: string } | null {
+  return db.runInTransaction(() => {
+    const row = db.raw.prepare("SELECT value FROM settings WHERE key = ?").get(`${LIMIT_NOTICE_PREFIX}${runId}`) as { value: string } | undefined;
+    if (!row) return null;
+    db.raw.prepare("DELETE FROM settings WHERE key = ?").run(`${LIMIT_NOTICE_PREFIX}${runId}`);
+    try {
+      const parsed = JSON.parse(row.value) as { surfaceIdentity?: string; chatKey?: string };
+      return parsed.surfaceIdentity && parsed.chatKey ? { surfaceIdentity: parsed.surfaceIdentity, chatKey: parsed.chatKey } : null;
+    } catch {
+      return null;
+    }
   });
 }
 
