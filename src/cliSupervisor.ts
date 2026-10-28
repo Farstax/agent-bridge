@@ -57,8 +57,8 @@ function buildChildEnv(extraEnv?: Record<string, string>): NodeJS.ProcessEnv {
   return { ...buildSafeChildEnv(), ...(extraEnv ?? {}) };
 }
 
-function defaultKillGraceMs(): number {
-  const envVal = process.env.AGENT_BRIDGE_KILL_GRACE_MS;
+function defaultKillGraceMs(env: NodeJS.ProcessEnv = process.env): number {
+  const envVal = env.AGENT_BRIDGE_KILL_GRACE_MS;
   if (envVal) {
     const parsed = parseInt(envVal, 10);
     if (!Number.isNaN(parsed) && parsed >= 0) return parsed;
@@ -69,6 +69,11 @@ function defaultKillGraceMs(): number {
 const KILL_GRACE_MS = 5_000;
 const GROUP_EXIT_POLL_INTERVAL_MS = 25;
 const GROUP_EXIT_POLL_BOUND_MS = 1_000;
+
+/** Maximum time killChildTree waits for SIGTERM escalation and group exit polling. */
+export function killChildTreeWaitBoundMs(env: NodeJS.ProcessEnv = process.env): number {
+  return defaultKillGraceMs(env) + GROUP_EXIT_POLL_BOUND_MS;
+}
 const RUN_MARKER_ENV = "AGENT_BRIDGE_RUN_ID";
 const SERVICE_MARKER_ENV = "AGENT_BRIDGE_SERVICE_ID";
 const ACQUISITION_MARKER_ENV = "AGENT_BRIDGE_ACQUISITION_ID";

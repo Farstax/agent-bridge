@@ -402,7 +402,6 @@ import { Readable, Writable } from "node:stream";
 const pidFile = ${JSON.stringify(pidFile)};
 const cancelledFile = ${JSON.stringify(cancelledFile)};
 writeFileSync(pidFile, String(process.pid));
-process.on("SIGTERM", () => {});
 process.stdin.on("end", () => writeFileSync(pidFile + ".closed", ""));
 const provider = spawn(process.execPath, ["-e", 'process.on("SIGTERM", () => {}); setInterval(() => {}, 1000)'], { detached: true, stdio: "ignore" });
 writeFileSync(pidFile + ".provider", String(provider.pid));
@@ -417,7 +416,7 @@ const connection = acp.agent({ name: "stall-server" })
 await connection.closed;
 // Model the Bridge supervisor's bounded SIGTERM -> SIGKILL cleanup for a
 // provider child in its own process group. The outer reviewer must let it finish.
-await new Promise(resolve => setTimeout(resolve, 5200));
+await new Promise(resolve => setTimeout(resolve, Number(process.env.AGENT_BRIDGE_KILL_GRACE_MS ?? "5000") + 200));
 try { process.kill(-provider.pid, "SIGKILL"); } catch {}
 `);
       await writeFile(join(root, "prompt.md"), "Review it.\n");
@@ -451,6 +450,7 @@ spawnSync(process.execPath, ["--import", "tsx", ${JSON.stringify(join(release, "
         env: {
           PATH: process.env.PATH, HOME: process.env.HOME,
           AGENT_BRIDGE_RUN_ID: "codex-run", AGENT_BRIDGE_PROVIDER: "codex", DB_PATH: dbPath,
+          AGENT_BRIDGE_KILL_GRACE_MS: "6500",
           BRIDGE_CURRENT_RELEASE_DIR: join(root, "caller-selected-release-is-ignored"),
         },
         timeout: 25_000,

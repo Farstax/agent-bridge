@@ -9,7 +9,7 @@ import { isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Readable, Writable } from "node:stream";
 import Database from "better-sqlite3";
-import { killChildTree, readProcessStartTicks } from "./cliSupervisor.js";
+import { killChildTree, killChildTreeWaitBoundMs, readProcessStartTicks } from "./cliSupervisor.js";
 import { commandExistsOnPath, resolveInteractiveCliAuthPaths } from "./interactiveCliAuth.js";
 import { resolveProviderRuntime } from "./providers/acpRuntime.js";
 import { isProviderApiKeyConfigured } from "./providers/apiKeyAuth.js";
@@ -343,7 +343,7 @@ interface CliOptions {
 }
 
 const DEFAULT_REVIEW_TIMEOUT_SECONDS = 1_800;
-const REVIEW_CLOSE_GRACE_MS = 5_000;
+const REVIEW_CLOSE_GRACE_MARGIN_MS = 1_000;
 const REVIEW_CANCEL_GRACE_MS = 1_000;
 const GIT_TIMEOUT_MS = 120_000;
 const REVIEW_KILL_GRACE_MS = 2_000;
@@ -656,7 +656,10 @@ async function runReviewSession(
         ? Promise.resolve()
         : new Promise<void>((resolveExit) => child!.once("exit", () => resolveExit()));
       try { child.stdin?.end(); } catch { /* already closed */ }
-      await Promise.race([exited, new Promise((resolveWait) => setTimeout(resolveWait, REVIEW_CLOSE_GRACE_MS).unref())]);
+      // Let the Bridge server finish its own SIGTERM -> SIGKILL provider cleanup
+      // before terminating the server process group that owns that cleanup.
+      const serverCloseGraceMs = killChildTreeWaitBoundMs(childEnv) + REVIEW_CLOSE_GRACE_MARGIN_MS;
+      await Promise.race([exited, new Promise((resolveWait) => setTimeout(resolveWait, serverCloseGraceMs).unref())]);
       await killChildTree(child, REVIEW_KILL_GRACE_MS);
     }
   }
