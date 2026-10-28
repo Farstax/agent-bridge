@@ -33,6 +33,7 @@ interface Options {
   restartBoundary: string | null;
   copyId: string | null;
   recoveryPointCreatedAt: string | null;
+  offlineStaged: boolean;
 }
 
 interface DbEvidence {
@@ -104,7 +105,7 @@ const CURRENT_LOCK_COLUMNS = new Set([
 function parseArgs(argv: string[]): Options {
   const mode = argv.shift() as Mode | undefined;
   if (!mode || !["inspect", "checkpoint", "prune", "migrate", "validate", "reconcile", "growth", "relocate", "isolate-recovery-copy"].includes(mode)) {
-    throw new Error("usage: rollout-db.ts <inspect|checkpoint|prune|migrate|validate|reconcile|isolate-recovery-copy> --db PATH [options]");
+    throw new Error("usage: rollout-db.ts <inspect|checkpoint|prune|migrate|validate|reconcile|isolate-recovery-copy> --db PATH [--offline-staged] [options]");
   }
   const databases: string[] = [];
   let evidencePath: string | null = null;
@@ -115,8 +116,14 @@ function parseArgs(argv: string[]): Options {
   let restartBoundary: string | null = null;
   let copyId: string | null = null;
   let recoveryPointCreatedAt: string | null = null;
+  let offlineStaged = false;
   while (argv.length > 0) {
     const flag = argv.shift();
+    if (flag === "--offline-staged") {
+      if (offlineStaged) throw new Error("duplicate --offline-staged");
+      offlineStaged = true;
+      continue;
+    }
     if (flag === "--allow-retired-health") {
       allowRetiredHealthTable = true;
       continue;
@@ -158,8 +165,11 @@ function parseArgs(argv: string[]): Options {
   if (mode === "isolate-recovery-copy" && databaseRoles.get(databases[0]!) !== "interactive") {
     throw new Error("isolate-recovery-copy requires the interactive database role");
   }
+  if (offlineStaged && mode !== "isolate-recovery-copy") {
+    throw new Error("--offline-staged is only valid for isolate-recovery-copy");
+  }
   if (restartBoundary && !/^[0-9T:.Z-]+$/.test(restartBoundary)) throw new Error("invalid --restart-boundary");
-  return { mode, databases, evidencePath, resolvingUnits, databaseRoles, allowRetiredHealthTable, reason, restartBoundary, copyId, recoveryPointCreatedAt };
+  return { mode, databases, evidencePath, resolvingUnits, databaseRoles, allowRetiredHealthTable, reason, restartBoundary, copyId, recoveryPointCreatedAt, offlineStaged };
 }
 
 function parseRelocationArgs(argv: string[]): { source: string; target: string } {
@@ -1072,7 +1082,26 @@ function writeEvidence(path: string | null, mode: Mode, databases: DbEvidence[],
   writeFileSync(path, content, { mode: 0o600 });
 }
 
-function assertRecoveryCopyExecutionServicesStopped(): void {
+function assertRecoveryCopyExecutionServicesStopped(offlineStaged = false): void {
+  if (offlineStaged) {
+    // The caller must first prove the guest unit is stopped and mask inherited
+    // execution surfaces on its rootfs. --as-pid2 supplies only systemd's
+    // minimal stub init, never the guest service manager; assert that exact
+    // execution context before accepting the caller's offline staging proof.
+    if (process.env.container !== "systemd-nspawn") {
+      throw new Error("recovery-copy offline isolation requires a systemd-nspawn staging container");
+    }
+    let initCommand: string;
+    try {
+      initCommand = readFileSync("/proc/1/comm", "utf8").trim();
+    } catch {
+      throw new Error("recovery-copy offline isolation requires a readable staging init identity");
+    }
+    if (initCommand !== "(sd-stubinit)") {
+      throw new Error("recovery-copy offline isolation requires systemd-nspawn --as-pid2 with the guest stopped");
+    }
+    return;
+  }
   if (process.env.NODE_ENV === "test") return;
   let activeUnits: string;
   try {
@@ -1120,7 +1149,7 @@ async function main(): Promise<void> {
   const roleFor = (path: string): DatabaseRole => options.databaseRoles.get(path) ?? "shared";
   if (options.mode === "isolate-recovery-copy") {
     const path = options.databases[0]!;
-    assertRecoveryCopyExecutionServicesStopped();
+    assertRecoveryCopyExecutionServicesStopped(options.offlineStaged);
     const raw = new Database(path, { fileMustExist: true });
     try {
       const version = Number(raw.pragma("user_version", { simple: true }));
