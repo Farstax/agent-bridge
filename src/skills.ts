@@ -486,12 +486,21 @@ export function uninstallSkillGlobal(skillName: string, options: UninstallSkillO
 
   const sharedDir = join(paths.agentsSkillsDir, skillName);
   const linkMode = record.linkMode === "copy" ? "copy" : "symlink";
-  for (const nativeDir of nativeSkillDirs(paths)) {
-    const nativePath = join(nativeDir, skillName);
-    if (linkMode === "copy" && isExpectedNativeEntry(nativePath, sharedDir, linkMode)) makeOwnerWritable(nativePath);
-    rmSync(nativePath, { recursive: true, force: true });
+  const nativePaths = nativeSkillDirs(paths).map((nativeDir) => join(nativeDir, skillName));
+  for (const nativePath of nativePaths) {
+    if (pathExists(nativePath) && !isExpectedNativeEntry(nativePath, sharedDir, linkMode)) {
+      throw new Error(`Refusing to remove an unmanaged native skill path: ${nativePath}`);
+    }
   }
   const cursorPath = join(paths.cursorSkillsDir, skillName);
+  if (pathExists(cursorPath) && !isExpectedNativeEntry(cursorPath, sharedDir, linkMode) && record.cursorProjected === true) {
+    throw new Error(`Native skill path already exists and is not this managed projection: ${cursorPath}`);
+  }
+  for (const nativePath of nativePaths) {
+    if (!pathExists(nativePath)) continue;
+    if (linkMode === "copy") makeOwnerWritable(nativePath);
+    rmSync(nativePath, { recursive: true, force: true });
+  }
   if (pathExists(cursorPath)) {
     if (isExpectedNativeEntry(cursorPath, sharedDir, linkMode)) {
       if (linkMode === "copy") makeOwnerWritable(cursorPath);

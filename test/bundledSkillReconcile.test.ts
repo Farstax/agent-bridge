@@ -106,6 +106,26 @@ describe("bundled Skill reconciliation", () => {
     expect(existsSync(join(paths.agentsSkillsDir, "custom-bundled"))).toBe(true);
   });
 
+  it("preserves an unmanaged native Skill path when retiring a bundled Skill", () => {
+    const home = makeDir("home");
+    const oldRepo = makeDir("old-repo");
+    const repo = makeDir("repo");
+    writeSkill(oldRepo, "advisor", "Retired bundled Skill.");
+    installSkillGlobal("advisor", { homeDir: home, repoRoot: oldRepo });
+    const paths = resolveSkillPaths(home);
+    const userPath = join(paths.claudeSkillsDir, "advisor");
+    rmSync(userPath, { recursive: true, force: true });
+    mkdirSync(userPath, { recursive: true });
+    writeFileSync(join(userPath, "SKILL.md"), "Operator-owned content.\n");
+
+    const result = reconcileBundledSkills({ homeDir: home, repoRoot: repo });
+
+    expect(result.retired).toEqual([]);
+    expect(result.errors.some((entry) => entry.includes("unmanaged native skill path"))).toBe(true);
+    expect(readFileSync(join(userPath, "SKILL.md"), "utf8")).toContain("Operator-owned content.");
+    expect(existsSync(join(paths.agentsSkillsDir, "advisor"))).toBe(true);
+  });
+
   it("copies from a read-only release so the next release can replace and retire them", () => {
     const home = makeDir("home");
     const repo = makeDir("repo");
