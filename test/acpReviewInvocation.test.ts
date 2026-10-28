@@ -9,7 +9,6 @@ import { tmpdir } from "node:os";
 import {
   buildAcpReviewEnvironment,
   buildReviewOutput,
-  buildReviewPrompt,
   describeIncompleteReview,
   classifyAcpReviewFailure,
   classifyAcpReviewFailureFromEvidence,

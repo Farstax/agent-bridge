@@ -516,12 +516,6 @@ export function describeIncompleteReview(stopReason: string | null, deniedPermis
   return `reviewer stopped without a completed turn (${reason})${denied.length > 0 ? `; refused permission requests: ${denied.join(", ")}` : ""}`;
 }
 
-async function reviewPrompt(promptFile: string, expectedHead: string, runtimeCommit: string, provider: ReviewProvider): Promise<string> {
-  const request = (await readFile(promptFile, "utf8")).trim();
-  if (!request) throw new Error("review prompt is empty");
-  return buildReviewPrompt(request, expectedHead, runtimeCommit, provider);
-}
-
 async function runReview(options: CliOptions): Promise<void> {
   const origin = resolveImplementingRun();
   const dbPath = origin.dbPath;
