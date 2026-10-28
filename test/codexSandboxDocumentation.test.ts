@@ -15,4 +15,8 @@ describe("Codex Ubuntu sandbox guidance", () => {
     expect(guidance).not.toContain("agent-bridge-codex-bwrap");
     expect(guidance).not.toContain("kernel.apparmor_restrict_unprivileged_userns=0");
   });
+
+  it("chains the 24.04 install behind the collision check", () => {
+    expect(guidance).toMatch(/sudo test ! -e \/etc\/apparmor\.d\/bwrap-userns-restrict \\\n\s+&& sudo install/);
+  });
 });

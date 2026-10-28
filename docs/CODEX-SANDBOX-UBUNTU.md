@@ -46,11 +46,11 @@ experimental profiles in that package do not change the host:
 ```bash
 profile_tmp="$(mktemp -d)"
 (cd "$profile_tmp" && apt-get download apparmor-profiles && dpkg-deb -x ./*.deb extracted)
-sudo test ! -e /etc/apparmor.d/bwrap-userns-restrict
-sudo install -m 0644 \
-  "$profile_tmp/extracted/usr/share/apparmor/extra-profiles/bwrap-userns-restrict" \
-  /etc/apparmor.d/bwrap-userns-restrict
-sudo apparmor_parser -r /etc/apparmor.d/bwrap-userns-restrict
+sudo test ! -e /etc/apparmor.d/bwrap-userns-restrict \
+  && sudo install -m 0644 \
+    "$profile_tmp/extracted/usr/share/apparmor/extra-profiles/bwrap-userns-restrict" \
+    /etc/apparmor.d/bwrap-userns-restrict \
+  && sudo apparmor_parser -r /etc/apparmor.d/bwrap-userns-restrict
 rm -rf "$profile_tmp"
 sudo cat /sys/kernel/security/apparmor/profiles | grep -E '^(bwrap|unpriv_bwrap) '
 ```

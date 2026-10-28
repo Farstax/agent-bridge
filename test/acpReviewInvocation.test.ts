@@ -10,6 +10,7 @@ import {
   buildAcpReviewEnvironment,
   buildReviewOutput,
   describeIncompleteReview,
+  refusePermission,
   classifyAcpReviewFailure,
   classifyAcpReviewFailureFromEvidence,
   classifyUnavailableProviderStatus,
@@ -29,6 +30,15 @@ import {
 import { openDb } from "../src/db.js";
 
 describe("ACP review invocation", () => {
+  it("cancels every permission request, cleans titles and caps captured refusals", () => {
+    const denied: string[] = [];
+    const results = [1, 2, 3, 4, 5].map((n) => refusePermission({ kind: n === 1 ? undefined : "read", title: `t${n}\nline\x07${"x".repeat(200)}` }, denied));
+    expect(results.every((result) => result.outcome.outcome === "cancelled")).toBe(true);
+    expect(denied).toHaveLength(3);
+    expect(denied[0]).toMatch(/^other "t1 line x+"$/);
+    expect(denied[0].length).toBeLessThan(100);
+  });
+
   it("reports permission refusals when a reviewer cannot complete its turn", () => {
     expect(describeIncompleteReview("cancelled", ['read "Read file"'])).toBe(
       'ACP reviewer stopped without a completed turn (cancelled); refused permission requests: read "Read file"',
