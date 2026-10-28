@@ -10,7 +10,7 @@ import { isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Readable, Writable } from "node:stream";
 import Database from "better-sqlite3";
-import { killChildTree } from "./cliSupervisor.js";
+import { killChildTree, readProcessStartTicks } from "./cliSupervisor.js";
 import { commandExistsOnPath, resolveInteractiveCliAuthPaths } from "./interactiveCliAuth.js";
 import { resolveProviderRuntime } from "./providers/acpRuntime.js";
 import { isProviderApiKeyConfigured } from "./providers/apiKeyAuth.js";
@@ -31,6 +31,7 @@ const RUN_SCOPED_AGENT_BRIDGE_ENV = /^AGENT_BRIDGE_(?:RUN_ID|SERVICE_ID|ACQUISIT
 
 export interface ProcessRecord {
   ppid: number;
+  startTicks: string | null;
   environ: Record<string, string>;
 }
 
@@ -43,45 +44,69 @@ function readProcRecord(pid: number): ProcessRecord | null {
       const split = entry.indexOf("=");
       if (split > 0) environ[entry.slice(0, split)] = entry.slice(split + 1);
     }
-    return Number.isInteger(ppid) ? { ppid, environ } : null;
+    return Number.isInteger(ppid) ? { ppid, startTicks: readProcessStartTicks(pid), environ } : null;
   } catch {
     return null;
   }
 }
 
+export interface RecordedRunStart {
+  bot: string;
+  process?: { pid: number; startTicks: string };
+}
+
+function readRecordedRunStarts(dbPath: string, runId: string): RecordedRunStart[] {
+  const db = openReadOnlyReviewDatabase(dbPath);
+  try {
+    return (db.prepare("SELECT payload_json FROM bridge_events WHERE run_id = ? ORDER BY seq ASC").all(runId) as Array<{ payload_json: string }>)
+      .map((row) => JSON.parse(row.payload_json) as RecordedRunStart & { type?: string })
+      .filter((event) => event.type === "run.started");
+  } finally {
+    db.close();
+  }
+}
+
 /**
- * Bridge starts the provider adapter with AGENT_BRIDGE_RUN_ID and DB_PATH.
- * Exec-time environments are held by the kernel, so a descendant can relabel
- * only itself. The outermost marked ancestor is the process Bridge started;
- * any disagreement below it is a relabelled descendant and fails closed.
+ * The implementer is the Run whose recorded run.started process (PID plus
+ * kernel start time) is a live ancestor of this helper. Environment markers
+ * only locate candidate Runs; a relabelled or orphaned process is not the
+ * process Bridge recorded, so the review fails closed.
  */
 export function resolveImplementingRun(
   startPid: number = process.pid,
   readProcess: (pid: number) => ProcessRecord | null = readProcRecord,
-): { runId: string; dbPath: string } {
-  const marked: Array<{ runId: string; dbPath: string | undefined }> = [];
+  readRunStarts: (dbPath: string, runId: string) => RecordedRunStart[] = readRecordedRunStarts,
+): { runId: string; dbPath: string; bot: string } {
+  const ancestry: Array<ProcessRecord & { pid: number }> = [];
   const seen = new Set<number>();
   for (let pid = startPid; pid > 1 && !seen.has(pid);) {
     seen.add(pid);
     const record = readProcess(pid);
     if (!record) break;
-    const runId = record.environ.AGENT_BRIDGE_RUN_ID?.trim();
-    if (runId) marked.push({ runId, dbPath: record.environ.DB_PATH?.trim() || undefined });
+    ancestry.push({ pid, ...record });
     pid = record.ppid;
   }
-  const origin = marked.at(-1);
-  if (!origin) throw new Error("implementing Bridge Run cannot be established from process ancestry");
-  if (marked.some((entry) => entry.runId !== origin.runId || (entry.dbPath ?? origin.dbPath) !== origin.dbPath)) {
-    throw new Error("implementing Bridge Run identity is inconsistent across process ancestry");
+  for (const candidate of ancestry.reverse()) {
+    const runId = candidate.environ.AGENT_BRIDGE_RUN_ID?.trim();
+    const dbPath = candidate.environ.DB_PATH?.trim();
+    if (!runId || !dbPath || !candidate.startTicks) continue;
+    let starts: RecordedRunStart[];
+    try {
+      starts = readRunStarts(dbPath, runId);
+    } catch {
+      continue;
+    }
+    const bound = starts.find((start) => start.process?.pid === candidate.pid && start.process.startTicks === candidate.startTicks);
+    if (bound) return { runId, dbPath, bot: bound.bot };
   }
-  if (!origin.dbPath) throw new Error("DB_PATH is required for durable Bridge review evidence");
-  return { runId: origin.runId, dbPath: origin.dbPath };
+  throw new Error("implementing Bridge Run cannot be established from a Bridge-recorded ancestor process");
 }
 
-export function readImplementingProvider(db: Database.Database, runId: string): string {
+export function readImplementingProvider(db: Database.Database, runId: string, recordedBot: string): string {
   const run = db.prepare("SELECT bot, status FROM bridge_runs WHERE run_id = ?").get(runId) as { bot?: string; status?: string } | undefined;
   if (!run?.bot) throw new Error("implementing Bridge Run is not recorded");
   if (run.status !== "running") throw new Error(`implementing Bridge Run is not active (${run.status ?? "unknown"})`);
+  if (run.bot !== recordedBot) throw new Error("implementing Bridge Run provider is inconsistent");
   return run.bot;
 }
 
@@ -321,11 +346,13 @@ interface CliOptions {
 
 const DEFAULT_REVIEW_TIMEOUT_SECONDS = 1_800;
 const REVIEW_CLOSE_GRACE_MS = 5_000;
+const GIT_TIMEOUT_MS = 120_000;
 const REVIEW_KILL_GRACE_MS = 2_000;
 
-export function reviewRuntime(base: NodeJS.ProcessEnv, candidateHead: string): { root: string; commit: string } {
-  const configured = base.BRIDGE_CURRENT_RELEASE_DIR?.trim();
-  if (!configured) throw new Error("installed Agent Bridge release directory is unavailable");
+/** The release that contains this helper; never a caller-selected directory. */
+export const HELPER_RELEASE_DIR = fileURLToPath(new URL("..", import.meta.url));
+
+export function reviewRuntime(configured: string, candidateHead: string): { root: string; commit: string } {
   let root: string;
   try {
     root = realpathSync(configured);
@@ -375,7 +402,9 @@ function parseArgs(argv: readonly string[]): CliOptions {
 }
 
 function git(cwd: string, args: string[]): string {
-  return execFileSync("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
+  return execFileSync("git", ["-c", "core.hooksPath=/dev/null", ...args], {
+    cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], timeout: GIT_TIMEOUT_MS, killSignal: "SIGKILL",
+  }).trim();
 }
 
 /** The reviewer sees only the committed tree: a fresh detached worktree at the exact head. */
@@ -424,11 +453,11 @@ async function runReview(options: CliOptions): Promise<void> {
   const originDb = openReadOnlyReviewDatabase(dbPath);
   let implementer: string;
   try {
-    implementer = readImplementingProvider(originDb, origin.runId);
+    implementer = readImplementingProvider(originDb, origin.runId, origin.bot);
   } finally {
     originDb.close();
   }
-  const runtime = reviewRuntime(process.env, options.head);
+  const runtime = reviewRuntime(HELPER_RELEASE_DIR, options.head);
   const childEnv = buildAcpReviewEnvironment({
     provider: options.provider,
     implementer,

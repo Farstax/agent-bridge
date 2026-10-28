@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { mkdtemp, mkdir, rm, symlink, writeFile } from "node:fs/promises";
+import { cp, mkdtemp, mkdir, rm, symlink, writeFile } from "node:fs/promises";
 import { existsSync, readFileSync } from "node:fs";
-import { execFileSync, spawn } from "node:child_process";
+import { execFileSync } from "node:child_process";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
@@ -90,8 +90,8 @@ describe("cross-provider ACP review invocation", () => {
       await writeFile(join(release, "manifest.json"), JSON.stringify({ commit: "b".repeat(40) }));
       await writeFile(join(release, "dist/acpServer/stdio.js"), "");
       await symlink(release, pointer);
-      expect(reviewRuntime({ BRIDGE_CURRENT_RELEASE_DIR: pointer }, "a".repeat(40))).toEqual({ root: release, commit: "b".repeat(40) });
-      expect(() => reviewRuntime({ BRIDGE_CURRENT_RELEASE_DIR: pointer }, "b".repeat(40))).toThrow(/independent of the candidate/);
+      expect(reviewRuntime(pointer, "a".repeat(40))).toEqual({ root: release, commit: "b".repeat(40) });
+      expect(() => reviewRuntime(pointer, "b".repeat(40))).toThrow(/independent of the candidate/);
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -284,8 +284,8 @@ describe("cross-provider ACP review invocation", () => {
     expect(workflow).toContain("bin/agent-bridge-review");
     expect(workflow).toContain('test -f "$verify_root/dist/acpReview.js"');
     expect(helper).toContain("$RELEASE_DIR/dist/acpReview.js");
-    expect(helper).toContain('RELEASE_DIR="$(realpath -e "$RELEASE_DIR")"');
-    expect(helper).toContain('export BRIDGE_CURRENT_RELEASE_DIR="$RELEASE_DIR"');
+    expect(helper).toContain('RELEASE_DIR="$(realpath -e "$(dirname "$(realpath -e "${BASH_SOURCE[0]}")")/..")"');
+    expect(helper).not.toContain("${BRIDGE_CURRENT_RELEASE_DIR:-");
     expect(skill).toContain("$BRIDGE_CURRENT_RELEASE_DIR/bin/agent-bridge-review");
     expect(skill).not.toContain("npm run acp:review");
     expect(packageJson.scripts?.["acp:review"]).toBeUndefined();
@@ -323,30 +323,38 @@ describe("cross-provider ACP review invocation", () => {
     }
   });
 
-  it("derives the implementer from the Bridge-started ancestor, not caller-controlled environment", () => {
-    const procs = (table: Record<number, { ppid: number; env: Record<string, string> }>) =>
-      (pid: number) => table[pid] ? { ppid: table[pid]!.ppid, environ: table[pid]!.env } : null;
-    const bridge = { ppid: 1, env: { DB_PATH: "/db" } };
-    const adapter = { ppid: 10, env: { AGENT_BRIDGE_RUN_ID: "codex-run", AGENT_BRIDGE_PROVIDER: "codex", DB_PATH: "/db" } };
+  it("binds the implementer to a Bridge-recorded ancestor process, not caller-controlled markers", () => {
+    type Proc = { ppid: number; ticks: string; env: Record<string, string> };
+    const procs = (table: Record<number, Proc>) =>
+      (pid: number) => table[pid] ? { ppid: table[pid]!.ppid, startTicks: table[pid]!.ticks, environ: table[pid]!.env } : null;
+    const recorded: Record<string, Array<{ bot: string; process?: { pid: number; startTicks: string } }>> = {
+      "codex-run": [{ bot: "codex", process: { pid: 20, startTicks: "500" } }],
+      "claude-run": [{ bot: "claude", process: { pid: 70, startTicks: "900" } }],
+    };
+    const starts = (dbPath: string, runId: string) => {
+      if (dbPath !== "/db") throw new Error("unknown database");
+      return recorded[runId] ?? [];
+    };
+    const bridge: Proc = { ppid: 1, ticks: "100", env: { DB_PATH: "/db" } };
+    const codexAdapter: Proc = { ppid: 10, ticks: "500", env: { AGENT_BRIDGE_RUN_ID: "codex-run", AGENT_BRIDGE_PROVIDER: "codex", DB_PATH: "/db" } };
 
-    // A shell that only relabels the provider still resolves to the real Run.
+    // Relabelling the provider or Run below the recorded adapter does not change the implementer.
     expect(resolveImplementingRun(30, procs({
-      10: bridge, 20: adapter,
-      30: { ppid: 20, env: { AGENT_BRIDGE_RUN_ID: "codex-run", AGENT_BRIDGE_PROVIDER: "claude", DB_PATH: "/db" } },
-    }))).toEqual({ runId: "codex-run", dbPath: "/db" });
-    // Relabelling the Run or database below the Bridge-started process fails closed.
+      10: bridge, 20: codexAdapter,
+      30: { ppid: 20, ticks: "600", env: { AGENT_BRIDGE_RUN_ID: "claude-run", AGENT_BRIDGE_PROVIDER: "claude", DB_PATH: "/db" } },
+    }), starts)).toEqual({ runId: "codex-run", dbPath: "/db", bot: "codex" });
+    // An orphaned helper that forges another provider's running Run has no recorded ancestor.
     expect(() => resolveImplementingRun(30, procs({
-      10: bridge, 20: adapter,
-      30: { ppid: 20, env: { AGENT_BRIDGE_RUN_ID: "claude-run", AGENT_BRIDGE_PROVIDER: "claude", DB_PATH: "/db" } },
-    }))).toThrow(/inconsistent/);
-    expect(() => resolveImplementingRun(30, procs({
-      10: bridge, 20: adapter,
-      30: { ppid: 20, env: { AGENT_BRIDGE_RUN_ID: "codex-run", DB_PATH: "/forged.sqlite" } },
-    }))).toThrow(/inconsistent/);
-    // No Bridge-started ancestor at all.
-    expect(() => resolveImplementingRun(30, procs({
-      30: { ppid: 1, env: { AGENT_BRIDGE_PROVIDER: "codex" } },
-    }))).toThrow(/cannot be established/);
+      30: { ppid: 1, ticks: "950", env: { AGENT_BRIDGE_RUN_ID: "codex-run", AGENT_BRIDGE_PROVIDER: "codex", DB_PATH: "/db" } },
+    }), starts)).toThrow(/cannot be established/);
+    // PID reuse: same PID, different kernel start time.
+    expect(() => resolveImplementingRun(20, procs({
+      10: bridge, 20: { ...codexAdapter, ticks: "501" },
+    }), starts)).toThrow(/cannot be established/);
+    // A forged database path is not the recorded Run's database.
+    expect(() => resolveImplementingRun(20, procs({
+      10: bridge, 20: { ...codexAdapter, env: { ...codexAdapter.env, DB_PATH: "/forged.sqlite" } },
+    }), starts)).toThrow(/cannot be established/);
 
     const db = openDb(":memory:", { serviceId: "acp:review-test", databaseRole: "interactive" });
     try {
@@ -354,15 +362,16 @@ describe("cross-provider ACP review invocation", () => {
         VALUES (?, 'telegram', 'chat', ?, ?, '2026-10-27T00:00:00Z')`);
       insert.run("codex-run", "codex", "running");
       insert.run("old-run", "claude", "done");
-      const implementer = readImplementingProvider(db.raw, "codex-run");
+      const implementer = readImplementingProvider(db.raw, "codex-run", "codex");
       expect(implementer).toBe("codex");
       // Asking Codex to review its own Run fails regardless of a spoofed AGENT_BRIDGE_PROVIDER.
       expect(() => buildAcpReviewEnvironment({
         provider: "codex", implementer, base: { DB_PATH: "/db", AGENT_BRIDGE_PROVIDER: "claude" },
         projectDir: "/repo", releaseDir: "/release",
       })).toThrow(/different provider/);
-      expect(() => readImplementingProvider(db.raw, "old-run")).toThrow(/not active/);
-      expect(() => readImplementingProvider(db.raw, "missing")).toThrow(/not recorded/);
+      expect(() => readImplementingProvider(db.raw, "codex-run", "claude")).toThrow(/inconsistent/);
+      expect(() => readImplementingProvider(db.raw, "old-run", "claude")).toThrow(/not active/);
+      expect(() => readImplementingProvider(db.raw, "missing", "codex")).toThrow(/not recorded/);
     } finally {
       db.close();
     }
@@ -372,60 +381,68 @@ describe("cross-provider ACP review invocation", () => {
     const root = await mkdtemp(join(tmpdir(), "acp-review-stall-"));
     const repo = join(root, "repo");
     const release = join(root, "release");
+    const source = fileURLToPath(new URL("..", import.meta.url));
     const git = (...args: string[]) => execFileSync("git", args, { cwd: repo, encoding: "utf8" }).trim();
     try {
       await mkdir(repo);
       git("init", "--quiet");
       git("-c", "user.email=t@example.com", "-c", "user.name=t", "commit", "--quiet", "--allow-empty", "-m", "candidate");
       const candidate = git("rev-parse", "HEAD");
+      // A release containing the helper; the runtime is located from the helper, not the environment.
+      await cp(join(source, "src"), join(release, "src"), { recursive: true });
+      await symlink(join(source, "node_modules"), join(release, "node_modules"));
+      await writeFile(join(release, "package.json"), JSON.stringify({ type: "module" }));
       await mkdir(join(release, "dist/acpServer"), { recursive: true });
       await writeFile(join(release, "manifest.json"), JSON.stringify({ commit: "c".repeat(40) }));
       const pidFile = join(root, "server.pid");
-      await writeFile(join(release, "dist/acpServer/stdio.js"),
-        `require("fs").writeFileSync(${JSON.stringify(pidFile)}, String(process.pid));
+      await writeFile(join(release, "dist/acpServer/stdio.js"), `import { writeFileSync } from "node:fs";
+writeFileSync(${JSON.stringify(pidFile)}, String(process.pid));
 process.on("SIGTERM", () => {}); setInterval(() => {}, 1000);
-process.stdin.on("end", () => require("fs").writeFileSync(${JSON.stringify(pidFile)} + ".closed", "")).resume();\n`);
-      await writeFile(join(release, "package.json"), JSON.stringify({ type: "commonjs" }));
+process.stdin.on("end", () => writeFileSync(${JSON.stringify(pidFile)} + ".closed", "")).resume();\n`);
       await writeFile(join(root, "prompt.md"), "Review it.\n");
       const dbPath = join(root, "bridge.sqlite");
       const db = openDb(dbPath, { serviceId: "acp:review-test", databaseRole: "interactive" });
       db.raw.prepare(`INSERT INTO bridge_runs (run_id, surface_identity, chat_id, bot, status, started_at)
         VALUES ('codex-run', 'telegram', 'chat', 'codex', 'running', '2026-10-27T00:00:00Z')`).run();
       db.close();
-
-      const helper = fileURLToPath(new URL("../src/acpReview.ts", import.meta.url));
+      // Stands in for the provider adapter Bridge spawned: it records its own
+      // kernel identity as run.started, then runs the helper as a descendant.
       const out = join(root, "out.txt");
-      // Detach through a short-lived shell so the helper's only Bridge-marked
-      // ancestry is its own exec-time environment, as under a Bridge provider.
-      const launcher = spawn("/bin/sh", ["-c", `"$@" >${JSON.stringify(out)} 2>&1 & echo $!`, "sh",
-        process.execPath, "--import", "tsx", helper,
-        "--provider", "claude", "--head", candidate, "--cwd", repo,
-        "--prompt-file", join(root, "prompt.md"), "--timeout-seconds", "2"], {
-        cwd: fileURLToPath(new URL("..", import.meta.url)),
+      const adapter = join(root, "adapter.mjs");
+      await writeFile(adapter, `import { createRequire } from "node:module";
+import { openSync, readFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+const Database = createRequire(${JSON.stringify(join(source, "package.json"))})("better-sqlite3");
+const stat = readFileSync("/proc/" + process.pid + "/stat", "utf8");
+const startTicks = stat.slice(stat.lastIndexOf(")") + 2).split(" ")[19];
+const db = new Database(process.env.DB_PATH);
+db.prepare("INSERT INTO bridge_events (id, run_id, seq, type, timestamp, payload_json) VALUES ('e1', 'codex-run', 1, 'run.started', '2026-10-27T00:00:00Z', ?)")
+  .run(JSON.stringify({ type: "run.started", runId: "codex-run", bot: "codex", process: { pid: process.pid, startTicks } }));
+db.close();
+const fd = openSync(${JSON.stringify(out)}, "w");
+spawnSync(process.execPath, ["--import", "tsx", ${JSON.stringify(join(release, "src/acpReview.ts"))},
+  "--provider", "claude", "--head", ${JSON.stringify(candidate)}, "--cwd", ${JSON.stringify(repo)},
+  "--prompt-file", ${JSON.stringify(join(root, "prompt.md"))}, "--timeout-seconds", "2"],
+  { cwd: ${JSON.stringify(release)}, env: { ...process.env, AGENT_BRIDGE_PROVIDER: "claude" }, stdio: ["ignore", fd, fd] });
+`);
+      const started = Date.now();
+      execFileSync(process.execPath, [adapter], {
         env: {
           PATH: process.env.PATH, HOME: process.env.HOME,
-          AGENT_BRIDGE_RUN_ID: "codex-run", AGENT_BRIDGE_PROVIDER: "claude", DB_PATH: dbPath,
-          BRIDGE_CURRENT_RELEASE_DIR: release,
+          AGENT_BRIDGE_RUN_ID: "codex-run", AGENT_BRIDGE_PROVIDER: "codex", DB_PATH: dbPath,
+          BRIDGE_CURRENT_RELEASE_DIR: join(root, "caller-selected-release-is-ignored"),
         },
-        stdio: ["ignore", "pipe", "inherit"],
+        timeout: 25_000,
       });
-      let helperPid = "";
-      launcher.stdout.on("data", (chunk: Buffer) => { helperPid += chunk.toString(); });
-      await new Promise((resolveExit) => launcher.once("exit", resolveExit));
-      const started = Date.now();
-      const alive = (pid: number) => { try { process.kill(pid, 0); return true; } catch { return false; } };
-      while (alive(Number(helperPid.trim())) && Date.now() - started < 20_000) {
-        await new Promise((resolveWait) => setTimeout(resolveWait, 100));
-      }
-      expect(alive(Number(helperPid.trim()))).toBe(false);
-      expect(Date.now() - started).toBeLessThan(15_000);
+      expect(Date.now() - started).toBeLessThan(20_000);
       expect(readFileSync(out, "utf8")).toContain("ACP reviewer timed out after 2000ms");
       // stdin closed first so a real server can finalize its Run, then forced stop.
       expect(existsSync(`${pidFile}.closed`)).toBe(true);
+      const alive = (pid: number) => { try { process.kill(pid, 0); return true; } catch { return false; } };
       expect(alive(Number(readFileSync(pidFile, "utf8")))).toBe(false);
       expect(git("worktree", "list", "--porcelain").match(/^worktree /gm)).toHaveLength(1);
     } finally {
       await rm(root, { recursive: true, force: true });
     }
-  }, 30_000);
+  }, 40_000);
 });
