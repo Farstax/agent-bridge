@@ -49,7 +49,6 @@ describe("cross-provider ACP review invocation", () => {
         AGENT_BRIDGE_OWNER_KEY: "implementer-owner",
         AGENT_BRIDGE_DELIVERY_CHAT_ID: "123",
       },
-      projectDir: "/workspace/repo",
       releaseDir: "/opt/agent-bridge/releases/current",
     });
 
@@ -76,7 +75,6 @@ describe("cross-provider ACP review invocation", () => {
       provider: "claude",
       implementer: "codex",
       base: {},
-      projectDir: "/workspace/repo",
       releaseDir: "/opt/agent-bridge/releases/current",
     })).toThrow(/DB_PATH/);
   });
@@ -153,7 +151,6 @@ describe("cross-provider ACP review invocation", () => {
       provider: "codex",
       implementer: "codex",
       base: {},
-      projectDir: "/workspace/repo",
       releaseDir: "/opt/agent-bridge/releases/current",
     })).toThrow(/different provider/);
 
@@ -367,7 +364,7 @@ describe("cross-provider ACP review invocation", () => {
       // Asking Codex to review its own Run fails regardless of a spoofed AGENT_BRIDGE_PROVIDER.
       expect(() => buildAcpReviewEnvironment({
         provider: "codex", implementer, base: { DB_PATH: "/db", AGENT_BRIDGE_PROVIDER: "claude" },
-        projectDir: "/repo", releaseDir: "/release",
+        releaseDir: "/release",
       })).toThrow(/different provider/);
       expect(() => readImplementingProvider(db.raw, "codex-run", "claude")).toThrow(/inconsistent/);
       expect(() => readImplementingProvider(db.raw, "old-run", "claude")).toThrow(/not active/);

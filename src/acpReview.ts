@@ -1,8 +1,7 @@
 #!/usr/bin/env node
 
 import * as acp from "@agentclientprotocol/sdk";
-import { spawn, type ChildProcess } from "node:child_process";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawn, type ChildProcess } from "node:child_process";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -22,7 +21,6 @@ export interface ReviewInvocationOptions {
   provider: ReviewProvider;
   implementer: string;
   base: Record<string, string | undefined>;
-  projectDir: string;
   releaseDir: string;
 }
 
@@ -462,7 +460,6 @@ async function runReview(options: CliOptions): Promise<void> {
     provider: options.provider,
     implementer,
     base: { ...process.env, DB_PATH: dbPath },
-    projectDir: options.cwd,
     releaseDir: runtime.root,
   });
   const repository = git(options.cwd, ["rev-parse", "--show-toplevel"]);
