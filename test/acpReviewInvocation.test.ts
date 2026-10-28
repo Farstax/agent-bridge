@@ -27,7 +27,7 @@ import {
 } from "../src/acpReview.js";
 import { openDb } from "../src/db.js";
 
-describe("cross-provider ACP review invocation", () => {
+describe("ACP review invocation", () => {
   const head = "a".repeat(40);
   it("locks the requested reviewer and safe-mode permissions without changing the active provider", () => {
     const env = buildAcpReviewEnvironment({
@@ -147,13 +147,23 @@ describe("cross-provider ACP review invocation", () => {
     }
   });
 
-  it("refuses same-provider reviews and only qualifies an exact-head PASS with read/search tool evidence", () => {
-    expect(() => buildAcpReviewEnvironment({
+  it("allows a same-provider review with a locked safe context and qualifies exact-head tool evidence", () => {
+    const sameProviderEnv = buildAcpReviewEnvironment({
       provider: "codex",
       implementer: "codex",
-      base: {},
+      base: {
+        DB_PATH: "/var/lib/agent-bridge/interactive/bridge.sqlite",
+        AGENT_BRIDGE_RUN_ID: "implementer-run",
+      },
       releaseDir: "/opt/agent-bridge/releases/current",
-    })).toThrow(/different provider/);
+    });
+    expect(sameProviderEnv.AGENT_BRIDGE_PROVIDER).toBe("codex");
+    expect(sameProviderEnv.BRIDGE_PROVIDER_LOCK).toBe("codex");
+    expect(sameProviderEnv.INTERACTIVE_CLI_CHAIN).toBe("codex");
+    expect(sameProviderEnv.BRIDGE_EXECUTION_MODE).toBe("safe");
+    expect(sameProviderEnv.CODEX_EXECUTION_MODE).toBe("safe");
+    expect(sameProviderEnv.DB_PATH).toBe("/var/lib/agent-bridge/interactive/bridge.sqlite");
+    expect(sameProviderEnv.AGENT_BRIDGE_RUN_ID).toBeUndefined();
 
     expect(qualifyReviewResult({
       text: `REVIEWED_HEAD: ${head}\nREVIEW_RESULT: PASS`,
@@ -362,11 +372,14 @@ describe("cross-provider ACP review invocation", () => {
       insert.run("old-run", "claude", "done");
       const implementer = readImplementingProvider(db.raw, "codex-run", "codex");
       expect(implementer).toBe("codex");
-      // Asking Codex to review its own Run fails regardless of a spoofed AGENT_BRIDGE_PROVIDER.
-      expect(() => buildAcpReviewEnvironment({
+      // Same-provider review is permitted, while the review receives a new Run context and remains locked safe.
+      const sameProviderReview = buildAcpReviewEnvironment({
         provider: "codex", implementer, base: { DB_PATH: "/db", AGENT_BRIDGE_PROVIDER: "claude" },
         releaseDir: "/release",
-      })).toThrow(/different provider/);
+      });
+      expect(sameProviderReview.BRIDGE_PROVIDER_LOCK).toBe("codex");
+      expect(sameProviderReview.AGENT_BRIDGE_PROVIDER).toBe("codex");
+      expect(sameProviderReview.BRIDGE_EXECUTION_MODE).toBe("safe");
       expect(() => readImplementingProvider(db.raw, "codex-run", "claude")).toThrow(/inconsistent/);
       expect(() => readImplementingProvider(db.raw, "old-run", "claude")).toThrow(/not active/);
       expect(() => readImplementingProvider(db.raw, "missing", "codex")).toThrow(/not recorded/);
@@ -468,6 +481,110 @@ spawnSync(process.execPath, ["--import", "tsx", ${JSON.stringify(join(release, "
       if (existsSync(providerPidFile)) {
         try { process.kill(-Number(readFileSync(providerPidFile, "utf8")), "SIGKILL"); } catch {}
       }
+      await rm(root, { recursive: true, force: true });
+    }
+  }, 40_000);
+
+  it("completes a same-provider ACP review in a distinct Run and session with exact-head read/search evidence", async () => {
+    const root = await mkdtemp(join(tmpdir(), "acp-review-success-"));
+    const repo = join(root, "repo");
+    const release = join(root, "release");
+    const source = fileURLToPath(new URL("..", import.meta.url));
+    const git = (...args: string[]) => execFileSync("git", args, { cwd: repo, encoding: "utf8" }).trim();
+    try {
+      await mkdir(repo);
+      git("init", "--quiet");
+      git("-c", "user.email=t@example.com", "-c", "user.name=t", "commit", "--quiet", "--allow-empty", "-m", "candidate");
+      const candidate = git("rev-parse", "HEAD");
+      await cp(join(source, "src"), join(release, "src"), { recursive: true });
+      await symlink(join(source, "node_modules"), join(release, "node_modules"));
+      await writeFile(join(release, "package.json"), JSON.stringify({ type: "module" }));
+      await writeFile(join(release, "manifest.json"), JSON.stringify({ commit: "c".repeat(40) }));
+      await mkdir(join(release, "dist/acpServer"), { recursive: true });
+      await writeFile(join(release, "dist/acpServer/stdio.js"), `import * as acp from "@agentclientprotocol/sdk";
+import Database from "better-sqlite3";
+import { randomUUID } from "node:crypto";
+import { appendFileSync, writeFileSync } from "node:fs";
+import { Readable, Writable } from "node:stream";
+process.stderr.write = (chunk) => { appendFileSync(process.env.FIXTURE_LOG, chunk); return true; };
+process.on("uncaughtException", error => { appendFileSync(process.env.FIXTURE_LOG, String(error.stack ?? error)); process.exit(1); });
+const db = new Database(process.env.DB_PATH);
+const sessionId = randomUUID();
+const conversationId = randomUUID();
+const runId = randomUUID();
+db.prepare("INSERT INTO outward_acp_sessions (session_id, conversation_id, cwd) VALUES (?, ?, ?)").run(sessionId, conversationId, process.cwd());
+db.prepare("INSERT INTO bridge_runs (run_id, surface_identity, chat_id, bot, status, started_at) VALUES (?, 'acp:outward', ?, 'codex', 'done', '2026-10-28T00:00:00Z')").run(runId, conversationId);
+db.close();
+const stream = acp.ndJsonStream(Writable.toWeb(process.stdout), Readable.toWeb(process.stdin));
+acp.agent({ name: "fixture-review-runtime" })
+  .onRequest(acp.methods.agent.initialize, async () => ({ protocolVersion: acp.PROTOCOL_VERSION, agentCapabilities: {} }))
+  .onRequest(acp.methods.agent.session.new, async () => ({ sessionId }))
+  .onRequest(acp.methods.agent.session.prompt, async (ctx) => {
+    writeFileSync(process.env.FIXTURE_PROMPT_CAPTURE, JSON.stringify(ctx.params.prompt));
+    for (const [id, kind] of [["read-1", "read"], ["search-1", "search"]]) {
+      await ctx.client.notify(acp.methods.client.session.update, { sessionId, update: { sessionUpdate: "tool_call", toolCallId: id, title: kind, kind, status: "pending" } });
+      await ctx.client.notify(acp.methods.client.session.update, { sessionId, update: { sessionUpdate: "tool_call_update", toolCallId: id, status: "completed" } });
+    }
+    await ctx.client.notify(acp.methods.client.session.update, { sessionId, update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "Independent repository review complete.\\nREVIEWED_HEAD: ${candidate}\\nREVIEW_RESULT: PASS" } } });
+    return { stopReason: "end_turn" };
+  })
+  .connect(stream);
+`);
+      const promptFile = join(root, "prompt.md");
+      await writeFile(promptFile, "Review the exact candidate and use repository read and search tools.\n");
+      const dbPath = join(root, "bridge.sqlite");
+      const db = openDb(dbPath, { serviceId: "acp:review-test", databaseRole: "interactive" });
+      db.raw.prepare(`INSERT INTO bridge_runs (run_id, surface_identity, chat_id, bot, status, started_at, session_id)
+        VALUES ('implementer-run', 'telegram', 'chat', 'codex', 'running', '2026-10-28T00:00:00Z', 'implementer-session')`).run();
+      db.close();
+
+      const outputPath = join(root, "review.json");
+      const fixtureLog = join(root, "fixture.log");
+      const fixturePrompt = join(root, "provider-prompt.json");
+      const adapter = join(root, "adapter.mjs");
+      await writeFile(adapter, `import { createRequire } from "node:module";
+import { readFileSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+const Database = createRequire(${JSON.stringify(join(source, "package.json"))})("better-sqlite3");
+const stat = readFileSync("/proc/" + process.pid + "/stat", "utf8");
+const startTicks = stat.slice(stat.lastIndexOf(")") + 2).split(" ")[19];
+const db = new Database(process.env.DB_PATH);
+db.prepare("INSERT INTO bridge_events (id, run_id, seq, type, timestamp, payload_json) VALUES ('implementer-start', 'implementer-run', 1, 'run.started', '2026-10-28T00:00:00Z', ?)")
+  .run(JSON.stringify({ type: "run.started", runId: "implementer-run", bot: "codex", process: { pid: process.pid, startTicks } }));
+db.close();
+const result = spawnSync(process.execPath, ["--import", "tsx", ${JSON.stringify(join(release, "src/acpReview.ts"))},
+  "--provider", "codex", "--head", ${JSON.stringify(candidate)}, "--cwd", ${JSON.stringify(repo)}, "--prompt-file", ${JSON.stringify(promptFile)}],
+  { cwd: ${JSON.stringify(release)}, env: { ...process.env, AGENT_BRIDGE_PROVIDER: "codex" }, encoding: "utf8", timeout: 25_000 });
+writeFileSync(${JSON.stringify(outputPath)}, JSON.stringify({ status: result.status, stdout: result.stdout, stderr: result.stderr }));
+if (result.error) throw result.error;
+`);
+      execFileSync(process.execPath, [adapter], {
+        env: { PATH: process.env.PATH, HOME: process.env.HOME, DB_PATH: dbPath, FIXTURE_LOG: fixtureLog, FIXTURE_PROMPT_CAPTURE: fixturePrompt, AGENT_BRIDGE_RUN_ID: "implementer-run", AGENT_BRIDGE_PROVIDER: "codex" },
+        timeout: 30_000,
+      });
+
+      const output = JSON.parse(readFileSync(outputPath, "utf8")) as { status: number; stdout: string; stderr: string };
+      const diagnostics = existsSync(fixtureLog) ? readFileSync(fixtureLog, "utf8") : "";
+      expect(output.status, `${output.stdout}\n${output.stderr}\n${diagnostics}`).toBe(0);
+      const evidence = JSON.parse(output.stdout) as Record<string, unknown>;
+      expect(evidence).toMatchObject({
+        implementer: "codex",
+        provider: "codex",
+        result: "pass",
+        reviewedHead: candidate,
+        toolKinds: ["read", "search"],
+      });
+      expect(evidence.bridgeRunId).toMatch(/^[a-f0-9-]{36}$/);
+      expect(typeof evidence.outwardSessionId).toBe("string");
+      expect(evidence.outwardSessionId).toMatch(/^[a-f0-9-]{36}$/);
+      expect(evidence.bridgeRunId).not.toBe("implementer-run");
+      expect(evidence.outwardSessionId).not.toBe("implementer-session");
+      expect(evidence.text).toContain(`REVIEWED_HEAD: ${candidate}`);
+      const sentPrompt = JSON.parse(readFileSync(fixturePrompt, "utf8")) as Array<{ text?: string }>;
+      expect(sentPrompt.map((part) => part.text ?? "").join(" ")).toContain("Codex may use its read-only repository inspection tools");
+      expect(sentPrompt.map((part) => part.text ?? "").join(" ")).not.toContain("Do not use shell/Bash/execute as a substitute");
+      expect(git("worktree", "list", "--porcelain").match(/^worktree /gm)).toHaveLength(1);
+    } finally {
       await rm(root, { recursive: true, force: true });
     }
   }, 40_000);
