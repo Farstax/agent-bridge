@@ -1151,7 +1151,7 @@ async function main(): Promise<void> {
     const path = options.databases[0]!;
     assertRecoveryCopyExecutionServicesStopped(options.offlineStaged);
     if (options.offlineStaged && path !== "/var/lib/agent-bridge/interactive.sqlite") {
-      throw new Error("recovery-copy offline isolation requires the staged guest interactive database");
+      throw new Error("recovery-copy isolation requires --offline-staged to target /var/lib/agent-bridge/interactive.sqlite");
     }
     const raw = new Database(path, { fileMustExist: true });
     try {
