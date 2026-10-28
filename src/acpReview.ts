@@ -536,11 +536,16 @@ async function runReviewSession(
           clientCapabilities: {},
           clientInfo: { name: "agent-bridge-review-client", version: "1" },
         });
+        if (cancelled) throw new Error(`ACP reviewer ${cancelled}`);
         return ctx.buildSession({ cwd: context.checkout, mcpServers: [] }).withSession(async (session) => {
           providerSessionId = session.sessionId;
           acpCancellation.cancel = async () => {
             try { await ctx.notify(acp.methods.agent.session.cancel, { sessionId: session.sessionId }); } catch { /* teardown still closes the transport */ }
           };
+          if (cancelled) {
+            await acpCancellation.cancel();
+            throw new Error(`ACP reviewer ${cancelled}`);
+          }
           const promptResult = session.prompt(prompt);
           for (;;) {
             const message = await session.nextUpdate();
