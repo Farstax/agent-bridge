@@ -430,15 +430,18 @@ export async function removeReviewCheckout(repository: string, checkout: string)
   try { git(repository, ["worktree", "prune"]); } catch { /* best effort */ }
 }
 
-async function reviewPrompt(promptFile: string, expectedHead: string, runtimeCommit: string): Promise<string> {
+async function reviewPrompt(promptFile: string, provider: ReviewProvider, expectedHead: string, runtimeCommit: string): Promise<string> {
   const request = (await readFile(promptFile, "utf8")).trim();
   if (!request) throw new Error("review prompt is empty");
+  const repositoryTools = provider === "codex"
+    ? "Use the provider's native repository read and search tools. Codex may use its read-only repository inspection tools. Do not modify files, use network access, or request permission escalation. If read or search is unavailable, report which capability is missing."
+    : "Use both ACP repository tools categorized as read and search. If either category is unavailable, stop and report which one is missing.";
   return [
     request,
     "",
     `The working directory is a clean detached checkout of commit ${expectedHead} created by the launcher; it contains only that committed tree.`,
     `The Agent Bridge ACP server and review helper are running from installed release commit ${runtimeCommit}.`,
-    "Read the repository instructions and inspect the candidate yourself. Use both ACP repository tools categorized as read and search. Do not use shell/Bash/execute as a substitute. If either category is unavailable, stop and report which one is missing. Do not modify files, commit, push, merge, deploy, or change infrastructure.",
+    `Read the repository instructions and inspect the candidate yourself. ${repositoryTools} Do not commit, push, merge, deploy, or change infrastructure.`,
     `After all review findings, put exactly one line REVIEWED_HEAD: ${expectedHead} followed by exactly one line REVIEW_RESULT: PASS or REVIEW_RESULT: FINDINGS as the final two lines. Include actionable findings before these markers.`,
   ].join("\n");
 }
@@ -475,7 +478,7 @@ async function runReviewSession(
   context: { implementer: string; dbPath: string; runtime: { root: string; commit: string }; childEnv: NodeJS.ProcessEnv; checkout: string },
 ): Promise<void> {
   const { implementer, dbPath, runtime, childEnv } = context;
-  const prompt = await reviewPrompt(options.promptFile, options.head, runtime.commit);
+  const prompt = await reviewPrompt(options.promptFile, options.provider, options.head, runtime.commit);
   let child: ChildProcess | null = null;
   let providerSessionId: string | null = null;
   const toolUpdates: acp.SessionUpdate[] = [];
