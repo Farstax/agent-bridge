@@ -15,6 +15,7 @@ import {
   mkdirSync,
   readFileSync,
   realpathSync,
+  chmodSync,
   readdirSync,
   readlinkSync,
   renameSync,
@@ -228,9 +229,29 @@ export function installSkillGlobal(skillName: string, options: InstallSkillOptio
     const currentHash = hashDirectory(destDir);
     const sourceHash = hashDirectory(sourceDir);
     if (!options.force) throw new Error(`Skill already installed: ${skillName}`);
-    if (currentHash !== sourceHash) rmSync(destDir, { recursive: true, force: true });
+    // Force authorises replacing hash-verified managed copies. A copy that
+    // differs from the release needs write access even when the shared Skill
+    // already holds the release (an interrupted earlier update).
+    if (previous?.linkMode === "copy") {
+      for (const nativeDir of nativeSkillDirs(paths)) {
+        const nativePath = join(nativeDir, skillName);
+        if (isManagedProjection(nativePath, sharedDir, previous) && hashDirectory(nativePath) !== sourceHash) {
+          makeOwnerWritable(nativePath);
+        }
+      }
+    }
+    if (currentHash !== sourceHash) {
+      // Historical copies made from immutable releases inherited read-only
+      // directory modes. Make only this hash-verified managed copy writable.
+      makeOwnerWritable(destDir);
+      rmSync(destDir, { recursive: true, force: true });
+    }
   }
-  if (!existsSync(destDir)) cpSync(sourceDir, destDir, { recursive: true });
+  if (!existsSync(destDir)) {
+    cpSync(sourceDir, destDir, { recursive: true });
+    // A release tree is read-only; copies inherit that mode and could never be replaced or removed.
+    makeOwnerWritable(destDir);
+  }
 
   const installedHash = hashDirectory(destDir);
   const now = (options.now ?? new Date()).toISOString();
@@ -254,7 +275,10 @@ export function installSkillGlobal(skillName: string, options: InstallSkillOptio
 
   writeJsonAtomic(paths.lockfilePath, lockfile);
 
-  if (refreshManagedCursorCopy) rmSync(cursorPath, { recursive: true, force: true });
+  if (refreshManagedCursorCopy) {
+    makeOwnerWritable(cursorPath);
+    rmSync(cursorPath, { recursive: true, force: true });
+  }
   if (options.projectCursor || refreshManagedCursorCopy) {
     projectManagedSkillToCursor(skillName, {
       homeDir: options.homeDir,
@@ -385,6 +409,81 @@ export function verifySkillGlobal(skillName?: string, options: VerifySkillOption
   return { ok: errors.length === 0, errors, repaired };
 }
 
+// Bundled Skills removed from the catalog. Only a bundled-owned entry is retired.
+const retiredBundledSkills = new Set(["advisor"]);
+
+export interface ReconcileBundledSkillsOptions {
+  homeDir?: string;
+  repoRoot?: string;
+  now?: Date;
+}
+
+export interface ReconcileBundledSkillsResult {
+  updated: string[];
+  retired: string[];
+  /** Registered user-owned Skills, left untouched. */
+  userOwned: string[];
+  /** Bundled copies changed on disk since install; left untouched. */
+  locallyModified: string[];
+  errors: string[];
+}
+
+/**
+ * Brings already-installed bundled-owned Skills in line with the release that
+ * is running. A guarded rollout replaces the release tree but never touches the
+ * runtime user's shared Skills home, so without this the Skills a Run loads stay
+ * at whatever version was last installed. User-owned Skills and copies edited
+ * since install are never overwritten, and nothing new is installed.
+ */
+export function reconcileBundledSkills(options: ReconcileBundledSkillsOptions = {}): ReconcileBundledSkillsResult {
+  const repoRoot = options.repoRoot ?? defaultRepoRoot;
+  const paths = resolveSkillPaths(options.homeDir);
+  const result: ReconcileBundledSkillsResult = { updated: [], retired: [], userOwned: [], locallyModified: [], errors: [] };
+  const lockfile = readLockfile(paths.lockfilePath, { force: false });
+  for (const name of Object.keys(lockfile.skills ?? {}).sort((a, b) => a.localeCompare(b))) {
+    const record = lockfile.skills![name]!;
+    try {
+      if (resolveSkillOwnership(name, record) !== "bundled") {
+        result.userOwned.push(name);
+        continue;
+      }
+      const sourceDir = join(repoRoot, "skills", name);
+      const sharedDir = join(paths.agentsSkillsDir, name);
+      const installedHash = existsSync(sharedDir) ? hashDirectory(sharedDir) : null;
+      // Without a recorded hash an edit cannot be told from an old install, so leave it.
+      const editedSinceInstall = installedHash !== null
+        && (typeof record.skillFolderHash !== "string" || installedHash !== record.skillFolderHash);
+      if (!existsSync(sourceDir)) {
+        if (retiredBundledSkills.has(name)) {
+          if (editedSinceInstall) result.locallyModified.push(name);
+          else {
+            uninstallSkillGlobal(name, { homeDir: options.homeDir });
+            result.retired.push(name);
+          }
+        }
+        continue;
+      }
+      const sourceHash = hashDirectory(sourceDir);
+      if (installedHash === sourceHash && record.skillFolderHash === sourceHash) continue;
+      if (editedSinceInstall && installedHash !== sourceHash) {
+        result.locallyModified.push(name);
+        continue;
+      }
+      installSkillGlobal(name, {
+        homeDir: options.homeDir,
+        repoRoot,
+        force: true,
+        linkMode: record.linkMode === "copy" ? "copy" : "symlink",
+        now: options.now,
+      });
+      result.updated.push(name);
+    } catch (error) {
+      result.errors.push(`${name}: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+  return result;
+}
+
 export function uninstallSkillGlobal(skillName: string, options: UninstallSkillOptions = {}): void {
   const paths = resolveSkillPaths(options.homeDir);
   const lockfile = readLockfile(paths.lockfilePath, { force: false });
@@ -398,21 +497,43 @@ export function uninstallSkillGlobal(skillName: string, options: UninstallSkillO
 
   const sharedDir = join(paths.agentsSkillsDir, skillName);
   const linkMode = record.linkMode === "copy" ? "copy" : "symlink";
-  for (const nativeDir of nativeSkillDirs(paths)) {
-    rmSync(join(nativeDir, skillName), { recursive: true, force: true });
+  const nativePaths = nativeSkillDirs(paths).map((nativeDir) => join(nativeDir, skillName));
+  for (const nativePath of nativePaths) {
+    if (pathExists(nativePath) && !isExpectedNativeEntry(nativePath, sharedDir, linkMode)) {
+      throw new Error(`Refusing to remove an unmanaged native skill path: ${nativePath}`);
+    }
   }
   const cursorPath = join(paths.cursorSkillsDir, skillName);
+  if (pathExists(cursorPath) && !isExpectedNativeEntry(cursorPath, sharedDir, linkMode) && record.cursorProjected === true) {
+    throw new Error(`Native skill path already exists and is not this managed projection: ${cursorPath}`);
+  }
+  for (const nativePath of nativePaths) {
+    if (!pathExists(nativePath)) continue;
+    if (linkMode === "copy") makeOwnerWritable(nativePath);
+    rmSync(nativePath, { recursive: true, force: true });
+  }
   if (pathExists(cursorPath)) {
     if (isExpectedNativeEntry(cursorPath, sharedDir, linkMode)) {
+      if (linkMode === "copy") makeOwnerWritable(cursorPath);
       rmSync(cursorPath, { recursive: true, force: true });
     } else if (record.cursorProjected === true) {
       throw new Error(`Native skill path already exists and is not this managed projection: ${cursorPath}`);
     }
   }
+  if (linkMode === "copy" && existsSync(sharedDir)) makeOwnerWritable(sharedDir);
   rmSync(sharedDir, { recursive: true, force: true });
   if (lockfile.skills) delete lockfile.skills[skillName];
   lockfile.version = Math.max(lockfile.version ?? 0, skillLockVersion);
   writeJsonAtomic(paths.lockfilePath, lockfile);
+}
+
+function makeOwnerWritable(path: string): void {
+  const stat = lstatSync(path);
+  if (stat.isSymbolicLink()) return;
+  chmodSync(path, stat.mode | (stat.isDirectory() ? 0o700 : 0o600));
+  if (stat.isDirectory()) {
+    for (const entry of readdirSync(path)) makeOwnerWritable(join(path, entry));
+  }
 }
 
 export function hashDirectory(dir: string): string {
@@ -596,6 +717,9 @@ function projectNativeSkill(input: { skillName: string; sharedDir: string; nativ
   if (pathExists(nativePath)) {
     if (!input.force && !isExpectedNativeEntry(nativePath, input.sharedDir, input.linkMode)) {
       throw new Error(`Native skill path already exists: ${nativePath}`);
+    }
+    if (input.linkMode === "copy" && isExpectedNativeEntry(nativePath, input.sharedDir, input.linkMode)) {
+      makeOwnerWritable(nativePath);
     }
     rmSync(nativePath, { recursive: true, force: true });
   }

@@ -4,6 +4,7 @@ import {
   installSkillGlobal,
   listLocalCatalog,
   projectManagedSkillToCursor,
+  reconcileBundledSkills,
   uninstallSkillGlobal,
   verifySkillGlobal,
   type SkillLinkMode,
@@ -34,6 +35,7 @@ function usage(): never {
     "  npx tsx scripts/skill-manager.ts verify [<skill-name>] [--fix]",
     "  npx tsx scripts/skill-manager.ts uninstall-user <skill-name>",
     "  npx tsx scripts/skill-manager.ts uninstall <skill-name>",
+    "  npx tsx scripts/skill-manager.ts reconcile-bundled",
     "  npx tsx scripts/skill-manager.ts collections list [--catalogue <source>]",
     "  npx tsx scripts/skill-manager.ts collections show <collection-id> [--catalogue <source>]",
     "  npx tsx scripts/skill-manager.ts collections status",
@@ -155,6 +157,12 @@ async function main(): Promise<void> {
       process.exit(1);
     }
     console.log("Skill verification passed");
+    return;
+  }
+  if (command === "reconcile-bundled") {
+    const result = reconcileBundledSkills();
+    console.log(JSON.stringify(result, null, 2));
+    if (result.errors.length > 0) process.exit(1);
     return;
   }
   if (command === "uninstall-user") {

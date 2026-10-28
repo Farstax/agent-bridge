@@ -1585,6 +1585,28 @@ prune_host_component_retention() {
     "$runtime_home/.local/bin/cursor-agent"
 }
 
+# Bundled Skills live in the runtime user's shared Skills home, which a release
+# swap never touches. After acceptance, bring installed bundled-owned Skills in
+# line with the accepted release. User-owned and locally edited Skills are left
+# alone by the manager. This is hygiene: it never fails the accepted rollout.
+reconcile_bundled_skills_after_acceptance() {
+  (( release_mode == 1 )) || return 0
+  local release_dir="$release_root/$expected_commit" runtime_home tsx manager output
+  tsx="$release_dir/node_modules/tsx/dist/cli.mjs"
+  manager="$release_dir/scripts/skill-manager.ts"
+  if [[ ! -f "$tsx" || -L "$tsx" || ! -f "$manager" || -L "$manager" ]]; then
+    echo "bundled skill reconciliation skipped reason=skill_manager_unavailable"
+    return 0
+  fi
+  runtime_home="$(resolve_runtime_home 2>/dev/null)" || { echo "bundled skill reconciliation skipped reason=runtime_home_unavailable"; return 0; }
+  if output="$(run_as_runtime /usr/bin/env -C "$runtime_home" HOME="$runtime_home" SHARED_MEMORY_HOME="$runtime_home" "$node_bin" "$tsx" "$manager" reconcile-bundled 2>&1)"; then
+    echo "bundled skill reconciliation complete: $(printf '%s' "$output" | /usr/bin/tr -s '[:space:]' ' ' | /usr/bin/cut -c1-600)"
+  else
+    echo "bundled skill reconciliation failed (non-fatal): $(printf '%s' "$output" | /usr/bin/tr -s '[:space:]' ' ' | /usr/bin/cut -c1-600)" >&2
+  fi
+  return 0
+}
+
 regular_file_bytes() {
   local path="$1"
   if [[ ! -e "$path" && ! -L "$path" ]]; then
@@ -2549,6 +2571,7 @@ record_phase ACCEPTED
 release_accepted=1
 retire_health_state_after_acceptance
 prune_host_component_retention
+reconcile_bundled_skills_after_acceptance
 
 completed=1
 record_phase COMPLETE
