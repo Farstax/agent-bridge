@@ -513,7 +513,7 @@ async function reviewPrompt(promptFile: string, provider: ReviewProvider, expect
 export function describeIncompleteReview(stopReason: string | null, deniedPermissions: string[]): string {
   const reason = stopReason ?? "unknown";
   const denied = deniedPermissions.slice(0, 3);
-  return `reviewer stopped without a completed turn (${reason})${denied.length > 0 ? `; refused permission requests: ${denied.join(", ")}` : ""}`;
+  return `ACP reviewer stopped without a completed turn (${reason})${denied.length > 0 ? `; refused permission requests: ${denied.join(", ")}` : ""}`;
 }
 
 async function runReview(options: CliOptions): Promise<void> {
@@ -602,7 +602,10 @@ async function runReviewSession(
       const review = acp.client({ name: "agent-bridge-review-client" })
       .onRequest(acp.methods.client.session.requestPermission, ({ params: request }) => {
         // Safe mode: the reviewer never receives an approval. Keep the kind and title so a refusal is diagnosable.
-        deniedPermissions.push(`${request.toolCall.kind ?? "other"} "${(request.toolCall.title ?? "").slice(0, 80)}"`);
+        if (deniedPermissions.length < 3) {
+          const title = (request.toolCall.title ?? "").replace(/[\x00-\x1f\x7f]+/g, " ").slice(0, 80);
+          deniedPermissions.push(`${request.toolCall.kind ?? "other"} "${title}"`);
+        }
         return { outcome: { outcome: "cancelled" } };
       })
       .connectWith(stream, async (ctx) => {
