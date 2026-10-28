@@ -504,7 +504,7 @@ spawnSync(process.execPath, ["--import", "tsx", ${JSON.stringify(join(release, "
       await writeFile(join(release, "dist/acpServer/stdio.js"), `import * as acp from "@agentclientprotocol/sdk";
 import Database from "better-sqlite3";
 import { randomUUID } from "node:crypto";
-import { appendFileSync } from "node:fs";
+import { appendFileSync, writeFileSync } from "node:fs";
 import { Readable, Writable } from "node:stream";
 process.stderr.write = (chunk) => { appendFileSync(process.env.FIXTURE_LOG, chunk); return true; };
 process.on("uncaughtException", error => { appendFileSync(process.env.FIXTURE_LOG, String(error.stack ?? error)); process.exit(1); });
@@ -520,6 +520,7 @@ acp.agent({ name: "fixture-review-runtime" })
   .onRequest(acp.methods.agent.initialize, async () => ({ protocolVersion: acp.PROTOCOL_VERSION, agentCapabilities: {} }))
   .onRequest(acp.methods.agent.session.new, async () => ({ sessionId }))
   .onRequest(acp.methods.agent.session.prompt, async (ctx) => {
+    writeFileSync(process.env.FIXTURE_PROMPT_CAPTURE, JSON.stringify(ctx.params.prompt));
     for (const [id, kind] of [["read-1", "read"], ["search-1", "search"]]) {
       await ctx.client.notify(acp.methods.client.session.update, { sessionId, update: { sessionUpdate: "tool_call", toolCallId: id, title: kind, kind, status: "pending" } });
       await ctx.client.notify(acp.methods.client.session.update, { sessionId, update: { sessionUpdate: "tool_call_update", toolCallId: id, status: "completed" } });
@@ -539,6 +540,7 @@ acp.agent({ name: "fixture-review-runtime" })
 
       const outputPath = join(root, "review.json");
       const fixtureLog = join(root, "fixture.log");
+      const fixturePrompt = join(root, "provider-prompt.json");
       const adapter = join(root, "adapter.mjs");
       await writeFile(adapter, `import { createRequire } from "node:module";
 import { readFileSync, writeFileSync } from "node:fs";
@@ -557,7 +559,7 @@ writeFileSync(${JSON.stringify(outputPath)}, JSON.stringify({ status: result.sta
 if (result.error) throw result.error;
 `);
       execFileSync(process.execPath, [adapter], {
-        env: { PATH: process.env.PATH, HOME: process.env.HOME, DB_PATH: dbPath, FIXTURE_LOG: fixtureLog, AGENT_BRIDGE_RUN_ID: "implementer-run", AGENT_BRIDGE_PROVIDER: "codex" },
+        env: { PATH: process.env.PATH, HOME: process.env.HOME, DB_PATH: dbPath, FIXTURE_LOG: fixtureLog, FIXTURE_PROMPT_CAPTURE: fixturePrompt, AGENT_BRIDGE_RUN_ID: "implementer-run", AGENT_BRIDGE_PROVIDER: "codex" },
         timeout: 30_000,
       });
 
@@ -578,6 +580,9 @@ if (result.error) throw result.error;
       expect(evidence.bridgeRunId).not.toBe("implementer-run");
       expect(evidence.outwardSessionId).not.toBe("implementer-session");
       expect(evidence.text).toContain(`REVIEWED_HEAD: ${candidate}`);
+      const sentPrompt = JSON.parse(readFileSync(fixturePrompt, "utf8")) as Array<{ text?: string }>;
+      expect(sentPrompt.map((part) => part.text ?? "").join(" ")).toContain("Codex may use its read-only repository inspection tools");
+      expect(sentPrompt.map((part) => part.text ?? "").join(" ")).not.toContain("Do not use shell/Bash/execute as a substitute");
       expect(git("worktree", "list", "--porcelain").match(/^worktree /gm)).toHaveLength(1);
     } finally {
       await rm(root, { recursive: true, force: true });
