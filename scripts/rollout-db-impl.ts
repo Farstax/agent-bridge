@@ -1150,8 +1150,18 @@ async function main(): Promise<void> {
   if (options.mode === "isolate-recovery-copy") {
     const path = options.databases[0]!;
     assertRecoveryCopyExecutionServicesStopped(options.offlineStaged);
+    if (options.offlineStaged && path !== "/var/lib/agent-bridge/interactive.sqlite") {
+      throw new Error("recovery-copy offline isolation requires the staged guest interactive database");
+    }
     const raw = new Database(path, { fileMustExist: true });
     try {
+      if (options.offlineStaged) {
+        // Hold a connection-local exclusive lock for the duration of
+        // isolation. In WAL mode this blocks concurrent readers and writers
+        // once the first read lock is acquired, including a guest-start race.
+        const lockingMode = raw.pragma("locking_mode = EXCLUSIVE", { simple: true });
+        if (lockingMode !== "exclusive") throw new Error("recovery-copy offline isolation could not acquire exclusive database mode");
+      }
       const version = Number(raw.pragma("user_version", { simple: true }));
       if (version !== CURRENT_SCHEMA_VERSION) throw new Error("recovery-copy isolation requires the current database schema");
       assertDatabaseForeignKeyIntegrity(raw);
