@@ -272,24 +272,88 @@ async function classifyUnavailableProvider(
   return classifyUnavailableProviderStatus({ runtimeAvailable, credentialAvailable, authenticationDegraded });
 }
 
-export function collectSuccessfulToolKinds(updates: readonly acp.SessionUpdate[]): string[] {
+export function collectSuccessfulToolKinds(
+  updates: readonly acp.SessionUpdate[],
+  provider?: ReviewProvider,
+  expectedCwd?: string,
+): string[] {
   const calls = new Map<string, { kind: string | null; status: string | null }>();
   for (const update of updates) {
     if (update.sessionUpdate !== "tool_call" && update.sessionUpdate !== "tool_call_update") continue;
-    const candidate = update as { toolCall?: { toolCallId?: unknown; kind?: unknown; status?: unknown }; toolCallId?: unknown; kind?: unknown; status?: unknown };
+    const candidate = update as {
+      toolCall?: { toolCallId?: unknown; kind?: unknown; status?: unknown; rawInput?: unknown };
+      toolCallId?: unknown;
+      kind?: unknown;
+      status?: unknown;
+      rawInput?: unknown;
+    };
     const id = candidate.toolCall?.toolCallId ?? candidate.toolCallId;
     if (typeof id !== "string") continue;
     const previous = calls.get(id) ?? { kind: null, status: null };
     const kind = candidate.toolCall?.kind ?? candidate.kind;
     const status = candidate.toolCall?.status ?? candidate.status;
+    const rawInput = candidate.toolCall?.rawInput ?? candidate.rawInput;
+    const codexKind = provider === "codex" && kind === "execute"
+      ? codexReadOnlyRepositoryCommandKind(rawInput, expectedCwd)
+      : null;
     calls.set(id, {
-      kind: typeof kind === "string" ? kind : previous.kind,
+      kind: codexKind ?? (typeof kind === "string" ? kind : previous.kind),
       status: typeof status === "string" ? status : previous.status,
     });
   }
   return [...new Set([...calls.values()]
     .filter((call) => call.status === "completed" && call.kind !== null)
     .map((call) => call.kind!))];
+}
+
+function codexReadOnlyRepositoryCommandKind(rawInput: unknown, expectedCwd?: string): "read" | "search" | null {
+  if (!rawInput || typeof rawInput !== "object" || Array.isArray(rawInput)) return null;
+  const input = rawInput as { command?: unknown; cwd?: unknown };
+  if (typeof input.command !== "string" || typeof input.cwd !== "string" || input.cwd !== expectedCwd) return null;
+  // Codex ACP reports repository inspection through its execute event. Only
+  // accept a single direct read/search command rooted in the review checkout;
+  // the provider's read-only mode remains the write boundary.
+  if (/[;&|<>`$()\\\r\n]/.test(input.command)) return null;
+  const words: string[] = [];
+  let word = "";
+  let quote: "'" | '"' | null = null;
+  for (const character of input.command) {
+    if (quote) {
+      if (character === quote) quote = null;
+      else word += character;
+    } else if (character === "'" || character === '"') {
+      quote = character;
+    } else if (/\s/.test(character)) {
+      if (word) words.push(word);
+      word = "";
+    } else {
+      word += character;
+    }
+  }
+  if (quote) return null;
+  if (word) words.push(word);
+  if (words.some((part) => part.startsWith("/") || part.split("/").includes(".."))) return null;
+
+  const [program, first, ...args] = words;
+  if (program === "rg" || program === "grep") {
+    if (words.slice(1).some((arg) => ["--pre", "--pre-glob", "--follow", "-L"].includes(arg))) return null;
+    return words.slice(1).some((arg) => !arg.startsWith("-")) ? "search" : null;
+  }
+  if (program === "sed") {
+    if (first !== "-n" || args.length < 2 || !/^(?:\d+(?:,\d+)?|\$)p$/.test(args[0] ?? "")) return null;
+    return "read";
+  }
+  if (program === "cat" || program === "head" || program === "tail") {
+    if (program !== "cat" && words.slice(1).some((arg) => ["-f", "--follow"].includes(arg))) return null;
+    return args.some((arg) => !arg.startsWith("-") && arg !== "-") ? "read" : null;
+  }
+  if (program !== "git") return null;
+  const subcommand = first === "-c" && args[0] === "core.hooksPath=/dev/null" ? args[1] : first;
+  const gitArgs = first === "-c" ? args.slice(2) : args;
+  if (gitArgs.some((arg) => arg === "--output" || arg.startsWith("--output=") || arg === "-o")) return null;
+  if (["show", "diff", "cat-file"].includes(subcommand ?? "")) return "read";
+  if (subcommand === "grep") return "search";
+  return null;
 }
 
 export function joinReviewMessageParts(parts: readonly (string | null)[]): string {
@@ -434,7 +498,7 @@ async function reviewPrompt(promptFile: string, provider: ReviewProvider, expect
   const request = (await readFile(promptFile, "utf8")).trim();
   if (!request) throw new Error("review prompt is empty");
   const repositoryTools = provider === "codex"
-    ? "Use the provider's native repository read and search tools. Codex may use its read-only repository inspection tools. Do not modify files, use network access, or request permission escalation. If read or search is unavailable, report which capability is missing."
+    ? "Use the provider's native repository read and search tools. Codex may use its read-only repository inspection tool for these operations, with one command per call and no shell operators or command chaining. Do not modify files, use network access, or request permission escalation. If read or search is unavailable, report which capability is missing."
     : "Use both ACP repository tools categorized as read and search. If either category is unavailable, stop and report which one is missing.";
   return [
     request,
@@ -582,7 +646,7 @@ async function runReviewSession(
 
     if (stopReason !== "end_turn") throw new Error(`reviewer stopped without a completed turn (${stopReason ?? "unknown"})`);
     const text = result ?? joinReviewMessageParts(messageParts);
-    const observedToolKinds = collectSuccessfulToolKinds(toolUpdates);
+    const observedToolKinds = collectSuccessfulToolKinds(toolUpdates, options.provider, context.checkout);
     const db = openReadOnlyReviewDatabase(dbPath);
     let runId: string | null = null;
     let actualProvider: string = options.provider;
