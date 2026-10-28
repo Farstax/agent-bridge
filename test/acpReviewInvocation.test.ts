@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import * as acp from "@agentclientprotocol/sdk";
 import { cp, mkdtemp, mkdir, rm, symlink, writeFile } from "node:fs/promises";
 import { existsSync, readFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
@@ -392,10 +393,25 @@ describe("cross-provider ACP review invocation", () => {
       await mkdir(join(release, "dist/acpServer"), { recursive: true });
       await writeFile(join(release, "manifest.json"), JSON.stringify({ commit: "c".repeat(40) }));
       const pidFile = join(root, "server.pid");
-      await writeFile(join(release, "dist/acpServer/stdio.js"), `import { writeFileSync } from "node:fs";
-writeFileSync(${JSON.stringify(pidFile)}, String(process.pid));
-process.on("SIGTERM", () => {}); setInterval(() => {}, 1000);
-process.stdin.on("end", () => writeFileSync(${JSON.stringify(pidFile)} + ".closed", "")).resume();\n`);
+      const cancelledFile = `${pidFile}.cancelled`;
+      await writeFile(join(release, "dist/acpServer/stdio.js"), `import * as acp from "@agentclientprotocol/sdk";
+import { writeFileSync } from "node:fs";
+import { Readable, Writable } from "node:stream";
+const pidFile = ${JSON.stringify(pidFile)};
+const cancelledFile = ${JSON.stringify(cancelledFile)};
+writeFileSync(pidFile, String(process.pid));
+process.on("SIGTERM", () => {});
+process.stdin.on("end", () => writeFileSync(pidFile + ".closed", ""));
+setInterval(() => {}, 1000);
+const stream = acp.ndJsonStream(Writable.toWeb(process.stdout), Readable.toWeb(process.stdin));
+const connection = acp.agent({ name: "stall-server" })
+  .onRequest(acp.methods.agent.initialize, () => ({ protocolVersion: acp.PROTOCOL_VERSION, agentCapabilities: {}, agentInfo: { name: "stall-server", version: "1" } }))
+  .onRequest(acp.methods.agent.session.new, () => ({ sessionId: "stall-session" }))
+  .onRequest(acp.methods.agent.session.prompt, () => new Promise(() => undefined))
+  .onNotification(acp.methods.agent.session.cancel, ctx => writeFileSync(cancelledFile, ctx.params.sessionId))
+  .connect(stream);
+await connection.closed;
+`);
       await writeFile(join(root, "prompt.md"), "Review it.\n");
       const dbPath = join(root, "bridge.sqlite");
       const db = openDb(dbPath, { serviceId: "acp:review-test", databaseRole: "interactive" });
@@ -432,8 +448,9 @@ spawnSync(process.execPath, ["--import", "tsx", ${JSON.stringify(join(release, "
         timeout: 25_000,
       });
       expect(Date.now() - started).toBeLessThan(20_000);
-      expect(readFileSync(out, "utf8")).toContain("ACP reviewer timed out after 2000ms");
-      // stdin closed first so a real server can finalize its Run, then forced stop.
+      expect(readFileSync(out, "utf8")).toContain("ACP reviewer timed out after 2000ms (ACP session stall-session)");
+      expect(readFileSync(cancelledFile, "utf8")).toBe("stall-session");
+      // stdin closes after ACP cancellation, then bounded SIGTERM -> SIGKILL teardown.
       expect(existsSync(`${pidFile}.closed`)).toBe(true);
       const alive = (pid: number) => { try { process.kill(pid, 0); return true; } catch { return false; } };
       expect(alive(Number(readFileSync(pidFile, "utf8")))).toBe(false);

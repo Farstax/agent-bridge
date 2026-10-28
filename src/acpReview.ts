@@ -344,6 +344,7 @@ interface CliOptions {
 
 const DEFAULT_REVIEW_TIMEOUT_SECONDS = 1_800;
 const REVIEW_CLOSE_GRACE_MS = 5_000;
+const REVIEW_CANCEL_GRACE_MS = 1_000;
 const GIT_TIMEOUT_MS = 120_000;
 const REVIEW_KILL_GRACE_MS = 2_000;
 
@@ -486,6 +487,7 @@ async function runReviewSession(
   let stopReason: string | null = null;
   let deadline: NodeJS.Timeout | null = null;
   let cancelled: string | null = null;
+  const acpCancellation: { cancel: (() => Promise<void>) | null } = { cancel: null };
   const stopSignals: NodeJS.Signals[] = ["SIGINT", "SIGTERM", "SIGHUP"];
   let interrupt: (reason: string) => void = () => undefined;
   const onSignal = (signal: NodeJS.Signals) => interrupt(`interrupted by ${signal}`);
@@ -536,9 +538,9 @@ async function runReviewSession(
         });
         return ctx.buildSession({ cwd: context.checkout, mcpServers: [] }).withSession(async (session) => {
           providerSessionId = session.sessionId;
-          interrupted.catch(() => {
-            void ctx.notify(acp.methods.agent.session.cancel, { sessionId: session.sessionId }).catch(() => undefined);
-          });
+          acpCancellation.cancel = async () => {
+            try { await ctx.notify(acp.methods.agent.session.cancel, { sessionId: session.sessionId }); } catch { /* teardown still closes the transport */ }
+          };
           const promptResult = session.prompt(prompt);
           for (;;) {
             const message = await session.nextUpdate();
@@ -631,6 +633,17 @@ async function runReviewSession(
     if (deadline) clearTimeout(deadline);
     for (const signal of stopSignals) process.off(signal, onSignal);
     if (child) {
+      if (cancelled && acpCancellation.cancel) {
+        let cancelTimer: NodeJS.Timeout | null = null;
+        try {
+          await Promise.race([
+            acpCancellation.cancel(),
+            new Promise<void>((resolveCancel) => { cancelTimer = setTimeout(resolveCancel, REVIEW_CANCEL_GRACE_MS); }),
+          ]);
+        } finally {
+          if (cancelTimer) clearTimeout(cancelTimer);
+        }
+      }
       // Closing stdin lets the ACP server cancel and finalize its Bridge Run;
       // after a bounded wait, reuse the supervisor's SIGTERM -> SIGKILL
       // process-group teardown.
