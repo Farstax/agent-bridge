@@ -229,16 +229,18 @@ export function installSkillGlobal(skillName: string, options: InstallSkillOptio
     const currentHash = hashDirectory(destDir);
     const sourceHash = hashDirectory(sourceDir);
     if (!options.force) throw new Error(`Skill already installed: ${skillName}`);
-    if (currentHash !== sourceHash) {
-      // Only change permissions after replacement is authorised and needed.
-      // Validate copied projections against the recorded old shared hash
-      // before changing sharedDir; after replacement, that proof is lost.
-      if (previous?.linkMode === "copy") {
-        for (const nativeDir of nativeSkillDirs(paths)) {
-          const nativePath = join(nativeDir, skillName);
-          if (isManagedProjection(nativePath, sharedDir, previous)) makeOwnerWritable(nativePath);
+    // Force authorises replacing hash-verified managed copies. A copy that
+    // differs from the release needs write access even when the shared Skill
+    // already holds the release (an interrupted earlier update).
+    if (previous?.linkMode === "copy") {
+      for (const nativeDir of nativeSkillDirs(paths)) {
+        const nativePath = join(nativeDir, skillName);
+        if (isManagedProjection(nativePath, sharedDir, previous) && hashDirectory(nativePath) !== sourceHash) {
+          makeOwnerWritable(nativePath);
         }
       }
+    }
+    if (currentHash !== sourceHash) {
       // Historical copies made from immutable releases inherited read-only
       // directory modes. Make only this hash-verified managed copy writable.
       makeOwnerWritable(destDir);

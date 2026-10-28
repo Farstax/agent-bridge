@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -202,6 +202,25 @@ describe("bundled Skill reconciliation", () => {
 
     expect(result).toMatchObject({ updated: ["ui-engineering"], errors: [] });
     expect(readFileSync(join(oldProjection, "SKILL.md"), "utf8")).toContain("Updated from new release.");
+  });
+
+  it("recovers read-only native projections when an interrupted update already replaced the shared Skill", () => {
+    const home = makeDir("home");
+    const oldRepo = makeDir("old-repo");
+    const nextRepo = makeDir("next-repo");
+    writeSkill(oldRepo, "ui-engineering", "Old release copy.");
+    installSkillGlobal("ui-engineering", { homeDir: home, repoRoot: oldRepo, linkMode: "copy" });
+    const paths = resolveSkillPaths(home);
+    const projection = join(paths.claudeSkillsDir, "ui-engineering");
+    writeSkill(nextRepo, "ui-engineering", "Updated from new release.");
+    // Interrupted update: shared Skill holds the release, lockfile and projection still hold the old hash.
+    cpSync(join(nextRepo, "skills", "ui-engineering"), join(paths.agentsSkillsDir, "ui-engineering"), { recursive: true, force: true });
+    execFileSync("chmod", ["-R", "a-w", projection]);
+
+    const result = reconcileBundledSkills({ homeDir: home, repoRoot: nextRepo });
+
+    expect(result).toMatchObject({ updated: ["ui-engineering"], errors: [] });
+    expect(readFileSync(join(projection, "SKILL.md"), "utf8")).toContain("Updated from new release.");
   });
 
   it("leaves read-only native projection permissions unchanged when a non-force install is rejected", () => {
