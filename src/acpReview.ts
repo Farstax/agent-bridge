@@ -510,6 +510,21 @@ async function reviewPrompt(promptFile: string, provider: ReviewProvider, expect
   ].join("\n");
 }
 
+/** Safe mode: the reviewer never receives an approval. Keep the kind and title of the first refusals so a failed turn is diagnosable. */
+export function refusePermission(toolCall: { kind?: string | null; title?: string | null }, denied: string[]): { outcome: { outcome: "cancelled" } } {
+  if (denied.length < 3) {
+    const title = (toolCall.title ?? "").replace(/[\x00-\x1f\x7f]+/g, " ").slice(0, 80);
+    denied.push(`${toolCall.kind ?? "other"} "${title}"`);
+  }
+  return { outcome: { outcome: "cancelled" } };
+}
+
+export function describeIncompleteReview(stopReason: string | null, deniedPermissions: string[]): string {
+  const reason = stopReason ?? "unknown";
+  const denied = deniedPermissions.slice(0, 3);
+  return `ACP reviewer stopped without a completed turn (${reason})${denied.length > 0 ? `; refused permission requests: ${denied.join(", ")}` : ""}`;
+}
+
 async function runReview(options: CliOptions): Promise<void> {
   const origin = resolveImplementingRun();
   const dbPath = origin.dbPath;
@@ -548,6 +563,7 @@ async function runReviewSession(
   const toolUpdates: acp.SessionUpdate[] = [];
   const messageParts: Array<string | null> = [];
   const serverOutput: string[] = [];
+  const deniedPermissions: string[] = [];
   let stopReason: string | null = null;
   let deadline: NodeJS.Timeout | null = null;
   let cancelled: string | null = null;
@@ -593,7 +609,7 @@ async function runReviewSession(
     let result: string | undefined;
     try {
       const review = acp.client({ name: "agent-bridge-review-client" })
-      .onRequest(acp.methods.client.session.requestPermission, () => ({ outcome: { outcome: "cancelled" } }))
+      .onRequest(acp.methods.client.session.requestPermission, ({ params: request }) => refusePermission(request.toolCall, deniedPermissions))
       .connectWith(stream, async (ctx) => {
         await ctx.request(acp.methods.agent.initialize, {
           protocolVersion: acp.PROTOCOL_VERSION,
@@ -644,7 +660,9 @@ async function runReviewSession(
       throw new Error(`ACP reviewer ${classification} failure${runId ? ` (Bridge Run ${runId})` : ""}`);
     }
 
-    if (stopReason !== "end_turn") throw new Error(`reviewer stopped without a completed turn (${stopReason ?? "unknown"})`);
+    if (stopReason !== "end_turn") {
+      throw new Error(describeIncompleteReview(stopReason, deniedPermissions));
+    }
     const text = result ?? joinReviewMessageParts(messageParts);
     const observedToolKinds = collectSuccessfulToolKinds(toolUpdates, options.provider, context.checkout);
     const db = openReadOnlyReviewDatabase(dbPath);
