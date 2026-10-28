@@ -23,7 +23,11 @@ function lock(home: string): { skills: Record<string, { ownership?: string; skil
 
 afterEach(() => {
   cleanupRoots();
-  while (temporary.length > 0) rmSync(temporary.pop()!, { recursive: true, force: true });
+  while (temporary.length > 0) {
+    const path = temporary.pop()!;
+    execFileSync("chmod", ["-R", "u+w", path]);
+    rmSync(path, { recursive: true, force: true });
+  }
 });
 
 describe("bundled Skill reconciliation", () => {
@@ -124,6 +128,28 @@ describe("bundled Skill reconciliation", () => {
     } finally {
       execFileSync("chmod", ["-R", "u+w", repo]);
     }
+  });
+
+  it("reconciles historical read-only managed copies before replacement and retirement", () => {
+    const home = makeDir("home");
+    const oldRepo = makeDir("old-repo");
+    const nextRepo = makeDir("next-repo");
+    writeSkill(oldRepo, "ui-engineering", "Old release copy.");
+    writeSkill(oldRepo, "advisor", "Retired release copy.");
+    installSkillGlobal("ui-engineering", { homeDir: home, repoRoot: oldRepo, linkMode: "copy" });
+    installSkillGlobal("advisor", { homeDir: home, repoRoot: oldRepo, linkMode: "copy" });
+    const paths = resolveSkillPaths(home);
+    const oldCopy = join(paths.agentsSkillsDir, "ui-engineering");
+    const retiredCopy = join(paths.agentsSkillsDir, "advisor");
+    execFileSync("chmod", ["-R", "a-w", oldCopy]);
+    execFileSync("chmod", ["-R", "a-w", retiredCopy]);
+    writeSkill(nextRepo, "ui-engineering", "Updated from new release.");
+
+    const result = reconcileBundledSkills({ homeDir: home, repoRoot: nextRepo });
+
+    expect(result).toMatchObject({ updated: ["ui-engineering"], retired: ["advisor"], errors: [] });
+    expect(readFileSync(join(oldCopy, "SKILL.md"), "utf8")).toContain("Updated from new release.");
+    expect(existsSync(retiredCopy)).toBe(false);
   });
 
   it("keeps an edited retired Skill and a bundled copy with no recorded hash", () => {

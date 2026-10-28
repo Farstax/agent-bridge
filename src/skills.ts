@@ -229,7 +229,12 @@ export function installSkillGlobal(skillName: string, options: InstallSkillOptio
     const currentHash = hashDirectory(destDir);
     const sourceHash = hashDirectory(sourceDir);
     if (!options.force) throw new Error(`Skill already installed: ${skillName}`);
-    if (currentHash !== sourceHash) rmSync(destDir, { recursive: true, force: true });
+    if (currentHash !== sourceHash) {
+      // Historical copies made from immutable releases inherited read-only
+      // directory modes. Make only this hash-verified managed copy writable.
+      makeOwnerWritable(destDir);
+      rmSync(destDir, { recursive: true, force: true });
+    }
   }
   if (!existsSync(destDir)) {
     cpSync(sourceDir, destDir, { recursive: true });
@@ -259,7 +264,10 @@ export function installSkillGlobal(skillName: string, options: InstallSkillOptio
 
   writeJsonAtomic(paths.lockfilePath, lockfile);
 
-  if (refreshManagedCursorCopy) rmSync(cursorPath, { recursive: true, force: true });
+  if (refreshManagedCursorCopy) {
+    makeOwnerWritable(cursorPath);
+    rmSync(cursorPath, { recursive: true, force: true });
+  }
   if (options.projectCursor || refreshManagedCursorCopy) {
     projectManagedSkillToCursor(skillName, {
       homeDir: options.homeDir,
@@ -479,16 +487,20 @@ export function uninstallSkillGlobal(skillName: string, options: UninstallSkillO
   const sharedDir = join(paths.agentsSkillsDir, skillName);
   const linkMode = record.linkMode === "copy" ? "copy" : "symlink";
   for (const nativeDir of nativeSkillDirs(paths)) {
-    rmSync(join(nativeDir, skillName), { recursive: true, force: true });
+    const nativePath = join(nativeDir, skillName);
+    if (linkMode === "copy" && isExpectedNativeEntry(nativePath, sharedDir, linkMode)) makeOwnerWritable(nativePath);
+    rmSync(nativePath, { recursive: true, force: true });
   }
   const cursorPath = join(paths.cursorSkillsDir, skillName);
   if (pathExists(cursorPath)) {
     if (isExpectedNativeEntry(cursorPath, sharedDir, linkMode)) {
+      if (linkMode === "copy") makeOwnerWritable(cursorPath);
       rmSync(cursorPath, { recursive: true, force: true });
     } else if (record.cursorProjected === true) {
       throw new Error(`Native skill path already exists and is not this managed projection: ${cursorPath}`);
     }
   }
+  if (linkMode === "copy" && existsSync(sharedDir)) makeOwnerWritable(sharedDir);
   rmSync(sharedDir, { recursive: true, force: true });
   if (lockfile.skills) delete lockfile.skills[skillName];
   lockfile.version = Math.max(lockfile.version ?? 0, skillLockVersion);
@@ -685,6 +697,9 @@ function projectNativeSkill(input: { skillName: string; sharedDir: string; nativ
   if (pathExists(nativePath)) {
     if (!input.force && !isExpectedNativeEntry(nativePath, input.sharedDir, input.linkMode)) {
       throw new Error(`Native skill path already exists: ${nativePath}`);
+    }
+    if (input.linkMode === "copy" && isExpectedNativeEntry(nativePath, input.sharedDir, input.linkMode)) {
+      makeOwnerWritable(nativePath);
     }
     rmSync(nativePath, { recursive: true, force: true });
   }
