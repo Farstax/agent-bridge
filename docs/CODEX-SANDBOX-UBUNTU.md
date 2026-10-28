@@ -1,50 +1,108 @@
-# Codex sandbox on Ubuntu 24.04
+# Codex sandbox on Ubuntu
 
-## Symptom
+Agent Bridge keeps Codex sandboxing enabled. It does not change AppArmor's
+`kernel.apparmor_restrict_unprivileged_userns` setting or approve an unsandboxed
+retry.
 
-Codex cannot start a sandboxed command. A direct `codex exec` run prints
+## Confirm the executable and policy first
 
-```
-bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted
-```
-
-and, through Agent Bridge, a Codex ACP Run (for example a cross-provider review started with
-`agent-bridge-review --provider codex`) sees its first read-only command stop at a permission
-request. The review helper refuses every permission request in safe mode, so the Run ends as
-`cancelled` and the helper reports `reviewer stopped without a completed turn (cancelled); refused
-permission requests: execute "Read file"`.
-
-## Cause
-
-Ubuntu 24.04 sets `kernel.apparmor_restrict_unprivileged_userns=1`. An unconfined program that creates
-a user namespace is moved into the `unprivileged_userns` profile, which denies every capability. Codex's
-sandbox starts commands through the `bwrap` it bundles under
-`node_modules/@openai/codex-linux-x64/vendor/*/codex-resources/bwrap`, and bwrap needs a capability inside
-its new namespace to configure the loopback device. The same command succeeds as root, which confirms
-that the restriction is AppArmor policy, not a missing kernel feature and not container isolation.
-
-`/usr/bin/bwrap` is affected in the same way because no AppArmor profile grants it `userns`.
-
-## Fix
-
-Grant `userns` to the bundled bwrap executable only, with
-[`examples/apparmor/agent-bridge-codex-bwrap`](../examples/apparmor/agent-bridge-codex-bwrap). The profile
-is `flags=(unconfined)`, so it confines nothing else, and the global sysctl stays at its default. Commands
-that Codex runs are still isolated by bwrap.
-
-Do not respond to the permission request by approving an unsandboxed retry, and do not set
-`kernel.apparmor_restrict_unprivileged_userns=0`: either one removes the isolation for every program.
-
-This is host configuration that the guarded rollout does not manage. Install and load the profile as
-root, then start a fresh Codex Run.
-
-## Verify
+Codex uses the first `bwrap` executable on `PATH`. Check this as the Agent
+Bridge runtime user, with the same environment as the Codex ACP process:
 
 ```bash
-bwrap --ro-bind / / --unshare-net true            # expect: no output, exit 0 (this is the system bwrap and stays denied)
-/opt/agent-bridge/releases/current/node_modules/@openai/codex-linux-x64/vendor/x86_64-unknown-linux-musl/codex-resources/bwrap \
-  --ro-bind / / --unshare-net true                # expect: exit 0 once the profile is loaded
+command -v bwrap
+printf '%s\n' "$PATH"
+sysctl kernel.apparmor_restrict_unprivileged_userns
+sudo aa-status
 ```
 
-Then run a cross-provider review and confirm the returned JSON has `result: "pass"` or `"findings"` with
-`toolKinds` containing both `read` and `search`.
+If `command -v` returns `/usr/bin/bwrap`, Codex uses Ubuntu's system
+`bubblewrap`. If it returns another path, do not add a profile for that path as
+a workaround. Confirm why the process environment differs and correct the
+intended `PATH` owner. Codex's bundled helper is a fallback when no `bwrap` is
+available on `PATH`.
+
+Before changing policy, inspect both the loaded profile list and files that
+attach to `/usr/bin/bwrap`:
+
+```bash
+sudo aa-status | grep -i bwrap || true
+sudo grep -R -nE 'profile .*(/usr/bin/bwrap|bwrap)|/usr/bin/bwrap' /etc/apparmor.d
+```
+
+If a bwrap profile is already loaded or an existing policy file attaches to
+`/usr/bin/bwrap`, stop and inspect that policy. Do not install a second profile
+with the same attachment or profile name. A collision can stop either profile
+from attaching.
+
+## Ubuntu 24.04 LTS
+
+Ubuntu's distribution-maintained profile is in the `apparmor-profiles`
+package at `/usr/share/apparmor/extra-profiles/bwrap-userns-restrict`. The
+extra profile is not active by default. Capture the loaded profile list before
+changing policy. Extract only this file from the Ubuntu package so the other
+experimental profiles in that package do not change the host:
+
+```bash
+profile_tmp="$(mktemp -d)"
+(cd "$profile_tmp" && apt-get download apparmor-profiles && dpkg-deb -x ./*.deb extracted)
+sudo test ! -e /etc/apparmor.d/bwrap-userns-restrict
+sudo install -m 0644 \
+  "$profile_tmp/extracted/usr/share/apparmor/extra-profiles/bwrap-userns-restrict" \
+  /etc/apparmor.d/bwrap-userns-restrict
+sudo apparmor_parser -r /etc/apparmor.d/bwrap-userns-restrict
+rm -rf "$profile_tmp"
+sudo cat /sys/kernel/security/apparmor/profiles | grep -E '^(bwrap|unpriv_bwrap) '
+```
+
+Only continue when the loaded `bwrap` profile is the Ubuntu profile and no
+other profile changed. Remove the temporary download if a command fails.
+
+The profile lets the system `bwrap` prepare namespaces. Its child profile
+removes capabilities. Codex still uses bubblewrap filesystem and network
+namespaces for each command.
+
+Rollback this change by unloading and removing only the file created above:
+
+```bash
+sudo apparmor_parser -R /etc/apparmor.d/bwrap-userns-restrict
+sudo rm /etc/apparmor.d/bwrap-userns-restrict
+sudo cat /sys/kernel/security/apparmor/profiles | grep -E '^(bwrap|unpriv_bwrap) ' || true
+```
+
+## Ubuntu 26.04 LTS
+
+The Ubuntu `apparmor` package includes
+`/etc/apparmor.d/bwrap-userns-restrict`. Check that this file exists and that
+`aa-status` lists the `bwrap` and `unpriv_bwrap` profiles. When they are already
+loaded, leave them as shipped. Do not copy the 24.04 extra profile or create a
+second attachment. If the packaged profile is missing or not loaded, inspect
+the package and AppArmor service state, then repair the Ubuntu package using
+the host's normal package-management procedure.
+
+This guidance changes no Ubuntu 26.04 workspace automatically. Validate the
+specific host before any local repair.
+
+## Verify the effective sandbox
+
+Run as the non-root Agent Bridge runtime user. Keep the global restriction at
+`1`:
+
+```bash
+sysctl kernel.apparmor_restrict_unprivileged_userns
+command -v bwrap
+bwrap --unshare-user --unshare-net --ro-bind / / -- /bin/sh -c \
+  'touch /tmp/agent-bridge-sandbox-probe-$$'
+```
+
+The bwrap command must start. Its output must say `Read-only file system`, and
+the probe file must not exist. Test network separation by opening a temporary
+listener on host loopback, then confirming a command inside `bwrap
+--unshare-net` cannot connect to that listener. Finally, run a sandboxed Codex
+ACP task and confirm it completes without a permission request for its first
+repository read.
+
+If bwrap still reports `loopback: Failed RTM_NEWADDR: Operation not permitted`,
+stop. Recheck the executable path, profile attachment, loaded policy and kernel
+audit denial. Do not disable the AppArmor sysctl, grant global capabilities,
+weaken nspawn isolation, or use an unsandboxed retry.

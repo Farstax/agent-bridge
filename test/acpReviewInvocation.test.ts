@@ -10,6 +10,7 @@ import {
   buildAcpReviewEnvironment,
   buildReviewOutput,
   buildReviewPrompt,
+  describeIncompleteReview,
   classifyAcpReviewFailure,
   classifyAcpReviewFailureFromEvidence,
   classifyUnavailableProviderStatus,
@@ -29,6 +30,14 @@ import {
 import { openDb } from "../src/db.js";
 
 describe("ACP review invocation", () => {
+  it("reports permission refusals when a reviewer cannot complete its turn", () => {
+    expect(describeIncompleteReview("cancelled", ['read "Read file"'])).toBe(
+      'reviewer stopped without a completed turn (cancelled); refused permission requests: read "Read file"',
+    );
+    expect(describeIncompleteReview(null, [])).toBe("reviewer stopped without a completed turn (unknown)");
+    expect(describeIncompleteReview("cancelled", ["one", "two", "three", "four"])).toContain("one, two, three");
+  });
+
   const head = "a".repeat(40);
   it("locks the requested reviewer and safe-mode permissions without changing the active provider", () => {
     const env = buildAcpReviewEnvironment({

@@ -510,6 +510,12 @@ async function reviewPrompt(promptFile: string, provider: ReviewProvider, expect
   ].join("\n");
 }
 
+export function describeIncompleteReview(stopReason: string | null, deniedPermissions: string[]): string {
+  const reason = stopReason ?? "unknown";
+  const denied = deniedPermissions.slice(0, 3);
+  return `reviewer stopped without a completed turn (${reason})${denied.length > 0 ? `; refused permission requests: ${denied.join(", ")}` : ""}`;
+}
+
 async function reviewPrompt(promptFile: string, expectedHead: string, runtimeCommit: string, provider: ReviewProvider): Promise<string> {
   const request = (await readFile(promptFile, "utf8")).trim();
   if (!request) throw new Error("review prompt is empty");
@@ -656,7 +662,7 @@ async function runReviewSession(
     }
 
     if (stopReason !== "end_turn") {
-      throw new Error(`reviewer stopped without a completed turn (${stopReason ?? "unknown"})${deniedPermissions.length > 0 ? `; refused permission requests: ${deniedPermissions.slice(0, 3).join(", ")}` : ""}`);
+      throw new Error(describeIncompleteReview(stopReason, deniedPermissions));
     }
     const text = result ?? joinReviewMessageParts(messageParts);
     const observedToolKinds = collectSuccessfulToolKinds(toolUpdates, options.provider, context.checkout);
