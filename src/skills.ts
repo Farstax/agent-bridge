@@ -216,6 +216,15 @@ export function installSkillGlobal(skillName: string, options: InstallSkillOptio
   for (const nativeDir of nativeSkillDirs(paths)) {
     assertReplaceableManagedProjection(join(nativeDir, skillName), sharedDir, previous);
   }
+  // Verify copied native projections against the recorded old shared hash
+  // before replacing sharedDir. Once it changes, projectNativeSkill can no
+  // longer distinguish a managed historical copy from an operator-owned path.
+  if (previous?.linkMode === "copy") {
+    for (const nativeDir of nativeSkillDirs(paths)) {
+      const nativePath = join(nativeDir, skillName);
+      if (isManagedProjection(nativePath, sharedDir, previous)) makeOwnerWritable(nativePath);
+    }
+  }
   const cursorPath = join(paths.cursorSkillsDir, skillName);
   if (options.projectCursor && previous?.cursorProjected === true) {
     assertReplaceableManagedProjection(cursorPath, sharedDir, previous);

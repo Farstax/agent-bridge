@@ -187,6 +187,23 @@ describe("bundled Skill reconciliation", () => {
     expect(existsSync(retiredCopy)).toBe(false);
   });
 
+  it("makes hash-verified read-only native projections writable before replacing their shared Skill", () => {
+    const home = makeDir("home");
+    const oldRepo = makeDir("old-repo");
+    const nextRepo = makeDir("next-repo");
+    writeSkill(oldRepo, "ui-engineering", "Old release copy.");
+    installSkillGlobal("ui-engineering", { homeDir: home, repoRoot: oldRepo, linkMode: "copy" });
+    const paths = resolveSkillPaths(home);
+    const oldProjection = join(paths.claudeSkillsDir, "ui-engineering");
+    execFileSync("chmod", ["-R", "a-w", oldProjection]);
+    writeSkill(nextRepo, "ui-engineering", "Updated from new release.");
+
+    const result = reconcileBundledSkills({ homeDir: home, repoRoot: nextRepo });
+
+    expect(result).toMatchObject({ updated: ["ui-engineering"], errors: [] });
+    expect(readFileSync(join(oldProjection, "SKILL.md"), "utf8")).toContain("Updated from new release.");
+  });
+
   it("keeps an edited retired Skill and a bundled copy with no recorded hash", () => {
     const home = makeDir("home");
     const oldRepo = makeDir("old-repo");
