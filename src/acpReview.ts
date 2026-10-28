@@ -510,6 +510,12 @@ async function reviewPrompt(promptFile: string, provider: ReviewProvider, expect
   ].join("\n");
 }
 
+async function reviewPrompt(promptFile: string, expectedHead: string, runtimeCommit: string, provider: ReviewProvider): Promise<string> {
+  const request = (await readFile(promptFile, "utf8")).trim();
+  if (!request) throw new Error("review prompt is empty");
+  return buildReviewPrompt(request, expectedHead, runtimeCommit, provider);
+}
+
 async function runReview(options: CliOptions): Promise<void> {
   const origin = resolveImplementingRun();
   const dbPath = origin.dbPath;
@@ -548,6 +554,7 @@ async function runReviewSession(
   const toolUpdates: acp.SessionUpdate[] = [];
   const messageParts: Array<string | null> = [];
   const serverOutput: string[] = [];
+  const deniedPermissions: string[] = [];
   let stopReason: string | null = null;
   let deadline: NodeJS.Timeout | null = null;
   let cancelled: string | null = null;
@@ -593,7 +600,11 @@ async function runReviewSession(
     let result: string | undefined;
     try {
       const review = acp.client({ name: "agent-bridge-review-client" })
-      .onRequest(acp.methods.client.session.requestPermission, () => ({ outcome: { outcome: "cancelled" } }))
+      .onRequest(acp.methods.client.session.requestPermission, ({ params: request }) => {
+        // Safe mode: the reviewer never receives an approval. Keep the kind and title so a refusal is diagnosable.
+        deniedPermissions.push(`${request.toolCall.kind ?? "other"} "${(request.toolCall.title ?? "").slice(0, 80)}"`);
+        return { outcome: { outcome: "cancelled" } };
+      })
       .connectWith(stream, async (ctx) => {
         await ctx.request(acp.methods.agent.initialize, {
           protocolVersion: acp.PROTOCOL_VERSION,
@@ -644,7 +655,9 @@ async function runReviewSession(
       throw new Error(`ACP reviewer ${classification} failure${runId ? ` (Bridge Run ${runId})` : ""}`);
     }
 
-    if (stopReason !== "end_turn") throw new Error(`reviewer stopped without a completed turn (${stopReason ?? "unknown"})`);
+    if (stopReason !== "end_turn") {
+      throw new Error(`reviewer stopped without a completed turn (${stopReason ?? "unknown"})${deniedPermissions.length > 0 ? `; refused permission requests: ${deniedPermissions.slice(0, 3).join(", ")}` : ""}`);
+    }
     const text = result ?? joinReviewMessageParts(messageParts);
     const observedToolKinds = collectSuccessfulToolKinds(toolUpdates, options.provider, context.checkout);
     const db = openReadOnlyReviewDatabase(dbPath);
