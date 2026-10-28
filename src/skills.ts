@@ -15,6 +15,7 @@ import {
   mkdirSync,
   readFileSync,
   realpathSync,
+  chmodSync,
   readdirSync,
   readlinkSync,
   renameSync,
@@ -230,7 +231,11 @@ export function installSkillGlobal(skillName: string, options: InstallSkillOptio
     if (!options.force) throw new Error(`Skill already installed: ${skillName}`);
     if (currentHash !== sourceHash) rmSync(destDir, { recursive: true, force: true });
   }
-  if (!existsSync(destDir)) cpSync(sourceDir, destDir, { recursive: true });
+  if (!existsSync(destDir)) {
+    cpSync(sourceDir, destDir, { recursive: true });
+    // A release tree is read-only; copies inherit that mode and could never be replaced or removed.
+    makeOwnerWritable(destDir);
+  }
 
   const installedHash = hashDirectory(destDir);
   const now = (options.now ?? new Date()).toISOString();
@@ -424,22 +429,26 @@ export function reconcileBundledSkills(options: ReconcileBundledSkillsOptions = 
         continue;
       }
       const sourceDir = join(repoRoot, "skills", name);
+      const sharedDir = join(paths.agentsSkillsDir, name);
+      const installedHash = existsSync(sharedDir) ? hashDirectory(sharedDir) : null;
+      // Without a recorded hash an edit cannot be told from an old install, so leave it.
+      const editedSinceInstall = installedHash !== null
+        && (typeof record.skillFolderHash !== "string" || installedHash !== record.skillFolderHash);
       if (!existsSync(sourceDir)) {
         if (retiredBundledSkills.has(name)) {
-          uninstallSkillGlobal(name, { homeDir: options.homeDir });
-          result.retired.push(name);
+          if (editedSinceInstall) result.locallyModified.push(name);
+          else {
+            uninstallSkillGlobal(name, { homeDir: options.homeDir });
+            result.retired.push(name);
+          }
         }
         continue;
       }
-      const sharedDir = join(paths.agentsSkillsDir, name);
       const sourceHash = hashDirectory(sourceDir);
-      if (existsSync(sharedDir)) {
-        const installedHash = hashDirectory(sharedDir);
-        if (installedHash === sourceHash) continue;
-        if (typeof record.skillFolderHash === "string" && installedHash !== record.skillFolderHash) {
-          result.locallyModified.push(name);
-          continue;
-        }
+      if (installedHash === sourceHash && record.skillFolderHash === sourceHash) continue;
+      if (editedSinceInstall && installedHash !== sourceHash) {
+        result.locallyModified.push(name);
+        continue;
       }
       installSkillGlobal(name, {
         homeDir: options.homeDir,
@@ -484,6 +493,15 @@ export function uninstallSkillGlobal(skillName: string, options: UninstallSkillO
   if (lockfile.skills) delete lockfile.skills[skillName];
   lockfile.version = Math.max(lockfile.version ?? 0, skillLockVersion);
   writeJsonAtomic(paths.lockfilePath, lockfile);
+}
+
+function makeOwnerWritable(path: string): void {
+  const stat = lstatSync(path);
+  if (stat.isSymbolicLink()) return;
+  chmodSync(path, stat.mode | (stat.isDirectory() ? 0o700 : 0o600));
+  if (stat.isDirectory()) {
+    for (const entry of readdirSync(path)) makeOwnerWritable(join(path, entry));
+  }
 }
 
 export function hashDirectory(dir: string): string {

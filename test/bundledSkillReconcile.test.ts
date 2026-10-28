@@ -102,6 +102,54 @@ describe("bundled Skill reconciliation", () => {
     expect(existsSync(join(paths.agentsSkillsDir, "custom-bundled"))).toBe(true);
   });
 
+  it("copies from a read-only release so the next release can replace and retire them", () => {
+    const home = makeDir("home");
+    const repo = makeDir("repo");
+    writeSkill(repo, "ui-engineering", "Release one.");
+    execFileSync("chmod", ["-R", "a-w", repo]);
+    try {
+      installSkillGlobal("ui-engineering", { homeDir: home, repoRoot: repo, linkMode: "copy" });
+      const second = makeDir("repo2");
+      writeSkill(second, "ui-engineering", "Release two.");
+      execFileSync("chmod", ["-R", "a-w", second]);
+      try {
+        expect(reconcileBundledSkills({ homeDir: home, repoRoot: second })).toMatchObject({ updated: ["ui-engineering"], errors: [] });
+        const third = makeDir("repo3");
+        writeSkill(third, "ui-engineering", "Release three.");
+        expect(reconcileBundledSkills({ homeDir: home, repoRoot: third })).toMatchObject({ updated: ["ui-engineering"], errors: [] });
+        expect(reconcileBundledSkills({ homeDir: home, repoRoot: makeDir("empty") }).errors).toEqual([]);
+      } finally {
+        execFileSync("chmod", ["-R", "u+w", second]);
+      }
+    } finally {
+      execFileSync("chmod", ["-R", "u+w", repo]);
+    }
+  });
+
+  it("keeps an edited retired Skill and a bundled copy with no recorded hash", () => {
+    const home = makeDir("home");
+    const oldRepo = makeDir("old-repo");
+    const repo = makeDir("repo");
+    writeSkill(oldRepo, "advisor", "Retired.");
+    writeSkill(oldRepo, "manage-skills", "Old.");
+    installSkillGlobal("advisor", { homeDir: home, repoRoot: oldRepo });
+    installSkillGlobal("manage-skills", { homeDir: home, repoRoot: oldRepo });
+    const paths = resolveSkillPaths(home);
+    const advisor = join(paths.agentsSkillsDir, "advisor", "SKILL.md");
+    writeFileSync(advisor, `${readFileSync(advisor, "utf8")}\nOperator edit.\n`);
+    const record = JSON.parse(readFileSync(paths.lockfilePath, "utf8"));
+    delete record.skills["manage-skills"].skillFolderHash;
+    writeFileSync(paths.lockfilePath, JSON.stringify(record));
+    writeSkill(repo, "manage-skills", "New.");
+
+    const result = reconcileBundledSkills({ homeDir: home, repoRoot: repo });
+
+    expect(result.locallyModified.sort()).toEqual(["advisor", "manage-skills"]);
+    expect(result.retired).toEqual([]);
+    expect(readFileSync(advisor, "utf8")).toContain("Operator edit.");
+    expect(readFileSync(join(paths.agentsSkillsDir, "manage-skills", "SKILL.md"), "utf8")).toContain("Old.");
+  });
+
   it("reports an unreadable catalog entry without aborting the remaining Skills", () => {
     const home = makeDir("home");
     const repo = makeDir("repo");
