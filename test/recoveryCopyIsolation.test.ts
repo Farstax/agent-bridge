@@ -297,7 +297,7 @@ describe("recovery-copy execution isolation", () => {
 
     const cli = spawnSync(process.execPath, [
       "--import", "tsx", "scripts/rollout-db.ts", "isolate-recovery-copy",
-      "--db", "/var/lib/agent-bridge/interactive.sqlite", "--database-role", "/var/lib/agent-bridge/interactive.sqlite=interactive",
+      "--db", path, "--database-role", `${path}=interactive`,
       "--offline-staged", "--copy-id", copyId, "--recovery-point-created-at", cutoff,
     ], { cwd: process.cwd(), encoding: "utf8", env: { ...process.env, NODE_ENV: "production", container: "systemd-nspawn" } });
 
@@ -329,10 +329,8 @@ describe("recovery-copy execution isolation", () => {
     db = undefined;
     symlinkSync("usr/lib", join(rootfs, "lib"));
     symlinkSync("usr/lib64", join(rootfs, "lib64"));
-    const bridgeReleases = "/opt/agent-bridge/releases";
-    const activeBridgeRelease = realpathSync(join(bridgeReleases, "current"));
-    mkdirSync(join(rootfs, bridgeReleases.slice(1)), { recursive: true });
-    symlinkSync(relative(bridgeReleases, activeBridgeRelease), join(rootfs, `${bridgeReleases.slice(1)}/current`));
+    const guestBridgeCurrent = join(rootfs, "opt/agent-bridge/releases/current");
+    mkdirSync(dirname(guestBridgeCurrent), { recursive: true });
     writeFileSync(join(rootfs, "etc/os-release"), "NAME=Recovery staging\nID=staging\n");
 
     const database = "/var/lib/agent-bridge/interactive.sqlite";
@@ -349,9 +347,19 @@ describe("recovery-copy execution isolation", () => {
           if (!lstatSync(packagePath).isSymbolicLink()) continue;
           const target = realpathSync(packagePath);
           const boundary = target.lastIndexOf("/node_modules/");
-          if (boundary > 0) moduleRoots.add(`${target.slice(0, boundary)}/node_modules`);
+          if (boundary > 0) moduleRoots.add(target.slice(0, boundary));
         } catch { /* optional/broken package links are not part of this fixture */ }
       }
+    }
+    // Reuse the mounted checkout/release root discovered from installed
+    // module links. CI need not have an operator host's /opt release tree.
+    const activeReleaseRoot = [...moduleRoots].find((path) => path.includes("/releases/"));
+    if (activeReleaseRoot) {
+      const target = join(rootfs, activeReleaseRoot.slice(1));
+      mkdirSync(target, { recursive: true });
+      symlinkSync(relative(dirname(guestBridgeCurrent), activeReleaseRoot), guestBridgeCurrent);
+    } else {
+      symlinkSync("/project", guestBridgeCurrent);
     }
     for (const moduleRoot of moduleRoots) mkdirSync(join(rootfs, moduleRoot.slice(1)), { recursive: true });
     const currentUid = process.getuid?.() ?? 1000;
@@ -362,11 +370,11 @@ describe("recovery-copy execution isolation", () => {
     competing.exec("BEGIN");
     competing.prepare("SELECT status FROM bridge_runs WHERE run_id = 'inherited-run'").get();
     try {
-      spawnSync("sudo", ["-n", "chown", "-R", "65536:65536", rootfs]);
+      const ownership = spawnSync("sudo", ["-n", "chown", "-R", "65536:65536", rootfs], { encoding: "utf8" });
+      expect(ownership.status, JSON.stringify({ stdout: ownership.stdout, stderr: ownership.stderr })).toBe(0);
       const run = spawnSync("sudo", ["-n", "systemd-nspawn", "--quiet", "--register=no",
         "--private-users=65536:65536", "--private-users-ownership=off", "--private-network",
         `--directory=${rootfs}`, "--bind-ro=/usr:/usr", `--bind-ro=${nodeDirectory}:${nodeRoot}`,
-        `--bind-ro=${bridgeReleases}:${bridgeReleases}`,
         `--bind-ro=${process.cwd()}:/project`, `--bind-ro=${modulesDirectory}:/project/node_modules`,
         ...[...moduleRoots].filter((moduleRoot) => moduleRoot !== modulesDirectory).map((moduleRoot) => `--bind-ro=${moduleRoot}:${moduleRoot}`),
         "--as-pid2", "--setenv=NODE_ENV=production", join(nodeRoot, "bin/node"),
@@ -383,7 +391,6 @@ describe("recovery-copy execution isolation", () => {
       const isolated = spawnSync("sudo", ["-n", "systemd-nspawn", "--quiet", "--register=no",
         "--private-users=65536:65536", "--private-users-ownership=off", "--private-network",
         `--directory=${rootfs}`, "--bind-ro=/usr:/usr", `--bind-ro=${nodeDirectory}:${nodeRoot}`,
-        `--bind-ro=${bridgeReleases}:${bridgeReleases}`,
         `--bind-ro=${process.cwd()}:/project`, `--bind-ro=${modulesDirectory}:/project/node_modules`,
         ...[...moduleRoots].filter((moduleRoot) => moduleRoot !== modulesDirectory).map((moduleRoot) => `--bind-ro=${moduleRoot}:${moduleRoot}`),
         "--as-pid2", "--setenv=NODE_ENV=production", join(nodeRoot, "bin/node"),
