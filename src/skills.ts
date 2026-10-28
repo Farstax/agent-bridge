@@ -385,6 +385,77 @@ export function verifySkillGlobal(skillName?: string, options: VerifySkillOption
   return { ok: errors.length === 0, errors, repaired };
 }
 
+// Bundled Skills removed from the catalog. Only a bundled-owned entry is retired.
+const retiredBundledSkills = new Set(["advisor"]);
+
+export interface ReconcileBundledSkillsOptions {
+  homeDir?: string;
+  repoRoot?: string;
+  now?: Date;
+}
+
+export interface ReconcileBundledSkillsResult {
+  updated: string[];
+  retired: string[];
+  /** Registered user-owned Skills, left untouched. */
+  userOwned: string[];
+  /** Bundled copies changed on disk since install; left untouched. */
+  locallyModified: string[];
+  errors: string[];
+}
+
+/**
+ * Brings already-installed bundled-owned Skills in line with the release that
+ * is running. A guarded rollout replaces the release tree but never touches the
+ * runtime user's shared Skills home, so without this the Skills a Run loads stay
+ * at whatever version was last installed. User-owned Skills and copies edited
+ * since install are never overwritten, and nothing new is installed.
+ */
+export function reconcileBundledSkills(options: ReconcileBundledSkillsOptions = {}): ReconcileBundledSkillsResult {
+  const repoRoot = options.repoRoot ?? defaultRepoRoot;
+  const paths = resolveSkillPaths(options.homeDir);
+  const result: ReconcileBundledSkillsResult = { updated: [], retired: [], userOwned: [], locallyModified: [], errors: [] };
+  const lockfile = readLockfile(paths.lockfilePath, { force: false });
+  for (const name of Object.keys(lockfile.skills ?? {}).sort((a, b) => a.localeCompare(b))) {
+    const record = lockfile.skills![name]!;
+    try {
+      if (resolveSkillOwnership(name, record) !== "bundled") {
+        result.userOwned.push(name);
+        continue;
+      }
+      const sourceDir = join(repoRoot, "skills", name);
+      if (!existsSync(sourceDir)) {
+        if (retiredBundledSkills.has(name)) {
+          uninstallSkillGlobal(name, { homeDir: options.homeDir });
+          result.retired.push(name);
+        }
+        continue;
+      }
+      const sharedDir = join(paths.agentsSkillsDir, name);
+      const sourceHash = hashDirectory(sourceDir);
+      if (existsSync(sharedDir)) {
+        const installedHash = hashDirectory(sharedDir);
+        if (installedHash === sourceHash) continue;
+        if (typeof record.skillFolderHash === "string" && installedHash !== record.skillFolderHash) {
+          result.locallyModified.push(name);
+          continue;
+        }
+      }
+      installSkillGlobal(name, {
+        homeDir: options.homeDir,
+        repoRoot,
+        force: true,
+        linkMode: record.linkMode === "copy" ? "copy" : "symlink",
+        now: options.now,
+      });
+      result.updated.push(name);
+    } catch (error) {
+      result.errors.push(`${name}: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+  return result;
+}
+
 export function uninstallSkillGlobal(skillName: string, options: UninstallSkillOptions = {}): void {
   const paths = resolveSkillPaths(options.homeDir);
   const lockfile = readLockfile(paths.lockfilePath, { force: false });
