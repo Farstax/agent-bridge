@@ -35,7 +35,14 @@ jobs:
 
       - run: npm ci
 
+      - name: Install the real systemd-nspawn test runtime
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y systemd-container
+          systemd-nspawn --version
+
       - name: Run repository qualification gate
         run: npm run qualify:local
         env:
           NODE_OPTIONS: "--max-old-space-size=3072"
+          RUN_NSPAWN_QUALIFICATION: "1"

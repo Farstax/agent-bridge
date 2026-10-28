@@ -1,7 +1,7 @@
 import Database from "better-sqlite3";
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join, relative } from "node:path";
 import { spawnSync } from "node:child_process";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { openDb } from "../src/db.js";
@@ -265,4 +265,152 @@ describe("recovery-copy execution isolation", () => {
     db = openDb(path, { databaseRole: "interactive" });
     expect(db.raw.prepare("SELECT status FROM bridge_runs WHERE run_id = 'inherited-run'").get()).toEqual({ status: "running" });
   }, 15_000);
+
+  it("does not mutate a database when offline staging is requested without its execution proof", () => {
+    dir = mkdtempSync(join(tmpdir(), "bridge-recovery-copy-offline-reject-"));
+    const path = join(dir, "interactive.sqlite");
+    db = openDb(path, { databaseRole: "interactive" });
+    seed(db.raw);
+    db.close();
+    db = undefined;
+
+    const cli = spawnSync(process.execPath, [
+      "--import", "tsx", "scripts/rollout-db.ts", "isolate-recovery-copy",
+      "--db", path, "--database-role", `${path}=interactive`, "--offline-staged", "--copy-id", copyId,
+      "--recovery-point-created-at", cutoff,
+    ], { cwd: process.cwd(), encoding: "utf8", env: { ...process.env, NODE_ENV: "production", container: "" } });
+
+    expect(cli.status).not.toBe(0);
+    expect(cli.stderr).toContain("requires a systemd-nspawn staging container");
+    db = openDb(path, { databaseRole: "interactive" });
+    expect(db.raw.prepare("SELECT status FROM bridge_runs WHERE run_id = 'inherited-run'").get()).toEqual({ status: "running" });
+  }, 15_000);
+
+  it("rejects an impersonated nspawn environment when PID 1 is not the stub init", () => {
+    expect(readFileSync("/proc/1/comm", "utf8").trim()).not.toBe("(sd-stubinit)");
+    dir = mkdtempSync(join(tmpdir(), "bridge-recovery-copy-spoofed-staging-"));
+    const path = join(dir, "interactive.sqlite");
+    db = openDb(path, { databaseRole: "interactive" });
+    seed(db.raw);
+    db.close();
+    db = undefined;
+
+    const cli = spawnSync(process.execPath, [
+      "--import", "tsx", "scripts/rollout-db.ts", "isolate-recovery-copy",
+      "--db", path, "--database-role", `${path}=interactive`,
+      "--offline-staged", "--copy-id", copyId, "--recovery-point-created-at", cutoff,
+    ], { cwd: process.cwd(), encoding: "utf8", env: { ...process.env, NODE_ENV: "production", container: "systemd-nspawn" } });
+
+    expect(cli.status).not.toBe(0);
+    expect(cli.stderr).toContain("requires systemd-nspawn --as-pid2");
+    db = openDb(path, { databaseRole: "interactive" });
+    expect(db.raw.prepare("SELECT status FROM bridge_runs WHERE run_id = 'inherited-run'").get()).toEqual({ status: "running" });
+  }, 15_000);
+
+  it.skipIf(process.env.RUN_NSPAWN_QUALIFICATION !== "1")("executes offline isolation under real nspawn --as-pid2 without a guest manager", () => {
+    const sudo = spawnSync("sudo", ["-n", "true"], { encoding: "utf8" });
+    const nspawn = spawnSync("systemd-nspawn", ["--version"], { encoding: "utf8" });
+    if (sudo.status !== 0) throw new Error("RUN_NSPAWN_QUALIFICATION requires non-interactive sudo");
+    if (nspawn.status !== 0) throw new Error("RUN_NSPAWN_QUALIFICATION requires systemd-nspawn");
+
+    dir = mkdtempSync(join(tmpdir(), "bridge-recovery-copy-real-offline-"));
+    const rootfs = join(dir, "rootfs");
+    mkdirSync(join(rootfs, "usr"), { recursive: true });
+    mkdirSync(join(rootfs, "opt"), { recursive: true });
+    mkdirSync(join(rootfs, "node-runtime"), { recursive: true });
+    mkdirSync(join(rootfs, "project"), { recursive: true });
+    mkdirSync(join(rootfs, "project/node_modules"), { recursive: true });
+    mkdirSync(join(rootfs, "etc"), { recursive: true });
+    mkdirSync(join(rootfs, "var/lib/agent-bridge"), { recursive: true });
+    const path = join(rootfs, "var/lib/agent-bridge/interactive.sqlite");
+    db = openDb(path, { databaseRole: "interactive" });
+    seed(db.raw);
+    db.close();
+    db = undefined;
+    symlinkSync("usr/lib", join(rootfs, "lib"));
+    symlinkSync("usr/lib64", join(rootfs, "lib64"));
+    writeFileSync(join(rootfs, "etc/os-release"), "NAME=Recovery staging\nID=staging\n");
+
+    const database = "/var/lib/agent-bridge/interactive.sqlite";
+    const nodeRoot = "/node-runtime";
+    const nodeDirectory = dirname(dirname(process.execPath));
+    const modulesDirectory = realpathSync(join(process.cwd(), "node_modules"));
+    const moduleRoots = new Set<string>([modulesDirectory]);
+    for (const scope of readdirSync(modulesDirectory)) {
+      const scopePath = join(modulesDirectory, scope);
+      const names = scope.startsWith("@") ? readdirSync(scopePath).map((name) => join(scope, name)) : [scope];
+      for (const name of names) {
+        const packagePath = join(modulesDirectory, name);
+        try {
+          if (!lstatSync(packagePath).isSymbolicLink()) continue;
+          const target = realpathSync(packagePath);
+          const boundary = target.lastIndexOf("/node_modules/");
+          if (boundary > 0) moduleRoots.add(target.slice(0, boundary));
+        } catch { /* optional/broken package links are not part of this fixture */ }
+      }
+    }
+    const guestBridgeCurrent = join(rootfs, "opt/agent-bridge/releases/current");
+    mkdirSync(dirname(guestBridgeCurrent), { recursive: true });
+    // Resolve the candidate release root from installed module links; CI can
+    // use the mounted checkout even when no operator release tree exists.
+    const activeReleaseRoot = [...moduleRoots].find((path) => path.includes("/releases/"));
+    if (activeReleaseRoot) {
+      mkdirSync(join(rootfs, activeReleaseRoot.slice(1)), { recursive: true });
+      symlinkSync(relative(dirname(guestBridgeCurrent), activeReleaseRoot), guestBridgeCurrent);
+    } else {
+      symlinkSync("/project", guestBridgeCurrent);
+    }
+    // Bind roots are derived from installed module links, so CI does not
+    // depend on a fixed operator release tree.
+    for (const moduleRoot of moduleRoots) mkdirSync(join(rootfs, moduleRoot.slice(1)), { recursive: true });
+    const currentUid = process.getuid?.() ?? 1000;
+    const currentGid = process.getgid?.() ?? 1000;
+    const runOffline = (databasePath: string) => spawnSync("sudo", ["-n", "systemd-nspawn", "--quiet", "--register=no",
+      "--private-users=65536:65536", "--private-users-ownership=off", "--private-network",
+      `--directory=${rootfs}`, "--bind-ro=/usr:/usr", `--bind-ro=${nodeDirectory}:${nodeRoot}`,
+      `--bind-ro=${process.cwd()}:/project`, `--bind-ro=${modulesDirectory}:/project/node_modules`,
+      ...[...moduleRoots].filter((moduleRoot) => moduleRoot !== modulesDirectory).map((moduleRoot) => `--bind-ro=${moduleRoot}:${moduleRoot}`),
+      "--as-pid2", "--setenv=NODE_ENV=production", join(nodeRoot, "bin/node"),
+      "/project/node_modules/tsx/dist/cli.mjs", "/project/scripts/rollout-db.ts", "isolate-recovery-copy",
+      "--db", databasePath, "--database-role", `${databasePath}=interactive`, "--offline-staged", "--copy-id", copyId,
+      "--recovery-point-created-at", cutoff], { encoding: "utf8", timeout: 30_000 });
+    // A competing live connection makes the offline isolation fail before
+    // it changes any row; closing it lets the same staged operation proceed.
+    const competing = new Database(path, { timeout: 250 });
+    competing.exec("BEGIN");
+    competing.prepare("SELECT status FROM bridge_runs WHERE run_id = 'inherited-run'").get();
+    try {
+      const ownership = spawnSync("sudo", ["-n", "chown", "-R", "65536:65536", rootfs], { encoding: "utf8" });
+      expect(ownership.status, JSON.stringify({ stdout: ownership.stdout, stderr: ownership.stderr })).toBe(0);
+      const wrongPath = runOffline("/var/lib/agent-bridge/not-the-interactive.sqlite");
+      expect(wrongPath.status).not.toBe(0);
+      expect(`${wrongPath.stdout}\n${wrongPath.stderr}`).toContain("recovery-copy isolation requires");
+      expect(`${wrongPath.stdout}\n${wrongPath.stderr}`).toContain("offline-staged to target /var/lib/agent-bridge/interactive.sqlite");
+
+      const run = runOffline(database);
+
+      expect(run.status).not.toBe(0);
+      expect(`${run.stdout}\n${run.stderr}`).toMatch(/database is locked|SQLITE_BUSY/i);
+      competing.exec("ROLLBACK");
+      competing.close();
+
+      const unchanged = new Database(path, { readonly: true, fileMustExist: true });
+      expect(unchanged.prepare("SELECT status FROM bridge_runs WHERE run_id = 'inherited-run'").get()).toEqual({ status: "running" });
+      unchanged.close();
+
+      const isolated = runOffline(database);
+
+      expect(isolated.status, JSON.stringify({ stdout: isolated.stdout, stderr: isolated.stderr, error: isolated.error?.message, signal: isolated.signal })).toBe(0);
+      expect(JSON.parse(isolated.stdout)).toMatchObject({ copyId, runsFenced: 2, alreadyApplied: false });
+    } finally {
+      try { if (competing.inTransaction) competing.exec("ROLLBACK"); } catch { /* closed or failed transaction */ }
+      try { competing.close(); } catch { /* already closed */ }
+      const restoreOwnership = spawnSync("sudo", ["-n", "chown", "-R", `${currentUid}:${currentGid}`, rootfs], { encoding: "utf8" });
+      if (restoreOwnership.status !== 0) {
+        throw new Error(`failed to restore nspawn fixture ownership: ${restoreOwnership.stderr}`);
+      }
+    }
+    db = openDb(path, { databaseRole: "interactive" });
+    expect(db.raw.prepare("SELECT status FROM bridge_runs WHERE run_id = 'inherited-run'").get()).toEqual({ status: "cancelled" });
+  }, 45_000);
 });

@@ -41,6 +41,12 @@ jobs:
       - name: Install locked dependencies
         run: npm ci
 
+      - name: Install offline recovery integration runtime
+        run: sudo apt-get update && sudo apt-get install --yes systemd-container
+
+      - name: Run real offline recovery isolation test
+        run: RUN_NSPAWN_QUALIFICATION=1 npm test -- --run test/recoveryCopyIsolation.test.ts
+
       - name: Run repository qualification gate
         run: npm run qualify:local
         env:
