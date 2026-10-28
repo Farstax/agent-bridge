@@ -27,7 +27,7 @@ import {
 } from "../src/acpReview.js";
 import { openDb } from "../src/db.js";
 
-describe("cross-provider ACP review invocation", () => {
+describe("ACP review invocation", () => {
   const head = "a".repeat(40);
   it("locks the requested reviewer and safe-mode permissions without changing the active provider", () => {
     const env = buildAcpReviewEnvironment({
@@ -147,13 +147,23 @@ describe("cross-provider ACP review invocation", () => {
     }
   });
 
-  it("refuses same-provider reviews and only qualifies an exact-head PASS with read/search tool evidence", () => {
-    expect(() => buildAcpReviewEnvironment({
+  it("allows a same-provider review with a locked safe context and qualifies exact-head tool evidence", () => {
+    const sameProviderEnv = buildAcpReviewEnvironment({
       provider: "codex",
       implementer: "codex",
-      base: {},
+      base: {
+        DB_PATH: "/var/lib/agent-bridge/interactive/bridge.sqlite",
+        AGENT_BRIDGE_RUN_ID: "implementer-run",
+      },
       releaseDir: "/opt/agent-bridge/releases/current",
-    })).toThrow(/different provider/);
+    });
+    expect(sameProviderEnv.AGENT_BRIDGE_PROVIDER).toBe("codex");
+    expect(sameProviderEnv.BRIDGE_PROVIDER_LOCK).toBe("codex");
+    expect(sameProviderEnv.INTERACTIVE_CLI_CHAIN).toBe("codex");
+    expect(sameProviderEnv.BRIDGE_EXECUTION_MODE).toBe("safe");
+    expect(sameProviderEnv.CODEX_EXECUTION_MODE).toBe("safe");
+    expect(sameProviderEnv.DB_PATH).toBe("/var/lib/agent-bridge/interactive/bridge.sqlite");
+    expect(sameProviderEnv.AGENT_BRIDGE_RUN_ID).toBeUndefined();
 
     expect(qualifyReviewResult({
       text: `REVIEWED_HEAD: ${head}\nREVIEW_RESULT: PASS`,
@@ -362,11 +372,14 @@ describe("cross-provider ACP review invocation", () => {
       insert.run("old-run", "claude", "done");
       const implementer = readImplementingProvider(db.raw, "codex-run", "codex");
       expect(implementer).toBe("codex");
-      // Asking Codex to review its own Run fails regardless of a spoofed AGENT_BRIDGE_PROVIDER.
-      expect(() => buildAcpReviewEnvironment({
+      // Same-provider review is permitted, while the review receives a new Run context and remains locked safe.
+      const sameProviderReview = buildAcpReviewEnvironment({
         provider: "codex", implementer, base: { DB_PATH: "/db", AGENT_BRIDGE_PROVIDER: "claude" },
         releaseDir: "/release",
-      })).toThrow(/different provider/);
+      });
+      expect(sameProviderReview.BRIDGE_PROVIDER_LOCK).toBe("codex");
+      expect(sameProviderReview.AGENT_BRIDGE_PROVIDER).toBe("codex");
+      expect(sameProviderReview.BRIDGE_EXECUTION_MODE).toBe("safe");
       expect(() => readImplementingProvider(db.raw, "codex-run", "claude")).toThrow(/inconsistent/);
       expect(() => readImplementingProvider(db.raw, "old-run", "claude")).toThrow(/not active/);
       expect(() => readImplementingProvider(db.raw, "missing", "codex")).toThrow(/not recorded/);
