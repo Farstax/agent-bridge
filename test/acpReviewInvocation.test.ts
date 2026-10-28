@@ -256,6 +256,54 @@ describe("ACP review invocation", () => {
     ])).toEqual(["read"]);
   });
 
+  it("qualifies Codex read-only repository commands from completed ACP execute events", () => {
+    const updates = [
+      {
+        sessionUpdate: "tool_call",
+        toolCallId: "read-1",
+        kind: "execute",
+        status: "in_progress",
+        rawInput: { command: "sed -n '1,120p' src/acpReview.ts", cwd: "/candidate" },
+      },
+      { sessionUpdate: "tool_call_update", toolCallId: "read-1", status: "completed" },
+      {
+        sessionUpdate: "tool_call",
+        toolCallId: "search-1",
+        kind: "execute",
+        status: "in_progress",
+        rawInput: { command: "rg -n reviewPrompt src/acpReview.ts", cwd: "/candidate" },
+      },
+      { sessionUpdate: "tool_call_update", toolCallId: "search-1", status: "completed" },
+    ] as unknown as acp.SessionUpdate[];
+    expect(collectSuccessfulToolKinds(updates, "codex", "/candidate")).toEqual(["read", "search"]);
+    expect(collectSuccessfulToolKinds(updates, "claude", "/candidate")).toEqual(["execute"]);
+
+    const unsafe = [
+      {
+        sessionUpdate: "tool_call",
+        toolCallId: "chained",
+        kind: "execute",
+        status: "completed",
+        rawInput: { command: "rg -n needle src && rm -f marker", cwd: "/candidate" },
+      },
+      {
+        sessionUpdate: "tool_call",
+        toolCallId: "outside",
+        kind: "execute",
+        status: "completed",
+        rawInput: { command: "cat ../../private.txt", cwd: "/candidate" },
+      },
+      {
+        sessionUpdate: "tool_call",
+        toolCallId: "wrong-cwd",
+        kind: "execute",
+        status: "completed",
+        rawInput: { command: "rg -n needle src", cwd: "/other" },
+      },
+    ] as unknown as acp.SessionUpdate[];
+    expect(collectSuccessfulToolKinds(unsafe, "codex", "/candidate")).toEqual(["execute"]);
+  });
+
   it("keeps final result markers on separate lines across ACP tool boundaries", () => {
     expect(joinReviewMessageParts([
       "The review found one issue.",
@@ -515,14 +563,15 @@ const runId = randomUUID();
 db.prepare("INSERT INTO outward_acp_sessions (session_id, conversation_id, cwd) VALUES (?, ?, ?)").run(sessionId, conversationId, process.cwd());
 db.prepare("INSERT INTO bridge_runs (run_id, surface_identity, chat_id, bot, status, started_at) VALUES (?, 'acp:outward', ?, 'codex', 'done', '2026-10-28T00:00:00Z')").run(runId, conversationId);
 db.close();
+let reviewCwd = "";
 const stream = acp.ndJsonStream(Writable.toWeb(process.stdout), Readable.toWeb(process.stdin));
 acp.agent({ name: "fixture-review-runtime" })
   .onRequest(acp.methods.agent.initialize, async () => ({ protocolVersion: acp.PROTOCOL_VERSION, agentCapabilities: {} }))
-  .onRequest(acp.methods.agent.session.new, async () => ({ sessionId }))
+  .onRequest(acp.methods.agent.session.new, async (ctx) => { reviewCwd = ctx.params.cwd; return { sessionId }; })
   .onRequest(acp.methods.agent.session.prompt, async (ctx) => {
     writeFileSync(process.env.FIXTURE_PROMPT_CAPTURE, JSON.stringify(ctx.params.prompt));
-    for (const [id, kind] of [["read-1", "read"], ["search-1", "search"]]) {
-      await ctx.client.notify(acp.methods.client.session.update, { sessionId, update: { sessionUpdate: "tool_call", toolCallId: id, title: kind, kind, status: "pending" } });
+    for (const [id, command] of [["read-1", "sed -n '1,120p' src/acpReview.ts"], ["search-1", "rg -n reviewPrompt src/acpReview.ts"]]) {
+      await ctx.client.notify(acp.methods.client.session.update, { sessionId, update: { sessionUpdate: "tool_call", toolCallId: id, title: "Codex command", kind: "execute", status: "in_progress", rawInput: { command, cwd: reviewCwd } } });
       await ctx.client.notify(acp.methods.client.session.update, { sessionId, update: { sessionUpdate: "tool_call_update", toolCallId: id, status: "completed" } });
     }
     await ctx.client.notify(acp.methods.client.session.update, { sessionId, update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "Independent repository review complete.\\nREVIEWED_HEAD: ${candidate}\\nREVIEW_RESULT: PASS" } } });
@@ -581,7 +630,7 @@ if (result.error) throw result.error;
       expect(evidence.outwardSessionId).not.toBe("implementer-session");
       expect(evidence.text).toContain(`REVIEWED_HEAD: ${candidate}`);
       const sentPrompt = JSON.parse(readFileSync(fixturePrompt, "utf8")) as Array<{ text?: string }>;
-      expect(sentPrompt.map((part) => part.text ?? "").join(" ")).toContain("Codex may use its read-only repository inspection tools");
+      expect(sentPrompt.map((part) => part.text ?? "").join(" ")).toContain("one command per call and no shell operators or command chaining");
       expect(sentPrompt.map((part) => part.text ?? "").join(" ")).not.toContain("Do not use shell/Bash/execute as a substitute");
       expect(git("worktree", "list", "--porcelain").match(/^worktree /gm)).toHaveLength(1);
     } finally {
