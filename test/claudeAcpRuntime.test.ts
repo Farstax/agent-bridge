@@ -69,20 +69,46 @@ describe("Claude ACP provider", () => {
   });
 
   it("keeps Bridge permission authority in Claude manual mode for safe and trusted Runs", () => {
-    expect(claudeAcpPolicy.sessionSettings?.(request({ executionMode: "safe" }), {})).toMatchObject({
+    const safe = claudeAcpPolicy.sessionSettings?.(request({ executionMode: "safe" }), {});
+    const trusted = claudeAcpPolicy.sessionSettings?.(request({ executionMode: "trusted" }), {});
+    expect(safe).toMatchObject({
       modeId: "default",
       meta: {
         systemPrompt: { append: expect.any(String) },
         claudeCode: { options: { settingSources: [] } },
       },
     });
-    expect(claudeAcpPolicy.sessionSettings?.(request({ executionMode: "trusted" }), {})).toMatchObject({
+    expect((safe?.meta as any).claudeCode.options.tools).toBeUndefined();
+    const review = claudeAcpPolicy.sessionSettings?.(request({ executionMode: "safe" }), { BRIDGE_ACP_REVIEW_MODE: "1" });
+    expect((review?.meta as any).claudeCode.options.tools).toEqual(["Read", "Glob", "Grep"]);
+    expect(trusted).toMatchObject({
       modeId: "default",
       meta: {
         systemPrompt: { append: expect.any(String) },
         claudeCode: { options: { settingSources: [] } },
       },
     });
+    expect((trusted?.meta as any).claudeCode.options.tools).toBeUndefined();
+    expect((claudeAcpPolicy.sessionSettings?.(request({ toolMode: "none" }), {})?.meta as any).claudeCode.options.tools).toEqual([]);
+  });
+
+  it("disables Bridge-managed MCP tools only for bounded review Runs", () => {
+    const home = mkdtempSync(join(tmpdir(), "claude-review-mcp-"));
+    writeFileSync(join(home, ".claude.json"), JSON.stringify({
+      mcpServers: {
+        managed: {
+          command: "node",
+          args: ["/usr/local/bin/agent-bridge-mcp-adapter.cjs", "--socket", "/run/agent-bridge/managed-mcp/conn_1.sock"],
+        },
+      },
+    }));
+
+    const ordinary = claudeAcpPolicy.sessionSettings?.(request(), { HOME: home });
+    const review = claudeAcpPolicy.sessionSettings?.(request(), { HOME: home, BRIDGE_ACP_REVIEW_MODE: "1" });
+    expect((ordinary?.meta as any).claudeCode.options.mcpServers).toHaveProperty("managed");
+    expect((ordinary?.meta as any).claudeCode.options.tools).toBeUndefined();
+    expect((review?.meta as any).claudeCode.options.mcpServers).toEqual({});
+    expect((review?.meta as any).claudeCode.options.tools).toEqual(["Read", "Glob", "Grep"]);
   });
 
   it("expresses model and effort as semantic ACP intents without provider-id translation", () => {

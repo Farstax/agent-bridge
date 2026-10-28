@@ -14,6 +14,7 @@
 
 import { execFileSync, spawn, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import { readFileSync } from "node:fs";
 import type { CliOptions } from "./types.js";
 import { type as evtType } from "./events/types.js";
 import type { BridgeEvent } from "./events/types.js";
@@ -56,8 +57,8 @@ function buildChildEnv(extraEnv?: Record<string, string>): NodeJS.ProcessEnv {
   return { ...buildSafeChildEnv(), ...(extraEnv ?? {}) };
 }
 
-function defaultKillGraceMs(): number {
-  const envVal = process.env.AGENT_BRIDGE_KILL_GRACE_MS;
+function defaultKillGraceMs(env: NodeJS.ProcessEnv = process.env): number {
+  const envVal = env.AGENT_BRIDGE_KILL_GRACE_MS;
   if (envVal) {
     const parsed = parseInt(envVal, 10);
     if (!Number.isNaN(parsed) && parsed >= 0) return parsed;
@@ -68,11 +69,33 @@ function defaultKillGraceMs(): number {
 const KILL_GRACE_MS = 5_000;
 const GROUP_EXIT_POLL_INTERVAL_MS = 25;
 const GROUP_EXIT_POLL_BOUND_MS = 1_000;
+
+/** Maximum time killChildTree waits for SIGTERM escalation and group exit polling. */
+export function killChildTreeWaitBoundMs(env: NodeJS.ProcessEnv = process.env): number {
+  return defaultKillGraceMs(env) + GROUP_EXIT_POLL_BOUND_MS;
+}
 const RUN_MARKER_ENV = "AGENT_BRIDGE_RUN_ID";
 const SERVICE_MARKER_ENV = "AGENT_BRIDGE_SERVICE_ID";
 const ACQUISITION_MARKER_ENV = "AGENT_BRIDGE_ACQUISITION_ID";
 
 export type ExecutionProcessState = "live" | "absent" | "ambiguous";
+
+/** Kernel start time (clock ticks since boot); with the PID it names one process instance. */
+export function readProcessStartTicks(pid: number | undefined): string | null {
+  if (!pid) return null;
+  try {
+    const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+    const ticks = stat.slice(stat.lastIndexOf(")") + 2).split(" ")[19];
+    return ticks && /^\d+$/.test(ticks) ? ticks : null;
+  } catch {
+    return null;
+  }
+}
+
+function spawnedProcess(pid: number | undefined): { pid: number; startTicks: string } | null {
+  const startTicks = readProcessStartTicks(pid);
+  return pid && startTicks ? { pid, startTicks } : null;
+}
 
 export function resolveSupervisorTimeouts(options: Pick<CliOptions, "timeoutMs" | "idleTimeoutMs"> = {}): {
   timeoutMs: number;
@@ -84,7 +107,7 @@ export function resolveSupervisorTimeouts(options: Pick<CliOptions, "timeoutMs" 
   };
 }
 
-function killChildTree(child: ChildProcess, graceMs: number = defaultKillGraceMs()): Promise<void> {
+export function killChildTree(child: ChildProcess, graceMs: number = defaultKillGraceMs()): Promise<void> {
   const pid = child.pid;
   const signal = (sig: NodeJS.Signals) => {
     if (pid) {
@@ -417,7 +440,7 @@ export async function runSupervisedProcess(
     let pendingError: Error | null = null;
     let pendingKill: Promise<void> | null = null;
 
-    if (evtCtx) emit(evtType.runStarted({ ...evtCtx, command, cwd, model: null }));
+    if (evtCtx) emit(evtType.runStarted({ ...evtCtx, command, cwd, model: null, process: spawnedProcess(pid) }));
 
     const doReject = (err: Error) => {
       if (settled) return;
@@ -631,7 +654,7 @@ export async function runSupervisedStdioSession<T>(
   const evtCtx = options.eventContext;
   const onEvent = options.onEvent;
   if (evtCtx) {
-    onEvent?.(evtType.runStarted({ ...evtCtx, command, cwd, model: null }));
+    onEvent?.(evtType.runStarted({ ...evtCtx, command, cwd, model: null, process: spawnedProcess(child.pid) }));
   }
 
   let settled = false;
