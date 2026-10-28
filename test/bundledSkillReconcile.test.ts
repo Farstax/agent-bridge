@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -202,6 +202,23 @@ describe("bundled Skill reconciliation", () => {
 
     expect(result).toMatchObject({ updated: ["ui-engineering"], errors: [] });
     expect(readFileSync(join(oldProjection, "SKILL.md"), "utf8")).toContain("Updated from new release.");
+  });
+
+  it("leaves read-only native projection permissions unchanged when a non-force install is rejected", () => {
+    const home = makeDir("home");
+    const repo = makeDir("repo");
+    writeSkill(repo, "ui-engineering", "Installed copy.");
+    installSkillGlobal("ui-engineering", { homeDir: home, repoRoot: repo, linkMode: "copy" });
+    const paths = resolveSkillPaths(home);
+    const projection = join(paths.claudeSkillsDir, "ui-engineering");
+    const projectionFile = join(projection, "SKILL.md");
+    execFileSync("chmod", ["-R", "a-w", projection]);
+    const before = [projection, projectionFile].map((path) => statSync(path).mode & 0o777);
+
+    expect(() => installSkillGlobal("ui-engineering", { homeDir: home, repoRoot: repo, linkMode: "copy" }))
+      .toThrow(/already installed/);
+
+    expect([projection, projectionFile].map((path) => statSync(path).mode & 0o777)).toEqual(before);
   });
 
   it("keeps an edited retired Skill and a bundled copy with no recorded hash", () => {
