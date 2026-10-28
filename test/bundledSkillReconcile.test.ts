@@ -48,6 +48,21 @@ describe("bundled Skill reconciliation", () => {
     expect(lock(home).skills["ui-engineering"].ownership).toBe("bundled");
   });
 
+  it("makes the bundled Playwright first-use procedure available to a fresh Skill home", () => {
+    const home = makeDir("home");
+    const oldRepo = makeDir("old-repo");
+    writeSkill(oldRepo, "ui-engineering", "The old copy has no browser setup instructions.");
+    installSkillGlobal("ui-engineering", { homeDir: home, repoRoot: oldRepo });
+
+    const result = reconcileBundledSkills({ homeDir: home, repoRoot: process.cwd() });
+    const installed = readFileSync(join(resolveSkillPaths(home).agentsSkillsDir, "ui-engineering", "SKILL.md"), "utf8");
+
+    expect(result.updated).toContain("ui-engineering");
+    expect(result.errors).toEqual([]);
+    expect(installed).toContain("Playwright first-use procedure");
+    expect(installed).toContain("pinned Playwright MCP package");
+  });
+
   it("is idempotent and installs nothing that was not already installed", () => {
     const home = makeDir("home");
     const repo = makeDir("repo");
