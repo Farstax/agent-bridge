@@ -379,6 +379,8 @@ describe("cross-provider ACP review invocation", () => {
     const root = await mkdtemp(join(tmpdir(), "acp-review-stall-"));
     const repo = join(root, "repo");
     const release = join(root, "release");
+    const pidFile = join(root, "server.pid");
+    const providerPidFile = pidFile + ".provider";
     const source = fileURLToPath(new URL("..", import.meta.url));
     const git = (...args: string[]) => execFileSync("git", args, { cwd: repo, encoding: "utf8" }).trim();
     try {
@@ -392,9 +394,9 @@ describe("cross-provider ACP review invocation", () => {
       await writeFile(join(release, "package.json"), JSON.stringify({ type: "module" }));
       await mkdir(join(release, "dist/acpServer"), { recursive: true });
       await writeFile(join(release, "manifest.json"), JSON.stringify({ commit: "c".repeat(40) }));
-      const pidFile = join(root, "server.pid");
       const cancelledFile = `${pidFile}.cancelled`;
       await writeFile(join(release, "dist/acpServer/stdio.js"), `import * as acp from "@agentclientprotocol/sdk";
+import { spawn } from "node:child_process";
 import { writeFileSync } from "node:fs";
 import { Readable, Writable } from "node:stream";
 const pidFile = ${JSON.stringify(pidFile)};
@@ -402,6 +404,8 @@ const cancelledFile = ${JSON.stringify(cancelledFile)};
 writeFileSync(pidFile, String(process.pid));
 process.on("SIGTERM", () => {});
 process.stdin.on("end", () => writeFileSync(pidFile + ".closed", ""));
+const provider = spawn(process.execPath, ["-e", 'process.on("SIGTERM", () => {}); setInterval(() => {}, 1000)'], { detached: true, stdio: "ignore" });
+writeFileSync(pidFile + ".provider", String(provider.pid));
 setInterval(() => {}, 1000);
 const stream = acp.ndJsonStream(Writable.toWeb(process.stdout), Readable.toWeb(process.stdin));
 const connection = acp.agent({ name: "stall-server" })
@@ -411,6 +415,10 @@ const connection = acp.agent({ name: "stall-server" })
   .onNotification(acp.methods.agent.session.cancel, ctx => writeFileSync(cancelledFile, ctx.params.sessionId))
   .connect(stream);
 await connection.closed;
+// Model the Bridge supervisor's bounded SIGTERM -> SIGKILL cleanup for a
+// provider child in its own process group. The outer reviewer must let it finish.
+await new Promise(resolve => setTimeout(resolve, 5200));
+try { process.kill(-provider.pid, "SIGKILL"); } catch {}
 `);
       await writeFile(join(root, "prompt.md"), "Review it.\n");
       const dbPath = join(root, "bridge.sqlite");
@@ -454,8 +462,12 @@ spawnSync(process.execPath, ["--import", "tsx", ${JSON.stringify(join(release, "
       expect(existsSync(`${pidFile}.closed`)).toBe(true);
       const alive = (pid: number) => { try { process.kill(pid, 0); return true; } catch { return false; } };
       expect(alive(Number(readFileSync(pidFile, "utf8")))).toBe(false);
+      expect(alive(Number(readFileSync(providerPidFile, "utf8")))).toBe(false);
       expect(git("worktree", "list", "--porcelain").match(/^worktree /gm)).toHaveLength(1);
     } finally {
+      if (existsSync(providerPidFile)) {
+        try { process.kill(-Number(readFileSync(providerPidFile, "utf8")), "SIGKILL"); } catch {}
+      }
       await rm(root, { recursive: true, force: true });
     }
   }, 40_000);
