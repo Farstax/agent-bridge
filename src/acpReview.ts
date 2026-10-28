@@ -109,9 +109,6 @@ export function readImplementingProvider(db: Database.Database, runId: string, r
 }
 
 export function buildAcpReviewEnvironment(options: ReviewInvocationOptions): NodeJS.ProcessEnv {
-  if (options.provider === options.implementer) {
-    throw new Error("independent review requires a different provider");
-  }
   if (!options.base.DB_PATH?.trim()) throw new Error("DB_PATH is required for durable Bridge review evidence");
   const env: NodeJS.ProcessEnv = {
     ...options.base,
