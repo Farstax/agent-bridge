@@ -17,6 +17,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -730,10 +731,6 @@ def accept_handoff(archive: Path, approval: Path | None, owner_request: Path | N
         command = detached_command(release_copy, approved_copy, owner_copy, unit)
         command.remove("--wait")
         command.append("--handoff-id=" + identity)
-        if production:
-            # ExecStartPre ensures the submitting Run can finish naturally before
-            # the independent owner attempts the stop-set; no session is killed.
-            command.insert(command.index("/usr/bin/python3"), "--property=ExecStartPre=/usr/bin/sleep 20")
         outcome = subprocess.run(command, check=False)
         if outcome.returncode:
             update_handoff_result(directory, "deferred", commit, sha256, "worker_launch_failed")
@@ -951,8 +948,13 @@ def main() -> int:
             return launch_detached(args.release, args.approval, args.owner_request)
     elif args.internal_worker:
         fail("internal deployment worker requires a root transient systemd unit")
-    print(finish_handoff_worker(args.handoff_id, args.release, args.approval, args.owner_request)
-          if args.handoff_id else run_deployment(args.release, args.approval, args.owner_request))
+    if args.handoff_id:
+        # The initiating Run can finish before the detached worker checks
+        # stop-set admission. No session is killed or silently considered idle.
+        time.sleep(20)
+        print(finish_handoff_worker(args.handoff_id, args.release, args.approval, args.owner_request))
+    else:
+        print(run_deployment(args.release, args.approval, args.owner_request))
     return 0
 
 
