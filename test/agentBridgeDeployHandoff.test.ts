@@ -49,6 +49,7 @@ describe("durable independent OSS deployer handoff (#1347)", () => {
       "assert '--handoff-id=' + commit + '-' + sha256 in calls[0]",
       "progress = json.loads((copied.parent / 'result.json').read_text())",
       "assert progress['status'] == 'accepted' and progress['archiveSha256'] == sha256",
+      "assert progress['approvalReference'] == 'control-plane-pinned-release'",
       "print(receipt)",
     ].join("\n"));
     expect(result.status, result.stderr).toBe(0);
