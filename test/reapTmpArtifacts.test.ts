@@ -288,6 +288,7 @@ describe("reap-tmp-artifacts.sh", () => {
       REAP_TMP_ROOT: join(root, "tmp"),
       REAP_WORKTREE_REPOS: ",",
       REAP_DETACHED_CHECKOUTS: checkout,
+      REAP_OSS_ORIGIN: "https://github.com/Farstax/agent-bridge.git",
     });
     expect(result.status, result.stderr).toBe(0);
     expect(existsSync(dependencies)).toBe(false);
@@ -300,7 +301,7 @@ describe("reap-tmp-artifacts.sh", () => {
   it("preserves detached dependencies when the checkout is dirty, unverified or active", () => {
     const root = makeRoot();
     const { checkout, dependencies } = makeDetachedCheckout(root);
-    const env = { REAP_TMP_ROOT: join(root, "tmp"), REAP_WORKTREE_REPOS: ",", REAP_DETACHED_CHECKOUTS: checkout };
+    const env = { REAP_TMP_ROOT: join(root, "tmp"), REAP_WORKTREE_REPOS: ",", REAP_DETACHED_CHECKOUTS: checkout, REAP_OSS_ORIGIN: "https://github.com/Farstax/agent-bridge.git" };
     writeFileSync(join(checkout, "unique-untracked-work"), "do not delete");
     expect(run(env).status).toBe(0);
     expect(existsSync(dependencies)).toBe(true);
@@ -321,7 +322,7 @@ describe("reap-tmp-artifacts.sh", () => {
   it("keeps active branch checkouts and fresh dependencies", () => {
     const root = makeRoot();
     const { checkout, dependencies } = makeDetachedCheckout(root);
-    const env = { REAP_TMP_ROOT: join(root, "tmp"), REAP_WORKTREE_REPOS: ",", REAP_DETACHED_CHECKOUTS: checkout };
+    const env = { REAP_TMP_ROOT: join(root, "tmp"), REAP_WORKTREE_REPOS: ",", REAP_DETACHED_CHECKOUTS: checkout, REAP_OSS_ORIGIN: "https://github.com/Farstax/agent-bridge.git" };
     execFileSync("git", ["-C", checkout, "switch", "-q", "-c", "active-work"]);
     expect(run(env).status).toBe(0);
     expect(existsSync(dependencies)).toBe(true);
@@ -355,6 +356,7 @@ describe("reap-tmp-artifacts.sh", () => {
       REAP_TMP_ROOT: join(root, "tmp"),
       REAP_WORKTREE_REPOS: ",",
       REAP_DETACHED_CHECKOUTS: checkout,
+      REAP_OSS_ORIGIN: "https://github.com/Farstax/agent-bridge.git",
     });
     expect(result.status).toBe(0);
     expect(existsSync(dependencies)).toBe(true);
@@ -375,6 +377,7 @@ describe("reap-tmp-artifacts.sh", () => {
         REAP_TMP_ROOT: join(root, "tmp"),
         REAP_WORKTREE_REPOS: ",",
         REAP_DETACHED_CHECKOUTS: checkout,
+      REAP_OSS_ORIGIN: "https://github.com/Farstax/agent-bridge.git",
       });
       expect(result.status).toBe(0);
       expect(existsSync(dependencies)).toBe(true);
