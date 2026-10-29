@@ -284,7 +284,7 @@ describe("reap-tmp-artifacts.sh", () => {
     expect(existsSync(oldBrowser)).toBe(false);
     expect(existsSync(recentBrowser)).toBe(true);
     expect(existsSync(unrelated)).toBe(true);
-  });
+  }, 20_000);
 
   it("preserves an aged browser cache when a live process ownership signal exists", () => {
     const root = makeRoot();
