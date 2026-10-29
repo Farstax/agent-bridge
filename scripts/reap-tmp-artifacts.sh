@@ -181,6 +181,37 @@ reap_detached_checkout_dependencies() {
   remove_entry "$dependencies" "inactive clean detached OSS dependencies"
 }
 
+
+# Narrowly owned, reproducible cache locations only. Do not recurse through
+# arbitrary user homes or touch any cache referenced by a running process.
+sweep_owned_build_cache() {
+  local cache_root="$1" expected_parent="$2" pattern="$3" entry age now recent
+  [[ -d "$cache_root" && ! -L "$cache_root" && "$cache_root" == "$expected_parent/"* ]] || return 0
+  [[ "$(realpath -e -- "$cache_root" 2>/dev/null)" == "$cache_root" ]] || return 0
+  [[ "$(stat -c %u -- "$cache_root" 2>/dev/null)" == "$(id -u)" ]] || return 0
+  [[ -d "$expected_parent" && ! -L "$expected_parent" ]] || return 0
+  [[ "$(realpath -e -- "$expected_parent" 2>/dev/null)" == "$expected_parent" ]] || return 0
+  # An active build or browser can return to a cache between filesystem calls.
+  # Preserve the entire cache while an owning user process references it.
+  if has_ownership_signal "$cache_root" || checkout_has_active_process "$cache_root"; then
+    log "preserving (active build cache): $cache_root"
+    return 0
+  fi
+  now="$(date +%s)"
+  for entry in "$cache_root"/$pattern; do
+    [[ -e "$entry" ]] || continue
+    [[ ! -L "$entry" && -d "$entry" ]] || continue
+    [[ "$(stat -c %u -- "$entry" 2>/dev/null)" == "$(id -u)" ]] || continue
+    age="$(stat -c %Y -- "$entry" 2>/dev/null)" || continue
+    (( now - age > MAX_AGE_MIN * 60 )) || continue
+    recent="$(find "$entry" -xdev -mmin "-$MAX_AGE_MIN" -print -quit 2>/dev/null)" || continue
+    [[ -z "$recent" ]] || continue
+    has_ownership_signal "$entry" && continue
+    checkout_has_active_process "$entry" && continue
+    remove_entry "$entry" "verified inactive reproducible cache"
+  done
+}
+
 # Age-sweep every direct child of $dir matching an optional -name glob.
 # Safe because every name here embeds a UUID/PID/random suffix — nothing
 # still running will ever look for an old name again.
@@ -293,6 +324,16 @@ sweep_by_age "${TMP_ROOT}/agent-bridge-voice" "voice-*"
 sweep_agent_bridge_scratch "${TMP_ROOT}"
 
 prune_acp_telemetry
+
+# Named producer caches, never a blanket ~/.cache or ~/.npm sweep.
+cache_home="${HOME:-}"
+if [[ "$cache_home" == /* && -d "$cache_home" && ! -L "$cache_home" ]]; then
+  sweep_owned_build_cache "$cache_home/.npm/_cacache" "$cache_home/.npm" "tmp"
+  sweep_owned_build_cache "$cache_home/.cache/ms-playwright" "$cache_home/.cache" "chromium-[0-9]*"
+  sweep_owned_build_cache "$cache_home/.cache/ms-playwright" "$cache_home/.cache" "chromium_headless_shell-[0-9]*"
+  sweep_owned_build_cache "$cache_home/.cache/ms-playwright" "$cache_home/.cache" "firefox-[0-9]*"
+  sweep_owned_build_cache "$cache_home/.cache/ms-playwright" "$cache_home/.cache" "webkit-[0-9]*"
+fi
 
 IFS=',' read -r -a REPOS <<< "${REAP_WORKTREE_REPOS:-${HOME:-}/agent-bridge}"
 for repo in "${REPOS[@]}"; do
