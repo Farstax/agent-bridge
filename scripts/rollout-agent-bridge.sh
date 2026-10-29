@@ -1411,7 +1411,10 @@ prune_rollout_retention() {
     [[ -d "$entry" && ! -L "$entry" ]] || continue
     base="$(/usr/bin/basename -- "$entry")"
     [[ "$base" =~ ^[0-9]{8}T[0-9]{6}Z-[0-9a-f]{40}$ ]] || continue
-    [[ "$entry" == "$artifact_dir" ]] && continue
+    # The running attempt is non-terminal before admission, but after
+    # acceptance it becomes the newest proven restore point. Include it
+    # then so superseded terminal backups can be pruned immediately.
+    [[ "$entry" == "$artifact_dir" ]] && ! rollout_artifact_is_terminal "$entry" && continue
     if rollout_artifact_is_terminal "$entry"; then
       terminal+=("$base")
     elif rollout_artifact_has_last_phase "$entry" PRECONDITION_FAILED \
@@ -1433,13 +1436,17 @@ prune_rollout_retention() {
     local remove_until=$(( ${#terminal[@]} - retention_count ))
     for (( index=0; index<remove_until; index++ )); do
       name="${terminal[$index]}"
-      remove_named_child_directory "$log_dir" "$name" || die "failed to prune proven terminal rollout evidence: $name"
       backup="$backup_dir/$name"
+      # Remove data first, evidence last. If backup cleanup is interrupted,
+      # the verified ledger must remain for a later safe retry.
       if [[ -e "$backup" || -L "$backup" ]]; then
-        if [[ -d "$backup" && ! -L "$backup" ]]; then
-          remove_named_child_directory "$backup_dir" "$name" || die "failed to prune proven terminal rollout backup: $name"
+        if [[ ! -d "$backup" || -L "$backup" ]]; then
+          echo "rollout retention protected_backup=$name reason=unsafe_backup_path"
+          continue
         fi
+        remove_named_child_directory "$backup_dir" "$name" || die "failed to prune proven terminal rollout backup: $name"
       fi
+      remove_named_child_directory "$log_dir" "$name" || die "failed to prune proven terminal rollout evidence: $name"
       pruned=$((pruned + 1))
     done
     retained=$(( ${#terminal[@]} - pruned ))
@@ -2577,4 +2584,8 @@ completed=1
 record_phase COMPLETE
 printf '{"status":"complete","targetCommit":"%s","artifactSha256":"%s","environment":"%s","approvalReference":"%s","artifactDir":"%s","completedAt":"%s"}\n' "$expected_commit" "$deployer_artifact_sha256" "$deployer_environment" "$deployer_approval_reference" "$artifact_dir" "$(/usr/bin/date -u '+%Y-%m-%dT%H:%M:%SZ')" > "$artifact_dir/deployment-result.json"
 /usr/bin/sha256sum "$artifact_dir/deployment-result.json" > "$artifact_dir/deployment-result.sha256"
+# Post-acceptance hygiene never invalidates a healthy deployed release.
+# The completed cohort is now the newest terminal restore point, so older
+# proven backups can be pruned without waiting for another deployment.
+( prune_rollout_retention ) || echo "post-acceptance rollout retention deferred; recovery evidence preserved" >&2
 echo "rollout completed commit=$expected_commit artifacts=$artifact_dir"
