@@ -263,4 +263,71 @@ describe("reap-tmp-artifacts.sh", () => {
     expect(result.stdout).toContain("would remove");
     expect(existsSync(staleRun)).toBe(true);
   });
+
+  function makeDetachedCheckout(root: string): { checkout: string; dependencies: string } {
+    const checkout = join(root, "agent-bridge-detached");
+    initGitRepo(checkout);
+    writeFileSync(join(checkout, ".gitignore"), "node_modules/\n");
+    execFileSync("git", ["-C", checkout, "add", ".gitignore"]);
+    execFileSync("git", ["-C", checkout, "commit", "-q", "-m", "ignore reproducible dependencies"]);
+    execFileSync("git", ["-C", checkout, "remote", "add", "origin", "https://github.com/Farstax/agent-bridge.git"]);
+    execFileSync("git", ["-C", checkout, "update-ref", "refs/remotes/origin/main", "HEAD"]);
+    execFileSync("git", ["-C", checkout, "checkout", "-q", "--detach", "HEAD"]);
+    const dependencies = join(checkout, "node_modules");
+    mkdirSync(dependencies);
+    writeFileSync(join(dependencies, "reconstructible-module"), "cached package\n");
+    ageEntry(dependencies, 48);
+    return { checkout, dependencies };
+  }
+
+  it("reclaims reproducible dependencies in an explicitly verified inactive detached OSS checkout", () => {
+    const root = makeRoot();
+    const { checkout, dependencies } = makeDetachedCheckout(root);
+    const result = run({
+      REAP_TMP_ROOT: join(root, "tmp"),
+      REAP_WORKTREE_REPOS: ",",
+      REAP_DETACHED_CHECKOUTS: checkout,
+    });
+    expect(result.status, result.stderr).toBe(0);
+    expect(existsSync(dependencies)).toBe(false);
+    expect(existsSync(join(checkout, ".git"))).toBe(true);
+    expect(result.stdout).toContain("inactive clean detached OSS dependencies");
+    const second = run({ REAP_TMP_ROOT: join(root, "tmp"), REAP_WORKTREE_REPOS: ",", REAP_DETACHED_CHECKOUTS: checkout });
+    expect(second.status).toBe(0);
+  });
+
+  it("preserves detached dependencies when the checkout is dirty, unverified or active", () => {
+    const root = makeRoot();
+    const { checkout, dependencies } = makeDetachedCheckout(root);
+    const env = { REAP_TMP_ROOT: join(root, "tmp"), REAP_WORKTREE_REPOS: ",", REAP_DETACHED_CHECKOUTS: checkout };
+    writeFileSync(join(checkout, "unique-untracked-work"), "do not delete");
+    expect(run(env).status).toBe(0);
+    expect(existsSync(dependencies)).toBe(true);
+    rmSync(join(checkout, "unique-untracked-work"));
+    execFileSync("git", ["-C", checkout, "remote", "set-url", "origin", "https://github.com/other/repo.git"]);
+    expect(run(env).status).toBe(0);
+    expect(existsSync(dependencies)).toBe(true);
+    execFileSync("git", ["-C", checkout, "remote", "set-url", "origin", "https://github.com/Farstax/agent-bridge.git"]);
+    writeFileSync(join(dependencies, ".pid"), String(process.pid));
+    expect(run(env).status).toBe(0);
+    expect(existsSync(dependencies)).toBe(true);
+    rmSync(join(dependencies, ".pid"));
+    execFileSync("git", ["-C", checkout, "update-ref", "-d", "refs/remotes/origin/main"]);
+    expect(run(env).status).toBe(0);
+    expect(existsSync(dependencies)).toBe(true);
+  });
+
+  it("keeps active branch checkouts and fresh dependencies", () => {
+    const root = makeRoot();
+    const { checkout, dependencies } = makeDetachedCheckout(root);
+    const env = { REAP_TMP_ROOT: join(root, "tmp"), REAP_WORKTREE_REPOS: ",", REAP_DETACHED_CHECKOUTS: checkout };
+    execFileSync("git", ["-C", checkout, "switch", "-q", "-c", "active-work"]);
+    expect(run(env).status).toBe(0);
+    expect(existsSync(dependencies)).toBe(true);
+    execFileSync("git", ["-C", checkout, "checkout", "-q", "--detach", "HEAD"]);
+    ageEntry(dependencies, 0);
+    expect(run(env).status).toBe(0);
+    expect(existsSync(dependencies)).toBe(true);
+  });
+
 });
