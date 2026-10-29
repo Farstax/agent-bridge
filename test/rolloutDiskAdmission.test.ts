@@ -210,6 +210,23 @@ fi
     expect(actions(fixture)).toContain("systemctl:stop");
   });
 
+  it("never prunes the accepted current backup when the host clock is behind old cohort timestamps", () => {
+    const fixture = useMinimalInventory(createFixture());
+    const prior = writeTerminal(fixture.logDir, fixture.backupDir, "20270101T000000Z");
+    const backdated = `20200101T000000Z-${fixture.expectedCommit}`;
+    const result = runRollout(fixture, undefined, undefined, {
+      AGENT_BRIDGE_ROLLOUT_AVAILABLE_BYTES: "999999999999",
+      AGENT_BRIDGE_ROLLOUT_SAFETY_RESERVE_BYTES: "1048576",
+      AGENT_BRIDGE_ROLLOUT_TEST_TIMESTAMP: "20200101T000000Z",
+    });
+    const output = result.stdout + "\\n" + result.stderr;
+    expect(result.status, output).toBe(0);
+    expect(existsSync(join(fixture.logDir, backdated))).toBe(true);
+    expect(existsSync(join(fixture.backupDir, backdated))).toBe(true);
+    expect(existsSync(join(fixture.logDir, prior))).toBe(true);
+    expect(output).toContain("reason=current_accepted_attempt");
+  });
+
   it("retries a refused rollout once without leaving a backup or sentinel behind", () => {
     const fixture = useMinimalInventory(createFixture());
     const refused = runRollout(fixture, undefined, undefined, {
