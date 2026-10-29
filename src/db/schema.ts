@@ -44,7 +44,7 @@ const MIGRATION_GROWTH: Readonly<Record<number, "none" | "copy">> = {
   1: "copy", 2: "copy", 3: "copy", 4: "copy", 5: "copy", 6: "none",
   7: "copy", 8: "copy", 9: "copy", 10: "copy", 11: "copy", 12: "copy",
   13: "copy", 14: "copy", 15: "copy", 16: "copy", 17: "copy", 18: "copy",
-  19: "none", 20: "copy", 21: "none", 22: "none", 23: "none", 24: "none",
+  19: "none", 20: "copy", 21: "none", 22: "none", 23: "none", 24: "none", 25: "none",
 };
 
 export function migrationGrowthClass(currentVersion: number): "none" | "copy" {

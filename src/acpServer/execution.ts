@@ -36,6 +36,7 @@ type ActiveOutwardExecution = {
 export interface OutwardAcpPromptExecutionInput {
   session: OutwardAcpSessionRecord;
   prompt: string;
+  attachments?: string[];
   signal: AbortSignal;
   onUpdate: (update: OutwardUpdate) => void | Promise<void>;
 }
@@ -84,6 +85,8 @@ export interface BridgeOutwardAcpPromptExecutorOptions {
   isProviderAvailable?: (provider: BotKind) => boolean;
   createEngine: (session: OutwardAcpSessionRecord, attemptProvider: BotKind) => OutwardAcpExecutionEngine;
   runId?: () => string;
+  /** Fresh read-only side question for /btw; absent when not wired. */
+  btw?: (session: OutwardAcpSessionRecord, provider: BotKind, prompt: string) => Promise<string>;
 }
 
 type RetainedSessionUpdate = {
@@ -253,19 +256,31 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
     if (isProviderAvailable && !isProviderAvailable(target)) {
       throw acp.RequestError.invalidParams({ field: "provider" }, "provider is not installed or authenticated");
     }
+    this.withIdleLane(session, () => {
+      if (this.selectedProvider(session) !== target) {
+        applyManualCliSwitchHandoff(db, this.identity(session), target as CliKind);
+        this.routers.delete(session.conversationId);
+      }
+    });
+    return this.status(session);
+  }
+
+  /** Run a Workstream mutation under its lane fence; busy when a Run holds the lane. */
+  withIdleLane<T>(session: OutwardAcpSessionRecord, operation: () => T): T {
+    const { db } = this.options;
     const lane = db.acquireLock(OUTWARD_ACP_SURFACE, session.conversationId);
     if (!lane) {
       throw new acp.RequestError(OUTWARD_ACP_BUSY_ERROR, "outward ACP session is busy", { sessionId: session.sessionId });
     }
     try {
-      if (this.selectedProvider(session) !== target) {
-        db.runWithLockFence(lane, () => applyManualCliSwitchHandoff(db, this.identity(session), target as CliKind));
-        this.routers.delete(session.conversationId);
-      }
+      return db.runWithLockFence(lane, operation);
     } finally {
       db.unlock(lane);
     }
-    return this.status(session);
+  }
+
+  get btw(): ((session: OutwardAcpSessionRecord, provider: BotKind, prompt: string) => Promise<string>) | undefined {
+    return this.options.btw;
   }
 
   async cancel(session: OutwardAcpSessionRecord): Promise<void> {
@@ -383,6 +398,7 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
 
       const result: CliResult = await this.routerFor(input.session, provider).executeSurfaceNeutralTurn({
         prompt: input.prompt,
+        attachments: input.attachments ?? [],
         // Resolved per-attempt by createEngine's wrapper for whichever
         // provider the fallback router is actually trying this attempt --
         // fallback providers have their own distinct provider-session binding.
@@ -513,6 +529,20 @@ function configuredProviderChain(env: NodeJS.ProcessEnv): readonly BotKind[] {
   return chain;
 }
 
+/** Settings view for outward Desk commands (/models reads provider bot config). */
+export function outwardCommandConfig(dbPath: string, env: NodeJS.ProcessEnv = process.env): BridgeConfig {
+  const head = configuredProviderChain(env)[0];
+  return {
+    allowedUserIds: new Set<string>(),
+    serviceEnvFile: env.BRIDGE_ENV_FILE ?? null,
+    serviceKind: head,
+    pollIntervalMs: 1000,
+    executionMode: resolveExecutionMode(head, env),
+    dbPath,
+    bots: loadBotsConfig(env),
+  };
+}
+
 export function createProductionOutwardAcpPromptExecutor(
   db: BridgeDb,
   dbPath: string,
@@ -521,32 +551,36 @@ export function createProductionOutwardAcpPromptExecutor(
   const providerChain = configuredProviderChain(env);
   const bots = loadBotsConfig(env);
   const allowedUserIds = new Set<string>();
+  const buildEngine = (session: OutwardAcpSessionRecord, attemptProvider: BotKind): BridgeEngine => {
+    const executionMode = resolveExecutionMode(attemptProvider, env);
+    const fullConfig: BridgeConfig = {
+      allowedUserIds,
+      serviceEnvFile: env.BRIDGE_ENV_FILE ?? null,
+      serviceKind: attemptProvider,
+      pollIntervalMs: 1000,
+      executionMode,
+      dbPath,
+      bots,
+    };
+    return new BridgeEngine({
+      kind: attemptProvider,
+      surfaceIdentity: OUTWARD_ACP_SURFACE,
+      executionKind: attemptProvider,
+      botConfig: bots[attemptProvider],
+      allowedUserIds,
+      executionMode,
+      pollIntervalMs: 1000,
+      workingDir: session.cwd,
+      fullConfig,
+    }, db, NO_DELIVERY_PLATFORM);
+  };
   return new BridgeOutwardAcpPromptExecutor({
     db,
     providerChain,
     isProviderAvailable: (provider) => getCachedAvailableCliKinds({ env }).has(provider as CliKind),
+    btw: (session, provider, prompt) => buildEngine(session, provider).executeSurfaceNeutralBtw(prompt, session.conversationId),
     createEngine: (session, attemptProvider) => {
-      const executionMode = resolveExecutionMode(attemptProvider, env);
-      const fullConfig: BridgeConfig = {
-        allowedUserIds,
-        serviceEnvFile: env.BRIDGE_ENV_FILE ?? null,
-        serviceKind: attemptProvider,
-        pollIntervalMs: 1000,
-        executionMode,
-        dbPath,
-        bots,
-      };
-      const engine = new BridgeEngine({
-        kind: attemptProvider,
-        surfaceIdentity: OUTWARD_ACP_SURFACE,
-        executionKind: attemptProvider,
-        botConfig: bots[attemptProvider],
-        allowedUserIds,
-        executionMode,
-        pollIntervalMs: 1000,
-        workingDir: session.cwd,
-        fullConfig,
-      }, db, NO_DELIVERY_PLATFORM);
+      const engine = buildEngine(session, attemptProvider);
       return {
         // Each fallback candidate has its own distinct provider-session
         // binding (acp_session_bindings keyed by provider); resolve it fresh

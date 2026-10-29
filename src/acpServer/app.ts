@@ -1,12 +1,14 @@
 import * as acp from "@agentclientprotocol/sdk";
 import { AgentApp } from "@agentclientprotocol/sdk";
 import { randomUUID } from "node:crypto";
-import { isAbsolute } from "node:path";
+import { basename, isAbsolute } from "node:path";
 import type {
   NewOutwardAcpSession,
   OutwardAcpSessionRecord,
 } from "../repositories/outwardAcpSessionRepository.js";
 import type { OutwardAcpPromptExecutor, OutwardWorkstreamControl } from "./execution.js";
+import { isDeskBridgeCommand, type DeskCommands } from "./commands.js";
+import { stageOutwardAcpAttachments } from "./attachments.js";
 import {
   bridgeAgentCapabilities,
   BRIDGE_ACP_AGENT_INFO,
@@ -31,6 +33,7 @@ export interface OutwardAcpAgentOptions {
   sessions?: OutwardAcpSessionStore;
   promptExecutor?: OutwardAcpPromptExecutor;
   workstreams?: OutwardWorkstreamControl;
+  commands?: DeskCommands;
 }
 
 /**
@@ -44,6 +47,8 @@ export const WORKSTREAM_METHODS = {
   update: "_agent-bridge/workstreams/update",
   status: "_agent-bridge/workstreams/status",
   selectProvider: "_agent-bridge/workstreams/select_provider",
+  commands: "_agent-bridge/commands/list",
+  runCommand: "_agent-bridge/commands/run",
 } as const;
 
 const WORKSTREAM_TITLE_MAX = 200;
@@ -79,6 +84,11 @@ function titleParam(params: Record<string, unknown>): string | undefined {
     throw acp.RequestError.invalidParams({ field: "title" }, `title must be 1-${WORKSTREAM_TITLE_MAX} printable characters`);
   }
   return title;
+}
+
+function optionalString(params: Record<string, unknown>, field: string, maxLength: number): string | undefined {
+  if (params[field] === undefined) return undefined;
+  return stringParam(params, field, maxLength);
 }
 
 function workstreamView(session: OutwardAcpSessionRecord) {
@@ -119,16 +129,8 @@ function replayUpdate(sessionId: string, turn: OutwardAcpHistoryTurn): acp.Sessi
 }
 
 function promptText(prompt: readonly acp.ContentBlock[]): string {
-  return prompt.map((block) => {
-    if (block.type === "text") return block.text;
-    if (block.type === "resource_link") {
-      return `[ACP resource_link]\n${JSON.stringify(block)}`;
-    }
-    throw acp.RequestError.invalidParams(
-      { field: "prompt" },
-      `outward ACP does not advertise support for ${block.type} prompt blocks`,
-    );
-  }).join("\n\n");
+  const text = prompt.filter((block) => block.type === "text").map((block) => block.text).join("\n\n");
+  return text || (prompt.some((block) => block.type !== "text") ? "Please review the attached files." : "");
 }
 
 /**
@@ -143,7 +145,11 @@ export function createOutwardAcpAgent(options: OutwardAcpAgentOptions = {}): Age
   const supportsWorkstreams = Boolean(workstreams && sessions?.get && sessions.list && sessions.update);
   let app = acp.agent({ name: "agent-bridge" }).onRequest(acp.methods.agent.initialize, () => ({
     protocolVersion: bridgeAgentProtocolVersion(),
-    agentCapabilities: bridgeAgentCapabilities({ loadSession: supportsLoad, workstreams: supportsWorkstreams }),
+    agentCapabilities: bridgeAgentCapabilities({
+      loadSession: supportsLoad,
+      workstreams: supportsWorkstreams,
+      commands: supportsWorkstreams && Boolean(options.commands),
+    }),
     agentInfo: { ...BRIDGE_ACP_AGENT_INFO },
   }));
   if (!sessions) return app;
@@ -191,6 +197,22 @@ export function createOutwardAcpAgent(options: OutwardAcpAgentOptions = {}): Age
         const status = control.selectProvider(session, stringParam(ctx.params, "provider", 64));
         return { workstream: workstreamView(session), status };
       });
+    if (options.commands) {
+      const commands = options.commands;
+      app = app
+        .onRequest(WORKSTREAM_METHODS.commands, objectParams, (ctx) => ({
+          commands: commands.catalogue(getKnown(ctx.params)),
+        }))
+        .onRequest(WORKSTREAM_METHODS.runCommand, objectParams, async (ctx) => {
+          const session = getKnown(ctx.params);
+          return commands.run(session, {
+            command: stringParam(ctx.params, "command", 64),
+            argument: optionalString(ctx.params, "argument", 16_384),
+            select: optionalString(ctx.params, "select", 256),
+            confirm: optionalBoolean(ctx.params, "confirm"),
+          });
+        });
+    }
   }
 
   app = app.onRequest(acp.methods.agent.session.new, (ctx) => {
@@ -231,15 +253,31 @@ export function createOutwardAcpAgent(options: OutwardAcpAgentOptions = {}): Age
         "unknown outward ACP session",
       );
     }
-    return promptExecutor.execute({
-      session,
-      prompt: promptText(ctx.params.prompt),
-      signal: ctx.signal,
-      onUpdate: (update) => ctx.client.notify(acp.methods.client.session.update, {
-        sessionId: session.sessionId,
-        update,
-      }),
-    });
+    const prompt = promptText(ctx.params.prompt);
+    // Bridge commands run only through their owners, never as model text.
+    if (isDeskBridgeCommand(prompt)) {
+      throw acp.RequestError.invalidParams(
+        { field: "prompt" },
+        `Bridge commands are not prompts; run them with ${WORKSTREAM_METHODS.runCommand}`,
+      );
+    }
+    try {
+      return await stageOutwardAcpAttachments(session.cwd, ctx.params.prompt, (attachments) => promptExecutor.execute({
+        session,
+        prompt: attachments.length
+          ? `${prompt}\n\n${attachments.map((path) => `[Attached file: ${basename(path)}]`).join("\n")}`
+          : prompt,
+        attachments,
+        signal: ctx.signal,
+        onUpdate: (update) => ctx.client.notify(acp.methods.client.session.update, {
+          sessionId: session.sessionId,
+          update,
+        }),
+      }));
+    } catch (error) {
+      if (error instanceof acp.RequestError) throw error;
+      throw acp.RequestError.invalidParams({ field: "prompt" }, error instanceof Error ? error.message : "invalid attachments");
+    }
   });
 
   return app.onNotification(acp.methods.agent.session.cancel, async (ctx) => {

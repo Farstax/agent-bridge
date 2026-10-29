@@ -13,8 +13,8 @@ title and archive state are two nullable columns on the existing session row
 
 Desk uses the existing **workspace-local stdio** outward ACP agent
 (`npm run acp:serve`). Standard ACP v1 methods are unchanged. Controls with no
-ACP v1 equivalent use the ACP extension-method namespace and are advertised as
-`agentCapabilities._meta["agent-bridge"].workstreams = 1`:
+ACP v1 equivalent use the ACP extension-method namespace and are advertised in
+`agentCapabilities._meta["agent-bridge"]` when wired:
 
 | Method | Params | Result |
 | --- | --- | --- |
@@ -22,6 +22,8 @@ ACP v1 equivalent use the ACP extension-method namespace and are advertised as
 | `_agent-bridge/workstreams/update` | `sessionId`, `cwd`, `title?`, `archived?` | `workstream` |
 | `_agent-bridge/workstreams/status` | `sessionId`, `cwd` | `workstream`, `status` |
 | `_agent-bridge/workstreams/select_provider` | `sessionId`, `cwd`, `provider` | `workstream`, `status` |
+| `_agent-bridge/commands/list` | `sessionId`, `cwd` | provider-aware `commands[]` with route, availability and reason |
+| `_agent-bridge/commands/run` | `sessionId`, `cwd`, `command`, optional `argument`, `select`, `confirm` | command result and selectable options |
 
 Create is standard `session/new` followed by an optional `update` for the
 title. Every per-Workstream call must present the session's `cwd`, as
@@ -30,6 +32,24 @@ the outward agent serves one workspace owner, so the Platform gateway must
 pin `cwd` to the authenticated principal's workspace and never forward a
 client-chosen value. Archive is metadata only; an archived Workstream can
 still be loaded and prompted, and `update` with `archived: false` restores it.
+
+Command entries reuse `src/commands.ts` and existing setting, provider switch,
+cancellation, reset and side-question owners. A Bridge command typed into
+`session/prompt` is rejected before a provider Run starts. `/queue_mode` is
+listed as unavailable because outward ACP rejects concurrent prompts instead
+of queueing them. `/sensors` and `/autonomy` fail closed because this local ACP
+surface has no authorisation context for those controls. `/stop` uses the
+active outward Run cancellation path; `/reset` requires explicit confirmation
+and runs under the conversation lane fence.
+
+Embedded ACP `image` and `resource` payloads are staged for one Run in a
+private, randomly named directory under the Workstream cwd. Supported files
+are text/code, JSON, CSV, logs, Markdown, PNG, JPEG and PDF. Input allows up to
+eight files, 8 MiB per file and 16 MiB total. Names are reduced to bounded safe
+filenames, and content stays inside the authorized cwd. Unsupported blocks and
+file types fail before provider execution. Staged files are removed after
+success, failure or cancellation. A `resource_link` alone is metadata, not
+uploaded bytes, and is not treated as an attachment.
 
 ## Status truth
 

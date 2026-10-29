@@ -6,10 +6,13 @@ import { openProductionDb } from "../db.js";
 import { OutwardAcpSessionRepository } from "../repositories/outwardAcpSessionRepository.js";
 import { createOutwardAcpAgent, type OutwardAcpSessionStore } from "./app.js";
 import { prepareInteractiveCliAuth } from "../interactiveCliAuth.js";
+import { getCodexUsageText } from "../codexUsage.js";
+import { DeskCommands } from "./commands.js";
 import {
   OUTWARD_ACP_SURFACE,
   type BridgeOutwardAcpPromptExecutor,
   createProductionOutwardAcpPromptExecutor,
+  outwardCommandConfig,
 } from "./execution.js";
 
 const OUTWARD_ACP_HISTORY_LIMIT = 200;
@@ -55,7 +58,13 @@ try {
     Writable.toWeb(process.stdout),
     Readable.toWeb(process.stdin) as ReadableStream<Uint8Array>,
   );
-  const connection = createOutwardAcpAgent({ sessions, promptExecutor, workstreams: promptExecutor }).connect(stream);
+  const commands = new DeskCommands({
+    db,
+    config: outwardCommandConfig(dbPath),
+    control: promptExecutor,
+    codexUsage: getCodexUsageText,
+  });
+  const connection = createOutwardAcpAgent({ sessions, promptExecutor, workstreams: promptExecutor, commands }).connect(stream);
   await connection.closed;
 } finally {
   try {

@@ -6,11 +6,17 @@ import { PROTOCOL_VERSION, type AgentCapabilities, type Implementation } from "@
  * `createOutwardAcpAgent` actually supports history replay, rather than
  * promising a capability the current wiring cannot satisfy.
  */
-export function bridgeAgentCapabilities(options: { loadSession: boolean; workstreams?: boolean }): AgentCapabilities {
+export function bridgeAgentCapabilities(
+  options: { loadSession: boolean; workstreams?: boolean; commands?: boolean },
+): AgentCapabilities {
+  // Extension controls are advertised only when wired (#1101).
+  const bridge = {
+    ...(options.workstreams ? { workstreams: 1 } : {}),
+    ...(options.commands ? { commands: 1 } : {}),
+  };
   return {
     loadSession: options.loadSession,
-    // Extension controls are advertised only when wired (#1101).
-    ...(options.workstreams ? { _meta: { "agent-bridge": { workstreams: 1 } } } : {}),
+    ...(Object.keys(bridge).length > 0 ? { _meta: { "agent-bridge": bridge } } : {}),
   };
 }
 
