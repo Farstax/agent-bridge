@@ -263,6 +263,10 @@ describe("release artifact manifest", () => {
     expect(statSync(join(process.cwd(), "bin/agent-bridge-wait")).mode & 0o111).not.toBe(0);
     expect(statSync(join(process.cwd(), "bin/agent-bridge-sensors")).mode & 0o111).not.toBe(0);
     expect(workflow).toContain('cp -a skills/. "$root/skills/"');
+    expect(workflow).toContain('node scripts/prune-production-payload.mjs --root "$root"');
+    expect(workflow).toContain('test -f "$root/dist/index-interactive.js"');
+    expect(workflow).toContain('test -f "$root/src/index-interactive.ts"');
+    expect(workflow).toContain('test -f "$root/node_modules/tsx/dist/cli.mjs"');
     expect(workflow).not.toContain('cp -a skills "$root/skills/"');
     expect(workflow).toContain('tsconfig.json');
     expect(workflow).not.toContain('SOUL.md');

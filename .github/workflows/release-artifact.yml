@@ -115,6 +115,24 @@ jobs:
           test -x "$root/bin/agent-bridge-review"
           cp -a skills/. "$root/skills/"
           cp -a tsconfig.json "$root/"
+          node scripts/prune-production-payload.mjs --root "$root"
+          test -f "$root/dist/index-interactive.js"
+          test -f "$root/src/index-interactive.ts"
+          test -f "$root/node_modules/tsx/dist/cli.mjs"
+          test -f "$root/scripts/rollout-db.ts"
+          if find "$root/dist" "$root/node_modules" -type f \( -name '*.map' -o -name '*.d.ts' -o -name '*.d.mts' -o -name '*.d.cts' \) | grep -q .; then
+            echo "assembled production payload still contains declarations or source maps" >&2
+            exit 1
+          fi
+          if [[ -f "$root/node_modules/@xai-official/grok/bin/grok-native" && -L "$root/node_modules/@xai-official/grok/bin/grok" ]]; then
+            link_target="$(readlink "$root/node_modules/@xai-official/grok/bin/grok")"
+            if [[ "$link_target" == grok-native || "$link_target" == */grok-native ]]; then
+              if find "$root/node_modules/@xai-official" -type f -path '*/grok-linux-*/bin/*.br' | grep -q .; then
+                echo "assembled production payload still contains the redundant grok brotli payload" >&2
+                exit 1
+              fi
+            fi
+          fi
           cat > "$root/qualification-evidence.json" <<EOF
           {
             "commit": "${commit}",
@@ -174,6 +192,12 @@ jobs:
           test -x "$verify_root/bin/agent-bridge-scratch"
           test -x "$verify_root/bin/agent-bridge-review"
           test -f "$verify_root/dist/acpReview.js"
+          test -f "$verify_root/dist/index-interactive.js"
+          test -f "$verify_root/src/index-interactive.ts"
+          if find "$verify_root/dist" "$verify_root/node_modules" -type f \( -name '*.map' -o -name '*.d.ts' -o -name '*.d.mts' -o -name '*.d.cts' \) | grep -q .; then
+            echo "archived production payload still contains declarations or source maps" >&2
+            exit 1
+          fi
           node --input-type=module - "$verify_root/manifest.json" <<'NODE'
           import { createHash } from "node:crypto";
           import { readFileSync } from "node:fs";
