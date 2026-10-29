@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { execFileSync, spawnSync } from "node:child_process";
-import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { describe, expect, it } from "vitest";
@@ -647,6 +647,39 @@ else:
     expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
     expect(result.stdout).toContain(`deployed ${COMMIT}`);
     expect(readFileSync(join(releaseRoot, COMMIT, "runtime.js"), "utf8")).toBe("runtime\n");
+  });
+
+  it("refuses staging before any candidate is written when one candidate plus the reserve does not fit (#1100)", () => {
+    const fixture = makeRelease();
+    const releaseRoot = mkdtempSync(join(tmpdir(), "agent-bridge-deploy-stage-"));
+    const deploy = (available: number, reserve?: string) => spawnSync("python3", [DEPLOYER, "--release", fixture.archive, "--approval", fixture.approval], {
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        AGENT_BRIDGE_DEPLOY_TEST: "1",
+        AGENT_BRIDGE_DEPLOY_TEST_RELEASE_ROOT: releaseRoot,
+        AGENT_BRIDGE_DEPLOY_TEST_AVAILABLE_BYTES: String(available),
+        ...(reserve ? { AGENT_BRIDGE_ROLLOUT_SAFETY_RESERVE_BYTES: reserve } : {}),
+      },
+    });
+
+    const refused = deploy(268435456);
+    expect(refused.status).not.toBe(0);
+    expect(refused.stderr).toMatch(/staging disk admission refused: .*\(\d+ staging \+ 268435456 reserve\)/);
+    expect(readdirSync(releaseRoot).filter((name) => name !== ".agent-bridge-deploy.lock")).toEqual([]);
+
+    const raisedReserve = deploy(268435456 * 2, String(268435456 * 4));
+    expect(raisedReserve.status).not.toBe(0);
+    expect(raisedReserve.stderr).toMatch(/1073741824 reserve/);
+
+    const admitted = deploy(268435456 + 1024 * 1024);
+    expect(admitted.status, `${admitted.stdout}\n${admitted.stderr}`).toBe(0);
+    expect(readFileSync(join(releaseRoot, COMMIT, "runtime.js"), "utf8")).toBe("runtime\n");
+
+    // An already staged identical release needs no new candidate and is reused.
+    const reused = deploy(0);
+    expect(reused.status, `${reused.stdout}\n${reused.stderr}`).toBe(0);
+    expect(reused.stdout).toContain(`already staged ${COMMIT}`);
   });
 
   it("deploys from --release alone, treating the operator's instruction as sufficient authorization", () => {

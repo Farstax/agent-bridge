@@ -244,6 +244,53 @@ def verify_archive_stream(archive: Path, stage) -> tuple[dict, bytes | None]:
     return manifest, qualification_bytes
 
 
+VERIFIED_MANIFESTS: dict[str, dict] = {}
+STAGING_BLOCK_BYTES = 4096
+DEFAULT_STAGING_SAFETY_RESERVE_BYTES = 268435456  # ROLLOUT_SAFETY_RESERVE_BYTES in rollout-agent-bridge.sh
+
+
+def staging_requirements(manifest: dict, archive: Path, release_root: Path) -> dict[int, tuple[Path, int]]:
+    """Bytes that staging allocates per filesystem: one candidate tree plus the archive snapshot."""
+    candidate = 0
+    directories: set[str] = set()
+    for entry in manifest["files"]:
+        parts = entry["path"].split("/")
+        directories.update("/".join(parts[:index]) for index in range(1, len(parts)))
+        if entry.get("type") != "symlink":
+            candidate += -(-int(entry.get("size", 0)) // STAGING_BLOCK_BYTES) * STAGING_BLOCK_BYTES
+    candidate += (len(directories) + 2) * STAGING_BLOCK_BYTES
+    snapshot = -(-archive.stat().st_size // STAGING_BLOCK_BYTES) * STAGING_BLOCK_BYTES
+    required: dict[int, tuple[Path, int]] = {}
+    for path, size in ((release_root, candidate), (Path(tempfile.gettempdir()), snapshot)):
+        probe = path
+        while not probe.exists():
+            probe = probe.parent
+        device = probe.stat().st_dev
+        required[device] = (probe, required.get(device, (probe, 0))[1] + size)
+    return required
+
+
+def admit_staging(archive: Path, commit: str, archive_sha256: str, release_root: Path, production: bool) -> None:
+    """Refuse before staging, while services still run, when one candidate would not fit (#1100)."""
+    if (release_root / commit).exists():
+        return
+    manifest = VERIFIED_MANIFESTS.get(archive_sha256)
+    if manifest is None or manifest.get("commit") != commit:
+        fail("staging disk admission requires the verified release manifest")
+    override = rollout_safety_reserve_override()
+    reserve = int(override) if override else DEFAULT_STAGING_SAFETY_RESERVE_BYTES
+    simulated = None if production else os.environ.get("AGENT_BRIDGE_DEPLOY_TEST_AVAILABLE_BYTES")
+    for probe, required in staging_requirements(manifest, archive, release_root).values():
+        if simulated is not None:
+            available = int(simulated)
+        else:
+            usage = os.statvfs(probe)
+            available = usage.f_bavail * usage.f_frsize
+        if available < required + reserve:
+            fail(f"staging disk admission refused: {probe} needs {required + reserve} bytes "
+                 f"({required} staging + {reserve} reserve) but {available} are available")
+
+
 def validate_archive(archive: Path, approval: Path | None, now: datetime, production: bool, fixed_environment: str | None = None, stage_helper: Path | None = None) -> tuple[str, str, dict | None]:
     if archive.is_symlink() or not archive.is_file():
         fail("release archive must be a regular non-symlink file")
@@ -251,6 +298,7 @@ def validate_archive(archive: Path, approval: Path | None, now: datetime, produc
     try:
         stage = staging_module(stage_helper or Path(__file__).with_name("release-stage.py"))
         manifest, qualification_bytes = verify_archive_stream(archive, stage)
+        VERIFIED_MANIFESTS[release_sha256] = manifest
     except Exception as error:
         fail(f"release archive or manifest validation failed: {error}")
     if not SHA.fullmatch(manifest["commit"]):
@@ -1052,6 +1100,7 @@ def _run_deployment(archive: Path, approval: Path | None, owner_request: Path | 
         if release_root_value:
             release_root = Path(release_root_value)
             environment = {**os.environ, "AGENT_BRIDGE_RELEASE_STAGE_TEST": "1"}
+            admit_staging(archive, commit, archive_sha256, release_root, production)
             subprocess.run([
                 sys.executable, str(stage_helper), "--archive", str(archive),
                 "--release-root", str(release_root), "--expected-commit", commit,
@@ -1077,6 +1126,7 @@ def _run_deployment(archive: Path, approval: Path | None, owner_request: Path | 
     assert config is not None
     release_root = Path(configured_value(config, "release_root"))
     rollout_helper = Path("/usr/local/sbin/rollout-agent-bridge")
+    admit_staging(archive, commit, archive_sha256, release_root, production)
     subprocess.run([
         "/usr/bin/python3", str(stage_helper), "--archive", str(archive),
         "--release-root", str(release_root), "--expected-commit", commit,
