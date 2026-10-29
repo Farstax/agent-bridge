@@ -27,7 +27,7 @@ function ageEntry(path: string, hoursOld: number) {
 
 function run(env: Record<string, string>, args: string[] = []) {
   return spawnSync("bash", [scriptPath, ...args], {
-    env: { ...process.env, ...env },
+    env: { ...process.env, HOME: "/nonexistent-home-for-reaper-tests", ...env },
     encoding: "utf8",
   });
 }
@@ -262,6 +262,42 @@ describe("reap-tmp-artifacts.sh", () => {
     expect(result.status).toBe(0);
     expect(result.stdout).toContain("would remove");
     expect(existsSync(staleRun)).toBe(true);
+  });
+
+  it("cleans only aged owned npm scratch and identifiable inactive browser downloads", () => {
+    const root = makeRoot();
+    const home = join(root, "home");
+    const npmScratch = join(home, ".npm", "_cacache", "tmp");
+    const oldBrowser = join(home, ".cache", "ms-playwright", "chromium-1234");
+    const recentBrowser = join(home, ".cache", "ms-playwright", "chromium-5678");
+    const unrelated = join(home, ".cache", "important-user-data");
+    for (const dir of [npmScratch, oldBrowser, recentBrowser, unrelated]) mkdirSync(dir, { recursive: true });
+    for (const dir of [npmScratch, oldBrowser]) {
+      writeFileSync(join(dir, "rebuildable"), "cache");
+      ageEntry(join(dir, "rebuildable"), 48);
+      ageEntry(dir, 48);
+    }
+    writeFileSync(join(recentBrowser, "live"), "keep");
+    const result = run({ HOME: home, REAP_TMP_ROOT: join(root, "empty-tmp"), REAP_WORKTREE_REPOS: "," });
+    expect(result.status, result.stderr).toBe(0);
+    expect(existsSync(npmScratch)).toBe(false);
+    expect(existsSync(oldBrowser)).toBe(false);
+    expect(existsSync(recentBrowser)).toBe(true);
+    expect(existsSync(unrelated)).toBe(true);
+  });
+
+  it("preserves an aged browser cache when a live process ownership signal exists", () => {
+    const root = makeRoot();
+    const home = join(root, "home");
+    const browser = join(home, ".cache", "ms-playwright", "chromium-1234");
+    mkdirSync(browser, { recursive: true });
+    writeFileSync(join(browser, "rebuildable"), "cache");
+    ageEntry(join(browser, "rebuildable"), 48);
+    ageEntry(browser, 48);
+    writeFileSync(join(browser, ".pid"), String(process.pid));
+    const result = run({ HOME: home, REAP_TMP_ROOT: join(root, "empty-tmp"), REAP_WORKTREE_REPOS: "," });
+    expect(result.status, result.stderr).toBe(0);
+    expect(existsSync(browser)).toBe(true);
   });
 
   function makeDetachedCheckout(root: string): { checkout: string; dependencies: string } {
