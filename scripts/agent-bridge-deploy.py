@@ -18,6 +18,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from collections import deque
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -794,6 +795,10 @@ def finish_handoff_worker(identity: str, archive: Path, approval: Path | None, o
         if production and not verify_handoff_readback(commit):
             fail("deployment handoff commit, service health or recovery-sentinel readback failed")
         update_handoff_result(directory, "verified", commit, sha256)
+        # Archive bytes have been consumed and the immutable installed release
+        # is accepted. Keep only the small durable receipt, not a redundant
+        # duplicate archive on this capacity-constrained host.
+        archive.unlink(missing_ok=True)
         return outcome
     except Exception as error:
         # Only known resource/session refusals can retry automatically.
@@ -891,12 +896,19 @@ def _run_deployment(archive: Path, approval: Path | None, owner_request: Path | 
     environment["AGENT_BRIDGE_DEPLOY_ARTIFACT_SHA256"] = archive_sha256
     environment["AGENT_BRIDGE_DEPLOY_ENVIRONMENT"] = approval_document["environment"]
     environment["AGENT_BRIDGE_DEPLOY_APPROVAL_REFERENCE"] = approval_document["approval_reference"]
-    result = subprocess.run([str(rollout_helper), "--expected-commit", commit],
-                            check=False, env=environment, capture_output=True, text=True)
-    sys.stdout.write(result.stdout or "")
-    sys.stderr.write(result.stderr or "")
-    if result.returncode:
-        combined = (result.stdout or "") + "\\n" + (result.stderr or "")
+    diagnostics: deque[str] = deque(maxlen=80)
+    # Stream full rollout output straight to the existing systemd journal.
+    # Retain only a bounded diagnostic tail in memory on a small protected host.
+    with subprocess.Popen([str(rollout_helper), "--expected-commit", commit],
+                          env=environment, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                          text=True, errors="replace") as process:
+        assert process.stdout is not None
+        for line in process.stdout:
+            sys.stdout.write(line)
+            diagnostics.append(line[-512:])
+        return_code = process.wait()
+    if return_code:
+        combined = "\n".join(diagnostics)
         for code, signal in (
             ("release_disk_space_insufficient", r"release_disk_space_insufficient"),
             ("disk_headroom_insufficient", r"disk_headroom_insufficient|insufficient disk for rollout and rollback"),
