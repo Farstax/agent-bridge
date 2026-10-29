@@ -670,6 +670,16 @@ def verify_handoff_readback(commit: str) -> bool:
     return not sentinel.exists() and not sentinel.is_symlink()
 
 
+def clean_verified_archive(path: Path) -> None:
+    try:
+        size = path.stat().st_size if path.exists() else 0
+        path.unlink(missing_ok=True)
+        if size:
+            print(f"verified deployment staging reclaimed_bytes={size}", file=sys.stderr)
+    except OSError:
+        print("verified deployment archive cleanup deferred", file=sys.stderr)
+
+
 def accept_handoff(archive: Path, approval: Path | None, owner_request: Path | None) -> str:
     reject_root_test_overrides()
     production = os.geteuid() == 0 or os.environ.get("AGENT_BRIDGE_DEPLOY_TEST") != "1"
@@ -722,6 +732,7 @@ def accept_handoff(archive: Path, approval: Path | None, owner_request: Path | N
         unit = handoff_unit(commit, sha256)
         if production and verify_handoff_readback(commit):
             update_handoff_result(directory, "verified", commit, sha256)
+            clean_verified_archive(release_copy)
             return f"verified {commit} {sha256} unit={unit}"
         result_file = directory / "result.json"
         if result_file.exists():
@@ -733,6 +744,7 @@ def accept_handoff(archive: Path, approval: Path | None, owner_request: Path | N
                 # If it was rolled back or services lost health, retry the
                 # guarded owner rather than report a stale verified receipt.
                 if not production or verify_handoff_readback(commit):
+                    clean_verified_archive(release_copy)
                     return f"verified {commit} {sha256} unit={unit}"
         # Avoid concurrent duplicate systemd workers. A completed or failed
         # unit can be retried by the exact same authorised request.
@@ -793,6 +805,7 @@ def resume_pending_handoff() -> str:
     with exclusive_deployment_lock(production):
         if production and verify_handoff_readback(commit):
             update_handoff_result(directory, "verified", commit, sha256)
+            clean_verified_archive(archive)
             return f"verified {commit} {sha256} unit={unit}"
         if production and subprocess.run(
             ["/usr/bin/systemctl", "is-active", "--quiet", unit], check=False
@@ -839,11 +852,7 @@ def finish_handoff_worker(identity: str, archive: Path, approval: Path | None, o
         # Archive bytes have been consumed and the immutable installed release
         # is accepted. Keep only the small durable receipt, not a redundant
         # duplicate archive on this capacity-constrained host.
-        try:
-            archive.unlink(missing_ok=True)
-        except OSError:
-            # Hygiene cannot reverse an already verified healthy rollout.
-            print("verified deployment archive cleanup deferred", file=sys.stderr)
+        clean_verified_archive(archive)
         return outcome
     except Exception as error:
         # Only known resource/session refusals can retry automatically.
