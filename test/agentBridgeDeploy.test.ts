@@ -718,6 +718,60 @@ print(json.dumps({"bytes": footprint_bytes, "inodes": footprint_inodes}))
     expect(footprint.bytes).toBeGreaterThan((2000 + 500 + 100) * 4096);
   });
 
+  it("charges ext4 directory-block packing for long names and bounds the stage snapshot (#1100)", () => {
+    const probe = String.raw`
+import hashlib, importlib.util, io, json, os, tarfile, tempfile
+from pathlib import Path
+spec = importlib.util.spec_from_file_location("agent_bridge_deploy", ${JSON.stringify(resolve(DEPLOYER))})
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+stage = module.staging_module(Path(${JSON.stringify(resolve("scripts/release-stage.py"))}))
+lock = b"lock\n"
+names = [f"flat/{index:0251d}" for index in range(1500)]
+files = [{"path": "package-lock.json", "sha256": hashlib.sha256(lock).hexdigest(), "size": 5}]
+files += [{"path": name, "sha256": hashlib.sha256(b"").hexdigest(), "size": 0} for name in names]
+manifest = json.dumps({"schema_version": 1, "commit": "${COMMIT}", "tree": "${TREE}", "files": files,
+  "package_lock_sha256": hashlib.sha256(lock).hexdigest()}).encode()
+directory = Path(tempfile.mkdtemp())
+archive = directory / "release.tar.gz"
+with tarfile.open(archive, "w:gz") as bundle:
+    for name, data in [("manifest.json", manifest), ("package-lock.json", lock)] + [(name, b"") for name in names]:
+        info = tarfile.TarInfo(name); info.size = len(data); bundle.addfile(info, io.BytesIO(data))
+verified, _ = module.verify_archive_stream(archive, stage)
+footprint = verified["_staging_footprint"][0]
+os.environ["AGENT_BRIDGE_RELEASE_STAGE_TEST"] = "1"
+try:
+    stage.stage(archive, directory / "releases", "${COMMIT}", hashlib.sha256(archive.read_bytes()).hexdigest(), archive.stat().st_size - 1)
+except RuntimeError as error:
+    limited = str(error)
+print(json.dumps({"footprint": footprint, "limited": limited, "staged": (directory / "releases" / "${COMMIT}").exists()}))
+`;
+    const result = spawnSync("python3", ["-c", probe], { encoding: "utf8" });
+    expect(result.status, result.stderr).toBe(0);
+    const outcome = JSON.parse(result.stdout) as { footprint: number; limited: string; staged: boolean };
+    // 264-byte records pack 15 per 4 KiB block: 1,500 names need 100 blocks.
+    expect(outcome.footprint).toBeGreaterThanOrEqual(100 * 4096);
+    expect(outcome.limited).toContain("archive is larger than its verified size");
+    expect(outcome.staged).toBe(false);
+  });
+
+  it("rejects release-stage test mode for a root deployment (#1100)", () => {
+    const probe = String.raw`
+import importlib.util, os
+spec = importlib.util.spec_from_file_location("agent_bridge_deploy", ${JSON.stringify(resolve(DEPLOYER))})
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+module.os.geteuid = lambda: 0
+os.environ["AGENT_BRIDGE_RELEASE_STAGE_TEST"] = "1"
+try:
+    module.reject_root_test_overrides()
+except RuntimeError as error:
+    print(error)
+`;
+    const result = spawnSync("python3", ["-c", probe], { encoding: "utf8", env: { PATH: process.env.PATH ?? "" } });
+    expect(result.stdout).toContain("AGENT_BRIDGE_RELEASE_STAGE_TEST");
+  });
+
   it("refuses staging when the candidate's inodes do not fit (#1100)", () => {
     const fixture = makeRelease();
     const releaseRoot = mkdtempSync(join(tmpdir(), "agent-bridge-deploy-stage-"));

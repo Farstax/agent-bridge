@@ -55,9 +55,18 @@ def digest_stream(stream: BinaryIO) -> str:
     return hasher.hexdigest()
 
 
-def snapshot_stream(source: BinaryIO, snapshot: BinaryIO) -> str:
+# The deployer passes the verified archive size so a source that grows after
+# verification cannot write more than the admitted snapshot (#1100).
+SNAPSHOT_LIMIT_SUPPORTED = True
+
+
+def snapshot_stream(source: BinaryIO, snapshot: BinaryIO, max_bytes: int | None = None) -> str:
     hasher = hashlib.sha256()
+    written = 0
     for chunk in iter(lambda: source.read(1024 * 1024), b""):
+        written += len(chunk)
+        if max_bytes is not None and written > max_bytes:
+            fail("archive is larger than its verified size")
         hasher.update(chunk)
         snapshot.write(chunk)
     snapshot.flush()
@@ -282,7 +291,7 @@ def validate_existing(release: Path, release_root: Path, expected_commit: str, a
     return f"already staged {expected_commit}"
 
 
-def stage(archive: Path, release_root: Path, expected_commit: str, expected_archive_sha256: str) -> str:
+def stage(archive: Path, release_root: Path, expected_commit: str, expected_archive_sha256: str, max_archive_bytes: int | None = None) -> str:
     if len(expected_commit) != SHA or any(c not in "0123456789abcdef" for c in expected_commit):
         fail("expected commit must be a full lowercase 40-character SHA")
     if len(expected_archive_sha256) != SHA256 or any(c not in "0123456789abcdef" for c in expected_archive_sha256):
@@ -290,7 +299,7 @@ def stage(archive: Path, release_root: Path, expected_commit: str, expected_arch
     release_root = validate_release_root(release_root)
     with open_archive(archive) as archive_stream:
         with tempfile.TemporaryFile(prefix="agent-bridge-archive-") as snapshot:
-            archive_sha256 = snapshot_stream(archive_stream, snapshot)
+            archive_sha256 = snapshot_stream(archive_stream, snapshot, max_archive_bytes)
             if archive_sha256 != expected_archive_sha256:
                 fail("archive SHA-256 does not match the expected digest")
             replacement = os.environ.get("AGENT_BRIDGE_RELEASE_STAGE_TEST_REPLACE_ARCHIVE")
@@ -333,10 +342,13 @@ def main() -> int:
     parser.add_argument("--release-root", type=Path, required=True)
     parser.add_argument("--expected-commit", required=True)
     parser.add_argument("--archive-sha256", required=True)
+    parser.add_argument("--max-archive-bytes", type=int)
     args = parser.parse_args()
+    if args.max_archive_bytes is not None and args.max_archive_bytes < 0:
+        fail("max archive bytes must not be negative")
     if os.geteuid() != 0 and os.environ.get("AGENT_BRIDGE_RELEASE_STAGE_TEST") != "1":
         fail("release staging must run as root")
-    print(stage(args.archive, args.release_root, args.expected_commit, args.archive_sha256))
+    print(stage(args.archive, args.release_root, args.expected_commit, args.archive_sha256, args.max_archive_bytes))
     return 0
 
 

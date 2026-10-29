@@ -201,8 +201,19 @@ def verify_archive_stream(archive: Path, stage) -> tuple[dict, bytes | None]:
     # blocks per regular file, one block per symlink (long targets need one),
     # and every directory sized by its entries (8-byte header plus the
     # 4-byte-aligned name, as in ext4), at least one block.
-    entry_bytes: dict[str, int] = {"": 0}
+    # Per directory: [blocks, bytes used in the last block]; "." and ".." first.
+    entry_bytes: dict[str, list[int]] = {}
     named: set[str] = set()
+
+    def add_entry(directory: str, name: str) -> None:
+        record = 8 + -(-len(name.encode()) // 4) * 4
+        state = entry_bytes.setdefault(directory, [1, 24])
+        if state[1] + record > STAGING_BLOCK_BYTES:
+            state[0] += 1
+            state[1] = 0
+        state[1] += record
+
+    add_entry("", ".")
     footprint_bytes = 0
     footprint_inodes = 1
     for relative, member, bundle in archive_members(archive, stage):
@@ -212,12 +223,11 @@ def verify_archive_stream(archive: Path, stage) -> tuple[dict, bytes | None]:
             if path in named:
                 continue
             named.add(path)
-            parent = "/".join(parts[:index - 1])
-            entry_bytes[parent] = entry_bytes.get(parent, 0) + 8 + -(-len(parts[index - 1].encode()) // 4) * 4
+            add_entry("/".join(parts[:index - 1]), parts[index - 1])
             if index < len(parts):
-                entry_bytes.setdefault(path, 0)
+                entry_bytes.setdefault(path, [1, 24])
         if member.isdir():
-            entry_bytes.setdefault(relative, 0)
+            entry_bytes.setdefault(relative, [1, 24])
             continue
         if not member.islnk():
             footprint_inodes += 1
@@ -262,7 +272,8 @@ def verify_archive_stream(archive: Path, stage) -> tuple[dict, bytes | None]:
     if "manifest.json" not in regular:
         raise RuntimeError("release artifact is missing a regular manifest.json")
     footprint_inodes += len(entry_bytes)
-    footprint_bytes += sum(max(1, -(-size // STAGING_BLOCK_BYTES)) * STAGING_BLOCK_BYTES for size in entry_bytes.values())
+    # Directories that span blocks also need hashed-index blocks; charge one per 64.
+    footprint_bytes += sum(blocks + (blocks > 1) * (1 + blocks // 64) for blocks, _ in entry_bytes.values()) * STAGING_BLOCK_BYTES
     # Large directories and filesystem metadata take more than one block each;
     # a 1% margin keeps the estimate above the measured allocation.
     footprint_bytes += footprint_bytes // 100
@@ -286,6 +297,14 @@ def filesystem_probe(path: Path) -> Path:
     while not probe.exists():
         probe = probe.parent
     return probe
+
+
+def snapshot_limit_args(stage_helper: Path, archive_sha256: str) -> list[str]:
+    """Bound the stage snapshot to the verified size when the installed helper supports it."""
+    manifest = VERIFIED_MANIFESTS.get(archive_sha256)
+    if manifest is None or not getattr(staging_module(stage_helper), "SNAPSHOT_LIMIT_SUPPORTED", False):
+        return []
+    return ["--max-archive-bytes", str(manifest["_staging_footprint"][2])]
 
 
 def admit_staging(archive: Path, commit: str, archive_sha256: str, release_root: Path, production: bool,
@@ -630,7 +649,8 @@ def refresh_privileged_helpers(release_dir: Path, config: Path, install_root: Pa
 
 
 def reject_root_test_overrides() -> None:
-    test_override_keys = sorted(key for key in os.environ if key.startswith("AGENT_BRIDGE_DEPLOY_TEST"))
+    test_override_keys = sorted(key for key in os.environ
+                                if key.startswith("AGENT_BRIDGE_DEPLOY_TEST") or key.startswith("AGENT_BRIDGE_RELEASE_STAGE_TEST"))
     if os.geteuid() == 0 and test_override_keys:
         fail(f"test overrides are forbidden for root deployment: {', '.join(test_override_keys)}")
 
@@ -1151,7 +1171,7 @@ def _run_deployment(archive: Path, approval: Path | None, owner_request: Path | 
             subprocess.run([
                 sys.executable, str(stage_helper), "--archive", str(archive),
                 "--release-root", str(release_root), "--expected-commit", commit,
-                "--archive-sha256", archive_sha256,
+                "--archive-sha256", archive_sha256, *snapshot_limit_args(stage_helper, archive_sha256),
             ], check=True, env=environment)
             test_helper_root = os.environ.get("AGENT_BRIDGE_DEPLOY_TEST_HELPER_ROOT")
             test_rollout_config = os.environ.get("AGENT_BRIDGE_DEPLOY_TEST_ROLLOUT_CONFIG")
@@ -1177,7 +1197,7 @@ def _run_deployment(archive: Path, approval: Path | None, owner_request: Path | 
     subprocess.run([
         "/usr/bin/python3", str(stage_helper), "--archive", str(archive),
         "--release-root", str(release_root), "--expected-commit", commit,
-        "--archive-sha256", archive_sha256,
+        "--archive-sha256", archive_sha256, *snapshot_limit_args(stage_helper, archive_sha256),
     ], check=True)
     refresh_privileged_helpers(release_root / commit, config)
     environment = os.environ.copy()
