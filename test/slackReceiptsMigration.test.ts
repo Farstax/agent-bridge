@@ -13,11 +13,13 @@ describe("schema v20 slack receipts (#943)", () => {
   afterEach(() => rmSync(dir, { recursive: true, force: true }));
 
   it("upgrades a v19 database preserving health and autonomous receipts, then admits slack rows", () => {
-    expect(CURRENT_SCHEMA_VERSION).toBe(25);
+    expect(CURRENT_SCHEMA_VERSION).toBe(26);
     const path = join(dir, "bridge.sqlite");
     const raw = new Database(path);
     // Build a current v19 image by running the registered plan to v19 semantics.
     applyMigrations(raw);
+    raw.exec("DROP INDEX IF EXISTS bridge_runs_outward_client_request");
+    raw.exec("ALTER TABLE bridge_runs DROP COLUMN client_request_id");
     raw.pragma("user_version = 19");
     raw.exec("DROP INDEX IF EXISTS idx_event_receipts_source_kind");
     raw.exec("ALTER TABLE event_receipts RENAME TO event_receipts_new");

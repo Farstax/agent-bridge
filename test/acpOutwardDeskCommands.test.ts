@@ -106,7 +106,7 @@ describe("outward ACP Desk commands (#1101)", () => {
     const { app } = setup();
     const initialized = await acp.client({ name: "desk" }).connectWith(app, (agent) =>
       agent.request(acp.methods.agent.initialize, { protocolVersion: 1, clientCapabilities: {} }));
-    expect(initialized.agentCapabilities?._meta).toEqual({ "agent-bridge": { workstreams: 1, commands: 1 } });
+    expect(initialized.agentCapabilities?._meta).toEqual({ "agent-bridge": { workstreams: 1, commands: 1, promptIdempotency: 1 } });
   });
 
   it("keeps recovery and provider-switch commands available when the selected provider is unavailable", async () => {

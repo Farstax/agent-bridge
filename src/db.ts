@@ -412,8 +412,13 @@ export class BridgeDb {
     runId: string,
     identity: ConversationIdentity,
     bot: string,
+    clientRequestId?: string,
   ): void {
-    this.runs.insertRun(runId, identity, bot);
+    this.runs.insertRun(runId, identity, bot, clientRequestId);
+  }
+
+  getRunByClientRequest(identity: ConversationIdentity, clientRequestId: string): any {
+    return this.runs.getRunByClientRequest(identity, clientRequestId);
   }
 
   getRun(runId: string): any {
