@@ -21,6 +21,11 @@ export interface SurfaceNeutralProviderRouterOptions {
   isProviderAvailable?: (provider: BotKind) => boolean;
 }
 
+export interface SurfaceNeutralProviderRouter extends Pick<BridgeEngine, "executeSurfaceNeutralTurn"> {
+  /** Provider the next turn of this conversation starts with, after any fallback. */
+  activeProvider(chatKey: string): BotKind;
+}
+
 /**
  * Provider-neutral fallback for non-messaging Runs.
  * BridgeEngine retains same-provider model fallback; this only advances to the
@@ -28,7 +33,7 @@ export interface SurfaceNeutralProviderRouterOptions {
  */
 export function createSurfaceNeutralProviderRouter(
   options: SurfaceNeutralProviderRouterOptions,
-): Pick<BridgeEngine, "executeSurfaceNeutralTurn"> {
+): SurfaceNeutralProviderRouter {
   const ordered = [
     options.initialProvider,
     ...options.providerChain.filter((provider) => provider !== options.initialProvider),
@@ -53,6 +58,10 @@ export function createSurfaceNeutralProviderRouter(
   const initialized = new Set<string>();
 
   return {
+    activeProvider(chatKey: string): BotKind {
+      snapshot = new Map();
+      return initialized.has(chatKey) ? fallback.getActiveCli(chatKey) as BotKind : options.initialProvider;
+    },
     async executeSurfaceNeutralTurn(input: SurfaceNeutralTurnInput) {
       if (!initialized.has(input.chatKey)) {
         fallback.setActiveCli(input.chatKey, options.initialProvider);

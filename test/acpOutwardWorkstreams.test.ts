@@ -224,6 +224,33 @@ describe("outward ACP Workstreams (#1101)", () => {
     expect(status.status).toMatchObject({ state: "idle", lastRun: { status: "done" } });
   });
 
+  it("reports the provider the next Run actually uses after fallback", async () => {
+    const f = fixture();
+    f.repo.create({ sessionId: "s1", conversationId: "acp:c1", cwd: f.root });
+    const attempts: Attempt[] = [];
+    let codexUp = true;
+    const exec = executor(f.db, attempts, { available: (p) => p === "claude" || codexUp });
+    const app = createOutwardAcpAgent({ sessions: f.sessions, promptExecutor: exec, workstreams: exec });
+    const prompt = () => acp.client({ name: "t" }).connectWith(app, (agent) =>
+      agent.request(acp.methods.agent.session.prompt, { sessionId: "s1", prompt: [{ type: "text", text: "hi" }] }));
+
+    expect(exec.status(f.repo.get("s1")!)).toMatchObject({ selectedProvider: "codex", nextProvider: "codex" });
+    await prompt();
+    codexUp = false;
+    const degraded = exec.status(f.repo.get("s1")!);
+    expect(degraded).toMatchObject({ selectedProvider: "codex", nextProvider: "claude" });
+    expect(degraded.providers).toEqual([{ id: "codex", available: false }, { id: "claude", available: true }]);
+    await prompt();
+    expect(attempts.map((a) => a.provider)).toEqual(["codex", "claude"]);
+
+    // An explicit selection resets the head; status and execution agree.
+    codexUp = true;
+    exec.selectProvider(f.repo.get("s1")!, "claude");
+    expect(exec.status(f.repo.get("s1")!)).toMatchObject({ selectedProvider: "claude", nextProvider: "claude" });
+    await prompt();
+    expect(attempts.at(-1)?.provider).toBe("claude");
+  });
+
   it("reports failed and attention states only from durable Run records", async () => {
     const f = fixture();
     f.repo.create({ sessionId: "s1", conversationId: "acp:c1", cwd: f.root });

@@ -25,7 +25,11 @@ ACP v1 equivalent use the ACP extension-method namespace and are advertised as
 
 Create is standard `session/new` followed by an optional `update` for the
 title. Every per-Workstream call must present the session's `cwd`, as
-`session/load` already requires.
+`session/load` already requires. `cwd` is a selector, not an authorisation:
+the outward agent serves one workspace owner, so the Platform gateway must
+pin `cwd` to the authenticated principal's workspace and never forward a
+client-chosen value. Archive is metadata only; an archived Workstream can
+still be loaded and prompted, and `update` with `archived: false` restores it.
 
 ## Status truth
 
@@ -33,7 +37,8 @@ title. Every per-Workstream call must present the session's `cwd`, as
 `running`, `failed`, `cancelled`, `attention` (provider recorded a `blocked`
 outcome) or `idle`. The outward agent rejects a second concurrent prompt as
 busy, so it has no queued state. Bridge never infers attention from message
-text or timing.
+text or timing. A Run interrupted by a crash reads `running` until restart
+reconciliation settles its record.
 
 ## Provider selection
 
@@ -44,7 +49,9 @@ in-flight Run is never retargeted. The selection is stored with the existing
 interactive CLI preference and manual-switch handoff (same as Telegram
 `/cli`), so it survives restart, keeps the conversation ID and starts the new
 provider with a fresh provider session. Fallback still advances along the
-configured chain from the selected head.
+configured chain from the selected head. `status.selectedProvider` is the
+durable choice; `status.nextProvider` is the provider the next Run starts
+with, which differs after an in-process fallback.
 
 ## Trust boundary
 

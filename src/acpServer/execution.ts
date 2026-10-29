@@ -11,7 +11,7 @@ import { SAFE_SURFACE_CAPABILITIES, type MessagingPlatform } from "../platform.j
 import { interactiveChainKinds, parseCliChain } from "../providers/selection.js";
 import { lookupProviderSession, persistProviderSession } from "../providers/sessionRuntime.js";
 import type { OutwardAcpSessionRecord } from "../repositories/outwardAcpSessionRepository.js";
-import { createSurfaceNeutralProviderRouter } from "../surfaceNeutralProviderRouter.js";
+import { createSurfaceNeutralProviderRouter, type SurfaceNeutralProviderRouter } from "../surfaceNeutralProviderRouter.js";
 import { getCachedAvailableCliKinds } from "../interactiveCliAuth.js";
 import { applyManualCliSwitchHandoff, getStoredCliPreference, type CliKind } from "../interactiveBot.js";
 import type { BotKind, BridgeConfig, CliResult, RouteableBotKind } from "../types.js";
@@ -50,8 +50,13 @@ export type OutwardWorkstreamState = "running" | "attention" | "failed" | "cance
 
 export interface OutwardWorkstreamStatus {
   state: OutwardWorkstreamState;
-  /** Provider the next Run will start with. */
+  /** Durable per-Workstream selection (the chain head when none was chosen). */
   selectedProvider: BotKind;
+  /**
+   * Provider the next Run starts with. Differs from the selection after an
+   * in-process fallback; a restart returns to the selection.
+   */
+  nextProvider: BotKind;
   /** Configured chain members, with current routeability. */
   providers: Array<{ id: BotKind; available: boolean }>;
   lastRun: {
@@ -177,7 +182,7 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
   // silently retrying an already-exhausted head provider every turn.
   // A router is rebuilt only when the Workstream's durable provider selection
   // changes, which can only happen while no Run holds the conversation lane.
-  private readonly routers = new Map<string, { provider: BotKind; router: OutwardAcpExecutionEngine }>();
+  private readonly routers = new Map<string, { provider: BotKind; router: SurfaceNeutralProviderRouter }>();
 
   constructor(private readonly options: BridgeOutwardAcpPromptExecutorOptions) {}
 
@@ -191,7 +196,7 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
     return stored && this.options.providerChain.includes(stored as BotKind) ? stored as BotKind : this.options.providerChain[0];
   }
 
-  private routerFor(session: OutwardAcpSessionRecord, initialProvider: BotKind): OutwardAcpExecutionEngine {
+  private routerFor(session: OutwardAcpSessionRecord, initialProvider: BotKind): SurfaceNeutralProviderRouter {
     const existing = this.routers.get(session.conversationId);
     if (existing?.provider === initialProvider) return existing.router;
     const { db, providerChain, createEngine, isProviderAvailable } = this.options;
@@ -216,9 +221,12 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
     else if (run?.status === "cancelled") state = "cancelled";
     // Attention comes only from an explicit recorded provider disposition.
     else if (run?.outcome_status === "blocked") state = "attention";
+    const selectedProvider = this.selectedProvider(session);
+    const cached = this.routers.get(session.conversationId);
     return {
       state,
-      selectedProvider: this.selectedProvider(session),
+      selectedProvider,
+      nextProvider: cached?.provider === selectedProvider ? cached.router.activeProvider(session.conversationId) : selectedProvider,
       providers: providerChain.map((id) => ({ id, available: isProviderAvailable?.(id) ?? true })),
       lastRun: run ? {
         runId: run.run_id,
