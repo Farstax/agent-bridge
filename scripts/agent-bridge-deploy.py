@@ -655,7 +655,8 @@ def verify_handoff_readback(commit: str) -> bool:
             check=False,
         ).returncode:
             return False
-    return not (Path(configured_value(config, "log_dir")) / ".rollout-in-progress").exists()
+    sentinel = Path(configured_value(config, "log_dir")) / ".rollout-in-progress"
+    return not sentinel.exists() and not sentinel.is_symlink()
 
 
 def accept_handoff(archive: Path, approval: Path | None, owner_request: Path | None) -> str:
