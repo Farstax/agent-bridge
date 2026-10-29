@@ -16,6 +16,7 @@ import sqlite3
 import subprocess
 import sys
 import tarfile
+import tempfile
 import time
 from pathlib import Path
 from typing import Mapping, Sequence
@@ -728,13 +729,26 @@ def main(argv: Sequence[str] | None = None) -> int:
         # guarded rollout prepares before containment. Prepare it here too,
         # with the runtime account the rollout passes to component installers.
         os.environ["AGENT_BRIDGE_RUNTIME_USER"] = args.runtime_user
-        # Component installers resolve node from PATH; use the admitted binary.
-        os.environ["PATH"] = f"{node_bin.parent}{os.pathsep}{os.environ.get('PATH', '/usr/bin:/bin')}"
-        print(json.dumps(activate.prepare_release_host_components(release_root, staged, activated_commit), sort_keys=True), flush=True)
-        install_shared_skills(release_root / activated_commit, node_bin, account, os.environ)
-        bootstrapped_databases = list(databases)
-        bootstrap_databases(release_root / activated_commit, node_bin, account, selected, databases)
-        print(activate.activate(release_root, current, activated_commit), flush=True)
+        # Component installers resolve node from PATH. Expose only the admitted
+        # binary through a private root-owned directory; its own directory may
+        # be runtime-user controlled and must never shadow root's tools.
+        node_dir = Path(tempfile.mkdtemp(prefix="agent-bridge-install-node-"))
+        os.symlink(node_bin, node_dir / "node")
+        # Root-owned and holding only the node link; the Cursor installer runs
+        # as the runtime user and must be able to resolve it.
+        os.chmod(node_dir, 0o755)
+        original_path = os.environ.get("PATH", "/usr/bin:/bin")
+        os.environ["PATH"] = f"{node_dir}{os.pathsep}{original_path}"
+        try:
+            print(json.dumps(activate.prepare_release_host_components(release_root, staged, activated_commit), sort_keys=True), flush=True)
+            install_shared_skills(release_root / activated_commit, node_bin, account, os.environ)
+            bootstrapped_databases = list(databases)
+            bootstrap_databases(release_root / activated_commit, node_bin, account, selected, databases)
+            # Commit-mode activation runs the component installers again.
+            print(activate.activate(release_root, current, activated_commit), flush=True)
+        finally:
+            os.environ["PATH"] = original_path
+            shutil.rmtree(node_dir, ignore_errors=True)
 
         systemctl("start", *managed_units)
         accept(units, databases, args.acceptance_timeout, state_root)

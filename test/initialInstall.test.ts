@@ -50,9 +50,12 @@ with tempfile.TemporaryDirectory() as directory:
     expect(prepare).toBeGreaterThan(0);
     expect(prepare).toBeLessThan(source.indexOf("activate.activate(release_root, current, activated_commit)"));
     // Component installers need the rollout's runtime account and the admitted node.
-    const environment = source.slice(source.lastIndexOf("try:", prepare), prepare);
+    const environment = source.slice(source.lastIndexOf("activate.validate_release(staged", prepare), prepare);
     expect(environment).toContain('os.environ["AGENT_BRIDGE_RUNTIME_USER"] = args.runtime_user');
-    expect(environment).toContain('os.environ["PATH"] = f"{node_bin.parent}');
+    // Only the admitted node is exposed to root, never its (user-owned) directory.
+    expect(source).not.toContain("node_bin.parent");
+    expect(environment).toContain('os.symlink(node_bin, node_dir / "node")');
+    expect(environment).toContain('os.environ["PATH"] = f"{node_dir}{os.pathsep}{original_path}"');
   });
 
   it("stages the archive once with the bootstrap helper and writes no inspection copy (#1100)", () => {
