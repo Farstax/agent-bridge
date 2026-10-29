@@ -115,6 +115,9 @@ jobs:
           test -x "$root/bin/agent-bridge-review"
           cp -a skills/. "$root/skills/"
           cp -a tsconfig.json "$root/"
+          bash scripts/prune-release-tree.sh "$root"
+          test -z "$(find "$root/node_modules" "$root/dist" -type f \( -name '*.map' -o -name '*.d.ts' \) -print -quit)"
+          "$root/node_modules/@xai-official/grok/bin/grok" --version
           cat > "$root/qualification-evidence.json" <<EOF
           {
             "commit": "${commit}",
