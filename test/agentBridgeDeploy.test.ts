@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { execFileSync, spawnSync } from "node:child_process";
-import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { describe, expect, it } from "vitest";
@@ -171,6 +171,54 @@ describe("single-input deployer contract", () => {
     expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
     expect(result.stdout).toContain(`validated ${COMMIT}`);
     expect(result.stdout).not.toMatch(/evidence|bundle|validator/i);
+  });
+
+  it("validates by streaming the archive without writing an extracted copy (#1100)", () => {
+    const fixture = makeRelease();
+    const probe = String.raw`
+import importlib.util, json, sys
+from datetime import datetime, timezone
+from pathlib import Path
+spec = importlib.util.spec_from_file_location("agent_bridge_deploy", ${JSON.stringify(resolve(DEPLOYER))})
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+real = module.staging_module
+def guarded(helper):
+    stage = real(helper)
+    stage.extract_archive = lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("validation extracted the archive"))
+    return stage
+module.staging_module = guarded
+module.tempfile.TemporaryDirectory = lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("validation created a scratch directory"))
+commit, sha, _ = module.validate_archive(Path(sys.argv[1]), None, datetime.now(timezone.utc), True)
+print(commit)
+`;
+    const result = spawnSync("python3", ["-c", probe, fixture.archive], { encoding: "utf8" });
+    expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
+    expect(result.stdout.trim()).toBe(COMMIT);
+  });
+
+  it.each([
+    ["an undeclared file", (root: string) => writeFileSync(join(root, "extra.js"), "x"), ["extra.js"], /not in the manifest/],
+    ["a modified payload", (root: string) => writeFileSync(join(root, "runtime.js"), "changed\n"), [], /hash or size mismatch/],
+    ["an escaping symlink", (root: string) => symlinkSync("../../etc/passwd", join(root, "escape")), ["escape"], /escaped release root/],
+    ["a traversal member", (_root: string) => undefined, ["../outside"], /unsafe archive path/],
+  ])("refuses %s before staging without extraction", (_name, mutate, extra, pattern) => {
+    const fixture = makeRelease();
+    mutate(fixture.root);
+    const archive = join(fixture.root, "bad.tar.gz");
+    const members = ["manifest.json", "package-lock.json", "qualification-evidence.json", "runtime.js"];
+    if (extra[0] === "../outside") {
+      writeFileSync(join(fixture.root, "..", "outside"), "x");
+      execFileSync("tar", ["-czf", archive, "-C", fixture.root, "-P", ...members, "../outside"]);
+    } else {
+      execFileSync("tar", ["-czf", archive, "-C", fixture.root, ...members, ...extra]);
+    }
+    const result = spawnSync("python3", [DEPLOYER, "--release", archive, "--validate-only"], {
+      encoding: "utf8",
+      env: { ...process.env, AGENT_BRIDGE_DEPLOY_TEST: "1" },
+    });
+    expect(result.status).not.toBe(0);
+    expect(`${result.stdout}\n${result.stderr}`).toMatch(pattern);
   });
 
   it("rejects a tampered archive and wrong commit/environment/SHA or expired approval", () => {

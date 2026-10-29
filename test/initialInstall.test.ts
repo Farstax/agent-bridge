@@ -29,6 +29,57 @@ ${body}
 }
 
 describe("exact-release initial installer", () => {
+  it("stages the archive once with the bootstrap helper and writes no inspection copy (#1100)", () => {
+    const result = probe(`
+import hashlib, io, tarfile
+stage_path = pathlib.Path(${JSON.stringify(resolve(process.cwd(), "scripts/release-stage.py"))})
+spec2 = importlib.util.spec_from_file_location("stage_test", stage_path)
+stage = importlib.util.module_from_spec(spec2)
+spec2.loader.exec_module(stage)
+os.environ["AGENT_BRIDGE_RELEASE_STAGE_TEST"] = "1"
+commit, tree = "1" * 40, "2" * 40
+def build(directory, evidence_commit):
+  files = {"package-lock.json": b"lock\\n", "runtime.js": b"runtime\\n",
+           "qualification-evidence.json": json.dumps({"commit": evidence_commit, "tree": tree}).encode()}
+  entries = [{"path": k, "sha256": hashlib.sha256(v).hexdigest(), "size": len(v)} for k, v in sorted(files.items())]
+  files["manifest.json"] = json.dumps({"schema_version": 1, "commit": commit, "tree": tree, "files": entries,
+                                       "package_lock_sha256": hashlib.sha256(b"lock\\n").hexdigest()}).encode()
+  archive = pathlib.Path(directory) / f"{evidence_commit}.tar.gz"
+  with tarfile.open(archive, "w:gz") as bundle:
+    for name, data in files.items():
+      info = tarfile.TarInfo(name); info.size = len(data); info.mode = 0o644
+      bundle.addfile(info, io.BytesIO(data))
+  return archive
+extractions = []
+real_extract = stage.extract_archive
+stage.extract_archive = lambda archive, destination: (extractions.append(str(destination)), real_extract(archive, destination))[1]
+out = {}
+import contextlib
+with tempfile.TemporaryDirectory() as directory, contextlib.redirect_stdout(io.StringIO()):
+  root = pathlib.Path(directory) / "releases"
+  manifest, sha, staged = module.stage_and_inspect(build(directory, commit), stage, root)
+  out["staged"] = staged.name
+  out["extractions"] = len(extractions)
+  out["inside_release_root"] = all(pathlib.Path(p).parent == root for p in extractions)
+  out["entries"] = sorted(p.name for p in root.iterdir())
+  bad_root = pathlib.Path(directory) / "bad"
+  try:
+    module.stage_and_inspect(build(directory, "3" * 40), stage, bad_root)
+  except RuntimeError as error:
+    out["mismatch"] = str(error)
+  out["bad_root_created"] = bad_root.exists()
+sys.stdout.write(json.dumps(out))
+`) as Record<string, unknown>;
+
+    expect(result.staged).toBe("1".repeat(40));
+    expect(result.extractions).toBe(1);
+    expect(result.inside_release_root).toBe(true);
+    expect(result.entries).toContain("1".repeat(40));
+    expect((result.entries as string[]).filter((name) => name.startsWith(".staging-"))).toEqual([]);
+    expect(result.mismatch).toMatch(/qualification evidence does not match/);
+    expect(result.bad_root_created).toBe(false);
+  });
+
   it("makes shared configuration traversable by the runtime account without broadening file access", () => {
     const result = probe(`
 calls = []
