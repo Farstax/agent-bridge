@@ -627,10 +627,20 @@ def persist_handoff_file(path: Path, content: bytes) -> None:
         raise
 
 
-def update_handoff_result(directory: Path, status: str, commit: str, sha256: str, detail: str = "") -> None:
+def update_handoff_result(directory: Path, status: str, commit: str, sha256: str, detail: str = "", approval_reference: str | None = None) -> None:
     if status not in ("accepted", "activating", "verified", "deferred", "failed"):
         fail("invalid deployment handoff status")
-    record = {"status": status, "targetCommit": commit, "archiveSha256": sha256, "detail": detail}
+    prior = directory / "result.json"
+    if approval_reference is None and prior.is_file() and not prior.is_symlink():
+        previous = json.loads(secure_file(prior, False))
+        if previous.get("targetCommit") != commit or previous.get("archiveSha256") != sha256:
+            fail("handoff receipt identity mismatch")
+        approval_reference = previous.get("approvalReference")
+    approval_reference = approval_reference or "control-plane-pinned-release"
+    if not TOKEN.fullmatch(approval_reference):
+        fail("invalid accepted handoff approval reference")
+    record = {"status": status, "targetCommit": commit, "archiveSha256": sha256,
+              "approvalReference": approval_reference, "detail": detail}
     descriptor, name = tempfile.mkstemp(prefix=".result-", dir=directory)
     temp = Path(name)
     try:
@@ -692,9 +702,13 @@ def accept_handoff(archive: Path, approval: Path | None, owner_request: Path | N
         validate_private_helper(stage_helper)
     environment = configured_value(config, "environment") if config else os.environ.get("AGENT_BRIDGE_DEPLOY_TEST_ENVIRONMENT")
     now = datetime.now(timezone.utc)
-    commit, sha256, _ = validate_archive(archive, approval, now, production, environment, stage_helper)
-    if owner_request:
-        parse_owner_request(owner_request, commit, now, production)
+    commit, sha256, approval_document = validate_archive(archive, approval, now, production, environment, stage_helper)
+    owner_document = parse_owner_request(owner_request, commit, now, production) if owner_request else None
+    approval_reference = (
+        owner_document["reference"] if owner_document else
+        approval_document["approval_reference"] if approval_document else
+        "control-plane-pinned-release"
+    )
     identity = handoff_identity(commit, sha256)
     root = handoff_root(production)
     with exclusive_deployment_lock(production):
@@ -752,7 +766,7 @@ def accept_handoff(archive: Path, approval: Path | None, owner_request: Path | N
                                check=False).returncode if production else 1
         if state == 0:
             return f"accepted {commit} {sha256} unit={unit} pending"
-        update_handoff_result(directory, "accepted", commit, sha256)
+        update_handoff_result(directory, "accepted", commit, sha256, approval_reference=approval_reference)
         command = detached_command(release_copy, approved_copy, owner_copy, unit)
         command.remove("--wait")
         command.append("--handoff-id=" + identity)
@@ -845,7 +859,7 @@ def finish_handoff_worker(identity: str, archive: Path, approval: Path | None, o
         # This worker is root-owned, unit-verified and bound to the prior
         # immutable accepted receipt. Expiry governs accepting NEW authority,
         # not completing a request already durably accepted.
-        outcome = run_deployment(archive, None, None)
+        outcome = run_deployment(archive, None, None, receipt.get("approvalReference"))
         if production and not verify_handoff_readback(commit):
             fail("deployment handoff commit, service health or recovery-sentinel readback failed")
         update_handoff_result(directory, "verified", commit, sha256)
@@ -867,15 +881,15 @@ def finish_handoff_worker(identity: str, archive: Path, approval: Path | None, o
         raise
 
 
-def run_deployment(archive: Path, approval: Path | None, owner_request: Path | None = None) -> str:
+def run_deployment(archive: Path, approval: Path | None, owner_request: Path | None = None, accepted_reference: str | None = None) -> str:
     production = os.geteuid() == 0 or os.environ.get("AGENT_BRIDGE_DEPLOY_TEST") != "1"
     if not mutating_deployment(production):
-        return _run_deployment(archive, approval, owner_request)
+        return _run_deployment(archive, approval, owner_request, accepted_reference)
     with exclusive_deployment_lock(production):
-        return _run_deployment(archive, approval, owner_request)
+        return _run_deployment(archive, approval, owner_request, accepted_reference)
 
 
-def _run_deployment(archive: Path, approval: Path | None, owner_request: Path | None = None) -> str:
+def _run_deployment(archive: Path, approval: Path | None, owner_request: Path | None = None, accepted_reference: str | None = None) -> str:
     reject_root_test_overrides()
     production = os.geteuid() == 0 or os.environ.get("AGENT_BRIDGE_DEPLOY_TEST") != "1"
     config = Path("/etc/agent-bridge/rollout.conf") if production else None
@@ -905,7 +919,7 @@ def _run_deployment(archive: Path, approval: Path | None, owner_request: Path | 
             "environment": fixed_environment or "production-content-crawler",
             "target_commit": commit,
             "release_sha256": archive_sha256,
-            "approval_reference": "direct-operator-instruction",
+            "approval_reference": accepted_reference or "direct-operator-instruction",
         }
     if os.environ.get("AGENT_BRIDGE_DEPLOY_VALIDATE_ONLY") == "1":
         return f"validated {commit} {archive_sha256}"
