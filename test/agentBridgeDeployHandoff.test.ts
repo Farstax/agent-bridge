@@ -55,6 +55,20 @@ describe("durable independent OSS deployer handoff (#1347)", () => {
     expect(result.stdout).toContain("accepted ");
   });
 
+  it("resumes the same exact immutable pending request without selecting a newer release", () => {
+    const result = probe([
+      "assert module.resume_pending_handoff() == 'none'",
+      "module.accept_handoff(archive, None, None)",
+      "archive.unlink()",
+      "result = module.resume_pending_handoff()",
+      "assert result.startswith('accepted ' + commit + ' ' + sha256)",
+      "assert len(calls) == 2",
+      "print('same-identity')",
+    ].join("\n"));
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout).toContain("same-identity");
+  });
+
   it("rejects changed durable bytes", () => {
     const result = probe([
       "module.accept_handoff(archive, None, None)",
