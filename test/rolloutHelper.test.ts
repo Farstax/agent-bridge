@@ -366,6 +366,39 @@ describe("guarded rollout helper", { timeout: 30_000 }, () => {
     expect(`${result.stdout}\n${result.stderr}`).toContain(`immutable release retention pruned=1 retained_active=${fixture.previousCommit} retained_target=${fixture.expectedCommit}`);
   }, 15_000);
 
+  it("reclaims superseded releases whose host-component receipts outlived their rollout (#1100)", () => {
+    const fixture = createFixture();
+    const { releaseDir } = prepareImmutableRelease(fixture, fixture.previousCommit);
+    const releaseRoot = dirname(releaseDir);
+    const receipts = join(releaseRoot, ".host-components-prepared");
+    mkdirSync(receipts, { recursive: true });
+    const obsoleteCommit = "f".repeat(40);
+    const obsoleteDir = join(releaseRoot, obsoleteCommit);
+    execFileSync("cp", ["-a", releaseDir, obsoleteDir]);
+    execFileSync("chmod", ["-R", "u+w", obsoleteDir]);
+    writeFileSync(join(obsoleteDir, "manifest.json"), JSON.stringify({ schema_version: 1, commit: obsoleteCommit, files: [] }));
+    execFileSync("chmod", ["-R", "a-w", obsoleteDir]);
+    for (const commit of [obsoleteCommit, fixture.previousCommit, fixture.expectedCommit]) {
+      writeFileSync(join(receipts, `${commit}.json`), JSON.stringify({ commit, components: [], schema_version: 1 }));
+    }
+    const unrelated = join(receipts, "notes.txt");
+    writeFileSync(unrelated, "kept\n");
+
+    const result = runRollout(fixture);
+    const output = `${result.stdout}\n${result.stderr}`;
+
+    expect(result.status, output).toBe(0);
+    expect(existsSync(obsoleteDir)).toBe(false);
+    expect(existsSync(join(receipts, `${obsoleteCommit}.json`))).toBe(false);
+    expect(existsSync(join(releaseRoot, fixture.previousCommit))).toBe(true);
+    expect(existsSync(join(receipts, `${fixture.previousCommit}.json`))).toBe(true);
+    expect(existsSync(join(releaseRoot, fixture.expectedCommit))).toBe(true);
+    expect(existsSync(join(receipts, `${fixture.expectedCommit}.json`))).toBe(true);
+    expect(existsSync(unrelated)).toBe(true);
+    expect(output).toContain("host component receipt retirement retired=1");
+    expect(output).toContain(`immutable release retention pruned=1 retained_active=${fixture.previousCommit} retained_target=${fixture.expectedCommit}`);
+  }, 15_000);
+
   it("retires the legacy health service/database and migrates its generic capabilities after target acceptance", () => {
     const fixture = createFixture();
     prepareImmutableRelease(fixture, fixture.previousCommit);
