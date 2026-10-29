@@ -16,6 +16,7 @@ import stat
 import shutil
 import subprocess
 import sys
+import tarfile
 import tempfile
 import time
 from collections import deque
@@ -125,32 +126,144 @@ def parse_approval(path: Path, expected_commit: str, release_sha256: str, now: d
     return document
 
 
+def archive_members(archive: Path, stage):
+    """Yield (relative, member, bundle) for every checked archive member, in order.
+
+    Without an extraction there is no filesystem to refuse a member below a
+    file or symlink, so the path topology is checked here: every parent must
+    be a directory, and nothing may later replace an implied directory.
+    """
+    kinds: dict[str, str] = {}
+    with archive.open("rb") as stream, tarfile.open(fileobj=stream, mode="r|gz") as bundle:
+        for member in bundle:
+            if member.name in (".", "./"):
+                continue
+            relative = stage.safe_relative(member.name)
+            if relative in kinds and (kinds[relative] != "implied" or not member.isdir()):
+                raise RuntimeError(f"duplicate archive member: {relative}")
+            parts = relative.split("/")
+            for index in range(1, len(parts)):
+                parent = "/".join(parts[:index])
+                if kinds.get(parent, "implied") not in ("dir", "implied"):
+                    raise RuntimeError(f"archive member is below a non-directory: {relative}")
+                kinds.setdefault(parent, "implied")
+            kinds[relative] = "dir" if member.isdir() else "entry"
+            yield relative, member, bundle
+
+
+def verify_archive_stream(archive: Path, stage) -> tuple[dict, bytes | None]:
+    """Verify a release archive against its manifest without extracting it.
+
+    The deployer needs the release identity and an early refusal of a bad
+    archive. Staging still performs the single full extraction and its own
+    on-disk verification, so this check streams the archive twice instead of
+    writing another expanded copy of the release to disk (#1100).
+    """
+    manifest_bytes = None
+    qualification_bytes = None
+    for relative, member, bundle in archive_members(archive, stage):
+        if relative in ("manifest.json", "qualification-evidence.json") and member.isfile():
+            if member.size > 64 * 1024 * 1024:
+                raise RuntimeError(f"release metadata is too large: {relative}")
+            source = bundle.extractfile(member)
+            data = source.read() if source else b""
+            if relative == "manifest.json":
+                manifest_bytes = data
+            else:
+                qualification_bytes = data
+    if manifest_bytes is None:
+        raise RuntimeError("release artifact is missing a regular manifest.json")
+    try:
+        manifest = json.loads(manifest_bytes.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise RuntimeError(f"invalid release manifest: {error}") from error
+    if not isinstance(manifest, dict) or manifest.get("schema_version") != 1:
+        raise RuntimeError("unsupported release manifest schema")
+    for field in ("commit", "tree"):
+        if not isinstance(manifest.get(field), str) or not SHA.fullmatch(manifest[field]):
+            raise RuntimeError(f"manifest {field} is not a full lowercase SHA")
+    if not isinstance(manifest.get("files"), list):
+        raise RuntimeError("manifest files must be a list")
+
+    expected: dict[str, dict] = {}
+    for entry in manifest["files"]:
+        path = entry.get("path") if isinstance(entry, dict) else None
+        if not isinstance(path, str):
+            raise RuntimeError("manifest file path is invalid")
+        path = stage.safe_relative(path)
+        if path == "manifest.json" or path in expected:
+            raise RuntimeError(f"manifest contains duplicate or self-referential file: {path}")
+        expected[path] = entry
+
+    actual: set[str] = set()
+    regular: dict[str, tuple[str, int]] = {}
+    for relative, member, bundle in archive_members(archive, stage):
+        if member.isdir():
+            continue
+        if member.issym():
+            target = member.linkname
+            resolved = os.path.normpath(os.path.join(os.path.dirname(relative), target))
+            if os.path.isabs(target) or resolved == ".." or resolved.startswith("../"):
+                raise RuntimeError(f"symlink escaped release root: {relative} -> {target}")
+            entry = expected.get(relative)
+            if not entry or entry.get("type") != "symlink" or target != entry.get("target"):
+                raise RuntimeError(f"release symlink does not match manifest: {relative}")
+            actual.add(relative)
+            continue
+        if member.islnk():
+            linkname = member.linkname
+            while linkname.startswith("./"):
+                linkname = linkname[2:]
+            source = regular.get(stage.safe_relative(linkname))
+            if source is None:
+                raise RuntimeError(f"hardlink target must be a preceding regular file: {relative} -> {linkname}")
+            file_digest, size = source
+        elif member.isfile():
+            stream = bundle.extractfile(member)
+            if stream is None:
+                raise RuntimeError(f"unable to read archive member: {relative}")
+            file_digest, size = stage.digest_stream(stream), member.size
+        else:
+            raise RuntimeError(f"unsupported archive member: {relative}")
+        regular[relative] = (file_digest, size)
+        if relative == "manifest.json":
+            continue
+        entry = expected.get(relative)
+        if not entry or entry.get("type", "file") != "file":
+            raise RuntimeError(f"release file is not in the manifest: {relative}")
+        if file_digest != entry.get("sha256") or size != entry.get("size"):
+            raise RuntimeError(f"release file hash or size mismatch: {relative}")
+        actual.add(relative)
+    if "manifest.json" not in regular:
+        raise RuntimeError("release artifact is missing a regular manifest.json")
+    if actual != set(expected):
+        raise RuntimeError("release contents do not match the manifest")
+    lock = expected.get("package-lock.json")
+    if not lock or lock.get("sha256") != manifest.get("package_lock_sha256"):
+        raise RuntimeError("package-lock hash binding is invalid")
+    return manifest, qualification_bytes
+
+
 def validate_archive(archive: Path, approval: Path | None, now: datetime, production: bool, fixed_environment: str | None = None, stage_helper: Path | None = None) -> tuple[str, str, dict | None]:
     if archive.is_symlink() or not archive.is_file():
         fail("release archive must be a regular non-symlink file")
     release_sha256 = digest(archive)
-    with tempfile.TemporaryDirectory(prefix="agent-bridge-deploy-validate-") as directory:
-        root = Path(directory)
+    try:
+        stage = staging_module(stage_helper or Path(__file__).with_name("release-stage.py"))
+        manifest, qualification_bytes = verify_archive_stream(archive, stage)
+    except Exception as error:
+        fail(f"release archive or manifest validation failed: {error}")
+    if not SHA.fullmatch(manifest["commit"]):
+        fail("release manifest commit is invalid")
+    if production and qualification_bytes is None:
+        fail("release archive must contain embedded qualification-evidence.json")
+    if qualification_bytes is not None:
         try:
-            stage = staging_module(stage_helper or Path(__file__).with_name("release-stage.py"))
-            with archive.open("rb") as stream:
-                stage.extract_archive(stream, root)
-            manifest = stage.load_manifest(root)
-            stage.verify_manifest(root, manifest)
-        except Exception as error:
-            fail(f"release archive or manifest validation failed: {error}")
-        if not SHA.fullmatch(manifest["commit"]):
-            fail("release manifest commit is invalid")
-        qualification = root / "qualification-evidence.json"
-        if production and (not qualification.is_file() or qualification.is_symlink()):
-            fail("release archive must contain embedded qualification-evidence.json")
-        if qualification.is_file() and not qualification.is_symlink():
-            try:
-                qualification_document = json.loads(qualification.read_text(encoding="utf-8"))
-            except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
-                fail(f"embedded qualification evidence is invalid: {error}")
-            if qualification_document.get("commit") != manifest["commit"] or qualification_document.get("tree") != manifest["tree"]:
-                fail("embedded qualification evidence does not match the release manifest")
+            qualification_document = json.loads(qualification_bytes.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as error:
+            fail(f"embedded qualification evidence is invalid: {error}")
+        if not isinstance(qualification_document, dict) or qualification_document.get("commit") != manifest["commit"] or qualification_document.get("tree") != manifest["tree"]:
+            fail("embedded qualification evidence does not match the release manifest")
     approval_document = parse_approval(Path(approval), manifest["commit"], release_sha256, now, production, fixed_environment) if approval else None
     return manifest["commit"], release_sha256, approval_document
 
