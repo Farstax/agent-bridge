@@ -738,6 +738,39 @@ def accept_handoff(archive: Path, approval: Path | None, owner_request: Path | N
     return f"accepted {commit} {sha256} unit={unit} pending"
 
 
+def resume_pending_handoff() -> str:
+    production = os.geteuid() == 0 or os.environ.get("AGENT_BRIDGE_DEPLOY_TEST") != "1"
+    root = handoff_root(production)
+    if not root.exists():
+        return "none"
+    secure_handoff_directory(root, production)
+    pending = []
+    for directory in root.iterdir():
+        if not directory.is_dir() or directory.is_symlink():
+            continue
+        try:
+            commit, sha256 = directory.name.split("-", 1)
+            if handoff_identity(commit, sha256) != directory.name:
+                continue
+            result = json.loads(secure_file(directory / "result.json", production))
+            if result.get("targetCommit") != commit or result.get("archiveSha256") != sha256:
+                fail("pending handoff identity does not match receipt")
+            if result.get("status") in ("accepted", "activating", "deferred"):
+                pending.append(directory)
+        except (OSError, ValueError, json.JSONDecodeError):
+            fail("pending handoff cannot be safely inventoried")
+    if len(pending) > 1:
+        fail("multiple unresolved handoff targets require a bounded recovery audit")
+    if not pending:
+        return "none"
+    directory = pending[0]
+    approval = directory / "approval.json"
+    owner_request = directory / "owner-request.json"
+    return accept_handoff(directory / "release.tar.gz",
+                          approval if approval.is_file() else None,
+                          owner_request if owner_request.is_file() else None)
+
+
 def finish_handoff_worker(identity: str, archive: Path, approval: Path | None, owner_request: Path | None) -> str:
     production = os.geteuid() == 0 or os.environ.get("AGENT_BRIDGE_DEPLOY_TEST") != "1"
     root = handoff_root(production)
@@ -854,17 +887,25 @@ def _run_deployment(archive: Path, approval: Path | None, owner_request: Path | 
 
 def main() -> int:
     parser = argparse.ArgumentParser(prog="agent-bridge-deploy")
-    parser.add_argument("--release", type=Path, required=True)
+    parser.add_argument("--release", type=Path)
     parser.add_argument("--approval", type=Path)
     parser.add_argument("--owner-request", type=Path)
     parser.add_argument("--validate-only", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--internal-worker", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--handoff", action="store_true", help="Durably hand an authorised release to the independent systemd deployer")
     parser.add_argument("--handoff-id", help=argparse.SUPPRESS)
+    parser.add_argument("--resume-pending", action="store_true", help="Resume an existing immutable deployment request")
     args = parser.parse_args()
     if args.approval is not None and args.owner_request is not None:
         parser.error("provide at most one of --approval or --owner-request")
     reject_root_test_overrides()
+    if args.resume_pending:
+        if args.release or args.handoff or args.internal_worker or args.validate_only or args.approval or args.owner_request or args.handoff_id:
+            parser.error("--resume-pending accepts no release or authority overrides")
+        print(resume_pending_handoff())
+        return 0
+    if args.release is None:
+        parser.error("--release is required except for --resume-pending")
     if args.handoff and (args.internal_worker or args.validate_only or args.handoff_id):
         parser.error("--handoff is only valid for a new normal deployment request")
     if args.handoff_id and not args.internal_worker:
