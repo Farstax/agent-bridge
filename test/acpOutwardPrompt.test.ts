@@ -150,7 +150,7 @@ describe("outward ACP prompt execution", () => {
         });
 
       const response = await client.connectWith(
-        createOutwardAcpAgent({ sessions, promptExecutor }),
+        createOutwardAcpAgent({ sessions, promptExecutor, workspaceRoot: root }),
         async (agent) => {
           await agent.request(acp.methods.agent.initialize, {
             protocolVersion: acp.PROTOCOL_VERSION,
@@ -252,7 +252,7 @@ describe("outward ACP prompt execution", () => {
         .onNotification(acp.methods.client.session.update, (ctx) => updates.push(ctx.params));
 
       const response = await client.connectWith(
-        createOutwardAcpAgent({ sessions, promptExecutor }),
+        createOutwardAcpAgent({ sessions, promptExecutor, workspaceRoot: root }),
         (agent) => agent.request(acp.methods.agent.session.prompt, {
           sessionId: session.sessionId,
           prompt: [{ type: "text", text: "cancel me" }],
@@ -269,7 +269,7 @@ describe("outward ACP prompt execution", () => {
     }
   });
 
-  it("accepts mandatory resource_link prompt blocks while failing closed for unadvertised media", async () => {
+  it("accepts resource_link metadata and stages embedded image prompt blocks", async () => {
     const root = mkdtempSync(join(tmpdir(), "agent-bridge-outward-prompt-content-"));
     const db = openDb(join(root, "bridge.sqlite"), { databaseRole: "interactive" });
     try {
@@ -286,7 +286,7 @@ describe("outward ACP prompt execution", () => {
         async cancel(): Promise<void> {},
       };
       const client = acp.client({ name: "outward-test-client" });
-      const app = createOutwardAcpAgent({ sessions, promptExecutor });
+      const app = createOutwardAcpAgent({ sessions, promptExecutor, workspaceRoot: root });
 
       await expect(client.connectWith(app, (agent) => agent.request(acp.methods.agent.session.prompt, {
         sessionId: "missing",
@@ -312,11 +312,12 @@ describe("outward ACP prompt execution", () => {
       expect(capturedPrompt).toContain("file:///workspace/notes.md");
       expect(capturedPrompt).toContain("workspace notes");
 
-      await expect(client.connectWith(app, (agent) => agent.request(acp.methods.agent.session.prompt, {
+      const image = await client.connectWith(app, (agent) => agent.request(acp.methods.agent.session.prompt, {
         sessionId: "known",
         prompt: [{ type: "image", data: "AA==", mimeType: "image/png" }],
-      }))).rejects.toMatchObject({ code: -32602 });
-      expect(executions).toBe(1);
+      }));
+      expect(image.stopReason).toBe("end_turn");
+      expect(executions).toBe(2);
     } finally {
       db.close();
       rmSync(root, { recursive: true, force: true });

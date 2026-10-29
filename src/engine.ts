@@ -164,6 +164,7 @@ export interface ExecFns {
 
 export interface SurfaceNeutralTurnInput {
   prompt: string;
+  attachments?: string[];
   sessionId: string | null;
   chatId: number | string;
   chatKey: string;
@@ -584,6 +585,23 @@ export class BridgeEngine {
   }
 
   private async _executeBtwClaimed(prompt: string, chatId: number | string, chatKey: string, threadId: number | string | undefined): Promise<void> {
+    await this.sendText(chatId, { text: await this._btwText(prompt, chatKey), message_thread_id: threadId });
+  }
+
+  /**
+   * Non-messaging /btw (#1101): the same fresh, safe, tool-free side
+   * execution, returning its text. Throws when isolation cannot be proven or
+   * no capacity slot is free; it never queues or touches the main session.
+   */
+  async executeSurfaceNeutralBtw(prompt: string, chatKey: string): Promise<string> {
+    const executionKind = this._executionKind();
+    if (executionKind === "antigravity" || !supportsToolFreeMode(executionKind)) {
+      throw new Error(`/btw is unavailable for ${executionKind}: isolated read-only execution cannot be proven without changing shared provider state.`);
+    }
+    return this._btwText(prompt, chatKey);
+  }
+
+  private async _btwText(prompt: string, chatKey: string): Promise<string> {
     const executionKind = this._executionKind();
     const model = isRouteableKind(this.kind)
       ? (this.db.getSetting(this.kind) || this.opts.botConfig.modelPreference[0] || null)
@@ -636,7 +654,7 @@ export class BridgeEngine {
         { conversationId: `${chatKey}:btw`, runId: sideExecutionId },
     ));
     const result = invoked.parsed ?? parseCliResult({ bot: executionKind, stdout: invoked.stdout });
-    await this.sendText(chatId, { text: result.text, message_thread_id: threadId });
+    return result.text;
   }
 
   private async _executeAndSend(
@@ -1965,7 +1983,7 @@ export class BridgeEngine {
         // staged output is discarded instead of sent to a messaging client.
         { onProviderExecutionStarted: input.onProviderExecutionStarted, publishArtifacts: false },
         () => {},
-        [],
+        input.attachments ?? [],
         input.eventContext,
         input.runId,
         input.collect,

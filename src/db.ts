@@ -420,6 +420,14 @@ export class BridgeDb {
     return this.runs.getRun(runId);
   }
 
+  getLatestRunForConversation(identity: ConversationIdentity) {
+    return this.runs.getLatestRunForConversation(identity);
+  }
+
+  listRunningRuns(surfaceIdentity?: string): RunningRun[] {
+    return this.runs.listRunningRuns(surfaceIdentity);
+  }
+
   updateRunCompleted(runId: string, text: string, sessionId: string | null): boolean {
     return this.runs.updateRunCompleted(runId, text, sessionId);
   }

@@ -1,6 +1,16 @@
 import Database from "better-sqlite3";
 import type { ConversationIdentity } from "../conversationIdentity.js";
 
+export interface LatestConversationRun {
+  run_id: string;
+  bot: string;
+  status: string;
+  started_at: string;
+  ended_at: string | null;
+  outcome_status: "complete" | "continue" | "blocked" | null;
+  error: string | null;
+}
+
 export interface RunningRun {
   run_id: string;
   surface_identity?: string | null;
@@ -106,7 +116,22 @@ export class RunRepository {
       .all(runId);
   }
 
-  listRunningRuns(): RunningRun[] {
+  /** Most recent Run of one conversation, for read-only status projection. */
+  getLatestRunForConversation(identity: ConversationIdentity): LatestConversationRun | null {
+    const row = this.db
+      .prepare(`SELECT run_id, bot, status, started_at, ended_at, outcome_status, error FROM bridge_runs
+        WHERE surface_identity = ? AND chat_id = ? ORDER BY started_at DESC, rowid DESC LIMIT 1`)
+      .get(identity.surfaceIdentity, identity.chatKey) as LatestConversationRun | undefined;
+    return row ?? null;
+  }
+
+  listRunningRuns(surfaceIdentity?: string): RunningRun[] {
+    if (surfaceIdentity !== undefined) {
+      return this.db
+        .prepare(`SELECT run_id, surface_identity, chat_id, bot, started_at FROM bridge_runs
+          WHERE status = 'running' AND surface_identity = ? ORDER BY started_at ASC`)
+        .all(surfaceIdentity) as RunningRun[];
+    }
     return this.db
       .prepare(`SELECT run_id, surface_identity, chat_id, bot, started_at FROM bridge_runs WHERE status = 'running' ORDER BY started_at ASC`)
       .all() as RunningRun[];

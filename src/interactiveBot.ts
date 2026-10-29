@@ -41,12 +41,17 @@ export interface InteractiveUpdateLogSummary {
   contentDetail: string | null;
 }
 
-export function getUserCliPreference(db: BridgeDb, identity: ConversationIdentity): CliKind {
+/** The explicitly selected CLI for a conversation, or null when none was chosen. */
+export function getStoredCliPreference(db: BridgeDb, identity: ConversationIdentity): CliKind | null {
   const row = db.raw
     .prepare(`SELECT interactive_cli_preference AS pref FROM bridge_state WHERE surface_identity = ? AND chat_id = ?`)
     .get(identity.surfaceIdentity, identity.chatKey) as { pref: string | null } | undefined;
   const stored = row?.pref ?? null;
-  return isValidCliKind(stored) ? stored : DEFAULT_CLI;
+  return isValidCliKind(stored) ? stored : null;
+}
+
+export function getUserCliPreference(db: BridgeDb, identity: ConversationIdentity): CliKind {
+  return getStoredCliPreference(db, identity) ?? DEFAULT_CLI;
 }
 
 export function setUserCliPreference(db: BridgeDb, identity: ConversationIdentity, cli: CliKind): void {

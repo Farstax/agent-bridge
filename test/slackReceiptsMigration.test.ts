@@ -13,7 +13,7 @@ describe("schema v20 slack receipts (#943)", () => {
   afterEach(() => rmSync(dir, { recursive: true, force: true }));
 
   it("upgrades a v19 database preserving health and autonomous receipts, then admits slack rows", () => {
-    expect(CURRENT_SCHEMA_VERSION).toBe(24);
+    expect(CURRENT_SCHEMA_VERSION).toBe(25);
     const path = join(dir, "bridge.sqlite");
     const raw = new Database(path);
     // Build a current v19 image by running the registered plan to v19 semantics.
