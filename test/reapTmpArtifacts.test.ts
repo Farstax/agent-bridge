@@ -1,4 +1,4 @@
-import { execFileSync, spawnSync } from "node:child_process";
+import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -359,6 +359,29 @@ describe("reap-tmp-artifacts.sh", () => {
     expect(result.status).toBe(0);
     expect(existsSync(dependencies)).toBe(true);
     expect(result.stdout).toContain("recent dependency writes");
+  });
+
+
+  it("preserves dependencies while a live same-user process has the checkout as its cwd", async () => {
+    const root = makeRoot();
+    const { checkout, dependencies } = makeDetachedCheckout(root);
+    const child = spawn("sleep", ["20"], { cwd: checkout, stdio: "ignore" });
+    try {
+      await new Promise<void>((resolve, reject) => {
+        child.once("spawn", () => resolve());
+        child.once("error", reject);
+      });
+      const result = run({
+        REAP_TMP_ROOT: join(root, "tmp"),
+        REAP_WORKTREE_REPOS: ",",
+        REAP_DETACHED_CHECKOUTS: checkout,
+      });
+      expect(result.status).toBe(0);
+      expect(existsSync(dependencies)).toBe(true);
+      expect(result.stdout).toContain("active checkout");
+    } finally {
+      child.kill();
+    }
   });
 
 });
