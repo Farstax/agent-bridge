@@ -283,7 +283,7 @@ export function createOutwardAcpAgent(options: OutwardAcpAgentOptions = {}): Age
         "unknown outward ACP session",
       );
     }
-    authorizeWorkspacePath(session.cwd, workspaceRoot);
+    const authorizedCwd = authorizeWorkspacePath(session.cwd, workspaceRoot);
     const prompt = promptText(ctx.params.prompt);
     // Bridge commands run only through their owners, never as model text.
     if (isDeskBridgeCommand(prompt)) {
@@ -293,7 +293,7 @@ export function createOutwardAcpAgent(options: OutwardAcpAgentOptions = {}): Age
       );
     }
     try {
-      return await stageOutwardAcpAttachments(workspaceRoot, ctx.params.prompt, (attachments) => promptExecutor.execute({
+      return await stageOutwardAcpAttachments(authorizedCwd, ctx.params.prompt, (attachments) => promptExecutor.execute({
         session,
         prompt: attachments.length
           ? `${prompt}\n\n${attachments.map((path) => `[Attached file: ${basename(path)}]`).join("\n")}`

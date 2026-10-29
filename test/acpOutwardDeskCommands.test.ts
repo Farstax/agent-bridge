@@ -1,5 +1,4 @@
-import { mkdtempSync, rmSync } from "node:fs";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, onTestFinished } from "vitest";
@@ -163,6 +162,21 @@ describe("outward ACP Desk commands (#1101)", () => {
     expect(prompts[0]).toContain("[Attached file: 01-report.csv]");
     expect(prompts[0]).toContain("[Attached file: 02-chart.png]");
     expect(paths.every((path) => !existsSync(path))).toBe(true);
+  });
+
+  it("stages embedded attachments inside a nested authorized Workstream directory", async () => {
+    const { root, repo, app, attachmentPaths } = setup();
+    const nested = join(root, "nested-workstream");
+    mkdirSync(nested);
+    repo.create({ sessionId: "nested", conversationId: "acp:nested", cwd: nested });
+    await acp.client({ name: "desk" }).connectWith(app, (agent) =>
+      agent.request(acp.methods.agent.session.prompt, {
+        sessionId: "nested",
+        prompt: [{ type: "resource", resource: { uri: "file:///input/notes.txt", mimeType: "text/plain", text: "nested content" } }],
+      }));
+    const stagedPath = attachmentPaths[0]![0]!;
+    expect(stagedPath.startsWith(join(nested, ".agent-bridge-attachments-"))).toBe(true);
+    expect(existsSync(stagedPath)).toBe(false);
   });
 
   it("removes staged files when the Workstream Run is cancelled", async () => {

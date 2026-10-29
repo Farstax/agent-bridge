@@ -44,7 +44,7 @@ active outward Run cancellation path; `/reset` requires explicit confirmation
 and runs under the conversation lane fence.
 
 Embedded ACP `image` and `resource` payloads are staged for one Run in a
-private, randomly named directory under the Workstream cwd. Supported files
+private, randomly named directory under the validated Workstream `cwd`. Supported files
 are text/code, JSON, CSV, logs, Markdown, PNG, JPEG and PDF. Input allows up to
 eight files, 8 MiB per file and 16 MiB total. Names are reduced to bounded safe
 filenames, and content stays inside the authorized workspace. Unsupported
