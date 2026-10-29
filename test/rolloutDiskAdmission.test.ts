@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { actions, cleanupRoots, createFixture, runRollout, useMinimalInventory } from "./support/rolloutFixture.js";
@@ -162,10 +162,11 @@ fi
     expect(output.indexOf("disk admission")).toBeLessThan(output.indexOf("stopping all services"));
     expect(existsSync(join(fixture.logDir, removed))).toBe(false);
     expect(existsSync(join(fixture.backupDir, removed))).toBe(false);
-    for (const name of kept) {
-      expect(existsSync(join(fixture.logDir, name))).toBe(true);
-      expect(existsSync(join(fixture.backupDir, name))).toBe(true);
-    }
+    // The accepted current rollout becomes the newest proven restore point.
+    expect(existsSync(join(fixture.logDir, kept[0]))).toBe(false);
+    expect(existsSync(join(fixture.backupDir, kept[0]))).toBe(false);
+    expect(existsSync(join(fixture.logDir, kept[1]))).toBe(true);
+    expect(existsSync(join(fixture.backupDir, kept[1]))).toBe(true);
     expect(existsSync(join(fixture.logDir, ambiguous))).toBe(true);
     expect(existsSync(join(fixture.logDir, sentinelName))).toBe(true);
     expect(readFileSync(join(fixture.backupDir, "orphan.sqlite"), "utf8")).toBe("not a rollout set\n");
@@ -199,8 +200,9 @@ fi
     expect(existsSync(join(fixture.backupDir, oldest))).toBe(false);
     expect(existsSync(join(fixture.logDir, middle))).toBe(false);
     expect(existsSync(join(fixture.backupDir, middle))).toBe(false);
-    expect(existsSync(join(fixture.logDir, newest))).toBe(true);
-    expect(existsSync(join(fixture.backupDir, newest))).toBe(true);
+    expect(existsSync(join(fixture.logDir, newest))).toBe(false);
+    expect(existsSync(join(fixture.backupDir, newest))).toBe(false);
+    expect(readdirSync(fixture.backupDir)).toHaveLength(1);
     expect(actions(fixture)).toContain("systemctl:stop");
   });
 
@@ -250,4 +252,22 @@ fi
     expect(existsSync(join(fixture.backupDir, refusedWithBackup))).toBe(true);
     expect(actions(fixture)).not.toContain("systemctl:stop");
   }, 60_000);
+
+  it("preserves verified terminal evidence when the matching backup path is unsafe", () => {
+    const fixture = useMinimalInventory(createFixture());
+    const protectedName = writeTerminal(fixture.logDir, fixture.backupDir, "20260101T000000Z");
+    writeTerminal(fixture.logDir, fixture.backupDir, "20260102T000000Z");
+    rmSync(join(fixture.backupDir, protectedName), { recursive: true, force: true });
+    symlinkSync(fixture.dbPaths[0], join(fixture.backupDir, protectedName));
+    const result = runRollout(fixture, undefined, undefined, {
+      AGENT_BRIDGE_ROLLOUT_AVAILABLE_BYTES: "999999999999",
+      AGENT_BRIDGE_ROLLOUT_SAFETY_RESERVE_BYTES: "1048576",
+    });
+    const output = result.stdout + "\n" + result.stderr;
+    expect(result.status, output).toBe(0);
+    expect(output).toContain("protected_backup=" + protectedName + " reason=unsafe_backup_path");
+    expect(existsSync(join(fixture.logDir, protectedName))).toBe(true);
+    expect(readFileSync(fixture.dbPaths[0], "utf8")).toBeDefined();
+  });
+
 });
