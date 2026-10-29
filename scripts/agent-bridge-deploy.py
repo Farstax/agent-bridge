@@ -716,6 +716,17 @@ def accept_handoff(archive: Path, approval: Path | None, owner_request: Path | N
         directory = root / identity
         if directory.is_symlink():
             fail("deployment handoff identity is a symlink")
+        # One accepted request at a time: a different release must not displace
+        # or race a request whose authority was already durably accepted.
+        for other in root.iterdir():
+            if other.name == identity or other.is_symlink() or not other.is_dir():
+                continue
+            try:
+                other_status = json.loads(secure_file(other / "result.json", production)).get("status")
+            except (OSError, ValueError):
+                fail("existing deployment handoff cannot be safely inventoried")
+            if other_status != "verified":
+                fail("another accepted deployment request is unresolved")
         directory.mkdir(mode=0o700, exist_ok=True)
         secure_handoff_directory(directory, production)
         release_copy = directory / "release.tar.gz"
@@ -980,8 +991,8 @@ def _run_deployment(archive: Path, approval: Path | None, owner_request: Path | 
         for code, signal in (
             ("release_disk_space_insufficient", r"release_disk_space_insufficient"),
             ("disk_headroom_insufficient", r"disk_headroom_insufficient|insufficient disk for rollout and rollback"),
-            ("memory_pressure_high", r"memory_pressure_high|memory_or_swap_floor_unhealthy"),
-            ("provider_sessions_active", r"provider.*active|session.*active"),
+            ("memory_pressure_high", r"\bmemory_pressure_high\b"),
+            ("provider_sessions_active", r"\bprovider_sessions_active\b"),
         ):
             if re.search(signal, combined, re.IGNORECASE):
                 fail(code)

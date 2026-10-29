@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -71,6 +71,31 @@ describe("durable independent OSS deployer handoff (#1347)", () => {
     expect(result.stdout).toContain("same-identity");
   });
 
+  it("refuses a different release while another accepted request is unresolved", () => {
+    const result = probe([
+      "module.accept_handoff(archive, None, None)",
+      "other = root / 'other.tar.gz'",
+      "other.write_bytes(b'second release')",
+      "other_sha = hashlib.sha256(other.read_bytes()).hexdigest()",
+      "module.validate_archive = lambda *args: ('b' * 40, other_sha, None)",
+      "try:",
+      "    module.accept_handoff(other, None, None)",
+      "    raise AssertionError('second pending request was accepted')",
+      "except RuntimeError as e:",
+      "    assert 'unresolved' in str(e)",
+      "assert not (root / 'handoffs' / ('b' * 40 + '-' + other_sha)).exists() or not (root / 'handoffs' / ('b' * 40 + '-' + other_sha) / 'release.tar.gz').exists()",
+      "print('refused')",
+    ].join("\n"));
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout).toContain("refused");
+  });
+
+  it("does not classify loose session wording as a retryable refusal", () => {
+    const source = readFileSync(resolve("scripts/agent-bridge-deploy.py"), "utf8");
+    expect(source).not.toContain("provider.*active");
+    expect(source).toContain("\\bprovider_sessions_active\\b");
+  });
+
   it("rejects changed durable bytes", () => {
     const result = probe([
       "module.accept_handoff(archive, None, None)",
@@ -97,8 +122,16 @@ describe("durable independent OSS deployer handoff (#1347)", () => {
       "assert module.finish_handoff_worker(identity, durable, None, None) == 'deployed'",
       "assert json.loads((directory / 'result.json').read_text())['status'] == 'verified'",
       "assert not durable.exists()",
+      "try:",
+      "    module.finish_handoff_worker(identity, durable, None, None)",
+      "    raise AssertionError('verified handoff was run again')",
+      "except (RuntimeError, SystemExit):",
+      "    pass",
+      "assert json.loads((directory / 'result.json').read_text())['status'] == 'verified'",
+      "# A fresh request for the same identity is a new accepted receipt with a new private archive.",
       "durable.write_bytes(b'verified source artifact')",
       "durable.chmod(0o600)",
+      "module.update_handoff_result(directory, 'accepted', commit, sha256)",
       "def fail_worker(*args):",
       "    raise RuntimeError('disk_headroom_insufficient')",
       "module.run_deployment = fail_worker",
