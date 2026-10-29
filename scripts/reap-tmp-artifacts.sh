@@ -306,9 +306,11 @@ if [[ "$capacity_before" =~ ^[0-9]+$ && "$capacity_after" =~ ^[0-9]+$ && "$inode
   gain=$(( capacity_after > capacity_before ? capacity_after - capacity_before : 0 ))
   log "disk_headroom root=$REPORT_ROOT free_bytes=$capacity_after observed_recovered_bytes=$gain free_inodes=$inodes_after before_free_inodes=$inodes_before"
   required="${REAP_REQUIRED_HEADROOM_BYTES:-0}"
-  if [[ "$required" =~ ^[0-9]+$ ]]; then
+  if [[ "$required" =~ ^[0-9]+$ && ${#required} -le 18 ]]; then
     shortfall=$(( required > capacity_after ? required - capacity_after : 0 ))
     log "disk_admission required_bytes=$required shortfall_bytes=$shortfall"
+  else
+    log "disk_admission=unknown reason=invalid_required_bytes"
   fi
 else
   log "disk_headroom=unknown root=$REPORT_ROOT"
