@@ -83,5 +83,9 @@ credentials never leave the workspace.
 
 ## Rollback
 
-v25 only adds nullable columns. The previous release ignores them and can
-still insert sessions.
+v25 adds nullable columns without changing existing session data. Production
+services require an exact schema-version match, so the previous release must
+not open a v25 database directly. The guarded rollout's failure rollback
+restores the verified pre-migration database backups before it restarts the
+previous release. Do not downgrade `user_version` or switch the release
+pointer alone.

@@ -4,7 +4,9 @@ import type Database from "better-sqlite3";
  * Version 25 (#1101): Workstream metadata on the existing outward ACP session
  * row. A Workstream is one outward ACP session bound to one stable Bridge
  * conversation ID, so no second identity or transcript table is introduced.
- * Nullable columns keep the previous release able to read and insert rows.
+ * The additive nullable columns preserve stored session data. Production
+ * rollback restores the guarded pre-migration database snapshot because the
+ * strict production opener requires an exact schema-version match.
  */
 export function applyOutwardWorkstreamsMigration(db: Database.Database, role?: string): void {
   if (role !== "interactive") return;
