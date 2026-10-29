@@ -60,8 +60,10 @@ and is not treated as an attachment.
 `running`, `failed`, `cancelled`, `attention` (provider recorded a `blocked`
 outcome) or `idle`. The outward agent rejects a second concurrent prompt as
 busy, so it has no queued state. Bridge never infers attention from message
-text or timing. A Run interrupted by a crash reads `running` until restart
-reconciliation settles its record.
+text or timing. At outward-service startup, existing guarded lock and Run
+reconciliation runs only for the outward ACP surface. It proves provider child
+absence, releases an expired stale lock, and marks an interrupted durable Run
+failed before serving new requests.
 
 ## Provider selection
 

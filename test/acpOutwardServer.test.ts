@@ -10,6 +10,7 @@ import { afterAll, describe, expect, it } from "vitest";
 import * as acp from "@agentclientprotocol/sdk";
 import { openDb } from "../src/db.js";
 import { OUTWARD_ACP_SURFACE } from "../src/acpServer/execution.js";
+import { OutwardAcpSessionRepository } from "../src/repositories/outwardAcpSessionRepository.js";
 
 const fakeAgent = fileURLToPath(new URL("./support/fakeAcpAgent.ts", import.meta.url));
 
@@ -303,12 +304,36 @@ describe("outward ACP stdio boundary", { timeout: 30_000 }, () => {
     const dbPath = join(root, "bridge.sqlite");
     const cwd = join(root, "workspace");
     mkdirSync(cwd);
-    openDb(dbPath, { databaseRole: "interactive" }).close();
+    const setupDb = openDb(dbPath, { databaseRole: "interactive" });
+    new OutwardAcpSessionRepository(setupDb.raw).create({
+      sessionId: "legacy-nested-workstream",
+      conversationId: "acp:legacy-nested-workstream",
+      cwd,
+    });
+    const interruptedRunId = "interrupted-outward-run";
+    const interruptedDb = openDb(dbPath, {
+      serviceId: "acp:outward",
+      runId: interruptedRunId,
+      lockLeaseMs: 10,
+      databaseRole: "interactive",
+    });
+    interruptedDb.insertRun(interruptedRunId, {
+      surfaceIdentity: OUTWARD_ACP_SURFACE,
+      chatKey: "acp:interrupted",
+    }, "codex");
+    expect(interruptedDb.acquireLock(OUTWARD_ACP_SURFACE, "acp:interrupted")).not.toBeNull();
+    interruptedDb.close();
+    setupDb.close();
     const staleAttachments = join(root, ".agent-bridge-attachments-after-crash");
     mkdirSync(staleAttachments, { mode: 0o700 });
     writeFileSync(join(staleAttachments, ".agent-bridge-staging-owner"), "agent-bridge-outward-attachment-v1\n", { mode: 0o600 });
+    const nestedStaleAttachments = join(cwd, ".agent-bridge-attachments-nested-after-crash");
+    mkdirSync(nestedStaleAttachments, { mode: 0o700 });
+    writeFileSync(join(nestedStaleAttachments, ".agent-bridge-staging-owner"), "agent-bridge-outward-attachment-v1\n", { mode: 0o600 });
     const staleTime = new Date(Date.now() - 25 * 60 * 60 * 1000);
     utimesSync(staleAttachments, staleTime, staleTime);
+    utimesSync(nestedStaleAttachments, staleTime, staleTime);
+    await delay(20);
 
     let first: RunningOutwardAcp | null = null;
     let second: RunningOutwardAcp | null = null;
@@ -316,6 +341,13 @@ describe("outward ACP stdio boundary", { timeout: 30_000 }, () => {
       first = startOutwardAcpProcess(dbPath);
       const initialized = await initialize(first, 1);
       expect(existsSync(staleAttachments)).toBe(false);
+      expect(existsSync(nestedStaleAttachments)).toBe(false);
+      const recoveredDb = openDb(dbPath, { databaseRole: "interactive" });
+      expect(recoveredDb.getRun(interruptedRunId)).toMatchObject({
+        status: "failed",
+        error: "Process interrupted by bridge restart",
+      });
+      recoveredDb.close();
       expect(initialized).toMatchObject({
         jsonrpc: "2.0",
         id: 1,
@@ -384,7 +416,7 @@ describe("outward ACP stdio boundary", { timeout: 30_000 }, () => {
       second = null;
 
       const reopened = openDb(dbPath, { databaseRole: "interactive" });
-      expect(reopened.raw.prepare("SELECT COUNT(*) AS count FROM outward_acp_sessions").get()).toEqual({ count: 2 });
+      expect(reopened.raw.prepare("SELECT COUNT(*) AS count FROM outward_acp_sessions").get()).toEqual({ count: 3 });
       expect(reopened.raw.prepare("SELECT conversation_id FROM outward_acp_sessions WHERE session_id = ?").get(sessionId)).toEqual({
         conversation_id: row?.conversation_id,
       });

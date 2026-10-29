@@ -72,6 +72,12 @@ export class OutwardAcpSessionRepository {
     return rows.map(toRecord);
   }
 
+  /** Distinct persisted Workstream directories, for scoped orphan-artifact cleanup. */
+  listWorkspaces(): string[] {
+    const rows = this.db.prepare(`SELECT DISTINCT cwd FROM outward_acp_sessions ORDER BY cwd`).all() as Array<{ cwd: string }>;
+    return rows.map((row) => row.cwd);
+  }
+
   update(sessionId: string, change: { title?: string; archived?: boolean }): OutwardAcpSessionRecord | null {
     this.db.transaction(() => {
       if (change.title !== undefined) {

@@ -1,6 +1,6 @@
 import type { ContentBlock } from "@agentclientprotocol/sdk";
 import { lstat, mkdtemp, readFile, readdir, realpath, rm, stat, writeFile } from "node:fs/promises";
-import { basename, extname, join } from "node:path";
+import { basename, extname, isAbsolute, join, relative, sep } from "node:path";
 
 const MAX_FILES = 8;
 const MAX_FILE_BYTES = 8 * 1024 * 1024;
@@ -49,23 +49,25 @@ function safeName(uri: string | undefined, mimeType: string, index: number): str
   return `${String(index + 1).padStart(2, "0")}-${stem || "attachment"}${ext}`;
 }
 
-function decodeBase64(value: string): Buffer {
+function decodeBase64(value: string, maxBytes = MAX_FILE_BYTES): Buffer {
   if (value.length > Math.ceil(MAX_FILE_BYTES / 3) * 4) throw new Error(`attachment size limit is ${MAX_FILE_BYTES} bytes per file`);
+  if (value.length > Math.ceil(maxBytes / 3) * 4) throw new Error(`attachment size limit is ${MAX_TOTAL_BYTES} bytes total`);
   if (!/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(value)) {
     throw new Error("attachment has invalid base64 data");
   }
   const bytes = Buffer.from(value, "base64");
   if (bytes.toString("base64") !== value) throw new Error("attachment has invalid base64 data");
+  if (bytes.byteLength > maxBytes) throw new Error(`attachment size limit is ${MAX_TOTAL_BYTES} bytes total`);
   return bytes;
 }
 
 type Payload = { name: string; bytes: Buffer };
 
-function payloadFor(block: ContentBlock, index: number): Payload {
+function payloadFor(block: ContentBlock, index: number, remainingBytes: number): Payload {
   if (block.type === "image") {
     const mimeType = block.mimeType.toLowerCase();
     if (mimeType !== "image/png" && mimeType !== "image/jpeg") throw new Error(`unsupported attachment type: ${mimeType}`);
-    return { name: safeName(block.uri ?? undefined, mimeType, index), bytes: decodeBase64(block.data) };
+    return { name: safeName(block.uri ?? undefined, mimeType, index), bytes: decodeBase64(block.data, Math.min(MAX_FILE_BYTES, remainingBytes)) };
   }
   if (block.type !== "resource") throw new Error("unsupported ACP attachment block; embedded image or resource content is required");
   const resource = block.resource;
@@ -77,10 +79,16 @@ function payloadFor(block: ContentBlock, index: number): Payload {
   if (textResource && !mimeType.startsWith("text/") && mimeType !== "application/json" && mimeType !== "application/xml" && mimeType !== "application/yaml" && mimeType !== "application/toml") {
     throw new Error(`attachment type ${mimeType} requires binary content`);
   }
-  if (textResource && Buffer.byteLength(resource.text, "utf8") > MAX_FILE_BYTES) {
+  const textBytes = textResource ? Buffer.byteLength(resource.text, "utf8") : 0;
+  if (textResource && textBytes > MAX_FILE_BYTES) {
     throw new Error(`attachment size limit is ${MAX_FILE_BYTES} bytes per file`);
   }
-  const bytes = textResource ? Buffer.from(resource.text, "utf8") : decodeBase64(resource.blob);
+  if (textResource && textBytes > remainingBytes) {
+    throw new Error(`attachment size limit is ${MAX_TOTAL_BYTES} bytes total`);
+  }
+  const bytes = textResource
+    ? Buffer.from(resource.text, "utf8")
+    : decodeBase64(resource.blob, Math.min(MAX_FILE_BYTES, remainingBytes));
   return { name: safeName(resource.uri, mimeType, index), bytes };
 }
 
@@ -95,12 +103,13 @@ export async function stageOutwardAcpAttachments<T>(
   // this private workspace staging path.
   const attachments = blocks.filter((block) => block.type === "image" || block.type === "resource");
   if (attachments.length > MAX_FILES) throw new Error(`attachment file limit is ${MAX_FILES}`);
-  const payloads = attachments.map(payloadFor);
+  const payloads: Payload[] = [];
   let total = 0;
-  for (const payload of payloads) {
+  for (const [index, block] of attachments.entries()) {
+    const payload = payloadFor(block, index, MAX_TOTAL_BYTES - total);
     if (payload.bytes.byteLength > MAX_FILE_BYTES) throw new Error(`attachment size limit is ${MAX_FILE_BYTES} bytes per file`);
     total += payload.bytes.byteLength;
-    if (total > MAX_TOTAL_BYTES) throw new Error(`attachment size limit is ${MAX_TOTAL_BYTES} bytes total`);
+    payloads.push(payload);
   }
   if (payloads.length === 0) return operation([]);
 
@@ -121,31 +130,45 @@ export async function stageOutwardAcpAttachments<T>(
   }
 }
 
-/** Remove only old, direct-child staging directories owned by this surface. */
-export async function cleanupStaleOutwardAcpAttachments(workspaceRoot: string, now = Date.now()): Promise<number> {
+/** Remove only old, owner-marked staging directories in known Workstream directories. */
+export async function cleanupStaleOutwardAcpAttachments(
+  workspaceRoot: string,
+  additionalWorkspaces: readonly string[] = [],
+  now = Date.now(),
+): Promise<number> {
   const root = await realpath(workspaceRoot);
   const cutoff = now - STALE_ATTACHMENT_AGE_MS;
   let removed = 0;
-  for (const entry of await readdir(root)) {
-    if (!entry.startsWith(STAGING_PREFIX)) continue;
-    const path = join(root, entry);
-    let info;
-    try { info = await lstat(path); } catch (error) {
+  for (const candidate of new Set([root, ...additionalWorkspaces])) {
+    let workspace: string;
+    try { workspace = await realpath(candidate); } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") continue;
       throw error;
     }
-    if (!info.isDirectory() || (info.mode & 0o777) !== 0o700 || info.mtimeMs > cutoff) continue;
-    const marker = join(path, OWNER_MARKER);
-    let markerInfo;
-    try { markerInfo = await lstat(marker); } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") continue;
-      throw error;
+    const workspaceRelative = relative(root, workspace);
+    if (workspaceRelative === ".." || workspaceRelative.startsWith(`..${sep}`) || isAbsolute(workspaceRelative)) continue;
+    if (!(await stat(workspace)).isDirectory()) continue;
+    for (const entry of await readdir(workspace)) {
+      if (!entry.startsWith(STAGING_PREFIX)) continue;
+      const path = join(workspace, entry);
+      let info;
+      try { info = await lstat(path); } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") continue;
+        throw error;
+      }
+      if (!info.isDirectory() || (info.mode & 0o777) !== 0o700 || info.mtimeMs > cutoff) continue;
+      const marker = join(path, OWNER_MARKER);
+      let markerInfo;
+      try { markerInfo = await lstat(marker); } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") continue;
+        throw error;
+      }
+      if (!markerInfo.isFile() || (markerInfo.mode & 0o777) !== 0o600 ||
+        (typeof process.getuid === "function" && (info.uid !== process.getuid() || markerInfo.uid !== process.getuid())) ||
+        await readFile(marker, "utf8") !== OWNER_MARKER_CONTENT) continue;
+      await rm(path, { recursive: true, force: true });
+      removed += 1;
     }
-    if (!markerInfo.isFile() || (markerInfo.mode & 0o777) !== 0o600 ||
-      (typeof process.getuid === "function" && (info.uid !== process.getuid() || markerInfo.uid !== process.getuid())) ||
-      await readFile(marker, "utf8") !== OWNER_MARKER_CONTENT) continue;
-    await rm(path, { recursive: true, force: true });
-    removed += 1;
   }
   return removed;
 }

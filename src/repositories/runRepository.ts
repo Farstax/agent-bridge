@@ -125,7 +125,13 @@ export class RunRepository {
     return row ?? null;
   }
 
-  listRunningRuns(): RunningRun[] {
+  listRunningRuns(surfaceIdentity?: string): RunningRun[] {
+    if (surfaceIdentity !== undefined) {
+      return this.db
+        .prepare(`SELECT run_id, surface_identity, chat_id, bot, started_at FROM bridge_runs
+          WHERE status = 'running' AND surface_identity = ? ORDER BY started_at ASC`)
+        .all(surfaceIdentity) as RunningRun[];
+    }
     return this.db
       .prepare(`SELECT run_id, surface_identity, chat_id, bot, started_at FROM bridge_runs WHERE status = 'running' ORDER BY started_at ASC`)
       .all() as RunningRun[];
