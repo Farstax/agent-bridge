@@ -676,8 +676,10 @@ else:
     expect(admitted.status, `${admitted.stdout}\n${admitted.stderr}`).toBe(0);
     expect(readFileSync(join(releaseRoot, COMMIT, "runtime.js"), "utf8")).toBe("runtime\n");
 
-    // An already staged identical release needs no new candidate and is reused.
-    const reused = deploy(0);
+    // An already staged identical release needs no new candidate and is
+    // reused, but release-stage still writes its archive snapshot first.
+    expect(deploy(0).stderr).toMatch(/staging disk admission refused/);
+    const reused = deploy(268435456 + 64 * 1024);
     expect(reused.status, `${reused.stdout}\n${reused.stderr}`).toBe(0);
     expect(reused.stdout).toContain(`already staged ${COMMIT}`);
   });
@@ -692,14 +694,17 @@ spec.loader.exec_module(module)
 stage = module.staging_module(Path(${JSON.stringify(resolve("scripts/release-stage.py"))}))
 lock = b"lock\n"
 manifest = json.dumps({"schema_version": 1, "commit": "${COMMIT}", "tree": "${TREE}",
-  "files": [{"path": "package-lock.json", "sha256": hashlib.sha256(lock).hexdigest(), "size": len(lock)}],
+  "files": [{"path": "package-lock.json", "sha256": hashlib.sha256(lock).hexdigest(), "size": len(lock)}]
+    + [{"path": f"links/{index}", "type": "symlink", "target": "../" + "x" * 200} for index in range(500)],
   "package_lock_sha256": hashlib.sha256(lock).hexdigest()}).encode()
 archive = Path(tempfile.mkdtemp()) / "release.tar.gz"
 with tarfile.open(archive, "w:gz") as bundle:
     for name, data in (("manifest.json", manifest), ("package-lock.json", lock)):
         info = tarfile.TarInfo(name); info.size = len(data); bundle.addfile(info, io.BytesIO(data))
     for index in range(2000):
-        info = tarfile.TarInfo(f"empty/{index}"); info.type = tarfile.DIRTYPE; bundle.addfile(info)
+        info = tarfile.TarInfo(f"empty/{index:0200d}"); info.type = tarfile.DIRTYPE; bundle.addfile(info)
+    for index in range(500):
+        info = tarfile.TarInfo(f"links/{index}"); info.type, info.linkname = tarfile.SYMTYPE, "../" + "x" * 200; bundle.addfile(info)
 verified, _ = module.verify_archive_stream(archive, stage)
 footprint_bytes, footprint_inodes, _ = verified["_staging_footprint"]
 print(json.dumps({"bytes": footprint_bytes, "inodes": footprint_inodes}))
@@ -707,8 +712,10 @@ print(json.dumps({"bytes": footprint_bytes, "inodes": footprint_inodes}))
     const result = spawnSync("python3", ["-c", probe], { encoding: "utf8" });
     expect(result.status, result.stderr).toBe(0);
     const footprint = JSON.parse(result.stdout) as { bytes: number; inodes: number };
-    expect(footprint.inodes).toBeGreaterThan(2000);
-    expect(footprint.bytes).toBeGreaterThan(2000 * 4096);
+    expect(footprint.inodes).toBeGreaterThan(2500);
+    // 2,000 empty directories and 500 long symlinks take a block each, and the
+    // 2,000 long names fill about 104 extra blocks of their parent directory.
+    expect(footprint.bytes).toBeGreaterThan((2000 + 500 + 100) * 4096);
   });
 
   it("refuses staging when the candidate's inodes do not fit (#1100)", () => {

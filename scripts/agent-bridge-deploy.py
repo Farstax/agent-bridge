@@ -197,19 +197,34 @@ def verify_archive_stream(archive: Path, stage) -> tuple[dict, bytes | None]:
 
     actual: set[str] = set()
     regular: dict[str, tuple[str, int]] = {}
-    directories: set[str] = set()
+    # Staging footprint, counted from the archive members themselves: data
+    # blocks per regular file, one block per symlink (long targets need one),
+    # and every directory sized by its entries (8-byte header plus the
+    # 4-byte-aligned name, as in ext4), at least one block.
+    entry_bytes: dict[str, int] = {"": 0}
+    named: set[str] = set()
     footprint_bytes = 0
     footprint_inodes = 1
     for relative, member, bundle in archive_members(archive, stage):
         parts = relative.split("/")
-        directories.update("/".join(parts[:index]) for index in range(1, len(parts)))
+        for index in range(1, len(parts) + 1):
+            path = "/".join(parts[:index])
+            if path in named:
+                continue
+            named.add(path)
+            parent = "/".join(parts[:index - 1])
+            entry_bytes[parent] = entry_bytes.get(parent, 0) + 8 + -(-len(parts[index - 1].encode()) // 4) * 4
+            if index < len(parts):
+                entry_bytes.setdefault(path, 0)
         if member.isdir():
-            directories.add(relative)
+            entry_bytes.setdefault(relative, 0)
             continue
         if not member.islnk():
             footprint_inodes += 1
         if member.isfile():
             footprint_bytes += -(-member.size // STAGING_BLOCK_BYTES) * STAGING_BLOCK_BYTES
+        elif member.issym():
+            footprint_bytes += STAGING_BLOCK_BYTES
         if member.issym():
             target = member.linkname
             resolved = os.path.normpath(os.path.join(os.path.dirname(relative), target))
@@ -246,8 +261,8 @@ def verify_archive_stream(archive: Path, stage) -> tuple[dict, bytes | None]:
         actual.add(relative)
     if "manifest.json" not in regular:
         raise RuntimeError("release artifact is missing a regular manifest.json")
-    footprint_inodes += len(directories)
-    footprint_bytes += (len(directories) + 1) * STAGING_BLOCK_BYTES
+    footprint_inodes += len(entry_bytes)
+    footprint_bytes += sum(max(1, -(-size // STAGING_BLOCK_BYTES)) * STAGING_BLOCK_BYTES for size in entry_bytes.values())
     # Large directories and filesystem metadata take more than one block each;
     # a 1% margin keeps the estimate above the measured allocation.
     footprint_bytes += footprint_bytes // 100
@@ -281,7 +296,7 @@ def admit_staging(archive: Path, commit: str, archive_sha256: str, release_root:
     archive members, including directories and inodes), release-stage's archive
     snapshot in TMPDIR and, for a new handoff, its durable archive copy. Each
     filesystem keeps the rollout safety reserve. An already staged release needs
-    no candidate or snapshot.
+    no new candidate, but release-stage still writes its snapshot.
     """
     manifest = VERIFIED_MANIFESTS.get(archive_sha256)
     if manifest is None or manifest.get("commit") != commit or "_staging_footprint" not in manifest:
@@ -290,9 +305,11 @@ def admit_staging(archive: Path, commit: str, archive_sha256: str, release_root:
     if archive.stat().st_size != archive_bytes:
         fail("release archive changed after verification")
     archive_blocks = -(-archive_bytes // STAGING_BLOCK_BYTES) * STAGING_BLOCK_BYTES
-    charges: list[tuple[Path, int, int]] = []
+    # release-stage always snapshots the archive into TMPDIR before it checks
+    # for an existing release, so only the candidate charge can be skipped.
+    charges: list[tuple[Path, int, int]] = [(Path(tempfile.gettempdir()), archive_blocks, 1)]
     if not (release_root / commit).exists():
-        charges += [(release_root, candidate_bytes, candidate_inodes), (Path(tempfile.gettempdir()), archive_blocks, 1)]
+        charges.append((release_root, candidate_bytes, candidate_inodes))
     if handoff_directory is not None and not (handoff_directory / "release.tar.gz").exists():
         charges.append((handoff_directory, archive_blocks + 4 * STAGING_BLOCK_BYTES, 4))
     required: dict[int, list] = {}
