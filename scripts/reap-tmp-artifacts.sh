@@ -115,6 +115,9 @@ checkout_has_active_process() {
     [[ -r "$proc/status" ]] || continue
     owner="$(sed -n 's/^Uid:[[:space:]]*\([0-9]*\).*/\1/p' "$proc/status" | head -n 1)"
     [[ "$owner" == "$current_uid" ]] || continue
+    local command_line
+    command_line="$(tr '\000' ' ' < "$proc/cmdline" 2>/dev/null || true)"
+    [[ "$command_line" == *"$checkout"* ]] && return 0
     for ref in "$proc/cwd" "$proc/exe" "$proc"/fd/*; do
       [[ -L "$ref" ]] || continue
       target="$(readlink -- "$ref" 2>/dev/null || true)"
@@ -130,6 +133,7 @@ reap_detached_checkout_dependencies() {
   local checkout="$1" root origin status dependencies age now
   [[ "$checkout" == /* && -d "$checkout" && ! -L "$checkout" ]] || return 0
   [[ "$(realpath -e -- "$checkout" 2>/dev/null)" == "$checkout" ]] || return 0
+  [[ "$(stat -c %u -- "$checkout" 2>/dev/null)" == "$(id -u)" ]] || return 0
   [[ -e "$checkout/.git" ]] || return 0
   root="$(git -C "$checkout" rev-parse --show-toplevel 2>/dev/null)" || return 0
   [[ "$root" == "$checkout" ]] || return 0
