@@ -1438,6 +1438,10 @@ prune_rollout_retention() {
     local remove_until=$(( ${#terminal[@]} - retention_count ))
     for (( index=0; index<remove_until; index++ )); do
       name="${terminal[$index]}"
+      if [[ "$name" == "$(/usr/bin/basename -- "$artifact_dir")" ]]; then
+        echo "rollout retention protected_backup=$name reason=current_accepted_attempt"
+        continue
+      fi
       backup="$backup_dir/$name"
       # Remove data first, evidence last. If backup cleanup is interrupted,
       # the verified ledger must remain for a later safe retry.
