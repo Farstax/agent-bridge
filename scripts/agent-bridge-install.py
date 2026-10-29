@@ -732,7 +732,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         # Component installers resolve node from PATH. Expose only the admitted
         # binary through a private root-owned directory; its own directory may
         # be runtime-user controlled and must never shadow root's tools.
-        node_dir = Path(tempfile.mkdtemp(prefix="agent-bridge-install-node-"))
+        # Do not inherit TMPDIR from the caller. A private directory below a
+        # caller-writable ancestor can be renamed and replaced before the
+        # root-run component installer resolves its `node` command.
+        node_dir = Path(tempfile.mkdtemp(prefix="agent-bridge-install-node-", dir="/run"))
         os.symlink(node_bin, node_dir / "node")
         # Root-owned and holding only the node link; the Cursor installer runs
         # as the runtime user and must be able to resolve it.

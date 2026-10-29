@@ -52,6 +52,7 @@ with tempfile.TemporaryDirectory() as directory:
     // Component installers need the rollout's runtime account and the admitted node.
     const environment = source.slice(source.lastIndexOf("activate.validate_release(staged", prepare), prepare);
     expect(environment).toContain('os.environ["AGENT_BRIDGE_RUNTIME_USER"] = args.runtime_user');
+    expect(environment).toContain('tempfile.mkdtemp(prefix="agent-bridge-install-node-", dir="/run")');
     // Only the admitted node is exposed to root, never its (user-owned) directory.
     expect(source).not.toContain("node_bin.parent");
     expect(environment).toContain('os.symlink(node_bin, node_dir / "node")');
