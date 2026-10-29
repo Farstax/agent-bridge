@@ -137,6 +137,8 @@ esac
     const removed = writeTerminal(fixture.logDir, fixture.backupDir, "20260101T000000Z");
     const ambiguous = `20200101T000000Z-${"b".repeat(40)}`;
     mkdirSync(join(fixture.logDir, ambiguous));
+    mkdirSync(join(fixture.backupDir, ambiguous));
+    writeFileSync(join(fixture.backupDir, ambiguous, "database"), "unqualified backup\n");
     writeFileSync(join(fixture.backupDir, "orphan.sqlite"), "not a rollout set\n");
     const sentinelName = writeTerminal(fixture.logDir, fixture.backupDir, "20260102T000000Z", "CONTAINED");
     const probe = join(fixture.root, "available-bytes");
@@ -168,6 +170,8 @@ fi
     expect(existsSync(join(fixture.logDir, kept[1]))).toBe(true);
     expect(existsSync(join(fixture.backupDir, kept[1]))).toBe(true);
     expect(existsSync(join(fixture.logDir, ambiguous))).toBe(true);
+    expect(existsSync(join(fixture.backupDir, ambiguous))).toBe(true);
+    expect(output).toContain("protected_backup=" + ambiguous + " reason=terminal_evidence_missing_or_invalid");
     expect(existsSync(join(fixture.logDir, sentinelName))).toBe(true);
     expect(readFileSync(join(fixture.backupDir, "orphan.sqlite"), "utf8")).toBe("not a rollout set\n");
     expect(actions(fixture)).toContain("systemctl:stop");
