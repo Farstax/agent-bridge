@@ -642,6 +642,20 @@ def handoff_unit(commit: str, sha256: str) -> str:
     return f"agent-bridge-deploy-{int(hashlib.sha256((commit + sha256).encode()).hexdigest()[:20], 16)}.service"
 
 
+def verify_handoff_readback(commit: str) -> bool:
+    config = Path("/etc/agent-bridge/rollout.conf")
+    current = Path(configured_value(config, "current_pointer"))
+    if not current.is_symlink() or os.readlink(current) != commit:
+        return False
+    for line in config.read_text(encoding="utf8").splitlines():
+        if line.startswith("unit=") and subprocess.run(
+            ["/usr/bin/systemctl", "is-active", "--quiet", line.partition("=")[2]],
+            check=False,
+        ).returncode:
+            return False
+    return not (Path(configured_value(config, "log_dir")) / ".rollout-in-progress").exists()
+
+
 def accept_handoff(archive: Path, approval: Path | None, owner_request: Path | None) -> str:
     reject_root_test_overrides()
     production = os.geteuid() == 0 or os.environ.get("AGENT_BRIDGE_DEPLOY_TEST") != "1"
@@ -670,11 +684,17 @@ def accept_handoff(archive: Path, approval: Path | None, owner_request: Path | N
         # The original temporary archive belongs to the caller. Copy it before
         # returning, and never allow the caller's disposal to invalidate worker input.
         if not release_copy.exists():
-            with archive.open("rb") as stream:
-                content = stream.read()
-            if hashlib.sha256(content).hexdigest() != sha256:
-                fail("release archive changed during handoff")
-            persist_handoff_file(release_copy, content)
+            descriptor = os.open(release_copy, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+            try:
+                with os.fdopen(descriptor, "wb") as target, archive.open("rb") as source:
+                    shutil.copyfileobj(source, target, length=1024 * 1024)
+                    target.flush()
+                    os.fsync(target.fileno())
+                if digest(release_copy) != sha256:
+                    fail("release archive changed during handoff")
+            except BaseException:
+                release_copy.unlink(missing_ok=True)
+                raise
         elif digest(release_copy) != sha256:
             fail("durable deployment archive checksum mismatch")
         approved_copy = None
@@ -692,7 +712,11 @@ def accept_handoff(archive: Path, approval: Path | None, owner_request: Path | N
             if previous.get("targetCommit") != commit or previous.get("archiveSha256") != sha256:
                 fail("handoff receipt identity mismatch")
             if previous.get("status") == "verified":
-                return f"verified {commit} {sha256} unit={unit}"
+                # A prior success is not proof that this release remains active.
+                # If it was rolled back or services lost health, retry the
+                # guarded owner rather than report a stale verified receipt.
+                if not production or verify_handoff_readback(commit):
+                    return f"verified {commit} {sha256} unit={unit}"
         # Avoid concurrent duplicate systemd workers. A completed or failed
         # unit can be retried by the exact same authorised request.
         state = subprocess.run(["/usr/bin/systemctl", "is-active", "--quiet", unit],
@@ -730,20 +754,8 @@ def finish_handoff_worker(identity: str, archive: Path, approval: Path | None, o
     update_handoff_result(directory, "activating", commit, sha256)
     try:
         outcome = run_deployment(archive, approval, owner_request)
-        if production:
-            config = Path("/etc/agent-bridge/rollout.conf")
-            current = Path(configured_value(config, "current_pointer"))
-            if not current.is_symlink() or os.readlink(current) != commit:
-                fail("deployment handoff installed commit readback mismatch")
-            for line in config.read_text(encoding="utf8").splitlines():
-                if line.startswith("unit=") and subprocess.run(
-                    ["/usr/bin/systemctl", "is-active", "--quiet", line.partition("=")[2]],
-                    check=False,
-                ).returncode:
-                    fail("deployment handoff service health readback failed")
-            log_dir = Path(configured_value(config, "log_dir"))
-            if (log_dir / ".rollout-in-progress").exists():
-                fail("deployment handoff recovery sentinel remains")
+        if production and not verify_handoff_readback(commit):
+            fail("deployment handoff commit, service health or recovery-sentinel readback failed")
         update_handoff_result(directory, "verified", commit, sha256)
         return outcome
     except Exception:
