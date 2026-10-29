@@ -197,9 +197,19 @@ def verify_archive_stream(archive: Path, stage) -> tuple[dict, bytes | None]:
 
     actual: set[str] = set()
     regular: dict[str, tuple[str, int]] = {}
+    directories: set[str] = set()
+    footprint_bytes = 0
+    footprint_inodes = 1
     for relative, member, bundle in archive_members(archive, stage):
+        parts = relative.split("/")
+        directories.update("/".join(parts[:index]) for index in range(1, len(parts)))
         if member.isdir():
+            directories.add(relative)
             continue
+        if not member.islnk():
+            footprint_inodes += 1
+        if member.isfile():
+            footprint_bytes += -(-member.size // STAGING_BLOCK_BYTES) * STAGING_BLOCK_BYTES
         if member.issym():
             target = member.linkname
             resolved = os.path.normpath(os.path.join(os.path.dirname(relative), target))
@@ -236,6 +246,12 @@ def verify_archive_stream(archive: Path, stage) -> tuple[dict, bytes | None]:
         actual.add(relative)
     if "manifest.json" not in regular:
         raise RuntimeError("release artifact is missing a regular manifest.json")
+    footprint_inodes += len(directories)
+    footprint_bytes += (len(directories) + 1) * STAGING_BLOCK_BYTES
+    # Large directories and filesystem metadata take more than one block each;
+    # a 1% margin keeps the estimate above the measured allocation.
+    footprint_bytes += footprint_bytes // 100
+    manifest = {**manifest, "_staging_footprint": (footprint_bytes, footprint_inodes, archive.stat().st_size)}
     if actual != set(expected):
         raise RuntimeError("release contents do not match the manifest")
     lock = expected.get("package-lock.json")
@@ -247,48 +263,59 @@ def verify_archive_stream(archive: Path, stage) -> tuple[dict, bytes | None]:
 VERIFIED_MANIFESTS: dict[str, dict] = {}
 STAGING_BLOCK_BYTES = 4096
 DEFAULT_STAGING_SAFETY_RESERVE_BYTES = 268435456  # ROLLOUT_SAFETY_RESERVE_BYTES in rollout-agent-bridge.sh
+STAGING_INODE_RESERVE = 1024
 
 
-def staging_requirements(manifest: dict, archive: Path, release_root: Path) -> dict[int, tuple[Path, int]]:
-    """Bytes that staging allocates per filesystem: one candidate tree plus the archive snapshot."""
-    candidate = 0
-    directories: set[str] = set()
-    for entry in manifest["files"]:
-        parts = entry["path"].split("/")
-        directories.update("/".join(parts[:index]) for index in range(1, len(parts)))
-        if entry.get("type") != "symlink":
-            candidate += -(-int(entry.get("size", 0)) // STAGING_BLOCK_BYTES) * STAGING_BLOCK_BYTES
-    candidate += (len(directories) + 2) * STAGING_BLOCK_BYTES
-    snapshot = -(-archive.stat().st_size // STAGING_BLOCK_BYTES) * STAGING_BLOCK_BYTES
-    required: dict[int, tuple[Path, int]] = {}
-    for path, size in ((release_root, candidate), (Path(tempfile.gettempdir()), snapshot)):
-        probe = path
-        while not probe.exists():
-            probe = probe.parent
-        device = probe.stat().st_dev
-        required[device] = (probe, required.get(device, (probe, 0))[1] + size)
-    return required
+def filesystem_probe(path: Path) -> Path:
+    probe = path
+    while not probe.exists():
+        probe = probe.parent
+    return probe
 
 
-def admit_staging(archive: Path, commit: str, archive_sha256: str, release_root: Path, production: bool) -> None:
-    """Refuse before staging, while services still run, when one candidate would not fit (#1100)."""
-    if (release_root / commit).exists():
-        return
+def admit_staging(archive: Path, commit: str, archive_sha256: str, release_root: Path, production: bool,
+                  handoff_directory: Path | None = None) -> None:
+    """Refuse before writing, while services still run, unless one candidate fits (#1100).
+
+    Charges, per filesystem, the expanded candidate (counted from the verified
+    archive members, including directories and inodes), release-stage's archive
+    snapshot in TMPDIR and, for a new handoff, its durable archive copy. Each
+    filesystem keeps the rollout safety reserve. An already staged release needs
+    no candidate or snapshot.
+    """
     manifest = VERIFIED_MANIFESTS.get(archive_sha256)
-    if manifest is None or manifest.get("commit") != commit:
+    if manifest is None or manifest.get("commit") != commit or "_staging_footprint" not in manifest:
         fail("staging disk admission requires the verified release manifest")
+    candidate_bytes, candidate_inodes, archive_bytes = manifest["_staging_footprint"]
+    if archive.stat().st_size != archive_bytes:
+        fail("release archive changed after verification")
+    archive_blocks = -(-archive_bytes // STAGING_BLOCK_BYTES) * STAGING_BLOCK_BYTES
+    charges: list[tuple[Path, int, int]] = []
+    if not (release_root / commit).exists():
+        charges += [(release_root, candidate_bytes, candidate_inodes), (Path(tempfile.gettempdir()), archive_blocks, 1)]
+    if handoff_directory is not None and not (handoff_directory / "release.tar.gz").exists():
+        charges.append((handoff_directory, archive_blocks + 4 * STAGING_BLOCK_BYTES, 4))
+    required: dict[int, list] = {}
+    for path, size, inodes in charges:
+        probe = filesystem_probe(path)
+        entry = required.setdefault(probe.stat().st_dev, [probe, 0, 0])
+        entry[1] += size
+        entry[2] += inodes
     override = rollout_safety_reserve_override()
     reserve = int(override) if override else DEFAULT_STAGING_SAFETY_RESERVE_BYTES
-    simulated = None if production else os.environ.get("AGENT_BRIDGE_DEPLOY_TEST_AVAILABLE_BYTES")
-    for probe, required in staging_requirements(manifest, archive, release_root).values():
-        if simulated is not None:
-            available = int(simulated)
-        else:
-            usage = os.statvfs(probe)
-            available = usage.f_bavail * usage.f_frsize
-        if available < required + reserve:
-            fail(f"staging disk admission refused: {probe} needs {required + reserve} bytes "
-                 f"({required} staging + {reserve} reserve) but {available} are available")
+    simulated_bytes = None if production else os.environ.get("AGENT_BRIDGE_DEPLOY_TEST_AVAILABLE_BYTES")
+    simulated_inodes = None if production else os.environ.get("AGENT_BRIDGE_DEPLOY_TEST_AVAILABLE_INODES")
+    for probe, size, inodes in required.values():
+        usage = os.statvfs(probe)
+        available = int(simulated_bytes) if simulated_bytes is not None else usage.f_bavail * usage.f_frsize
+        free_inodes = int(simulated_inodes) if simulated_inodes is not None else usage.f_favail
+        if available < size + reserve:
+            fail(f"staging disk admission refused: {probe} needs {size + reserve} bytes "
+                 f"({size} staging + {reserve} reserve) but {available} are available")
+        # Filesystems without a fixed inode table report zero total inodes.
+        if (usage.f_files or simulated_inodes is not None) and free_inodes < inodes + STAGING_INODE_RESERVE:
+            fail(f"staging disk admission refused: {probe} needs {inodes + STAGING_INODE_RESERVE} inodes "
+                 f"but {free_inodes} are available")
 
 
 def validate_archive(archive: Path, approval: Path | None, now: datetime, production: bool, fixed_environment: str | None = None, stage_helper: Path | None = None) -> tuple[str, str, dict | None]:
@@ -888,6 +915,9 @@ def accept_handoff(archive: Path, approval: Path | None, owner_request: Path | N
                 fail("existing deployment handoff cannot be safely inventoried")
             if other_status != "verified":
                 fail("another accepted deployment request is unresolved")
+        staging_root = Path(configured_value(config, "release_root")) if config else Path(
+            os.environ.get("AGENT_BRIDGE_DEPLOY_TEST_RELEASE_ROOT") or tempfile.gettempdir())
+        admit_staging(archive, commit, sha256, staging_root, production, directory)
         directory.mkdir(mode=0o700, exist_ok=True)
         secure_handoff_directory(directory, production)
         release_copy = directory / "release.tar.gz"

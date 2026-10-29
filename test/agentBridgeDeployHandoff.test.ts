@@ -24,7 +24,10 @@ function probe(program: string) {
     "os.environ['AGENT_BRIDGE_DEPLOY_TEST_LOCK_FILE'] = str(root / 'deploy.lock')",
     "os.environ['AGENT_BRIDGE_DEPLOY_TEST_HANDOFF_ROOT'] = str(root / 'handoffs')",
     "module.os.geteuid = lambda: 1000",
-    "module.validate_archive = lambda *args: (commit, sha256, None)",
+    "def fake_validate(path, *args):",
+    "    module.VERIFIED_MANIFESTS[sha256] = {'commit': commit, '_staging_footprint': (4096, 2, path.stat().st_size)}",
+    "    return (commit, sha256, None)",
+    "module.validate_archive = fake_validate",
     "calls = []",
     "def fake_run(argv, **kwargs):",
     "    calls.append(argv)",
@@ -157,5 +160,38 @@ describe("durable independent OSS deployer handoff (#1347)", () => {
     ].join("\n"));
     expect(result.status, result.stderr).toBe(0);
     expect(result.stdout).toContain("checked");
+  });
+});
+
+describe("handoff staging disk admission (#1100)", () => {
+  it("refuses before writing the durable archive copy when staging would not fit", () => {
+    const result = probe([
+      "os.environ['AGENT_BRIDGE_DEPLOY_TEST_AVAILABLE_BYTES'] = str(268435456)",
+      "os.environ['AGENT_BRIDGE_DEPLOY_TEST_RELEASE_ROOT'] = str(root / 'releases')",
+      "try:",
+      "    module.accept_handoff(archive, None, None)",
+      "except RuntimeError as error:",
+      "    print(error)",
+      "else:",
+      "    raise SystemExit('handoff unexpectedly accepted')",
+      "handoffs = root / 'handoffs'",
+      "assert not handoffs.exists() or not any(handoffs.iterdir()), list(handoffs.iterdir())",
+      "assert calls == []",
+    ].join("\n"));
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout).toMatch(/staging disk admission refused/);
+  });
+
+  it("refuses an archive whose size changed after verification", () => {
+    const result = probe([
+      "module.validate_archive(archive)",
+      "archive.write_bytes(b'replaced after verification with more bytes')",
+      "try:",
+      "    module.admit_staging(archive, commit, sha256, root / 'releases', False)",
+      "except RuntimeError as error:",
+      "    print(error)",
+    ].join("\n"));
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout).toContain("release archive changed after verification");
   });
 });

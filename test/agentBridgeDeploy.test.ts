@@ -682,6 +682,47 @@ else:
     expect(reused.stdout).toContain(`already staged ${COMMIT}`);
   });
 
+  it("charges directory members and inodes counted from the verified archive itself (#1100)", () => {
+    const probe = String.raw`
+import hashlib, importlib.util, io, json, tarfile, tempfile
+from pathlib import Path
+spec = importlib.util.spec_from_file_location("agent_bridge_deploy", ${JSON.stringify(resolve(DEPLOYER))})
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+stage = module.staging_module(Path(${JSON.stringify(resolve("scripts/release-stage.py"))}))
+lock = b"lock\n"
+manifest = json.dumps({"schema_version": 1, "commit": "${COMMIT}", "tree": "${TREE}",
+  "files": [{"path": "package-lock.json", "sha256": hashlib.sha256(lock).hexdigest(), "size": len(lock)}],
+  "package_lock_sha256": hashlib.sha256(lock).hexdigest()}).encode()
+archive = Path(tempfile.mkdtemp()) / "release.tar.gz"
+with tarfile.open(archive, "w:gz") as bundle:
+    for name, data in (("manifest.json", manifest), ("package-lock.json", lock)):
+        info = tarfile.TarInfo(name); info.size = len(data); bundle.addfile(info, io.BytesIO(data))
+    for index in range(2000):
+        info = tarfile.TarInfo(f"empty/{index}"); info.type = tarfile.DIRTYPE; bundle.addfile(info)
+verified, _ = module.verify_archive_stream(archive, stage)
+footprint_bytes, footprint_inodes, _ = verified["_staging_footprint"]
+print(json.dumps({"bytes": footprint_bytes, "inodes": footprint_inodes}))
+`;
+    const result = spawnSync("python3", ["-c", probe], { encoding: "utf8" });
+    expect(result.status, result.stderr).toBe(0);
+    const footprint = JSON.parse(result.stdout) as { bytes: number; inodes: number };
+    expect(footprint.inodes).toBeGreaterThan(2000);
+    expect(footprint.bytes).toBeGreaterThan(2000 * 4096);
+  });
+
+  it("refuses staging when the candidate's inodes do not fit (#1100)", () => {
+    const fixture = makeRelease();
+    const releaseRoot = mkdtempSync(join(tmpdir(), "agent-bridge-deploy-stage-"));
+    const result = spawnSync("python3", [DEPLOYER, "--release", fixture.archive, "--approval", fixture.approval], {
+      encoding: "utf8",
+      env: { ...process.env, AGENT_BRIDGE_DEPLOY_TEST: "1", AGENT_BRIDGE_DEPLOY_TEST_RELEASE_ROOT: releaseRoot, AGENT_BRIDGE_DEPLOY_TEST_AVAILABLE_INODES: "1024" },
+    });
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toMatch(/staging disk admission refused: .* inodes/);
+    expect(readdirSync(releaseRoot).filter((name) => name !== ".agent-bridge-deploy.lock")).toEqual([]);
+  });
+
   it("deploys from --release alone, treating the operator's instruction as sufficient authorization", () => {
     const fixture = makeRelease();
     const releaseRoot = mkdtempSync(join(tmpdir(), "agent-bridge-deploy-stage-"));
