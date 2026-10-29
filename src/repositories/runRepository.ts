@@ -31,14 +31,19 @@ export interface ReconciliationEvidence {
 export class RunRepository {
   constructor(private readonly db: Database.Database) {}
 
-  insertRun(runId: string, identity: ConversationIdentity, bot: string): void {
+  insertRun(runId: string, identity: ConversationIdentity, bot: string, clientRequestId?: string): void {
     const startedAt = new Date().toISOString();
     this.db
       .prepare(
-        `INSERT INTO bridge_runs (run_id, surface_identity, chat_id, bot, status, started_at)
-         VALUES (?, ?, ?, ?, 'running', ?)`
+        `INSERT INTO bridge_runs (run_id, surface_identity, chat_id, bot, status, started_at, client_request_id)
+         VALUES (?, ?, ?, ?, 'running', ?, ?)`
       )
-      .run(runId, identity.surfaceIdentity, identity.chatKey, bot, startedAt);
+      .run(runId, identity.surfaceIdentity, identity.chatKey, bot, startedAt, clientRequestId ?? null);
+  }
+
+  getRunByClientRequest(identity: ConversationIdentity, clientRequestId: string): any {
+    return this.db.prepare(`SELECT * FROM bridge_runs WHERE surface_identity = ? AND chat_id = ? AND client_request_id = ?`)
+      .get(identity.surfaceIdentity, identity.chatKey, clientRequestId);
   }
 
   getRun(runId: string): any {

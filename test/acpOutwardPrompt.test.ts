@@ -14,6 +14,52 @@ import {
 } from "../src/acpServer/execution.js";
 
 describe("outward ACP prompt execution", () => {
+  it("reuses the Bridge-owned Run receipt when the same client request is retried after reconnect", async () => {
+    const root = mkdtempSync(join(tmpdir(), "agent-bridge-outward-idempotency-"));
+    const db = openDb(join(root, "bridge.sqlite"), { databaseRole: "interactive" });
+    try {
+      const session = new OutwardAcpSessionRepository(db.raw).create({
+        sessionId: "outward-idempotency",
+        conversationId: "acp:idempotency",
+        cwd: root,
+      });
+      let engineCalls = 0;
+      const createExecutor = (runId: string) => new BridgeOutwardAcpPromptExecutor({
+        db,
+        providerChain: ["codex"] as const,
+        runId: () => runId,
+        createEngine: () => ({
+          executeSurfaceNeutralTurn: async (input) => {
+            engineCalls += 1;
+            input.collect(eventType.runStarted({
+              runId: input.runId, bot: "codex", chatId: session.sessionId, chatKey: session.conversationId,
+              command: "codex-acp", cwd: root, model: null,
+            }));
+            return { text: "durable answer", sessionId: "provider-session", stopReason: "end_turn" };
+          },
+        }),
+      });
+      const request = {
+        session,
+        requestId: "desk-request-75b56b05-1dfd-46c0-a5c4-36db0bc3f527",
+        prompt: "Summarize the project",
+        signal: new AbortController().signal,
+        onUpdate: () => undefined,
+      };
+      await createExecutor("run-idempotency-first").execute(request);
+      const retry = await createExecutor("run-idempotency-retry").execute(request);
+
+      expect(retry.stopReason).toBe("end_turn");
+      expect(engineCalls).toBe(1);
+      expect(db.raw.prepare("SELECT COUNT(*) AS count FROM bridge_runs WHERE surface_identity = ? AND chat_id = ?").get(OUTWARD_ACP_SURFACE, session.conversationId)).toMatchObject({ count: 1 });
+      expect(db.raw.prepare("SELECT COUNT(*) AS count FROM conversation_turns WHERE surface_identity = ? AND chat_key = ?").get(OUTWARD_ACP_SURFACE, session.conversationId)).toMatchObject({ count: 2 });
+      expect(db.getRun("run-idempotency-retry")).toBeUndefined();
+    } finally {
+      db.close();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("keeps provider identity private, suppresses replay/provisional text, and forwards live structured updates", async () => {
     const root = mkdtempSync(join(tmpdir(), "agent-bridge-outward-prompt-"));
     const dbPath = join(root, "bridge.sqlite");
@@ -152,18 +198,21 @@ describe("outward ACP prompt execution", () => {
       const response = await client.connectWith(
         createOutwardAcpAgent({ sessions, promptExecutor, workspaceRoot: root }),
         async (agent) => {
-          await agent.request(acp.methods.agent.initialize, {
+          const initialized = await agent.request(acp.methods.agent.initialize, {
             protocolVersion: acp.PROTOCOL_VERSION,
             clientCapabilities: {},
           });
+          expect((initialized.agentCapabilities?._meta as Record<string, Record<string, number>> | undefined)?.["agent-bridge"]?.promptIdempotency).toBe(1);
           return agent.request(acp.methods.agent.session.prompt, {
             sessionId: session.sessionId,
             prompt: [{ type: "text", text: "hi" }],
+            _meta: { "farstax/request-id": "desk-request-75b56b05-1dfd-46c0-a5c4-36db0bc3f527" },
           });
         },
       );
 
       expect(response.stopReason).toBe("end_turn");
+      expect(db.raw.prepare("SELECT client_request_id FROM bridge_runs WHERE run_id = 'run-1'").get()).toMatchObject({ client_request_id: "desk-request-75b56b05-1dfd-46c0-a5c4-36db0bc3f527" });
       expect(updates).toEqual([
         {
           sessionId: "outward-session",

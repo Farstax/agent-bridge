@@ -35,6 +35,7 @@ type ActiveOutwardExecution = {
 
 export interface OutwardAcpPromptExecutionInput {
   session: OutwardAcpSessionRecord;
+  requestId?: string;
   prompt: string;
   attachments?: string[];
   signal: AbortSignal;
@@ -349,8 +350,12 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
     let activeProvider: RouteableBotKind = provider;
     try {
       const identity = { surfaceIdentity: OUTWARD_ACP_SURFACE, chatKey: input.session.conversationId };
+      if (input.requestId) {
+        const prior = db.getRunByClientRequest(identity, input.requestId);
+        if (prior) return { stopReason: "end_turn" };
+      }
       db.runInTransaction(() => {
-        db.insertRun(runId, identity, provider);
+        db.insertRun(runId, identity, provider, input.requestId);
         // An admitted prompt is durable even if its provider turn fails or the
         // process restarts before a final answer exists.
         db.addConvTurn(input.session.conversationId, "user", input.prompt, provider, {

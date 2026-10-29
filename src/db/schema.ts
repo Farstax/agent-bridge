@@ -23,9 +23,10 @@ import { applyExecutionCapacityMigration } from "./executionCapacityMigration.js
 import { applyExecutionCapacityNotificationMigration } from "./executionCapacityNotificationMigration.js";
 import { applyRunOutcomeMigration } from "./runOutcomeMigration.js";
 import { applyRecoveryCopyIsolationMigration } from "./recoveryCopyIsolationMigration.js";
+import { applyOutwardPromptIdempotencyMigration } from "./outwardPromptIdempotencyMigration.js";
 
 /** The schema version reached after the complete registered migration plan. */
-export const CURRENT_SCHEMA_VERSION = 25;
+export const CURRENT_SCHEMA_VERSION = 26;
 
 export interface Migration {
   version: number;
@@ -44,7 +45,7 @@ const MIGRATION_GROWTH: Readonly<Record<number, "none" | "copy">> = {
   1: "copy", 2: "copy", 3: "copy", 4: "copy", 5: "copy", 6: "none",
   7: "copy", 8: "copy", 9: "copy", 10: "copy", 11: "copy", 12: "copy",
   13: "copy", 14: "copy", 15: "copy", 16: "copy", 17: "copy", 18: "copy",
-  19: "none", 20: "copy", 21: "none", 22: "none", 23: "none", 24: "none", 25: "none",
+  19: "none", 20: "copy", 21: "none", 22: "none", 23: "none", 24: "none", 25: "none", 26: "none",
 };
 
 export function migrationGrowthClass(currentVersion: number): "none" | "copy" {
@@ -239,4 +240,5 @@ const DEFAULT_MIGRATIONS: readonly Migration[] = [
   { version: 23, name: "add-run-outcomes", up: applyRunOutcomeMigration },
   { version: 24, name: "retain-recovery-copy-execution-evidence", up: applyRecoveryCopyIsolationMigration },
   { version: 25, name: "add-outward-workstream-metadata", up: applyOutwardWorkstreamsMigration },
+  { version: 26, name: "add-outward-prompt-idempotency", up: applyOutwardPromptIdempotencyMigration },
 ];
