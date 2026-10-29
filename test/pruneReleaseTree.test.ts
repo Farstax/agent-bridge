@@ -71,5 +71,7 @@ describe("release tree pruning (#1100)", () => {
     const prune = workflow.indexOf("scripts/prune-release-tree.sh");
     expect(prune).toBeGreaterThan(0);
     expect(prune).toBeLessThan(workflow.indexOf("node scripts/releaseManifest.mjs"));
+    for (const pattern of ["'*.map'", "'*.d.ts'", "'*.d.mts'", "'*.d.cts'"]) expect(workflow).toContain(`-name ${pattern}`);
+    expect(workflow).toContain('test ! -e "$root/node_modules/@xai-official/grok-linux-x64/bin/grok.br"');
   });
 });
