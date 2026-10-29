@@ -105,6 +105,60 @@ has_ownership_signal() {
   return 1
 }
 
+
+# Only explicit checkouts or detached worktrees registered to a known OSS repo.
+# Never discover candidates by walking home directories.
+checkout_has_active_process() {
+  local checkout="$1" proc ref owner target current_uid
+  current_uid="$(id -u)"
+  for proc in /proc/[0-9]*; do
+    [[ -r "$proc/status" ]] || continue
+    owner="$(sed -n 's/^Uid:[[:space:]]*\([0-9]*\).*/\1/p' "$proc/status" | head -n 1)"
+    [[ "$owner" == "$current_uid" ]] || continue
+    for ref in "$proc/cwd" "$proc/exe" "$proc"/fd/*; do
+      [[ -L "$ref" ]] || continue
+      target="$(readlink -- "$ref" 2>/dev/null || true)"
+      if [[ "$target" == "$checkout" || "$target" == "$checkout/"* ]]; then
+        return 0
+      fi
+    done
+  done
+  return 1
+}
+
+reap_detached_checkout_dependencies() {
+  local checkout="$1" root origin status dependencies age now
+  [[ "$checkout" == /* && -d "$checkout" && ! -L "$checkout" ]] || return 0
+  [[ "$(realpath -e -- "$checkout" 2>/dev/null)" == "$checkout" ]] || return 0
+  [[ -e "$checkout/.git" ]] || return 0
+  root="$(git -C "$checkout" rev-parse --show-toplevel 2>/dev/null)" || return 0
+  [[ "$root" == "$checkout" ]] || return 0
+  # Accept only the actual Farstax OSS repository, not a similarly named tree.
+  origin="$(git -C "$checkout" remote get-url origin 2>/dev/null)" || return 0
+  case "$origin" in
+    https://github.com/Farstax/agent-bridge|https://github.com/Farstax/agent-bridge.git|git@github.com:Farstax/agent-bridge.git) ;;
+    *) log "preserving (unverified OSS origin): $checkout"; return 0 ;;
+  esac
+  [[ -z "$(git -C "$checkout" symbolic-ref -q HEAD 2>/dev/null)" ]] || return 0
+  status="$(git -C "$checkout" status --porcelain=v1 --untracked-files=all 2>/dev/null)" || return 0
+  [[ -z "$status" ]] || { log "preserving (dirty checkout): $checkout"; return 0; }
+  git -C "$checkout" merge-base --is-ancestor HEAD refs/remotes/origin/main 2>/dev/null || {
+    log "preserving (unverified detached commit): $checkout"
+    return 0
+  }
+  dependencies="$checkout/node_modules"
+  [[ -d "$dependencies" && ! -L "$dependencies" ]] || return 0
+  [[ "$(stat -c %u -- "$dependencies" 2>/dev/null)" == "$(id -u)" ]] || return 0
+  now="$(date +%s)"
+  age="$(stat -c %Y -- "$dependencies" 2>/dev/null)" || return 0
+  (( now - age > MAX_AGE_MIN * 60 )) || return 0
+  if has_ownership_signal "$checkout" || checkout_has_active_process "$checkout"; then
+    log "preserving (active checkout): $checkout"
+    return 0
+  fi
+  remove_entry "$dependencies" "inactive clean detached OSS dependencies"
+}
+
 # Age-sweep every direct child of $dir matching an optional -name glob.
 # Safe because every name here embeds a UUID/PID/random suffix — nothing
 # still running will ever look for an old name again.
@@ -165,6 +219,9 @@ reap_worktree_repo() {
         branch="${branch#refs/heads/}"
         ;;
       "detached")
+        if [[ -n "$wt" && "$wt" != "$repo" ]]; then
+          reap_detached_checkout_dependencies "$wt"
+        fi
         wt=""
         branch=""
         ;;
@@ -203,6 +260,13 @@ prune_acp_telemetry
 IFS=',' read -r -a REPOS <<< "${REAP_WORKTREE_REPOS:-${HOME:-}/agent-bridge}"
 for repo in "${REPOS[@]}"; do
   [[ -n "$repo" ]] && reap_worktree_repo "$repo"
+done
+
+# Optional exact detached-checkout inventory, for standalone detached clones
+# that are not linked Git worktrees. All candidates receive the same checks.
+IFS=',' read -r -a DETACHED_CHECKOUTS <<< "${REAP_DETACHED_CHECKOUTS:-}"
+for checkout in "${DETACHED_CHECKOUTS[@]}"; do
+  [[ -n "$checkout" ]] && reap_detached_checkout_dependencies "$checkout"
 done
 
 if (( FAILURES > 0 )); then
