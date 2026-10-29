@@ -1414,7 +1414,9 @@ prune_rollout_retention() {
     # The running attempt is non-terminal before admission, but after
     # acceptance it becomes the newest proven restore point. Include it
     # then so superseded terminal backups can be pruned immediately.
-    [[ "$entry" == "$artifact_dir" ]] && ! rollout_artifact_is_terminal "$entry" && continue
+    if [[ "$entry" == "$artifact_dir" ]] && ! rollout_artifact_is_terminal "$entry"; then
+      continue
+    fi
     if rollout_artifact_is_terminal "$entry"; then
       terminal+=("$base")
     elif rollout_artifact_has_last_phase "$entry" PRECONDITION_FAILED \
