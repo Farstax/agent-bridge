@@ -13,6 +13,7 @@ import os
 import re
 import shlex
 import stat
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -30,6 +31,7 @@ DEPLOY_UNIT = re.compile(r"^agent-bridge-deploy-[1-9][0-9]*\.service$")
 DEPLOY_UNIT_ENV = "AGENT_BRIDGE_DEPLOY_UNIT"
 ROLLOUT_SAFETY_RESERVE_ENV = "AGENT_BRIDGE_ROLLOUT_SAFETY_RESERVE_BYTES"
 DEPLOY_LOCK = Path("/run/lock/agent-bridge-deploy.lock")
+HANDOFF_ROOT = Path("/etc/agent-bridge/deploy-requests")
 SYSTEMD_RUN = "/usr/bin/systemd-run"
 RUNUSER = "/usr/sbin/runuser"
 SUDO = "/usr/bin/sudo"
@@ -570,6 +572,187 @@ def launch_detached(release: Path, approval: Path | None, owner_request: Path | 
     return result.returncode
 
 
+
+def handoff_root(production: bool) -> Path:
+    if production:
+        return HANDOFF_ROOT
+    return Path(os.environ.get("AGENT_BRIDGE_DEPLOY_TEST_HANDOFF_ROOT", "/tmp/agent-bridge-deploy-test-handoff"))
+
+
+def handoff_identity(commit: str, sha256: str) -> str:
+    if not SHA.fullmatch(commit) or not SHA256.fullmatch(sha256):
+        fail("invalid handoff identity")
+    return commit + "-" + sha256
+
+
+def secure_handoff_directory(root: Path, production: bool) -> None:
+    # The deployer is an installed, privileged trust boundary. Never use a
+    # writable runtime-owned directory as the root of its handoff spool.
+    if root.is_symlink():
+        fail("deployment handoff directory must not be a symlink")
+    root.mkdir(mode=0o700, exist_ok=True)
+    metadata = root.stat()
+    if not stat.S_ISDIR(metadata.st_mode) or (metadata.st_mode & 0o077):
+        fail("deployment handoff directory must be private")
+    if production and metadata.st_uid != 0:
+        fail("deployment handoff directory must be root-owned")
+
+
+def persist_handoff_file(path: Path, content: bytes) -> None:
+    if path.exists() or path.is_symlink():
+        if secure_file(path, False) != content:
+            fail("existing deployment handoff identity has different content")
+        return
+    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    try:
+        with os.fdopen(descriptor, "wb") as stream:
+            stream.write(content)
+            stream.flush()
+            os.fsync(stream.fileno())
+    except BaseException:
+        path.unlink(missing_ok=True)
+        raise
+
+
+def update_handoff_result(directory: Path, status: str, commit: str, sha256: str, detail: str = "") -> None:
+    if status not in ("accepted", "activating", "verified", "deferred", "failed"):
+        fail("invalid deployment handoff status")
+    record = {"status": status, "targetCommit": commit, "archiveSha256": sha256, "detail": detail}
+    descriptor, name = tempfile.mkstemp(prefix=".result-", dir=directory)
+    temp = Path(name)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf8") as stream:
+            os.fchmod(stream.fileno(), 0o600)
+            json.dump(record, stream, sort_keys=True)
+            stream.write("\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temp, directory / "result.json")
+        directory_fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
+    finally:
+        temp.unlink(missing_ok=True)
+
+
+def handoff_unit(commit: str, sha256: str) -> str:
+    # Stable per immutable release, unlike the initiating provider PID.
+    return f"agent-bridge-deploy-{int(hashlib.sha256((commit + sha256).encode()).hexdigest()[:20], 16)}.service"
+
+
+def accept_handoff(archive: Path, approval: Path | None, owner_request: Path | None) -> str:
+    reject_root_test_overrides()
+    production = os.geteuid() == 0 or os.environ.get("AGENT_BRIDGE_DEPLOY_TEST") != "1"
+    config = Path("/etc/agent-bridge/rollout.conf") if production else None
+    stage_helper = Path("/usr/local/libexec/agent-bridge-release-stage") if production else Path(
+        os.environ.get("AGENT_BRIDGE_DEPLOY_TEST_STAGE_HELPER", Path(__file__).with_name("release-stage.py")))
+    if production:
+        assert config is not None
+        validate_private_file(config, False)
+        validate_private_helper(stage_helper)
+    environment = configured_value(config, "environment") if config else os.environ.get("AGENT_BRIDGE_DEPLOY_TEST_ENVIRONMENT")
+    now = datetime.now(timezone.utc)
+    commit, sha256, _ = validate_archive(archive, approval, now, production, environment, stage_helper)
+    if owner_request:
+        parse_owner_request(owner_request, commit, now, production)
+    identity = handoff_identity(commit, sha256)
+    root = handoff_root(production)
+    with exclusive_deployment_lock(production):
+        secure_handoff_directory(root, production)
+        directory = root / identity
+        if directory.is_symlink():
+            fail("deployment handoff identity is a symlink")
+        directory.mkdir(mode=0o700, exist_ok=True)
+        secure_handoff_directory(directory, production)
+        release_copy = directory / "release.tar.gz"
+        # The original temporary archive belongs to the caller. Copy it before
+        # returning, and never allow the caller's disposal to invalidate worker input.
+        if not release_copy.exists():
+            with archive.open("rb") as stream:
+                content = stream.read()
+            if hashlib.sha256(content).hexdigest() != sha256:
+                fail("release archive changed during handoff")
+            persist_handoff_file(release_copy, content)
+        elif digest(release_copy) != sha256:
+            fail("durable deployment archive checksum mismatch")
+        approved_copy = None
+        owner_copy = None
+        if approval:
+            approved_copy = directory / "approval.json"
+            persist_handoff_file(approved_copy, secure_file(approval, production))
+        if owner_request:
+            owner_copy = directory / "owner-request.json"
+            persist_handoff_file(owner_copy, secure_file(owner_request, production))
+        unit = handoff_unit(commit, sha256)
+        result_file = directory / "result.json"
+        if result_file.exists():
+            previous = json.loads(secure_file(result_file, production))
+            if previous.get("targetCommit") != commit or previous.get("archiveSha256") != sha256:
+                fail("handoff receipt identity mismatch")
+            if previous.get("status") == "verified":
+                return f"verified {commit} {sha256} unit={unit}"
+        # Avoid concurrent duplicate systemd workers. A completed or failed
+        # unit can be retried by the exact same authorised request.
+        state = subprocess.run(["/usr/bin/systemctl", "is-active", "--quiet", unit],
+                               check=False).returncode if production else 1
+        if state == 0:
+            return f"accepted {commit} {sha256} unit={unit} pending"
+        update_handoff_result(directory, "accepted", commit, sha256)
+        command = detached_command(release_copy, approved_copy, owner_copy, unit)
+        command.remove("--wait")
+        command.append("--handoff-id=" + identity)
+        if production:
+            # ExecStartPre ensures the submitting Run can finish naturally before
+            # the independent owner attempts the stop-set; no session is killed.
+            command.insert(command.index("/usr/bin/python3"), "--property=ExecStartPre=/usr/bin/sleep 20")
+        outcome = subprocess.run(command, check=False)
+        if outcome.returncode:
+            update_handoff_result(directory, "deferred", commit, sha256, "worker_launch_failed")
+            fail("deployment handoff worker could not be started")
+    return f"accepted {commit} {sha256} unit={unit} pending"
+
+
+def finish_handoff_worker(identity: str, archive: Path, approval: Path | None, owner_request: Path | None) -> str:
+    production = os.geteuid() == 0 or os.environ.get("AGENT_BRIDGE_DEPLOY_TEST") != "1"
+    root = handoff_root(production)
+    directory = root / identity
+    if not directory.is_dir() or directory.is_symlink() or archive != directory / "release.tar.gz":
+        fail("worker handoff input does not match durable owner receipt")
+    commit, sha256 = identity.split("-", 1)
+    if not SHA.fullmatch(commit) or not SHA256.fullmatch(sha256) or digest(archive) != sha256:
+        fail("worker handoff artifact identity mismatch")
+    if approval and approval != directory / "approval.json":
+        fail("worker approval is not durable handoff authority")
+    if owner_request and owner_request != directory / "owner-request.json":
+        fail("worker owner request is not durable handoff authority")
+    update_handoff_result(directory, "activating", commit, sha256)
+    try:
+        outcome = run_deployment(archive, approval, owner_request)
+        if production:
+            config = Path("/etc/agent-bridge/rollout.conf")
+            current = Path(configured_value(config, "current_pointer"))
+            if not current.is_symlink() or os.readlink(current) != commit:
+                fail("deployment handoff installed commit readback mismatch")
+            for line in config.read_text(encoding="utf8").splitlines():
+                if line.startswith("unit=") and subprocess.run(
+                    ["/usr/bin/systemctl", "is-active", "--quiet", line.partition("=")[2]],
+                    check=False,
+                ).returncode:
+                    fail("deployment handoff service health readback failed")
+            log_dir = Path(configured_value(config, "log_dir"))
+            if (log_dir / ".rollout-in-progress").exists():
+                fail("deployment handoff recovery sentinel remains")
+        update_handoff_result(directory, "verified", commit, sha256)
+        return outcome
+    except Exception:
+        # Not every rollout failure is recoverable. Preserve the immutable
+        # request for the existing maintenance owner's guarded retry/readback.
+        update_handoff_result(directory, "deferred", commit, sha256, "guarded_rollout_not_verified")
+        raise
+
+
 def run_deployment(archive: Path, approval: Path | None, owner_request: Path | None = None) -> str:
     production = os.geteuid() == 0 or os.environ.get("AGENT_BRIDGE_DEPLOY_TEST") != "1"
     if not mutating_deployment(production):
@@ -664,12 +847,21 @@ def main() -> int:
     parser.add_argument("--owner-request", type=Path)
     parser.add_argument("--validate-only", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--internal-worker", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--handoff", action="store_true", help="Durably hand an authorised release to the independent systemd deployer")
+    parser.add_argument("--handoff-id", help=argparse.SUPPRESS)
     args = parser.parse_args()
     if args.approval is not None and args.owner_request is not None:
         parser.error("provide at most one of --approval or --owner-request")
     reject_root_test_overrides()
+    if args.handoff and (args.internal_worker or args.validate_only or args.handoff_id):
+        parser.error("--handoff is only valid for a new normal deployment request")
+    if args.handoff_id and not args.internal_worker:
+        parser.error("--handoff-id requires a systemd worker")
     if args.validate_only:
         os.environ["AGENT_BRIDGE_DEPLOY_VALIDATE_ONLY"] = "1"
+    if args.handoff:
+        print(accept_handoff(args.release, args.approval, args.owner_request))
+        return 0
     if os.geteuid() == 0 and not args.validate_only:
         unit = os.environ.get(DEPLOY_UNIT_ENV, "")
         if args.internal_worker:
@@ -679,7 +871,8 @@ def main() -> int:
             return launch_detached(args.release, args.approval, args.owner_request)
     elif args.internal_worker:
         fail("internal deployment worker requires a root transient systemd unit")
-    print(run_deployment(args.release, args.approval, args.owner_request))
+    print(finish_handoff_worker(args.handoff_id, args.release, args.approval, args.owner_request)
+          if args.handoff_id else run_deployment(args.release, args.approval, args.owner_request))
     return 0
 
 
