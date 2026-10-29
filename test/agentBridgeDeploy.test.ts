@@ -706,16 +706,18 @@ with tarfile.open(archive, "w:gz") as bundle:
     for index in range(500):
         info = tarfile.TarInfo(f"links/{index}"); info.type, info.linkname = tarfile.SYMTYPE, "../" + "x" * 200; bundle.addfile(info)
 verified, _ = module.verify_archive_stream(archive, stage)
-footprint_bytes, footprint_inodes, _ = verified["_staging_footprint"]
-print(json.dumps({"bytes": footprint_bytes, "inodes": footprint_inodes}))
+footprint_bytes, footprint_inodes, _, raw_footprint = verified["_staging_footprint"]
+large_block_bytes = module.candidate_bytes(raw_footprint, 65536)
+print(json.dumps({"bytes": footprint_bytes, "large_block_bytes": large_block_bytes, "inodes": footprint_inodes}))
 `;
     const result = spawnSync("python3", ["-c", probe], { encoding: "utf8" });
     expect(result.status, result.stderr).toBe(0);
-    const footprint = JSON.parse(result.stdout) as { bytes: number; inodes: number };
+    const footprint = JSON.parse(result.stdout) as { bytes: number; large_block_bytes: number; inodes: number };
     expect(footprint.inodes).toBeGreaterThan(2500);
     // 2,000 empty directories and 500 long symlinks take a block each, and the
     // 2,000 long names fill about 104 extra blocks of their parent directory.
     expect(footprint.bytes).toBeGreaterThan((2000 + 500 + 100) * 4096);
+    expect(footprint.large_block_bytes).toBeGreaterThan((2000 + 500) * 65536);
   });
 
   it("charges ext4 directory-block packing for long names and bounds the stage snapshot (#1100)", () => {

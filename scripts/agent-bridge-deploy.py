@@ -151,6 +151,26 @@ def archive_members(archive: Path, stage):
             yield relative, member, bundle
 
 
+def candidate_bytes(raw: tuple, block: int) -> int:
+    """Allocation of one expanded candidate on a filesystem with this block size.
+
+    Data blocks per regular file, one block per symlink (long targets need
+    one), and each directory packed from its entry records ("." and ".."
+    first; records never straddle blocks), plus hashed-index blocks for
+    multi-block directories and a 1% metadata margin.
+    """
+    file_sizes, symlinks, directories = raw
+    total = sum(-(-size // block) * block for size in file_sizes) + symlinks * block
+    for records in directories:
+        blocks, used = 1, 24
+        for record in records:
+            if used + record > block:
+                blocks, used = blocks + 1, 0
+            used += record
+        total += (blocks + (blocks > 1) * (1 + blocks // 64)) * block
+    return total + total // 100
+
+
 def verify_archive_stream(archive: Path, stage) -> tuple[dict, bytes | None]:
     """Verify a release archive against its manifest without extracting it.
 
@@ -206,15 +226,11 @@ def verify_archive_stream(archive: Path, stage) -> tuple[dict, bytes | None]:
     named: set[str] = set()
 
     def add_entry(directory: str, name: str) -> None:
-        record = 8 + -(-len(name.encode()) // 4) * 4
-        state = entry_bytes.setdefault(directory, [1, 24])
-        if state[1] + record > STAGING_BLOCK_BYTES:
-            state[0] += 1
-            state[1] = 0
-        state[1] += record
+        entry_bytes.setdefault(directory, []).append(8 + -(-len(name.encode()) // 4) * 4)
 
     add_entry("", ".")
-    footprint_bytes = 0
+    file_sizes: list[int] = []
+    symlinks = 0
     footprint_inodes = 1
     for relative, member, bundle in archive_members(archive, stage):
         parts = relative.split("/")
@@ -225,16 +241,16 @@ def verify_archive_stream(archive: Path, stage) -> tuple[dict, bytes | None]:
             named.add(path)
             add_entry("/".join(parts[:index - 1]), parts[index - 1])
             if index < len(parts):
-                entry_bytes.setdefault(path, [1, 24])
+                entry_bytes.setdefault(path, [])
         if member.isdir():
-            entry_bytes.setdefault(relative, [1, 24])
+            entry_bytes.setdefault(relative, [])
             continue
         if not member.islnk():
             footprint_inodes += 1
         if member.isfile():
-            footprint_bytes += -(-member.size // STAGING_BLOCK_BYTES) * STAGING_BLOCK_BYTES
+            file_sizes.append(member.size)
         elif member.issym():
-            footprint_bytes += STAGING_BLOCK_BYTES
+            symlinks += 1
         if member.issym():
             target = member.linkname
             resolved = os.path.normpath(os.path.join(os.path.dirname(relative), target))
@@ -272,12 +288,8 @@ def verify_archive_stream(archive: Path, stage) -> tuple[dict, bytes | None]:
     if "manifest.json" not in regular:
         raise RuntimeError("release artifact is missing a regular manifest.json")
     footprint_inodes += len(entry_bytes)
-    # Directories that span blocks also need hashed-index blocks; charge one per 64.
-    footprint_bytes += sum(blocks + (blocks > 1) * (1 + blocks // 64) for blocks, _ in entry_bytes.values()) * STAGING_BLOCK_BYTES
-    # Large directories and filesystem metadata take more than one block each;
-    # a 1% margin keeps the estimate above the measured allocation.
-    footprint_bytes += footprint_bytes // 100
-    manifest = {**manifest, "_staging_footprint": (footprint_bytes, footprint_inodes, archive.stat().st_size)}
+    raw = (tuple(file_sizes), symlinks, tuple(tuple(records) for records in entry_bytes.values()))
+    manifest = {**manifest, "_staging_footprint": (candidate_bytes(raw, STAGING_BLOCK_BYTES), footprint_inodes, archive.stat().st_size, raw)}
     if actual != set(expected):
         raise RuntimeError("release contents do not match the manifest")
     lock = expected.get("package-lock.json")
@@ -299,9 +311,23 @@ def filesystem_probe(path: Path) -> Path:
     return probe
 
 
-def root_controlled(path: Path) -> bool:
-    """True when only root can grow or replace the file at this path."""
-    for item in (path, path.parent):
+def in_handoff_spool(archive: Path) -> bool:
+    """True for the root-owned durable handoff copy, which no caller can grow or replace."""
+    try:
+        relative = archive.relative_to(HANDOFF_ROOT)
+    except ValueError:
+        return False
+    if len(relative.parts) != 2 or relative.parts[1] != "release.tar.gz":
+        return False
+    # Check every path component, not only the leaf and its parent. A safe
+    # root-owned directory below a caller-writable ancestor can still be
+    # renamed and replaced between admission and the legacy helper's snapshot.
+    components = [Path("/")]
+    current = Path("/")
+    for part in (*HANDOFF_ROOT.parts[1:], *relative.parts):
+        current = current / part
+        components.append(current)
+    for item in components:
         metadata = item.lstat()
         if stat.S_ISLNK(metadata.st_mode) or metadata.st_uid != 0 or metadata.st_mode & 0o022:
             return False
@@ -320,7 +346,7 @@ def snapshot_limit_args(stage_helper: Path, archive: Path, archive_sha256: str, 
         fail("staging disk admission requires the verified release manifest")
     if getattr(staging_module(stage_helper), "SNAPSHOT_LIMIT_SUPPORTED", False):
         return ["--max-archive-bytes", str(manifest["_staging_footprint"][2])]
-    if production and not root_controlled(archive):
+    if production and not in_handoff_spool(archive):
         fail("installed release-stage cannot bound its archive snapshot; bootstrap release-stage or deploy with --handoff")
     return []
 
@@ -338,20 +364,36 @@ def admit_staging(archive: Path, commit: str, archive_sha256: str, release_root:
     manifest = VERIFIED_MANIFESTS.get(archive_sha256)
     if manifest is None or manifest.get("commit") != commit or "_staging_footprint" not in manifest:
         fail("staging disk admission requires the verified release manifest")
-    candidate_bytes, candidate_inodes, archive_bytes = manifest["_staging_footprint"]
+    footprint = manifest["_staging_footprint"]
+    candidate_at_default, candidate_inodes, archive_bytes = footprint[:3]
+    raw = footprint[3] if len(footprint) > 3 else None
     if archive.stat().st_size != archive_bytes:
         fail("release archive changed after verification")
-    archive_blocks = -(-archive_bytes // STAGING_BLOCK_BYTES) * STAGING_BLOCK_BYTES
+
+    def blocks_of(path: Path) -> int:
+        usage = os.statvfs(path)
+        return max(usage.f_frsize, usage.f_bsize, STAGING_BLOCK_BYTES)
+
+    def file_charge(size: int, block: int) -> int:
+        return -(-size // block) * block
+
     # release-stage always snapshots the archive into TMPDIR before it checks
     # for an existing release, so only the candidate charge can be skipped.
-    charges: list[tuple[Path, int, int]] = [(Path(tempfile.gettempdir()), archive_blocks, 1)]
+    charges: list[tuple[Path, str, int]] = [(Path(tempfile.gettempdir()), "snapshot", 1)]
     if not (release_root / commit).exists():
-        charges.append((release_root, candidate_bytes, candidate_inodes))
+        charges.append((release_root, "candidate", candidate_inodes))
     if handoff_directory is not None and not (handoff_directory / "release.tar.gz").exists():
-        charges.append((handoff_directory, archive_blocks + 4 * STAGING_BLOCK_BYTES, 4))
+        charges.append((handoff_directory, "handoff", 4))
     required: dict[int, list] = {}
-    for path, size, inodes in charges:
+    for path, kind, inodes in charges:
         probe = filesystem_probe(path)
+        block = blocks_of(probe)
+        if kind == "candidate":
+            size = candidate_bytes(raw, block) if raw is not None else candidate_at_default
+        elif kind == "snapshot":
+            size = file_charge(archive_bytes, block)
+        else:
+            size = file_charge(archive_bytes, block) + 4 * block
         entry = required.setdefault(probe.stat().st_dev, [probe, 0, 0])
         entry[1] += size
         entry[2] += inodes
