@@ -221,6 +221,59 @@ print(commit)
     expect(`${result.stdout}\n${result.stderr}`).toMatch(pattern);
   });
 
+  it.each([
+    ["a member below a symlinked directory", "symlink"],
+    ["a member below a regular file", "file"],
+    ["a file replacing an implied directory", "replace"],
+  ])("refuses %s although every member is declared in the manifest", (_name, shape) => {
+    const probe = String.raw`
+import hashlib, importlib.util, io, json, sys, tarfile, tempfile
+from datetime import datetime, timezone
+from pathlib import Path
+spec = importlib.util.spec_from_file_location("agent_bridge_deploy", ${JSON.stringify(resolve(DEPLOYER))})
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+shape = sys.argv[1]
+lock = b"lock\n"
+evidence = json.dumps({"commit": "${COMMIT}", "tree": "${TREE}"}).encode()
+members = [("package-lock.json", "file", lock), ("qualification-evidence.json", "file", evidence), ("target/real", "file", b"real\n")]
+if shape == "symlink":
+    members += [("alias", "symlink", "target"), ("alias/real", "file", b"real\n")]
+elif shape == "file":
+    members += [("plain", "file", b"x"), ("plain/child", "file", b"y")]
+else:
+    members += [("tree/child", "file", b"y"), ("tree", "file", b"x")]
+files = []
+for name, kind, data in members:
+    if kind == "symlink":
+        files.append({"path": name, "type": "symlink", "target": data})
+    else:
+        files.append({"path": name, "sha256": hashlib.sha256(data).hexdigest(), "size": len(data)})
+manifest = json.dumps({"schema_version": 1, "commit": "${COMMIT}", "tree": "${TREE}", "files": files,
+                       "package_lock_sha256": hashlib.sha256(lock).hexdigest()}).encode()
+directory = Path(tempfile.mkdtemp())
+archive = directory / "release.tar.gz"
+with tarfile.open(archive, "w:gz") as bundle:
+    for name, kind, data in [("manifest.json", "file", manifest), *members]:
+        info = tarfile.TarInfo(name)
+        if kind == "symlink":
+            info.type, info.linkname = tarfile.SYMTYPE, data
+            bundle.addfile(info)
+        else:
+            info.size = len(data)
+            bundle.addfile(info, io.BytesIO(data))
+try:
+    module.validate_archive(archive, None, datetime.now(timezone.utc), True)
+except RuntimeError as error:
+    print(error)
+else:
+    raise SystemExit("archive unexpectedly validated")
+`;
+    const result = spawnSync("python3", ["-c", probe, shape], { encoding: "utf8" });
+    expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
+    expect(result.stdout).toMatch(/below a non-directory|duplicate archive member/);
+  });
+
   it("rejects a tampered archive and wrong commit/environment/SHA or expired approval", () => {
     const fixture = makeRelease();
     const approval = JSON.parse(readFileSync(fixture.approval, "utf8"));

@@ -127,16 +127,27 @@ def parse_approval(path: Path, expected_commit: str, release_sha256: str, now: d
 
 
 def archive_members(archive: Path, stage):
-    """Yield (relative, member, bundle) for every checked archive member, in order."""
-    seen: set[str] = set()
+    """Yield (relative, member, bundle) for every checked archive member, in order.
+
+    Without an extraction there is no filesystem to refuse a member below a
+    file or symlink, so the path topology is checked here: every parent must
+    be a directory, and nothing may later replace an implied directory.
+    """
+    kinds: dict[str, str] = {}
     with archive.open("rb") as stream, tarfile.open(fileobj=stream, mode="r|gz") as bundle:
         for member in bundle:
             if member.name in (".", "./"):
                 continue
             relative = stage.safe_relative(member.name)
-            if relative in seen:
+            if relative in kinds and (kinds[relative] != "implied" or not member.isdir()):
                 raise RuntimeError(f"duplicate archive member: {relative}")
-            seen.add(relative)
+            parts = relative.split("/")
+            for index in range(1, len(parts)):
+                parent = "/".join(parts[:index])
+                if kinds.get(parent, "implied") not in ("dir", "implied"):
+                    raise RuntimeError(f"archive member is below a non-directory: {relative}")
+                kinds.setdefault(parent, "implied")
+            kinds[relative] = "dir" if member.isdir() else "entry"
             yield relative, member, bundle
 
 
