@@ -1,6 +1,15 @@
 import Database from "better-sqlite3";
 import type { ConversationIdentity } from "../conversationIdentity.js";
 
+export interface LatestConversationRun {
+  run_id: string;
+  bot: string;
+  status: string;
+  started_at: string;
+  ended_at: string | null;
+  outcome_status: "complete" | "continue" | "blocked" | null;
+}
+
 export interface RunningRun {
   run_id: string;
   surface_identity?: string | null;
@@ -104,6 +113,15 @@ export class RunRepository {
     return this.db
       .prepare(`SELECT * FROM bridge_events WHERE run_id = ? ORDER BY seq ASC`)
       .all(runId);
+  }
+
+  /** Most recent Run of one conversation, for read-only status projection. */
+  getLatestRunForConversation(identity: ConversationIdentity): LatestConversationRun | null {
+    const row = this.db
+      .prepare(`SELECT run_id, bot, status, started_at, ended_at, outcome_status FROM bridge_runs
+        WHERE surface_identity = ? AND chat_id = ? ORDER BY started_at DESC, rowid DESC LIMIT 1`)
+      .get(identity.surfaceIdentity, identity.chatKey) as LatestConversationRun | undefined;
+    return row ?? null;
   }
 
   listRunningRuns(): RunningRun[] {

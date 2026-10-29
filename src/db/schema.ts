@@ -18,13 +18,14 @@ import { applyOutwardAcpSessionsMigration } from "./outwardAcpSessionsMigration.
 import { applyConversationIdentityMigration } from "./conversationIdentityMigration.js";
 import { applyLegacySettingsSurfaceMigration } from "./legacySettingsSurfaceMigration.js";
 import { applySlackReceiptsMigration } from "./slackReceiptsMigration.js";
+import { applyOutwardWorkstreamsMigration } from "./outwardWorkstreamsMigration.js";
 import { applyExecutionCapacityMigration } from "./executionCapacityMigration.js";
 import { applyExecutionCapacityNotificationMigration } from "./executionCapacityNotificationMigration.js";
 import { applyRunOutcomeMigration } from "./runOutcomeMigration.js";
 import { applyRecoveryCopyIsolationMigration } from "./recoveryCopyIsolationMigration.js";
 
 /** The schema version reached after the complete registered migration plan. */
-export const CURRENT_SCHEMA_VERSION = 24;
+export const CURRENT_SCHEMA_VERSION = 25;
 
 export interface Migration {
   version: number;
@@ -209,6 +210,7 @@ export function schemaTablesForRole(databaseRole = "shared"): readonly string[] 
  * source 'slack' and the dispatching/ambiguous receipt states.
  * Version 23 records an explicit provider objective disposition on its owning Run (#1050).
  * Version 24 retains execution records fenced during recovery-copy isolation.
+ * Version 25 adds Workstream title/archive metadata to outward ACP sessions (#1101).
  * Each step is transactional and user_version remains authoritative.
  */
 const DEFAULT_MIGRATIONS: readonly Migration[] = [
@@ -236,4 +238,5 @@ const DEFAULT_MIGRATIONS: readonly Migration[] = [
   { version: 22, name: "add-execution-capacity-notification", up: applyExecutionCapacityNotificationMigration },
   { version: 23, name: "add-run-outcomes", up: applyRunOutcomeMigration },
   { version: 24, name: "retain-recovery-copy-execution-evidence", up: applyRecoveryCopyIsolationMigration },
+  { version: 25, name: "add-outward-workstream-metadata", up: applyOutwardWorkstreamsMigration },
 ];

@@ -34,6 +34,8 @@ try {
   const sessions: OutwardAcpSessionStore = {
     create: (session) => sessionRepo.create(session),
     get: (sessionId) => sessionRepo.get(sessionId),
+    list: (cwd, options) => sessionRepo.list(cwd, options),
+    update: (sessionId, change) => sessionRepo.update(sessionId, change),
     history: (conversationId) => db.getRecentConvTurns(
       conversationId,
       OUTWARD_ACP_HISTORY_LIMIT,
@@ -53,7 +55,7 @@ try {
     Writable.toWeb(process.stdout),
     Readable.toWeb(process.stdin) as ReadableStream<Uint8Array>,
   );
-  const connection = createOutwardAcpAgent({ sessions, promptExecutor }).connect(stream);
+  const connection = createOutwardAcpAgent({ sessions, promptExecutor, workstreams: promptExecutor }).connect(stream);
   await connection.closed;
 } finally {
   try {

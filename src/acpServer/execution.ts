@@ -13,7 +13,7 @@ import { lookupProviderSession, persistProviderSession } from "../providers/sess
 import type { OutwardAcpSessionRecord } from "../repositories/outwardAcpSessionRepository.js";
 import { createSurfaceNeutralProviderRouter } from "../surfaceNeutralProviderRouter.js";
 import { getCachedAvailableCliKinds } from "../interactiveCliAuth.js";
-import type { CliKind } from "../interactiveBot.js";
+import { applyManualCliSwitchHandoff, getStoredCliPreference, type CliKind } from "../interactiveBot.js";
 import type { BotKind, BridgeConfig, CliResult, RouteableBotKind } from "../types.js";
 
 export const OUTWARD_ACP_SURFACE = "acp:outward";
@@ -43,6 +43,31 @@ export interface OutwardAcpPromptExecutionInput {
 export interface OutwardAcpPromptExecutor {
   execute(input: OutwardAcpPromptExecutionInput): Promise<acp.PromptResponse>;
   cancel(session: OutwardAcpSessionRecord): Promise<void>;
+}
+
+/** Truthful Workstream state, derived only from durable Run records (#1101). */
+export type OutwardWorkstreamState = "running" | "attention" | "failed" | "cancelled" | "idle";
+
+export interface OutwardWorkstreamStatus {
+  state: OutwardWorkstreamState;
+  /** Provider the next Run will start with. */
+  selectedProvider: BotKind;
+  /** Configured chain members, with current routeability. */
+  providers: Array<{ id: BotKind; available: boolean }>;
+  lastRun: {
+    runId: string;
+    provider: string;
+    status: string;
+    outcome: "complete" | "continue" | "blocked" | null;
+    startedAt: string;
+    endedAt: string | null;
+  } | null;
+}
+
+/** Bridge-owned Workstream controls offered beside standard ACP. */
+export interface OutwardWorkstreamControl {
+  status(session: OutwardAcpSessionRecord): OutwardWorkstreamStatus;
+  selectProvider(session: OutwardAcpSessionRecord, provider: string): OutwardWorkstreamStatus;
 }
 
 export type OutwardAcpExecutionEngine = Pick<BridgeEngine, "executeSurfaceNeutralTurn">;
@@ -144,30 +169,95 @@ function sweepDelay(done: Promise<void>): Promise<void> {
   ]);
 }
 
-export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor {
+export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor, OutwardWorkstreamControl {
   private readonly active = new Map<string, ActiveOutwardExecution>();
   // One router per conversation, reused across turns so that a fallback
   // chosen on an earlier turn stays the active provider on later turns
   // (matches Telegram's per-chat ProviderFallbackChain lifetime) rather than
   // silently retrying an already-exhausted head provider every turn.
-  private readonly routers = new Map<string, OutwardAcpExecutionEngine>();
+  // A router is rebuilt only when the Workstream's durable provider selection
+  // changes, which can only happen while no Run holds the conversation lane.
+  private readonly routers = new Map<string, { provider: BotKind; router: OutwardAcpExecutionEngine }>();
 
   constructor(private readonly options: BridgeOutwardAcpPromptExecutorOptions) {}
 
-  private routerFor(session: OutwardAcpSessionRecord): OutwardAcpExecutionEngine {
+  private identity(session: OutwardAcpSessionRecord) {
+    return { surfaceIdentity: OUTWARD_ACP_SURFACE, chatKey: session.conversationId };
+  }
+
+  /** Durable per-Workstream selection when it is still in the chain, else the chain head. */
+  private selectedProvider(session: OutwardAcpSessionRecord): BotKind {
+    const stored = getStoredCliPreference(this.options.db, this.identity(session));
+    return stored && this.options.providerChain.includes(stored as BotKind) ? stored as BotKind : this.options.providerChain[0];
+  }
+
+  private routerFor(session: OutwardAcpSessionRecord, initialProvider: BotKind): OutwardAcpExecutionEngine {
     const existing = this.routers.get(session.conversationId);
-    if (existing) return existing;
+    if (existing?.provider === initialProvider) return existing.router;
     const { db, providerChain, createEngine, isProviderAvailable } = this.options;
     const router = createSurfaceNeutralProviderRouter({
       db,
       isProviderAvailable,
       surfaceIdentity: OUTWARD_ACP_SURFACE,
-      initialProvider: providerChain[0],
+      initialProvider,
       providerChain,
       engineForProvider: (attemptProvider) => createEngine(session, attemptProvider),
     });
-    this.routers.set(session.conversationId, router);
+    this.routers.set(session.conversationId, { provider: initialProvider, router });
     return router;
+  }
+
+  status(session: OutwardAcpSessionRecord): OutwardWorkstreamStatus {
+    const { db, providerChain, isProviderAvailable } = this.options;
+    const run = db.getLatestRunForConversation(this.identity(session));
+    let state: OutwardWorkstreamState = "idle";
+    if (run?.status === "running") state = "running";
+    else if (run?.status === "failed") state = "failed";
+    else if (run?.status === "cancelled") state = "cancelled";
+    // Attention comes only from an explicit recorded provider disposition.
+    else if (run?.outcome_status === "blocked") state = "attention";
+    return {
+      state,
+      selectedProvider: this.selectedProvider(session),
+      providers: providerChain.map((id) => ({ id, available: isProviderAvailable?.(id) ?? true })),
+      lastRun: run ? {
+        runId: run.run_id,
+        provider: run.bot,
+        status: run.status,
+        outcome: run.outcome_status,
+        startedAt: run.started_at,
+        endedAt: run.ended_at,
+      } : null,
+    };
+  }
+
+  /**
+   * Durable per-Workstream provider switch. Holds the conversation lane for
+   * the write, so it never retargets an in-flight Run: a busy Workstream
+   * fails transparently and the caller may retry after the Run settles.
+   */
+  selectProvider(session: OutwardAcpSessionRecord, provider: string): OutwardWorkstreamStatus {
+    const { db, providerChain, isProviderAvailable } = this.options;
+    const target = providerChain.find((candidate) => candidate === provider);
+    if (!target) {
+      throw acp.RequestError.invalidParams({ field: "provider" }, "provider is not configured for this workspace");
+    }
+    if (isProviderAvailable && !isProviderAvailable(target)) {
+      throw acp.RequestError.invalidParams({ field: "provider" }, "provider is not installed or authenticated");
+    }
+    const lane = db.acquireLock(OUTWARD_ACP_SURFACE, session.conversationId);
+    if (!lane) {
+      throw new acp.RequestError(OUTWARD_ACP_BUSY_ERROR, "outward ACP session is busy", { sessionId: session.sessionId });
+    }
+    try {
+      if (this.selectedProvider(session) !== target) {
+        db.runWithLockFence(lane, () => applyManualCliSwitchHandoff(db, this.identity(session), target as CliKind));
+        this.routers.delete(session.conversationId);
+      }
+    } finally {
+      db.unlock(lane);
+    }
+    return this.status(session);
   }
 
   async cancel(session: OutwardAcpSessionRecord): Promise<void> {
@@ -213,8 +303,7 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor 
   }
 
   async execute(input: OutwardAcpPromptExecutionInput): Promise<acp.PromptResponse> {
-    const { db, providerChain } = this.options;
-    const provider = providerChain[0];
+    const { db } = this.options;
     const lane = db.acquireLock(OUTWARD_ACP_SURFACE, input.session.conversationId);
     if (!lane) {
       throw new acp.RequestError(
@@ -224,6 +313,7 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor 
       );
     }
 
+    const provider = this.selectedProvider(input.session);
     const runId = this.options.runId?.() ?? randomUUID();
     let eventStore: EventStore | null = null;
     let active: ActiveOutwardExecution | null = null;
@@ -283,7 +373,7 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor 
         acquisitionId: lane.acquisitionId,
       };
 
-      const result: CliResult = await this.routerFor(input.session).executeSurfaceNeutralTurn({
+      const result: CliResult = await this.routerFor(input.session, provider).executeSurfaceNeutralTurn({
         prompt: input.prompt,
         // Resolved per-attempt by createEngine's wrapper for whichever
         // provider the fallback router is actually trying this attempt --
