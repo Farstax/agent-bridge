@@ -1403,7 +1403,7 @@ remove_named_child_directory() {
 prune_rollout_retention() {
   local retention_count="$ROLLOUT_TERMINAL_RETENTION_COUNT"
   [[ -n "${AGENT_BRIDGE_ROLLOUT_RETENTION_COUNT:-}" ]] && retention_count="$AGENT_BRIDGE_ROLLOUT_RETENTION_COUNT"
-  [[ "$retention_count" =~ ^[0-9]+$ ]] || die "rollout retention count is not numeric"
+  [[ "$retention_count" =~ ^[1-9][0-9]*$ ]] || die "rollout retention must preserve at least one qualified restore point"
   local -a terminal=() refused=()
   local entry base
   while IFS= read -r entry; do
