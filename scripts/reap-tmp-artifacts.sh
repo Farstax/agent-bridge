@@ -248,6 +248,21 @@ reap_worktree_repo() {
   done < <(git -C "$repo" worktree list --porcelain; echo)
 }
 
+
+# Capacity is observed at the same chosen filesystem before and after cleanup.
+# Concurrent writers may change the counters; report observed free-space change,
+# not a claim that every extra free byte came from this janitor.
+REPORT_ROOT="${REAP_REPORT_ROOT:-${TMP_ROOT}}"
+[[ -d "$REPORT_ROOT" && ! -L "$REPORT_ROOT" ]] || REPORT_ROOT="/"
+read_capacity() {
+  df -P -B1 -- "$REPORT_ROOT" 2>/dev/null | awk 'NR == 2 { print $4 }'
+}
+read_inodes() {
+  df -P -i -- "$REPORT_ROOT" 2>/dev/null | awk 'NR == 2 { print $4 }'
+}
+capacity_before="$(read_capacity)"
+inodes_before="$(read_inodes)"
+
 sweep_by_age "${TMP_ROOT}/bridge-out"
 sweep_by_age "${TMP_ROOT}" "bridge-uploads-*"
 sweep_by_age "${TMP_ROOT}" "antigravity-*.log"
@@ -268,6 +283,21 @@ IFS=',' read -r -a DETACHED_CHECKOUTS <<< "${REAP_DETACHED_CHECKOUTS:-}"
 for checkout in "${DETACHED_CHECKOUTS[@]}"; do
   [[ -n "$checkout" ]] && reap_detached_checkout_dependencies "$checkout"
 done
+
+
+capacity_after="$(read_capacity)"
+inodes_after="$(read_inodes)"
+if [[ "$capacity_before" =~ ^[0-9]+$ && "$capacity_after" =~ ^[0-9]+$ && "$inodes_after" =~ ^[0-9]+$ ]]; then
+  gain=$(( capacity_after > capacity_before ? capacity_after - capacity_before : 0 ))
+  log "disk_headroom root=$REPORT_ROOT free_bytes=$capacity_after observed_recovered_bytes=$gain free_inodes=$inodes_after before_free_inodes=$inodes_before"
+  required="${REAP_REQUIRED_HEADROOM_BYTES:-0}"
+  if [[ "$required" =~ ^[0-9]+$ ]]; then
+    shortfall=$(( required > capacity_after ? required - capacity_after : 0 ))
+    log "disk_admission required_bytes=$required shortfall_bytes=$shortfall"
+  fi
+else
+  log "disk_headroom=unknown root=$REPORT_ROOT"
+fi
 
 if (( FAILURES > 0 )); then
   log "cleanup incomplete: ${FAILURES} eligible artifact(s) could not be removed" >&2
