@@ -129,8 +129,15 @@ function replayUpdate(sessionId: string, turn: OutwardAcpHistoryTurn): acp.Sessi
 }
 
 function promptText(prompt: readonly acp.ContentBlock[]): string {
-  const text = prompt.filter((block) => block.type === "text").map((block) => block.text).join("\n\n");
-  return text || (prompt.some((block) => block.type !== "text") ? "Please review the attached files." : "");
+  const parts = prompt.flatMap((block) => {
+    if (block.type === "text") return [block.text];
+    if (block.type === "resource_link") {
+      return [`[ACP resource_link] ${block.name} (${block.mimeType ?? "unknown type"}): ${block.uri}`];
+    }
+    return [];
+  });
+  const text = parts.join("\n\n");
+  return text || (prompt.some((block) => block.type === "image" || block.type === "resource") ? "Please review the attached files." : "");
 }
 
 /**

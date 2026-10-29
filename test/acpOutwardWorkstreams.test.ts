@@ -26,13 +26,16 @@ function fixture(): Fixture {
   const dbPath = join(root, "bridge.sqlite");
   const db = openDb(dbPath, { databaseRole: "interactive" });
   const repo = new OutwardAcpSessionRepository(db.raw);
-  const sessions: OutwardAcpSessionStore = {
-    create: (session) => repo.create(session),
-    get: (id) => repo.get(id),
-    list: (cwd, options) => repo.list(cwd, options),
-    update: (id, change) => repo.update(id, change),
-  };
-  const f = { root, dbPath, db, repo, sessions };
+  const f: Fixture = { root, dbPath, db, repo, sessions: {} as OutwardAcpSessionStore };
+  const makeSessions = (): OutwardAcpSessionStore => ({
+    create: (session) => f.repo.create(session),
+    get: (id) => f.repo.get(id),
+    list: (cwd, options) => f.repo.list(cwd, options),
+    update: (id, change) => f.repo.update(id, change),
+    history: (conversationId) => f.db.getRecentConvTurns(conversationId, 200, undefined, OUTWARD_ACP_SURFACE)
+      .map((turn) => ({ role: turn.role as "user" | "assistant", text: turn.text })),
+  });
+  f.sessions = makeSessions();
   opened.push(f);
   return f;
 }
@@ -269,5 +272,55 @@ describe("outward ACP Workstreams (#1101)", () => {
     const runId = f.db.getLatestRunForConversation({ surfaceIdentity: OUTWARD_ACP_SURFACE, chatKey: "acp:c1" })!.run_id;
     f.db.raw.prepare("UPDATE bridge_runs SET outcome_status = 'blocked' WHERE run_id = ?").run(runId);
     expect(exec.status(f.repo.get("s1")!)).toMatchObject({ state: "attention", lastRun: { outcome: "blocked" } });
+  });
+
+  it("recovers an accepted failed prompt and a safe reason after database restart", async () => {
+    const f = fixture();
+    f.repo.create({ sessionId: "s1", conversationId: "acp:c1", cwd: f.root });
+    const exec = executor(f.db, []);
+    const app = createOutwardAcpAgent({ sessions: f.sessions, promptExecutor: exec, workstreams: exec });
+    failNext = true;
+    await expect(acp.client({ name: "t" }).connectWith(app, (agent) =>
+      agent.request(acp.methods.agent.session.prompt, { sessionId: "s1", prompt: [{ type: "text", text: "accepted before failure" }] })))
+      .rejects.toMatchObject({ code: -32001 });
+
+    expect(f.sessions.history!("acp:c1")).toEqual([{ role: "user", text: "accepted before failure" }]);
+    expect(exec.status(f.repo.get("s1")!).lastRun).toMatchObject({ status: "failed", error: expect.any(String) });
+
+    f.db.close();
+    f.db = openDb(f.dbPath, { databaseRole: "interactive" });
+    f.repo = new OutwardAcpSessionRepository(f.db.raw);
+    f.sessions = {
+      create: (session) => f.repo.create(session),
+      get: (id) => f.repo.get(id),
+      list: (cwd, options) => f.repo.list(cwd, options),
+      update: (id, change) => f.repo.update(id, change),
+      history: (conversationId) => f.db.getRecentConvTurns(conversationId, 200, undefined, OUTWARD_ACP_SURFACE)
+        .map((turn) => ({ role: turn.role as "user" | "assistant", text: turn.text })),
+    };
+    const restarted = executor(f.db, []);
+    expect(restarted.status(f.repo.get("s1")!)).toMatchObject({
+      state: "failed",
+      lastRun: { status: "failed", error: expect.stringContaining("outward ACP") },
+    });
+    expect(f.sessions.history!("acp:c1")).toEqual([{ role: "user", text: "accepted before failure" }]);
+  });
+
+  it("does not replay an assistant answer when its terminal Run update fails", async () => {
+    const f = fixture();
+    const session = f.repo.create({ sessionId: "s1", conversationId: "acp:c1", cwd: f.root });
+    const exec = executor(f.db, []);
+    const app = createOutwardAcpAgent({ sessions: f.sessions, promptExecutor: exec, workstreams: exec });
+    const updateRunCompleted = f.db.updateRunCompleted.bind(f.db);
+    f.db.updateRunCompleted = () => false;
+    try {
+      await expect(acp.client({ name: "t" }).connectWith(app, (agent) =>
+        agent.request(acp.methods.agent.session.prompt, { sessionId: "s1", prompt: [{ type: "text", text: "do not mark complete" }] })))
+        .rejects.toMatchObject({ code: -32001 });
+    } finally {
+      f.db.updateRunCompleted = updateRunCompleted;
+    }
+    expect(f.sessions.history!(session.conversationId)).toEqual([{ role: "user", text: "do not mark complete" }]);
+    expect(exec.status(session)).toMatchObject({ state: "failed", lastRun: { status: "failed" } });
   });
 });

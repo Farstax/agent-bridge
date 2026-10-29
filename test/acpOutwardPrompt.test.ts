@@ -269,7 +269,7 @@ describe("outward ACP prompt execution", () => {
     }
   });
 
-  it("accepts mandatory resource_link prompt blocks while failing closed for unadvertised media", async () => {
+  it("accepts resource_link metadata and stages embedded image prompt blocks", async () => {
     const root = mkdtempSync(join(tmpdir(), "agent-bridge-outward-prompt-content-"));
     const db = openDb(join(root, "bridge.sqlite"), { databaseRole: "interactive" });
     try {
@@ -312,11 +312,12 @@ describe("outward ACP prompt execution", () => {
       expect(capturedPrompt).toContain("file:///workspace/notes.md");
       expect(capturedPrompt).toContain("workspace notes");
 
-      await expect(client.connectWith(app, (agent) => agent.request(acp.methods.agent.session.prompt, {
+      const image = await client.connectWith(app, (agent) => agent.request(acp.methods.agent.session.prompt, {
         sessionId: "known",
         prompt: [{ type: "image", data: "AA==", mimeType: "image/png" }],
-      }))).rejects.toMatchObject({ code: -32602 });
-      expect(executions).toBe(1);
+      }));
+      expect(image.stopReason).toBe("end_turn");
+      expect(executions).toBe(2);
     } finally {
       db.close();
       rmSync(root, { recursive: true, force: true });

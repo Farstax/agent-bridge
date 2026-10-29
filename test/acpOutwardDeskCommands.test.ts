@@ -174,7 +174,7 @@ describe("outward ACP Desk commands (#1101)", () => {
         sessionId: "s1",
         prompt: [{ type: "resource", resource: { uri: "file:///input/notes.md", mimeType: "text/markdown", text: "cancel me" } }],
       }));
-    await new Promise((resolve) => setTimeout(resolve, 20));
+    for (let i = 0; i < 50 && !attachmentPaths[0]; i++) await new Promise((resolve) => setTimeout(resolve, 2));
     const paths = attachmentPaths[0]!;
     expect(paths).toHaveLength(1);
     const stopping = run({ command: "stop" });
@@ -250,7 +250,7 @@ describe("outward ACP Desk commands (#1101)", () => {
   it("/stop cancels the active Run through ACP cancellation", async () => {
     let release!: () => void;
     const gate = new Promise<void>((resolve) => { release = resolve; });
-    const { run, app, exec, repo } = setup({ gate });
+    const { run, app, exec, repo, db } = setup({ gate });
     const done = acp.client({ name: "t" }).connectWith(app, (agent) =>
       agent.request(acp.methods.agent.session.prompt, { sessionId: "s1", prompt: [{ type: "text", text: "long" }] }));
     await new Promise((resolve) => setTimeout(resolve, 20));
@@ -261,5 +261,6 @@ describe("outward ACP Desk commands (#1101)", () => {
     await stopping;
     expect((await done).stopReason).toBe("cancelled");
     expect(exec.status(repo.get("s1")!).state).toBe("cancelled");
+    expect(db.getRecentConvTurns("acp:c1", 10, undefined, OUTWARD_ACP_SURFACE).map((turn) => turn.role)).toEqual(["user"]);
   });
 });

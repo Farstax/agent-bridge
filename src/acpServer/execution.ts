@@ -1,6 +1,6 @@
 import * as acp from "@agentclientprotocol/sdk";
 import { randomUUID } from "node:crypto";
-import { abortCliProcessAndWait } from "../cli.js";
+import { abortCliProcessAndWait, toUserMessage } from "../cli.js";
 import { loadBotsConfig, resolveExecutionMode } from "../config.js";
 import type { BridgeDb } from "../db.js";
 import { BridgeEngine, type SurfaceNeutralTurnInput } from "../engine.js";
@@ -65,6 +65,7 @@ export interface OutwardWorkstreamStatus {
     provider: string;
     status: string;
     outcome: "complete" | "continue" | "blocked" | null;
+    error: string | null;
     startedAt: string;
     endedAt: string | null;
   } | null;
@@ -236,6 +237,10 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
         provider: run.bot,
         status: run.status,
         outcome: run.outcome_status,
+        error: run.error ? (run.status === "cancelled" && run.error === "user"
+          ? "Run cancelled by user."
+          : run.status === "cancelled" ? "Run cancelled."
+            : toUserMessage(new Error(run.error))) : null,
         startedAt: run.started_at,
         endedAt: run.ended_at,
       } : null,
@@ -344,7 +349,14 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
     let activeProvider: RouteableBotKind = provider;
     try {
       const identity = { surfaceIdentity: OUTWARD_ACP_SURFACE, chatKey: input.session.conversationId };
-      db.insertRun(runId, identity, provider);
+      db.runInTransaction(() => {
+        db.insertRun(runId, identity, provider);
+        // An admitted prompt is durable even if its provider turn fails or the
+        // process restarts before a final answer exists.
+        db.addConvTurn(input.session.conversationId, "user", input.prompt, provider, {
+          surfaceIdentity: OUTWARD_ACP_SURFACE,
+        });
+      });
       eventStore = new EventStore(db, identity, runId);
 
       let finishDone!: () => void;
@@ -419,26 +431,8 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
       const actualProvider: RouteableBotKind = terminalBot(completed) ?? terminalBot(providerCancelled) ?? activeProvider;
       db.runWithLockFence(lane, () => {
         persistProviderSession(db, { surfaceIdentity: OUTWARD_ACP_SURFACE, chatKey: input.session.conversationId }, actualProvider, result.sessionId, runId);
-        // Durable transcript for `session/load` replay only — mirrors the
-        // generic addConvTurn seam Telegram/Discord already use, so a
-        // cancelled/partial turn (with no authoritative final text) never
-        // enters replay history, matching Bridge's final-answer authority.
-        if (!cancelled && result.text) {
-          db.addConvTurn(input.session.conversationId, "user", input.prompt, actualProvider, {
-            surfaceIdentity: OUTWARD_ACP_SURFACE,
-          });
-          db.addConvTurn(input.session.conversationId, "assistant", result.text, actualProvider, {
-            surfaceIdentity: OUTWARD_ACP_SURFACE,
-          });
-        }
       });
 
-      if (!cancelled && result.text) {
-        enqueueUpdate({
-          sessionUpdate: "agent_message_chunk",
-          content: { type: "text", text: result.text },
-        });
-      }
       await updateChain;
 
       if (cancelled) {
@@ -460,7 +454,23 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
           ...(result.telemetry ? { telemetry: result.telemetry } : {}),
         }));
       }
-      eventStore.finalize();
+      db.runWithLockFence(lane, () => db.runInTransaction(() => {
+        if (!cancelled && result.text) {
+          db.addConvTurn(input.session.conversationId, "assistant", result.text, actualProvider, {
+            surfaceIdentity: OUTWARD_ACP_SURFACE,
+          });
+        }
+        eventStore!.finalize();
+        if (db.getRun(runId)?.status !== (cancelled ? "cancelled" : "done")) {
+          throw new Error("outward ACP terminal Run state was not persisted");
+        }
+      }));
+      if (!cancelled && result.text) {
+        await input.onUpdate({
+          sessionUpdate: "agent_message_chunk",
+          content: { type: "text", text: result.text },
+        });
+      }
       return { stopReason: cancelled ? "cancelled" : normalizeStopReason(result.stopReason) };
     } catch (error) {
       if (active?.cancelRequested) {

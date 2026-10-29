@@ -9,16 +9,24 @@ import { persistProviderSession } from "../src/providers/sessionRuntime.js";
 
 const paths: string[] = [];
 const command = join(process.cwd(), "bin", "agent-bridge-wait");
-const baseEnv = (dbPath: string, originRunId = "wait-origin") => ({
-  ...process.env,
-  AGENT_BRIDGE_CONTEXT_DB: dbPath,
-  AGENT_BRIDGE_RUN_ID: originRunId,
-  AGENT_BRIDGE_SURFACE_IDENTITY: "telegram:interactive",
-  AGENT_BRIDGE_CHAT_KEY: "123",
-  AGENT_BRIDGE_PROVIDER: "codex",
-  AGENT_BRIDGE_DELIVERY_CHAT_ID: "123",
-  AGENT_BRIDGE_DELIVERY_CHAT_TYPE: "private",
-});
+const baseEnv = (dbPath: string, originRunId = "wait-origin") => {
+  const env = {
+    ...process.env,
+    AGENT_BRIDGE_CONTEXT_DB: dbPath,
+    AGENT_BRIDGE_RUN_ID: originRunId,
+    AGENT_BRIDGE_SURFACE_IDENTITY: "telegram:interactive",
+    AGENT_BRIDGE_CHAT_KEY: "123",
+    AGENT_BRIDGE_PROVIDER: "codex",
+    AGENT_BRIDGE_DELIVERY_CHAT_ID: "123",
+    AGENT_BRIDGE_DELIVERY_CHAT_TYPE: "private",
+  };
+  // This is a fresh test-owned process and DB. It must not inherit the
+  // execution-lock identity of the enclosing Agent Bridge Run.
+  for (const key of ["AGENT_BRIDGE_LOCK_SERVICE_ID", "AGENT_BRIDGE_LOCK_RUN_ID", "AGENT_BRIDGE_LOCK_ACQUISITION_ID", "AGENT_BRIDGE_SERVICE_ID", "AGENT_BRIDGE_ACQUISITION_ID"]) {
+    delete env[key];
+  }
+  return env;
+};
 
 function run(args: string[], env: NodeJS.ProcessEnv) {
   return spawnSync(command, args, { cwd: process.cwd(), env, encoding: "utf8" });

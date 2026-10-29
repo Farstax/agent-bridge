@@ -86,7 +86,10 @@ export async function stageOutwardAcpAttachments<T>(
   blocks: readonly ContentBlock[],
   operation: (paths: string[]) => Promise<T>,
 ): Promise<T> {
-  const attachments = blocks.filter((block) => block.type !== "text");
+  // resource_link is a metadata-only prompt block handled by promptText(); it
+  // is never fetched or staged as a file. Only embedded payload blocks enter
+  // this private workspace staging path.
+  const attachments = blocks.filter((block) => block.type === "image" || block.type === "resource");
   if (attachments.length > MAX_FILES) throw new Error(`attachment file limit is ${MAX_FILES}`);
   const payloads = attachments.map(payloadFor);
   let total = 0;

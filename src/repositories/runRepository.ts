@@ -8,6 +8,7 @@ export interface LatestConversationRun {
   started_at: string;
   ended_at: string | null;
   outcome_status: "complete" | "continue" | "blocked" | null;
+  error: string | null;
 }
 
 export interface RunningRun {
@@ -118,7 +119,7 @@ export class RunRepository {
   /** Most recent Run of one conversation, for read-only status projection. */
   getLatestRunForConversation(identity: ConversationIdentity): LatestConversationRun | null {
     const row = this.db
-      .prepare(`SELECT run_id, bot, status, started_at, ended_at, outcome_status FROM bridge_runs
+      .prepare(`SELECT run_id, bot, status, started_at, ended_at, outcome_status, error FROM bridge_runs
         WHERE surface_identity = ? AND chat_id = ? ORDER BY started_at DESC, rowid DESC LIMIT 1`)
       .get(identity.surfaceIdentity, identity.chatKey) as LatestConversationRun | undefined;
     return row ?? null;
