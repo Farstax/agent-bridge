@@ -98,6 +98,7 @@ describe("durable independent OSS deployer handoff (#1347)", () => {
       "assert json.loads((directory / 'result.json').read_text())['status'] == 'verified'",
       "assert not durable.exists()",
       "durable.write_bytes(b'verified source artifact')",
+      "durable.chmod(0o600)",
       "def fail_worker(*args):",
       "    raise RuntimeError('disk_headroom_insufficient')",
       "module.run_deployment = fail_worker",
