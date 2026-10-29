@@ -706,6 +706,9 @@ def accept_handoff(archive: Path, approval: Path | None, owner_request: Path | N
             owner_copy = directory / "owner-request.json"
             persist_handoff_file(owner_copy, secure_file(owner_request, production))
         unit = handoff_unit(commit, sha256)
+        if production and verify_handoff_readback(commit):
+            update_handoff_result(directory, "verified", commit, sha256)
+            return f"verified {commit} {sha256} unit={unit}"
         result_file = directory / "result.json"
         if result_file.exists():
             previous = json.loads(secure_file(result_file, production))
@@ -791,10 +794,16 @@ def finish_handoff_worker(identity: str, archive: Path, approval: Path | None, o
             fail("deployment handoff commit, service health or recovery-sentinel readback failed")
         update_handoff_result(directory, "verified", commit, sha256)
         return outcome
-    except Exception:
-        # Not every rollout failure is recoverable. Preserve the immutable
-        # request for the existing maintenance owner's guarded retry/readback.
-        update_handoff_result(directory, "deferred", commit, sha256, "guarded_rollout_not_verified")
+    except Exception as error:
+        # Only known resource/session refusals can retry automatically.
+        # Provenance, approval, rollback and ambiguous failures require action.
+        retryable = {"release_disk_space_insufficient", "disk_headroom_insufficient",
+                     "memory_pressure_high", "provider_sessions_active"}
+        code = str(error)
+        if code in retryable:
+            update_handoff_result(directory, "deferred", commit, sha256, code)
+        else:
+            update_handoff_result(directory, "failed", commit, sha256, "action_required")
         raise
 
 
@@ -881,7 +890,21 @@ def _run_deployment(archive: Path, approval: Path | None, owner_request: Path | 
     environment["AGENT_BRIDGE_DEPLOY_ARTIFACT_SHA256"] = archive_sha256
     environment["AGENT_BRIDGE_DEPLOY_ENVIRONMENT"] = approval_document["environment"]
     environment["AGENT_BRIDGE_DEPLOY_APPROVAL_REFERENCE"] = approval_document["approval_reference"]
-    subprocess.run([str(rollout_helper), "--expected-commit", commit], check=True, env=environment)
+    result = subprocess.run([str(rollout_helper), "--expected-commit", commit],
+                            check=False, env=environment, capture_output=True, text=True)
+    sys.stdout.write(result.stdout or "")
+    sys.stderr.write(result.stderr or "")
+    if result.returncode:
+        combined = (result.stdout or "") + "\\n" + (result.stderr or "")
+        for code, signal in (
+            ("release_disk_space_insufficient", r"release_disk_space_insufficient"),
+            ("disk_headroom_insufficient", r"disk_headroom_insufficient|insufficient disk for rollout and rollback"),
+            ("memory_pressure_high", r"memory_pressure_high|memory_or_swap_floor_unhealthy"),
+            ("provider_sessions_active", r"provider.*active|session.*active"),
+        ):
+            if re.search(signal, combined, re.IGNORECASE):
+                fail(code)
+        fail("rollout_hard_or_ambiguous_failure")
     return f"deployed {commit} {archive_sha256}"
 
 
