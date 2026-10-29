@@ -770,11 +770,31 @@ def resume_pending_handoff() -> str:
     if not pending:
         return "none"
     directory = pending[0]
-    approval = directory / "approval.json"
-    owner_request = directory / "owner-request.json"
-    return accept_handoff(directory / "release.tar.gz",
-                          approval if approval.is_file() else None,
-                          owner_request if owner_request.is_file() else None)
+    commit, sha256 = directory.name.split("-", 1)
+    archive = directory / "release.tar.gz"
+    if archive.is_symlink() or not archive.is_file() or digest(archive) != sha256:
+        fail("accepted handoff archive is missing or has changed")
+    unit = handoff_unit(commit, sha256)
+    # The root-owned receipt records authority accepted before the original
+    # request expired. Retry the SAME bytes; do not re-authorize, advance its
+    # target, or make the owner repeat their approval after a temporary refusal.
+    with exclusive_deployment_lock(production):
+        if production and verify_handoff_readback(commit):
+            update_handoff_result(directory, "verified", commit, sha256)
+            return f"verified {commit} {sha256} unit={unit}"
+        if production and subprocess.run(
+            ["/usr/bin/systemctl", "is-active", "--quiet", unit], check=False
+        ).returncode == 0:
+            return f"accepted {commit} {sha256} unit={unit} pending"
+        update_handoff_result(directory, "accepted", commit, sha256)
+        command = detached_command(archive, None, None, unit)
+        command.remove("--wait")
+        command.append("--handoff-id=" + directory.name)
+        outcome = subprocess.run(command, check=False)
+        if outcome.returncode:
+            update_handoff_result(directory, "deferred", commit, sha256, "worker_launch_failed")
+            fail("pending handoff worker could not be restarted")
+    return f"accepted {commit} {sha256} unit={unit} pending"
 
 
 def finish_handoff_worker(identity: str, archive: Path, approval: Path | None, owner_request: Path | None) -> str:
@@ -786,13 +806,21 @@ def finish_handoff_worker(identity: str, archive: Path, approval: Path | None, o
     commit, sha256 = identity.split("-", 1)
     if not SHA.fullmatch(commit) or not SHA256.fullmatch(sha256) or digest(archive) != sha256:
         fail("worker handoff artifact identity mismatch")
+    receipt = json.loads(secure_file(directory / "result.json", production))
+    if receipt.get("targetCommit") != commit or receipt.get("archiveSha256") != sha256:
+        fail("worker receipt identity mismatch")
+    if receipt.get("status") not in ("accepted", "activating", "deferred"):
+        fail("worker handoff has no live accepted request")
     if approval and approval != directory / "approval.json":
         fail("worker approval is not durable handoff authority")
     if owner_request and owner_request != directory / "owner-request.json":
         fail("worker owner request is not durable handoff authority")
     update_handoff_result(directory, "activating", commit, sha256)
     try:
-        outcome = run_deployment(archive, approval, owner_request)
+        # This worker is root-owned, unit-verified and bound to the prior
+        # immutable accepted receipt. Expiry governs accepting NEW authority,
+        # not completing a request already durably accepted.
+        outcome = run_deployment(archive, None, None)
         if production and not verify_handoff_readback(commit):
             fail("deployment handoff commit, service health or recovery-sentinel readback failed")
         update_handoff_result(directory, "verified", commit, sha256)
