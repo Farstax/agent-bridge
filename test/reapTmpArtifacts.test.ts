@@ -276,6 +276,7 @@ describe("reap-tmp-artifacts.sh", () => {
     const dependencies = join(checkout, "node_modules");
     mkdirSync(dependencies);
     writeFileSync(join(dependencies, "reconstructible-module"), "cached package\n");
+    ageEntry(join(dependencies, "reconstructible-module"), 48);
     ageEntry(dependencies, 48);
     return { checkout, dependencies };
   }
@@ -342,6 +343,22 @@ describe("reap-tmp-artifacts.sh", () => {
     expect(result.status).toBe(0);
     expect(result.stdout).toMatch(/disk_headroom root=.*free_bytes=[0-9]+ observed_recovered_bytes=[0-9]+ free_inodes=[0-9]+/);
     expect(result.stdout).toMatch(/disk_admission required_bytes=999999999999999 shortfall_bytes=[1-9][0-9]*/);
+  });
+
+
+  it("preserves a stale dependency root when a nested module was recently written", () => {
+    const root = makeRoot();
+    const { checkout, dependencies } = makeDetachedCheckout(root);
+    writeFileSync(join(dependencies, "recently-installed"), "new package");
+    ageEntry(dependencies, 48);
+    const result = run({
+      REAP_TMP_ROOT: join(root, "tmp"),
+      REAP_WORKTREE_REPOS: ",",
+      REAP_DETACHED_CHECKOUTS: checkout,
+    });
+    expect(result.status).toBe(0);
+    expect(existsSync(dependencies)).toBe(true);
+    expect(result.stdout).toContain("recent dependency writes");
   });
 
 });
