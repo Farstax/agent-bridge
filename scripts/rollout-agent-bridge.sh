@@ -1432,7 +1432,7 @@ prune_rollout_retention() {
     refused_pruned=$((refused_pruned + 1))
   done
   echo "rollout refused-attempt retention pruned=${refused_pruned}"
-  local pruned=0 retained=${#terminal[@]}
+  local pruned=0 retained=${#terminal[@]} reclaimed_bytes=0 backup_bytes
   if (( ${#terminal[@]} > retention_count )); then
     local index name backup
     local remove_until=$(( ${#terminal[@]} - retention_count ))
@@ -1450,14 +1450,16 @@ prune_rollout_retention() {
           echo "rollout retention protected_backup=$name reason=unsafe_backup_path"
           continue
         fi
+        backup_bytes="$(/usr/bin/du -sb -- "$backup" 2>/dev/null | /usr/bin/cut -f1)"
         remove_named_child_directory "$backup_dir" "$name" || die "failed to prune proven terminal rollout backup: $name"
+        [[ "$backup_bytes" =~ ^[0-9]+$ ]] && reclaimed_bytes=$((reclaimed_bytes + backup_bytes))
       fi
       remove_named_child_directory "$log_dir" "$name" || die "failed to prune proven terminal rollout evidence: $name"
       pruned=$((pruned + 1))
     done
     retained=$(( ${#terminal[@]} - pruned ))
   fi
-  echo "rollout retention pruned=${pruned} retained_terminal=${retained}"
+  echo "rollout retention pruned=${pruned} retained_terminal=${retained} reclaimed_backup_bytes=${reclaimed_bytes}"
   # Historical backup cohorts without verified terminal evidence remain.
   # Name exact ambiguous cohorts for a later bounded recovery audit.
   local protected_count=0

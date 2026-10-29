@@ -199,7 +199,7 @@ fi
 
     const output = `${result.stdout}\n${result.stderr}`;
     expect(result.status, output).toBe(0);
-    expect(output).toMatch(/rollout retention pruned=2 retained_terminal=1/);
+    expect(output).toMatch(/rollout retention pruned=2 retained_terminal=1 reclaimed_backup_bytes=[1-9][0-9]*/);
     expect(existsSync(join(fixture.logDir, oldest))).toBe(false);
     expect(existsSync(join(fixture.backupDir, oldest))).toBe(false);
     expect(existsSync(join(fixture.logDir, middle))).toBe(false);

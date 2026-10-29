@@ -109,22 +109,20 @@ has_ownership_signal() {
 # Only explicit checkouts or detached worktrees registered to a known OSS repo.
 # Never discover candidates by walking home directories.
 checkout_has_active_process() {
-  local checkout="$1" proc ref owner target current_uid
-  current_uid="$(id -u)"
+  local checkout="$1" proc target
+  local -a args
+  # Bash builtins only for filtering; one readlink per owned process. A host
+  # with hundreds of processes must not make cleanup minutes long.
   for proc in /proc/[0-9]*; do
-    [[ -r "$proc/status" ]] || continue
-    owner="$(sed -n 's/^Uid:[[:space:]]*\([0-9]*\).*/\1/p' "$proc/status" | head -n 1)"
-    [[ "$owner" == "$current_uid" ]] || continue
-    local command_line
-    command_line="$(tr '\000' ' ' < "$proc/cmdline" 2>/dev/null || true)"
-    [[ "$command_line" == *"$checkout"* ]] && return 0
-    for ref in "$proc/cwd" "$proc/exe" "$proc"/fd/*; do
-      [[ -L "$ref" ]] || continue
-      target="$(readlink -- "$ref" 2>/dev/null || true)"
+    [[ -O "$proc" ]] || continue
+    args=()
+    mapfile -d '' -t args < "$proc/cmdline" 2>/dev/null || true
+    [[ "${args[*]:-}" == *"$checkout"* ]] && return 0
+    while IFS= read -r target; do
       if [[ "$target" == "$checkout" || "$target" == "$checkout/"* ]]; then
         return 0
       fi
-    done
+    done < <(readlink -- "$proc/cwd" "$proc/exe" "$proc"/fd/* 2>/dev/null)
   done
   return 1
 }

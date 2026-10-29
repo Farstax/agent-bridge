@@ -193,3 +193,27 @@ commands directly or maintain them as a second operational path.
 Roadmap and issue closeout documents are historical records, not alternative
 operator runbooks. Where they differ, this document and the executable deployer
 are authoritative.
+
+## Disk cleanup and backup retention
+
+Scheduled and on-demand cleanup use the same owner, `scripts/reap-tmp-artifacts.sh`,
+run by `agent-bridge-tmp-cleanup.service`. The protected operator can run it at
+any time under existing maintenance authority with
+`systemctl start agent-bridge-tmp-cleanup.service`. The service is idempotent.
+Set `REAP_REQUIRED_HEADROOM_BYTES` in a drop-in or environment to have it report
+the remaining shortfall against a known admission requirement.
+
+The cleanup removes only positively identified, reproducible material: inactive
+`node_modules` of clean detached checkouts of the configured OSS origin, named
+build and browser caches with no recent writes or open references, and the
+existing temporary artifacts. It logs `disk_headroom` (free bytes, observed
+recovered bytes, free inodes) and `disk_admission` (required bytes and
+shortfall). A green service does not mean an upgrade fits: rollout still
+refuses before any service is stopped when capacity is short.
+
+The rollout owns database backup cohorts. After acceptance it keeps the newest
+proven terminal cohort (the one just accepted) and prunes older ones whose
+evidence ledger is complete, data first and evidence last. It reports
+`reclaimed_backup_bytes`. A cohort without complete terminal evidence is never
+deleted. It is named as `protected_backup=<id> reason=terminal_evidence_missing_or_invalid`
+for a bounded recovery audit. Retention below one cohort is refused.
