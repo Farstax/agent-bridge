@@ -330,4 +330,18 @@ describe("reap-tmp-artifacts.sh", () => {
     expect(existsSync(dependencies)).toBe(true);
   });
 
+
+  it("reports measured free bytes, inodes and the remaining operator-supplied admission shortfall", () => {
+    const root = makeRoot();
+    const result = run({
+      REAP_TMP_ROOT: root,
+      REAP_REPORT_ROOT: root,
+      REAP_WORKTREE_REPOS: ",",
+      REAP_REQUIRED_HEADROOM_BYTES: "999999999999999",
+    });
+    expect(result.status).toBe(0);
+    expect(result.stdout).toMatch(/disk_headroom root=.*free_bytes=[0-9]+ observed_recovered_bytes=[0-9]+ free_inodes=[0-9]+/);
+    expect(result.stdout).toMatch(/disk_admission required_bytes=999999999999999 shortfall_bytes=[1-9][0-9]*/);
+  });
+
 });
