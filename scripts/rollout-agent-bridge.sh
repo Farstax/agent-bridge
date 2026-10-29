@@ -1480,6 +1480,26 @@ prune_rollout_retention() {
 # target has already been staged and is needed for activation.  Every other
 # immutable release is disposable only when it proves its own identity and is
 # not referenced by an in-progress host-component preparation receipt.
+# A host-component preparation receipt protects its release while a rollout
+# is in progress. After acceptance only the new active release and the
+# rollback release can be activated again, so other receipts are retired and
+# their releases become reclaimable (#1100). Without this every activated
+# release kept its receipt and immutable release retention never pruned.
+retire_superseded_host_component_receipts() {
+  (( release_mode == 1 )) || return 0
+  local receipts="$release_root/.host-components-prepared" entry name retired=0
+  [[ -d "$receipts" && ! -L "$receipts" ]] || { echo "host component receipt retirement retired=0"; return 0; }
+  while IFS= read -r entry; do
+    name="$(/usr/bin/basename -- "$entry" .json)"
+    [[ "$(/usr/bin/basename -- "$entry")" == "$name.json" && "$name" =~ ^[0-9a-f]{40}$ ]] || continue
+    [[ "$name" != "$expected_commit" && "$name" != "$previous_pointer_target" ]] || continue
+    [[ -f "$entry" && ! -L "$entry" ]] || continue
+    /usr/bin/rm -f -- "$entry" || return 1
+    retired=$((retired + 1))
+  done < <(/usr/bin/find "$receipts" -mindepth 1 -maxdepth 1 -type f -name '*.json' -print | /usr/bin/sort)
+  echo "host component receipt retirement retired=${retired} retained_active=${expected_commit} retained_rollback=${previous_pointer_target}"
+}
+
 prune_immutable_release_retention() {
   (( release_mode == 1 )) || return 0
   local entry name manifest receipt manifest_commit unsafe_entry unsafe_owner pruned=0
@@ -2610,4 +2630,9 @@ printf '{"status":"complete","targetCommit":"%s","artifactSha256":"%s","environm
 # The completed cohort is now the newest terminal restore point, so older
 # proven backups can be pruned without waiting for another deployment.
 ( prune_rollout_retention ) || echo "post-acceptance rollout retention deferred; recovery evidence preserved" >&2
+# The accepted release is active and the previous release is the rollback
+# baseline; the pre-containment retain set is unchanged, so superseded releases
+# are reclaimed now instead of accumulating until the next deployment.
+( retire_superseded_host_component_receipts && prune_immutable_release_retention ) \
+  || echo "post-acceptance immutable release retention deferred" >&2
 echo "rollout completed commit=$expected_commit artifacts=$artifact_dir"
