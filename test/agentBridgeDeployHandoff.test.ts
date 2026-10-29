@@ -195,3 +195,40 @@ describe("handoff staging disk admission (#1100)", () => {
     expect(result.stdout).toContain("release archive changed after verification");
   });
 });
+
+describe("bounded archive copies (#1100)", () => {
+  it("refuses a source that grew after admission without copying the excess", () => {
+    const result = probe([
+      "real_admit = module.admit_staging",
+      "def admit_then_grow(*args, **kwargs):",
+      "    real_admit(*args, **kwargs)",
+      "    with archive.open('ab') as grow:",
+      "        grow.write(b'x' * (4 * 1024 * 1024))",
+      "module.admit_staging = admit_then_grow",
+      "try:",
+      "    module.accept_handoff(archive, None, None)",
+      "except RuntimeError as error:",
+      "    print(error)",
+      "copied = root / 'handoffs' / (commit + '-' + sha256) / 'release.tar.gz'",
+      "assert not copied.exists()",
+    ].join("\n"));
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout).toContain("release archive changed during handoff");
+  });
+
+  it("fails closed when an old stage helper cannot bound a caller-writable archive in production", () => {
+    const result = probe([
+      "module.validate_archive(archive)",
+      "helper = root / 'old-release-stage.py'",
+      "helper.write_text('def stage(*args):\\n    pass\\n')",
+      "try:",
+      "    module.snapshot_limit_args(helper, archive, sha256, True)",
+      "except RuntimeError as error:",
+      "    print(error)",
+      "print('limit', module.snapshot_limit_args(pathlib.Path(" + JSON.stringify(resolve("scripts/release-stage.py")) + "), archive, sha256, True))",
+    ].join("\n"));
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout).toContain("installed release-stage cannot bound its archive snapshot");
+    expect(result.stdout).toMatch(/limit \['--max-archive-bytes', '\d+'\]/);
+  });
+});

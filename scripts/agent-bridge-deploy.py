@@ -299,12 +299,30 @@ def filesystem_probe(path: Path) -> Path:
     return probe
 
 
-def snapshot_limit_args(stage_helper: Path, archive_sha256: str) -> list[str]:
-    """Bound the stage snapshot to the verified size when the installed helper supports it."""
+def root_controlled(path: Path) -> bool:
+    """True when only root can grow or replace the file at this path."""
+    for item in (path, path.parent):
+        metadata = item.lstat()
+        if stat.S_ISLNK(metadata.st_mode) or metadata.st_uid != 0 or metadata.st_mode & 0o022:
+            return False
+    return True
+
+
+def snapshot_limit_args(stage_helper: Path, archive: Path, archive_sha256: str, production: bool) -> list[str]:
+    """Bound release-stage's snapshot to the verified archive size.
+
+    A bootstrap helper installed before the limit existed cannot bound it, so
+    production then accepts only an archive that root alone can change, such as
+    the root-owned handoff copy, and otherwise fails closed (#1100).
+    """
     manifest = VERIFIED_MANIFESTS.get(archive_sha256)
-    if manifest is None or not getattr(staging_module(stage_helper), "SNAPSHOT_LIMIT_SUPPORTED", False):
-        return []
-    return ["--max-archive-bytes", str(manifest["_staging_footprint"][2])]
+    if manifest is None:
+        fail("staging disk admission requires the verified release manifest")
+    if getattr(staging_module(stage_helper), "SNAPSHOT_LIMIT_SUPPORTED", False):
+        return ["--max-archive-bytes", str(manifest["_staging_footprint"][2])]
+    if production and not root_controlled(archive):
+        fail("installed release-stage cannot bound its archive snapshot; bootstrap release-stage or deploy with --handoff")
+    return []
 
 
 def admit_staging(archive: Path, commit: str, archive_sha256: str, release_root: Path, production: bool,
@@ -964,7 +982,17 @@ def accept_handoff(archive: Path, approval: Path | None, owner_request: Path | N
             descriptor = os.open(release_copy, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
             try:
                 with os.fdopen(descriptor, "wb") as target, archive.open("rb") as source:
-                    shutil.copyfileobj(source, target, length=1024 * 1024)
+                    # Never copy more than the verified size, even if the
+                    # caller-owned source grows after admission (#1100).
+                    remaining = VERIFIED_MANIFESTS[sha256]["_staging_footprint"][2]
+                    while remaining:
+                        chunk = source.read(min(remaining, 1024 * 1024))
+                        if not chunk:
+                            break
+                        target.write(chunk)
+                        remaining -= len(chunk)
+                    if source.read(1):
+                        fail("release archive changed during handoff")
                     target.flush()
                     os.fsync(target.fileno())
                 if digest(release_copy) != sha256:
@@ -1171,7 +1199,7 @@ def _run_deployment(archive: Path, approval: Path | None, owner_request: Path | 
             subprocess.run([
                 sys.executable, str(stage_helper), "--archive", str(archive),
                 "--release-root", str(release_root), "--expected-commit", commit,
-                "--archive-sha256", archive_sha256, *snapshot_limit_args(stage_helper, archive_sha256),
+                "--archive-sha256", archive_sha256, *snapshot_limit_args(stage_helper, archive, archive_sha256, production),
             ], check=True, env=environment)
             test_helper_root = os.environ.get("AGENT_BRIDGE_DEPLOY_TEST_HELPER_ROOT")
             test_rollout_config = os.environ.get("AGENT_BRIDGE_DEPLOY_TEST_ROLLOUT_CONFIG")
@@ -1197,7 +1225,7 @@ def _run_deployment(archive: Path, approval: Path | None, owner_request: Path | 
     subprocess.run([
         "/usr/bin/python3", str(stage_helper), "--archive", str(archive),
         "--release-root", str(release_root), "--expected-commit", commit,
-        "--archive-sha256", archive_sha256, *snapshot_limit_args(stage_helper, archive_sha256),
+        "--archive-sha256", archive_sha256, *snapshot_limit_args(stage_helper, archive, archive_sha256, production),
     ], check=True)
     refresh_privileged_helpers(release_root / commit, config)
     environment = os.environ.copy()
