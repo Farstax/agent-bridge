@@ -152,6 +152,17 @@ reap_detached_checkout_dependencies() {
   now="$(date +%s)"
   age="$(stat -c %Y -- "$dependencies" 2>/dev/null)" || return 0
   (( now - age > MAX_AGE_MIN * 60 )) || return 0
+  # A recently written nested package makes a stale directory mtime misleading.
+  # Any unreadable subtree or recent write means ownership cannot be proved.
+  local recently_changed
+  recently_changed="$(find "$dependencies" -xdev -mmin "-$MAX_AGE_MIN" -print -quit 2>/dev/null)" || {
+    log "preserving (dependency activity unverified): $checkout"
+    return 0
+  }
+  [[ -z "$recently_changed" ]] || {
+    log "preserving (recent dependency writes): $checkout"
+    return 0
+  }
   if has_ownership_signal "$checkout" || checkout_has_active_process "$checkout"; then
     log "preserving (active checkout): $checkout"
     return 0
