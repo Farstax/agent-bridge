@@ -137,12 +137,19 @@ reap_detached_checkout_dependencies() {
   [[ -e "$checkout/.git" ]] || return 0
   root="$(git -C "$checkout" rev-parse --show-toplevel 2>/dev/null)" || return 0
   [[ "$root" == "$checkout" ]] || return 0
-  # Accept only the actual Farstax OSS repository, not a similarly named tree.
+  # The configured inventory provides the expected upstream identity.
+  # No hosted-product name or arbitrary remote is hardcoded into OSS cleanup.
   origin="$(git -C "$checkout" remote get-url origin 2>/dev/null)" || return 0
-  case "$origin" in
-    https://github.com/Farstax/agent-bridge|https://github.com/Farstax/agent-bridge.git|git@github.com:Farstax/agent-bridge.git) ;;
-    *) log "preserving (unverified OSS origin): $checkout"; return 0 ;;
-  esac
+  local expected_origin="${REAP_OSS_ORIGIN:-}"
+  if [[ -z "$expected_origin" ]]; then
+    local inventory_repo="${REAP_WORKTREE_REPOS:-${HOME:-}/agent-bridge}"
+    inventory_repo="${inventory_repo%%,*}"
+    expected_origin="$(git -C "$inventory_repo" remote get-url origin 2>/dev/null)" || return 0
+  fi
+  [[ -n "$expected_origin" && "$origin" == "$expected_origin" ]] || {
+    log "preserving (unverified OSS origin): $checkout"
+    return 0
+  }
   [[ -z "$(git -C "$checkout" symbolic-ref -q HEAD 2>/dev/null)" ]] || return 0
   status="$(git -C "$checkout" status --porcelain=v1 --untracked-files=all 2>/dev/null)" || return 0
   [[ -z "$status" ]] || { log "preserving (dirty checkout): $checkout"; return 0; }
