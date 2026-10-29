@@ -1,10 +1,14 @@
 import type { ContentBlock } from "@agentclientprotocol/sdk";
-import { mkdtemp, realpath, rm, stat, writeFile } from "node:fs/promises";
+import { lstat, mkdtemp, readFile, readdir, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { basename, extname, join } from "node:path";
 
 const MAX_FILES = 8;
 const MAX_FILE_BYTES = 8 * 1024 * 1024;
 const MAX_TOTAL_BYTES = 16 * 1024 * 1024;
+const STALE_ATTACHMENT_AGE_MS = 24 * 60 * 60 * 1000;
+const STAGING_PREFIX = ".agent-bridge-attachments-";
+const OWNER_MARKER = ".agent-bridge-staging-owner";
+const OWNER_MARKER_CONTENT = "agent-bridge-outward-attachment-v1\n";
 
 const MIME_EXTENSIONS: Readonly<Record<string, readonly string[]>> = {
   "text/plain": [".txt", ".log", ".md", ".rst", ".py", ".js", ".jsx", ".ts", ".tsx", ".html", ".htm", ".css", ".sh", ".sql", ".xml", ".yaml", ".yml", ".toml", ".ini", ".conf", ".env", ".go", ".rs", ".java", ".c", ".h", ".cpp", ".hpp", ".rb", ".php", ".cs", ".kt", ".swift", ".vue", ".svelte", ".jsonc"],
@@ -102,9 +106,10 @@ export async function stageOutwardAcpAttachments<T>(
 
   const workspace = await realpath(cwd);
   if (!(await stat(workspace)).isDirectory()) throw new Error("attachment workspace is not a directory");
-  const staging = await mkdtemp(join(workspace, ".agent-bridge-attachments-"));
+  const staging = await mkdtemp(join(workspace, STAGING_PREFIX));
   const paths: string[] = [];
   try {
+    await writeFile(join(staging, OWNER_MARKER), OWNER_MARKER_CONTENT, { flag: "wx", mode: 0o600 });
     for (const payload of payloads) {
       const path = join(staging, payload.name);
       await writeFile(path, payload.bytes, { flag: "wx", mode: 0o600 });
@@ -114,4 +119,33 @@ export async function stageOutwardAcpAttachments<T>(
   } finally {
     await rm(staging, { recursive: true, force: true });
   }
+}
+
+/** Remove only old, direct-child staging directories owned by this surface. */
+export async function cleanupStaleOutwardAcpAttachments(workspaceRoot: string, now = Date.now()): Promise<number> {
+  const root = await realpath(workspaceRoot);
+  const cutoff = now - STALE_ATTACHMENT_AGE_MS;
+  let removed = 0;
+  for (const entry of await readdir(root)) {
+    if (!entry.startsWith(STAGING_PREFIX)) continue;
+    const path = join(root, entry);
+    let info;
+    try { info = await lstat(path); } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") continue;
+      throw error;
+    }
+    if (!info.isDirectory() || (info.mode & 0o777) !== 0o700 || info.mtimeMs > cutoff) continue;
+    const marker = join(path, OWNER_MARKER);
+    let markerInfo;
+    try { markerInfo = await lstat(marker); } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") continue;
+      throw error;
+    }
+    if (!markerInfo.isFile() || (markerInfo.mode & 0o777) !== 0o600 ||
+      (typeof process.getuid === "function" && (info.uid !== process.getuid() || markerInfo.uid !== process.getuid())) ||
+      await readFile(marker, "utf8") !== OWNER_MARKER_CONTENT) continue;
+    await rm(path, { recursive: true, force: true });
+    removed += 1;
+  }
+  return removed;
 }

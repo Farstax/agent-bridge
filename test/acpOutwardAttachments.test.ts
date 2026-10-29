@@ -1,10 +1,10 @@
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readFileSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import type { ContentBlock } from "@agentclientprotocol/sdk";
-import { stageOutwardAcpAttachments } from "../src/acpServer/attachments.js";
+import { cleanupStaleOutwardAcpAttachments, stageOutwardAcpAttachments } from "../src/acpServer/attachments.js";
 
 const roots: string[] = [];
 afterEach(() => { while (roots.length) rmSync(roots.pop()!, { recursive: true, force: true }); });
@@ -55,5 +55,28 @@ describe("outward ACP attachment staging", () => {
       throw new Error("provider failed");
     })).rejects.toThrow("provider failed");
     expect(existsSync(staged)).toBe(false);
+  });
+
+  it("removes only stale Bridge staging directories after process restart", async () => {
+    const cwd = workspace();
+    const stale = join(cwd, ".agent-bridge-attachments-stale");
+    const recent = join(cwd, ".agent-bridge-attachments-recent");
+    const unowned = join(cwd, ".agent-bridge-attachments-unowned");
+    const linked = join(cwd, ".agent-bridge-attachments-linked");
+    mkdirSync(stale, { mode: 0o700 });
+    writeFileSync(join(stale, ".agent-bridge-staging-owner"), "agent-bridge-outward-attachment-v1\n", { mode: 0o600 });
+    mkdirSync(recent);
+    mkdirSync(unowned, { mode: 0o700 });
+    symlinkSync(stale, linked);
+    const now = Date.now();
+    const old = new Date(now - 25 * 60 * 60 * 1000);
+    utimesSync(stale, old, old);
+    utimesSync(unowned, old, old);
+
+    await expect(cleanupStaleOutwardAcpAttachments(cwd, now)).resolves.toBe(1);
+    expect(existsSync(stale)).toBe(false);
+    expect(existsSync(recent)).toBe(true);
+    expect(existsSync(unowned)).toBe(true);
+    expect(lstatSync(linked).isSymbolicLink()).toBe(true);
   });
 });

@@ -1,7 +1,8 @@
 import * as acp from "@agentclientprotocol/sdk";
 import { AgentApp } from "@agentclientprotocol/sdk";
 import { randomUUID } from "node:crypto";
-import { basename, isAbsolute } from "node:path";
+import { realpathSync, statSync } from "node:fs";
+import { basename, isAbsolute, relative, sep } from "node:path";
 import type {
   NewOutwardAcpSession,
   OutwardAcpSessionRecord,
@@ -34,6 +35,8 @@ export interface OutwardAcpAgentOptions {
   promptExecutor?: OutwardAcpPromptExecutor;
   workstreams?: OutwardWorkstreamControl;
   commands?: DeskCommands;
+  /** Trusted process-local root; client-supplied cwd values are confined beneath it. */
+  workspaceRoot?: string;
 }
 
 /**
@@ -118,6 +121,24 @@ function assertConservativeSessionParams(params: { cwd: string; additionalDirect
   }
 }
 
+function authorizeWorkspacePath(cwd: string, workspaceRoot: string): string {
+  if (!isAbsolute(cwd)) {
+    throw acp.RequestError.invalidParams({ field: "cwd" }, "cwd must be an absolute path");
+  }
+  let canonical: string;
+  try { canonical = realpathSync(cwd); } catch {
+    throw acp.RequestError.invalidParams({ field: "cwd" }, "cwd must exist inside the authorized workspace");
+  }
+  const relativePath = relative(workspaceRoot, canonical);
+  if (relativePath === ".." || relativePath.startsWith(`..${sep}`) || isAbsolute(relativePath)) {
+    throw acp.RequestError.invalidParams({ field: "cwd" }, "cwd is outside the authorized workspace");
+  }
+  if (!statSync(canonical).isDirectory()) {
+    throw acp.RequestError.invalidParams({ field: "cwd" }, "cwd must be a directory");
+  }
+  return canonical;
+}
+
 function replayUpdate(sessionId: string, turn: OutwardAcpHistoryTurn): acp.SessionNotification {
   return {
     sessionId,
@@ -146,6 +167,8 @@ function promptText(prompt: readonly acp.ContentBlock[]): string {
  * otherwise stay absent and fail closed through ACP method-not-found handling.
  */
 export function createOutwardAcpAgent(options: OutwardAcpAgentOptions = {}): AgentApp {
+  const workspaceRoot = realpathSync(options.workspaceRoot ?? process.cwd());
+  if (!statSync(workspaceRoot).isDirectory()) throw new Error("outward ACP workspace root must be a directory");
   const sessions = options.sessions;
   const supportsLoad = Boolean(sessions?.get && sessions?.history);
   const workstreams = options.workstreams;
@@ -168,15 +191,14 @@ export function createOutwardAcpAgent(options: OutwardAcpAgentOptions = {}): Age
       if (!session) throw acp.RequestError.invalidParams({ field: "sessionId" }, "unknown outward ACP session");
       // A Workstream is addressed within its workspace directory; a client
       // must present the matching cwd, exactly as session/load requires.
-      if (session.cwd !== stringParam(params, "cwd", 4096)) {
+      if (session.cwd !== authorizeWorkspacePath(stringParam(params, "cwd", 4096), workspaceRoot)) {
         throw acp.RequestError.invalidParams({ field: "cwd" }, "session cwd does not match the Workstream");
       }
       return session;
     };
     app = app
       .onRequest(WORKSTREAM_METHODS.list, objectParams, (ctx) => {
-        const cwd = stringParam(ctx.params, "cwd", 4096);
-        if (!isAbsolute(cwd)) throw acp.RequestError.invalidParams({ field: "cwd" }, "cwd must be an absolute path");
+        const cwd = authorizeWorkspacePath(stringParam(ctx.params, "cwd", 4096), workspaceRoot);
         const includeArchived = optionalBoolean(ctx.params, "includeArchived") ?? false;
         return {
           workstreams: sessions.list!(cwd, { includeArchived }).map((session) => ({
@@ -226,7 +248,8 @@ export function createOutwardAcpAgent(options: OutwardAcpAgentOptions = {}): Age
     assertConservativeSessionParams(ctx.params);
     const sessionId = randomUUID();
     const conversationId = `acp:${randomUUID()}`;
-    sessions.create({ sessionId, conversationId, cwd: ctx.params.cwd });
+    const cwd = authorizeWorkspacePath(ctx.params.cwd, workspaceRoot);
+    sessions.create({ sessionId, conversationId, cwd });
     return { sessionId };
   });
 
@@ -239,7 +262,7 @@ export function createOutwardAcpAgent(options: OutwardAcpAgentOptions = {}): Age
       if (!session) {
         throw acp.RequestError.invalidParams({ field: "sessionId" }, "unknown outward ACP session");
       }
-      if (session.cwd !== ctx.params.cwd) {
+      if (session.cwd !== authorizeWorkspacePath(ctx.params.cwd, workspaceRoot)) {
         throw acp.RequestError.invalidParams({ field: "cwd" }, "session cwd does not match the loaded session");
       }
       for (const turn of history(session.conversationId)) {
@@ -260,6 +283,7 @@ export function createOutwardAcpAgent(options: OutwardAcpAgentOptions = {}): Age
         "unknown outward ACP session",
       );
     }
+    authorizeWorkspacePath(session.cwd, workspaceRoot);
     const prompt = promptText(ctx.params.prompt);
     // Bridge commands run only through their owners, never as model text.
     if (isDeskBridgeCommand(prompt)) {
@@ -269,7 +293,7 @@ export function createOutwardAcpAgent(options: OutwardAcpAgentOptions = {}): Age
       );
     }
     try {
-      return await stageOutwardAcpAttachments(session.cwd, ctx.params.prompt, (attachments) => promptExecutor.execute({
+      return await stageOutwardAcpAttachments(workspaceRoot, ctx.params.prompt, (attachments) => promptExecutor.execute({
         session,
         prompt: attachments.length
           ? `${prompt}\n\n${attachments.map((path) => `[Attached file: ${basename(path)}]`).join("\n")}`

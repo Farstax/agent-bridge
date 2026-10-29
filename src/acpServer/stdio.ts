@@ -2,9 +2,11 @@
 
 import * as acp from "@agentclientprotocol/sdk";
 import { Readable, Writable } from "node:stream";
+import { realpathSync } from "node:fs";
 import { openProductionDb } from "../db.js";
 import { OutwardAcpSessionRepository } from "../repositories/outwardAcpSessionRepository.js";
 import { createOutwardAcpAgent, type OutwardAcpSessionStore } from "./app.js";
+import { cleanupStaleOutwardAcpAttachments } from "./attachments.js";
 import { prepareInteractiveCliAuth } from "../interactiveCliAuth.js";
 import { getCodexUsageText } from "../codexUsage.js";
 import { DeskCommands } from "./commands.js";
@@ -22,6 +24,7 @@ console.log = (...args: unknown[]) => console.error(...args);
 console.info = (...args: unknown[]) => console.error(...args);
 
 const bridgeProjectDir = process.env.BRIDGE_PROJECT_DIR || process.cwd();
+const workspaceRoot = realpathSync(bridgeProjectDir);
 const dbPath = process.env.DB_PATH || `${bridgeProjectDir}/.data/bridge.sqlite`;
 const db = openProductionDb(dbPath, {
   serviceId: "acp:outward",
@@ -64,7 +67,8 @@ try {
     control: promptExecutor,
     codexUsage: getCodexUsageText,
   });
-  const connection = createOutwardAcpAgent({ sessions, promptExecutor, workstreams: promptExecutor, commands }).connect(stream);
+  await cleanupStaleOutwardAcpAttachments(workspaceRoot);
+  const connection = createOutwardAcpAgent({ sessions, promptExecutor, workstreams: promptExecutor, commands, workspaceRoot }).connect(stream);
   await connection.closed;
 } finally {
   try {

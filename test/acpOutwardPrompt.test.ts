@@ -150,7 +150,7 @@ describe("outward ACP prompt execution", () => {
         });
 
       const response = await client.connectWith(
-        createOutwardAcpAgent({ sessions, promptExecutor }),
+        createOutwardAcpAgent({ sessions, promptExecutor, workspaceRoot: root }),
         async (agent) => {
           await agent.request(acp.methods.agent.initialize, {
             protocolVersion: acp.PROTOCOL_VERSION,
@@ -252,7 +252,7 @@ describe("outward ACP prompt execution", () => {
         .onNotification(acp.methods.client.session.update, (ctx) => updates.push(ctx.params));
 
       const response = await client.connectWith(
-        createOutwardAcpAgent({ sessions, promptExecutor }),
+        createOutwardAcpAgent({ sessions, promptExecutor, workspaceRoot: root }),
         (agent) => agent.request(acp.methods.agent.session.prompt, {
           sessionId: session.sessionId,
           prompt: [{ type: "text", text: "cancel me" }],
@@ -286,7 +286,7 @@ describe("outward ACP prompt execution", () => {
         async cancel(): Promise<void> {},
       };
       const client = acp.client({ name: "outward-test-client" });
-      const app = createOutwardAcpAgent({ sessions, promptExecutor });
+      const app = createOutwardAcpAgent({ sessions, promptExecutor, workspaceRoot: root });
 
       await expect(client.connectWith(app, (agent) => agent.request(acp.methods.agent.session.prompt, {
         sessionId: "missing",

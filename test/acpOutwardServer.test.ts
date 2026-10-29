@@ -1,8 +1,8 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { once } from "node:events";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { createInterface, type Interface } from "node:readline";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
@@ -93,6 +93,7 @@ function startOutwardAcpProcess(dbPath: string, extraEnv: NodeJS.ProcessEnv = {}
       ...process.env,
       HOME: authHome,
       DB_PATH: dbPath,
+      BRIDGE_PROJECT_DIR: dirname(dbPath),
       NODE_ENV: "test",
       AGENT_BRIDGE_INSTALLATION_ID: "",
       ...extraEnv,
@@ -301,13 +302,20 @@ describe("outward ACP stdio boundary", { timeout: 30_000 }, () => {
     const root = mkdtempSync(join(tmpdir(), "agent-bridge-outward-acp-"));
     const dbPath = join(root, "bridge.sqlite");
     const cwd = join(root, "workspace");
+    mkdirSync(cwd);
     openDb(dbPath, { databaseRole: "interactive" }).close();
+    const staleAttachments = join(root, ".agent-bridge-attachments-after-crash");
+    mkdirSync(staleAttachments, { mode: 0o700 });
+    writeFileSync(join(staleAttachments, ".agent-bridge-staging-owner"), "agent-bridge-outward-attachment-v1\n", { mode: 0o600 });
+    const staleTime = new Date(Date.now() - 25 * 60 * 60 * 1000);
+    utimesSync(staleAttachments, staleTime, staleTime);
 
     let first: RunningOutwardAcp | null = null;
     let second: RunningOutwardAcp | null = null;
     try {
       first = startOutwardAcpProcess(dbPath);
       const initialized = await initialize(first, 1);
+      expect(existsSync(staleAttachments)).toBe(false);
       expect(initialized).toMatchObject({
         jsonrpc: "2.0",
         id: 1,

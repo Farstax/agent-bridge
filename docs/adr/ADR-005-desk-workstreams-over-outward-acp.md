@@ -27,10 +27,11 @@ ACP v1 equivalent use the ACP extension-method namespace and are advertised in
 
 Create is standard `session/new` followed by an optional `update` for the
 title. Every per-Workstream call must present the session's `cwd`, as
-`session/load` already requires. `cwd` is a selector, not an authorisation:
-the outward agent serves one workspace owner, so the Platform gateway must
-pin `cwd` to the authenticated principal's workspace and never forward a
-client-chosen value. Archive is metadata only; an archived Workstream can
+`session/load` already requires. The stdio process pins an authorised workspace
+root from its trusted `BRIDGE_PROJECT_DIR` (or launch directory), resolves the
+requested `cwd`, and rejects paths outside that root before creating or using
+a Workstream. Platform must launch the process for the principal's workspace
+and must never forward a client-chosen root. Archive is metadata only; an archived Workstream can
 still be loaded and prompted, and `update` with `archived: false` restores it.
 
 Command entries reuse `src/commands.ts` and existing setting, provider switch,
@@ -46,10 +47,12 @@ Embedded ACP `image` and `resource` payloads are staged for one Run in a
 private, randomly named directory under the Workstream cwd. Supported files
 are text/code, JSON, CSV, logs, Markdown, PNG, JPEG and PDF. Input allows up to
 eight files, 8 MiB per file and 16 MiB total. Names are reduced to bounded safe
-filenames, and content stays inside the authorized cwd. Unsupported blocks and
-file types fail before provider execution. Staged files are removed after
-success, failure or cancellation. A `resource_link` alone is metadata, not
-uploaded bytes, and is not treated as an attachment.
+filenames, and content stays inside the authorized workspace. Unsupported
+blocks and file types fail before provider execution. Staged files are removed
+after success, failure or cancellation. On startup, the stdio process removes
+only owner-marked staging directories more than 24 hours old to recover from a
+hard process exit. A `resource_link` alone is metadata, not uploaded bytes,
+and is not treated as an attachment.
 
 ## Status truth
 

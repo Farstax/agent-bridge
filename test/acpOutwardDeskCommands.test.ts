@@ -71,7 +71,7 @@ function setup(options: { chain?: BotKind[]; btw?: boolean; gate?: Promise<void>
     }),
   });
   const commands = new DeskCommands({ db, config, control: exec, codexUsage: async () => "Codex usage: 12%" });
-  const app = createOutwardAcpAgent({ sessions, promptExecutor: exec, workstreams: exec, commands });
+  const app = createOutwardAcpAgent({ sessions, promptExecutor: exec, workstreams: exec, commands, workspaceRoot: root });
   const run = <T = { command: string; text: string; options?: Array<{ label: string; selected: boolean; token: string }> }>(
     params: Record<string, unknown>,
   ) => acp.client({ name: "desk" }).connectWith(app, (agent) =>
