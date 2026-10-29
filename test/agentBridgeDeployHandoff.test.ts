@@ -60,6 +60,7 @@ describe("durable independent OSS deployer handoff (#1347)", () => {
       "assert module.resume_pending_handoff() == 'none'",
       "module.accept_handoff(archive, None, None)",
       "archive.unlink()",
+      "module.validate_archive = lambda *args: (_ for _ in ()).throw(RuntimeError('original approval expired'))",
       "result = module.resume_pending_handoff()",
       "assert result.startswith('accepted ' + commit + ' ' + sha256)",
       "assert len(calls) == 2",
