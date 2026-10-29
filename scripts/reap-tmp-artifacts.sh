@@ -105,6 +105,113 @@ has_ownership_signal() {
   return 1
 }
 
+
+# Only explicit checkouts or detached worktrees registered to a known OSS repo.
+# Never discover candidates by walking home directories.
+checkout_has_active_process() {
+  local checkout="$1" proc target
+  local -a args
+  # Bash builtins only for filtering; one readlink per owned process. A host
+  # with hundreds of processes must not make cleanup minutes long.
+  for proc in /proc/[0-9]*; do
+    [[ -O "$proc" ]] || continue
+    args=()
+    mapfile -d '' -t args < "$proc/cmdline" 2>/dev/null || true
+    [[ "${args[*]:-}" == *"$checkout"* ]] && return 0
+    while IFS= read -r target; do
+      if [[ "$target" == "$checkout" || "$target" == "$checkout/"* ]]; then
+        return 0
+      fi
+    done < <(readlink -- "$proc/cwd" "$proc/exe" "$proc"/fd/* 2>/dev/null)
+  done
+  return 1
+}
+
+reap_detached_checkout_dependencies() {
+  local checkout="$1" root origin status dependencies age now
+  [[ "$checkout" == /* && -d "$checkout" && ! -L "$checkout" ]] || return 0
+  [[ "$(realpath -e -- "$checkout" 2>/dev/null)" == "$checkout" ]] || return 0
+  [[ "$(stat -c %u -- "$checkout" 2>/dev/null)" == "$(id -u)" ]] || return 0
+  [[ -e "$checkout/.git" ]] || return 0
+  root="$(git -C "$checkout" rev-parse --show-toplevel 2>/dev/null)" || return 0
+  [[ "$root" == "$checkout" ]] || return 0
+  # The configured inventory provides the expected upstream identity.
+  # No hosted-product name or arbitrary remote is hardcoded into OSS cleanup.
+  origin="$(git -C "$checkout" remote get-url origin 2>/dev/null)" || return 0
+  local expected_origin="${REAP_OSS_ORIGIN:-}"
+  if [[ -z "$expected_origin" ]]; then
+    local inventory_repo="${REAP_WORKTREE_REPOS:-${HOME:-}/agent-bridge}"
+    inventory_repo="${inventory_repo%%,*}"
+    expected_origin="$(git -C "$inventory_repo" remote get-url origin 2>/dev/null)" || return 0
+  fi
+  [[ -n "$expected_origin" && "$origin" == "$expected_origin" ]] || {
+    log "preserving (unverified OSS origin): $checkout"
+    return 0
+  }
+  [[ -z "$(git -C "$checkout" symbolic-ref -q HEAD 2>/dev/null)" ]] || return 0
+  status="$(git -C "$checkout" status --porcelain=v1 --untracked-files=all 2>/dev/null)" || return 0
+  [[ -z "$status" ]] || { log "preserving (dirty checkout): $checkout"; return 0; }
+  git -C "$checkout" merge-base --is-ancestor HEAD refs/remotes/origin/main 2>/dev/null || {
+    log "preserving (unverified detached commit): $checkout"
+    return 0
+  }
+  dependencies="$checkout/node_modules"
+  [[ -d "$dependencies" && ! -L "$dependencies" ]] || return 0
+  [[ "$(stat -c %u -- "$dependencies" 2>/dev/null)" == "$(id -u)" ]] || return 0
+  now="$(date +%s)"
+  age="$(stat -c %Y -- "$dependencies" 2>/dev/null)" || return 0
+  (( now - age > MAX_AGE_MIN * 60 )) || return 0
+  # A recently written nested package makes a stale directory mtime misleading.
+  # Any unreadable subtree or recent write means ownership cannot be proved.
+  local recently_changed
+  recently_changed="$(find "$dependencies" -xdev -mmin "-$MAX_AGE_MIN" -print -quit 2>/dev/null)" || {
+    log "preserving (dependency activity unverified): $checkout"
+    return 0
+  }
+  [[ -z "$recently_changed" ]] || {
+    log "preserving (recent dependency writes): $checkout"
+    return 0
+  }
+  if has_ownership_signal "$checkout" || checkout_has_active_process "$checkout"; then
+    log "preserving (active checkout): $checkout"
+    return 0
+  fi
+  remove_entry "$dependencies" "inactive clean detached OSS dependencies"
+}
+
+
+# Narrowly owned, reproducible cache locations only. Do not recurse through
+# arbitrary user homes or touch any cache referenced by a running process.
+sweep_owned_build_cache() {
+  local cache_root="$1" expected_parent="$2" entry age now recent pattern
+  [[ -d "$cache_root" && ! -L "$cache_root" && "$cache_root" == "$expected_parent/"* ]] || return 0
+  [[ "$(realpath -e -- "$cache_root" 2>/dev/null)" == "$cache_root" ]] || return 0
+  [[ "$(stat -c %u -- "$cache_root" 2>/dev/null)" == "$(id -u)" ]] || return 0
+  [[ -d "$expected_parent" && ! -L "$expected_parent" ]] || return 0
+  [[ "$(realpath -e -- "$expected_parent" 2>/dev/null)" == "$expected_parent" ]] || return 0
+  # An active build or browser can return to a cache between filesystem calls.
+  # Preserve the entire cache while an owning user process references it.
+  if has_ownership_signal "$cache_root" || checkout_has_active_process "$cache_root"; then
+    log "preserving (active build cache): $cache_root"
+    return 0
+  fi
+  now="$(date +%s)"
+  shift 2
+  for pattern in "$@"; do
+    for entry in "$cache_root"/$pattern; do
+      [[ -e "$entry" ]] || continue
+      [[ ! -L "$entry" && -d "$entry" ]] || continue
+      [[ "$(stat -c %u -- "$entry" 2>/dev/null)" == "$(id -u)" ]] || continue
+      age="$(stat -c %Y -- "$entry" 2>/dev/null)" || continue
+      (( now - age > MAX_AGE_MIN * 60 )) || continue
+      recent="$(find "$entry" -xdev -mmin "-$MAX_AGE_MIN" -print -quit 2>/dev/null)" || continue
+      [[ -z "$recent" ]] || continue
+      has_ownership_signal "$entry" && continue
+      remove_entry "$entry" "verified inactive reproducible cache"
+    done
+  done
+}
+
 # Age-sweep every direct child of $dir matching an optional -name glob.
 # Safe because every name here embeds a UUID/PID/random suffix — nothing
 # still running will ever look for an old name again.
@@ -165,6 +272,9 @@ reap_worktree_repo() {
         branch="${branch#refs/heads/}"
         ;;
       "detached")
+        if [[ -n "$wt" && "$wt" != "$repo" ]]; then
+          reap_detached_checkout_dependencies "$wt"
+        fi
         wt=""
         branch=""
         ;;
@@ -191,6 +301,21 @@ reap_worktree_repo() {
   done < <(git -C "$repo" worktree list --porcelain; echo)
 }
 
+
+# Capacity is observed at the same chosen filesystem before and after cleanup.
+# Concurrent writers may change the counters; report observed free-space change,
+# not a claim that every extra free byte came from this janitor.
+REPORT_ROOT="${REAP_REPORT_ROOT:-${TMP_ROOT}}"
+[[ -d "$REPORT_ROOT" && ! -L "$REPORT_ROOT" ]] || REPORT_ROOT="/"
+read_capacity() {
+  df -P -B1 -- "$REPORT_ROOT" 2>/dev/null | awk 'NR == 2 { print $4 }'
+}
+read_inodes() {
+  df -P -i -- "$REPORT_ROOT" 2>/dev/null | awk 'NR == 2 { print $4 }'
+}
+capacity_before="$(read_capacity)"
+inodes_before="$(read_inodes)"
+
 sweep_by_age "${TMP_ROOT}/bridge-out"
 sweep_by_age "${TMP_ROOT}" "bridge-uploads-*"
 sweep_by_age "${TMP_ROOT}" "antigravity-*.log"
@@ -200,10 +325,42 @@ sweep_agent_bridge_scratch "${TMP_ROOT}"
 
 prune_acp_telemetry
 
+# Named producer caches, never a blanket ~/.cache or ~/.npm sweep.
+cache_home="${HOME:-}"
+if [[ "$cache_home" == /* && -d "$cache_home" && ! -L "$cache_home" ]]; then
+  sweep_owned_build_cache "$cache_home/.npm/_cacache" "$cache_home/.npm" "tmp"
+  sweep_owned_build_cache "$cache_home/.cache/ms-playwright" "$cache_home/.cache" \
+    "chromium-[0-9]*" "chromium_headless_shell-[0-9]*" "firefox-[0-9]*" "webkit-[0-9]*"
+fi
+
 IFS=',' read -r -a REPOS <<< "${REAP_WORKTREE_REPOS:-${HOME:-}/agent-bridge}"
 for repo in "${REPOS[@]}"; do
   [[ -n "$repo" ]] && reap_worktree_repo "$repo"
 done
+
+# Optional exact detached-checkout inventory, for standalone detached clones
+# that are not linked Git worktrees. All candidates receive the same checks.
+IFS=',' read -r -a DETACHED_CHECKOUTS <<< "${REAP_DETACHED_CHECKOUTS:-}"
+for checkout in "${DETACHED_CHECKOUTS[@]}"; do
+  [[ -n "$checkout" ]] && reap_detached_checkout_dependencies "$checkout"
+done
+
+
+capacity_after="$(read_capacity)"
+inodes_after="$(read_inodes)"
+if [[ "$capacity_before" =~ ^[0-9]+$ && "$capacity_after" =~ ^[0-9]+$ && "$inodes_after" =~ ^[0-9]+$ ]]; then
+  gain=$(( capacity_after > capacity_before ? capacity_after - capacity_before : 0 ))
+  log "disk_headroom root=$REPORT_ROOT free_bytes=$capacity_after observed_recovered_bytes=$gain free_inodes=$inodes_after before_free_inodes=$inodes_before"
+  required="${REAP_REQUIRED_HEADROOM_BYTES:-0}"
+  if [[ "$required" =~ ^[0-9]+$ && ${#required} -le 18 ]]; then
+    shortfall=$(( required > capacity_after ? required - capacity_after : 0 ))
+    log "disk_admission required_bytes=$required shortfall_bytes=$shortfall"
+  else
+    log "disk_admission=unknown reason=invalid_required_bytes"
+  fi
+else
+  log "disk_headroom=unknown root=$REPORT_ROOT"
+fi
 
 if (( FAILURES > 0 )); then
   log "cleanup incomplete: ${FAILURES} eligible artifact(s) could not be removed" >&2

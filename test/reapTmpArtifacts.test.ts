@@ -1,4 +1,4 @@
-import { execFileSync, spawnSync } from "node:child_process";
+import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -27,7 +27,7 @@ function ageEntry(path: string, hoursOld: number) {
 
 function run(env: Record<string, string>, args: string[] = []) {
   return spawnSync("bash", [scriptPath, ...args], {
-    env: { ...process.env, ...env },
+    env: { ...process.env, HOME: "/nonexistent-home-for-reaper-tests", ...env },
     encoding: "utf8",
   });
 }
@@ -263,4 +263,164 @@ describe("reap-tmp-artifacts.sh", () => {
     expect(result.stdout).toContain("would remove");
     expect(existsSync(staleRun)).toBe(true);
   });
+
+  it("cleans only aged owned npm scratch and identifiable inactive browser downloads", () => {
+    const root = makeRoot();
+    const home = join(root, "home");
+    const npmScratch = join(home, ".npm", "_cacache", "tmp");
+    const oldBrowser = join(home, ".cache", "ms-playwright", "chromium-1234");
+    const recentBrowser = join(home, ".cache", "ms-playwright", "chromium-5678");
+    const unrelated = join(home, ".cache", "important-user-data");
+    for (const dir of [npmScratch, oldBrowser, recentBrowser, unrelated]) mkdirSync(dir, { recursive: true });
+    for (const dir of [npmScratch, oldBrowser]) {
+      writeFileSync(join(dir, "rebuildable"), "cache");
+      ageEntry(join(dir, "rebuildable"), 48);
+      ageEntry(dir, 48);
+    }
+    writeFileSync(join(recentBrowser, "live"), "keep");
+    const result = run({ HOME: home, REAP_TMP_ROOT: join(root, "empty-tmp"), REAP_WORKTREE_REPOS: "," });
+    expect(result.status, result.stderr).toBe(0);
+    expect(existsSync(npmScratch)).toBe(false);
+    expect(existsSync(oldBrowser)).toBe(false);
+    expect(existsSync(recentBrowser)).toBe(true);
+    expect(existsSync(unrelated)).toBe(true);
+  }, 20_000);
+
+  it("preserves an aged browser cache when a live process ownership signal exists", () => {
+    const root = makeRoot();
+    const home = join(root, "home");
+    const browser = join(home, ".cache", "ms-playwright", "chromium-1234");
+    mkdirSync(browser, { recursive: true });
+    writeFileSync(join(browser, "rebuildable"), "cache");
+    ageEntry(join(browser, "rebuildable"), 48);
+    ageEntry(browser, 48);
+    writeFileSync(join(browser, ".pid"), String(process.pid));
+    const result = run({ HOME: home, REAP_TMP_ROOT: join(root, "empty-tmp"), REAP_WORKTREE_REPOS: "," });
+    expect(result.status, result.stderr).toBe(0);
+    expect(existsSync(browser)).toBe(true);
+  });
+
+  function makeDetachedCheckout(root: string): { checkout: string; dependencies: string } {
+    const checkout = join(root, "agent-bridge-detached");
+    initGitRepo(checkout);
+    writeFileSync(join(checkout, ".gitignore"), "node_modules/\n");
+    execFileSync("git", ["-C", checkout, "add", ".gitignore"]);
+    execFileSync("git", ["-C", checkout, "commit", "-q", "-m", "ignore reproducible dependencies"]);
+    execFileSync("git", ["-C", checkout, "remote", "add", "origin", "https://github.com/Farstax/agent-bridge.git"]);
+    execFileSync("git", ["-C", checkout, "update-ref", "refs/remotes/origin/main", "HEAD"]);
+    execFileSync("git", ["-C", checkout, "checkout", "-q", "--detach", "HEAD"]);
+    const dependencies = join(checkout, "node_modules");
+    mkdirSync(dependencies);
+    writeFileSync(join(dependencies, "reconstructible-module"), "cached package\n");
+    ageEntry(join(dependencies, "reconstructible-module"), 48);
+    ageEntry(dependencies, 48);
+    return { checkout, dependencies };
+  }
+
+  it("reclaims reproducible dependencies in an explicitly verified inactive detached OSS checkout", () => {
+    const root = makeRoot();
+    const { checkout, dependencies } = makeDetachedCheckout(root);
+    const result = run({
+      REAP_TMP_ROOT: join(root, "tmp"),
+      REAP_WORKTREE_REPOS: ",",
+      REAP_DETACHED_CHECKOUTS: checkout,
+      REAP_OSS_ORIGIN: "https://github.com/Farstax/agent-bridge.git",
+    });
+    expect(result.status, result.stderr).toBe(0);
+    expect(existsSync(dependencies)).toBe(false);
+    expect(existsSync(join(checkout, ".git"))).toBe(true);
+    expect(result.stdout).toContain("inactive clean detached OSS dependencies");
+    const second = run({ REAP_TMP_ROOT: join(root, "tmp"), REAP_WORKTREE_REPOS: ",", REAP_DETACHED_CHECKOUTS: checkout });
+    expect(second.status).toBe(0);
+  });
+
+  it("preserves detached dependencies when the checkout is dirty, unverified or active", () => {
+    const root = makeRoot();
+    const { checkout, dependencies } = makeDetachedCheckout(root);
+    const env = { REAP_TMP_ROOT: join(root, "tmp"), REAP_WORKTREE_REPOS: ",", REAP_DETACHED_CHECKOUTS: checkout, REAP_OSS_ORIGIN: "https://github.com/Farstax/agent-bridge.git" };
+    writeFileSync(join(checkout, "unique-untracked-work"), "do not delete");
+    expect(run(env).status).toBe(0);
+    expect(existsSync(dependencies)).toBe(true);
+    rmSync(join(checkout, "unique-untracked-work"));
+    execFileSync("git", ["-C", checkout, "remote", "set-url", "origin", "https://github.com/other/repo.git"]);
+    expect(run(env).status).toBe(0);
+    expect(existsSync(dependencies)).toBe(true);
+    execFileSync("git", ["-C", checkout, "remote", "set-url", "origin", "https://github.com/Farstax/agent-bridge.git"]);
+    writeFileSync(join(dependencies, ".pid"), String(process.pid));
+    expect(run(env).status).toBe(0);
+    expect(existsSync(dependencies)).toBe(true);
+    rmSync(join(dependencies, ".pid"));
+    execFileSync("git", ["-C", checkout, "update-ref", "-d", "refs/remotes/origin/main"]);
+    expect(run(env).status).toBe(0);
+    expect(existsSync(dependencies)).toBe(true);
+  });
+
+  it("keeps active branch checkouts and fresh dependencies", () => {
+    const root = makeRoot();
+    const { checkout, dependencies } = makeDetachedCheckout(root);
+    const env = { REAP_TMP_ROOT: join(root, "tmp"), REAP_WORKTREE_REPOS: ",", REAP_DETACHED_CHECKOUTS: checkout, REAP_OSS_ORIGIN: "https://github.com/Farstax/agent-bridge.git" };
+    execFileSync("git", ["-C", checkout, "switch", "-q", "-c", "active-work"]);
+    expect(run(env).status).toBe(0);
+    expect(existsSync(dependencies)).toBe(true);
+    execFileSync("git", ["-C", checkout, "checkout", "-q", "--detach", "HEAD"]);
+    ageEntry(dependencies, 0);
+    expect(run(env).status).toBe(0);
+    expect(existsSync(dependencies)).toBe(true);
+  });
+
+
+  it("reports measured free bytes, inodes and the remaining operator-supplied admission shortfall", () => {
+    const root = makeRoot();
+    const result = run({
+      REAP_TMP_ROOT: root,
+      REAP_REPORT_ROOT: root,
+      REAP_WORKTREE_REPOS: ",",
+      REAP_REQUIRED_HEADROOM_BYTES: "999999999999999",
+    });
+    expect(result.status).toBe(0);
+    expect(result.stdout).toMatch(/disk_headroom root=.*free_bytes=[0-9]+ observed_recovered_bytes=[0-9]+ free_inodes=[0-9]+/);
+    expect(result.stdout).toMatch(/disk_admission required_bytes=999999999999999 shortfall_bytes=[1-9][0-9]*/);
+  });
+
+
+  it("preserves a stale dependency root when a nested module was recently written", () => {
+    const root = makeRoot();
+    const { checkout, dependencies } = makeDetachedCheckout(root);
+    writeFileSync(join(dependencies, "recently-installed"), "new package");
+    ageEntry(dependencies, 48);
+    const result = run({
+      REAP_TMP_ROOT: join(root, "tmp"),
+      REAP_WORKTREE_REPOS: ",",
+      REAP_DETACHED_CHECKOUTS: checkout,
+      REAP_OSS_ORIGIN: "https://github.com/Farstax/agent-bridge.git",
+    });
+    expect(result.status).toBe(0);
+    expect(existsSync(dependencies)).toBe(true);
+    expect(result.stdout).toContain("recent dependency writes");
+  });
+
+
+  it("preserves dependencies while a live same-user process has the checkout as its cwd", async () => {
+    const root = makeRoot();
+    const { checkout, dependencies } = makeDetachedCheckout(root);
+    const child = spawn("sleep", ["20"], { cwd: checkout, stdio: "ignore" });
+    try {
+      await new Promise<void>((resolve, reject) => {
+        child.once("spawn", () => resolve());
+        child.once("error", reject);
+      });
+      const result = run({
+        REAP_TMP_ROOT: join(root, "tmp"),
+        REAP_WORKTREE_REPOS: ",",
+        REAP_DETACHED_CHECKOUTS: checkout,
+      REAP_OSS_ORIGIN: "https://github.com/Farstax/agent-bridge.git",
+      });
+      expect(result.status).toBe(0);
+      expect(existsSync(dependencies)).toBe(true);
+      expect(result.stdout).toContain("active checkout");
+    } finally {
+      child.kill();
+    }
+  });
+
 });

@@ -1403,7 +1403,7 @@ remove_named_child_directory() {
 prune_rollout_retention() {
   local retention_count="$ROLLOUT_TERMINAL_RETENTION_COUNT"
   [[ -n "${AGENT_BRIDGE_ROLLOUT_RETENTION_COUNT:-}" ]] && retention_count="$AGENT_BRIDGE_ROLLOUT_RETENTION_COUNT"
-  [[ "$retention_count" =~ ^[0-9]+$ ]] || die "rollout retention count is not numeric"
+  [[ "$retention_count" =~ ^[1-9][0-9]*$ ]] || die "rollout retention must preserve at least one qualified restore point"
   local -a terminal=() refused=()
   local entry base
   while IFS= read -r entry; do
@@ -1411,7 +1411,12 @@ prune_rollout_retention() {
     [[ -d "$entry" && ! -L "$entry" ]] || continue
     base="$(/usr/bin/basename -- "$entry")"
     [[ "$base" =~ ^[0-9]{8}T[0-9]{6}Z-[0-9a-f]{40}$ ]] || continue
-    [[ "$entry" == "$artifact_dir" ]] && continue
+    # The running attempt is non-terminal before admission, but after
+    # acceptance it becomes the newest proven restore point. Include it
+    # then so superseded terminal backups can be pruned immediately.
+    if [[ "$entry" == "$artifact_dir" ]] && ! rollout_artifact_is_terminal "$entry"; then
+      continue
+    fi
     if rollout_artifact_is_terminal "$entry"; then
       terminal+=("$base")
     elif rollout_artifact_has_last_phase "$entry" PRECONDITION_FAILED \
@@ -1427,24 +1432,48 @@ prune_rollout_retention() {
     refused_pruned=$((refused_pruned + 1))
   done
   echo "rollout refused-attempt retention pruned=${refused_pruned}"
-  local pruned=0 retained=${#terminal[@]}
+  local pruned=0 retained=${#terminal[@]} reclaimed_bytes=0 backup_bytes
   if (( ${#terminal[@]} > retention_count )); then
     local index name backup
     local remove_until=$(( ${#terminal[@]} - retention_count ))
     for (( index=0; index<remove_until; index++ )); do
       name="${terminal[$index]}"
-      remove_named_child_directory "$log_dir" "$name" || die "failed to prune proven terminal rollout evidence: $name"
-      backup="$backup_dir/$name"
-      if [[ -e "$backup" || -L "$backup" ]]; then
-        if [[ -d "$backup" && ! -L "$backup" ]]; then
-          remove_named_child_directory "$backup_dir" "$name" || die "failed to prune proven terminal rollout backup: $name"
-        fi
+      if [[ "$name" == "$(/usr/bin/basename -- "$artifact_dir")" ]]; then
+        echo "rollout retention protected_backup=$name reason=current_accepted_attempt"
+        continue
       fi
+      backup="$backup_dir/$name"
+      # Remove data first, evidence last. If backup cleanup is interrupted,
+      # the verified ledger must remain for a later safe retry.
+      if [[ -e "$backup" || -L "$backup" ]]; then
+        if [[ ! -d "$backup" || -L "$backup" ]]; then
+          echo "rollout retention protected_backup=$name reason=unsafe_backup_path"
+          continue
+        fi
+        backup_bytes="$(/usr/bin/du -sb -- "$backup" 2>/dev/null | /usr/bin/cut -f1)"
+        remove_named_child_directory "$backup_dir" "$name" || die "failed to prune proven terminal rollout backup: $name"
+        [[ "$backup_bytes" =~ ^[0-9]+$ ]] && reclaimed_bytes=$((reclaimed_bytes + backup_bytes))
+      fi
+      remove_named_child_directory "$log_dir" "$name" || die "failed to prune proven terminal rollout evidence: $name"
       pruned=$((pruned + 1))
     done
     retained=$(( ${#terminal[@]} - pruned ))
   fi
-  echo "rollout retention pruned=${pruned} retained_terminal=${retained}"
+  echo "rollout retention pruned=${pruned} retained_terminal=${retained} reclaimed_backup_bytes=${reclaimed_bytes}"
+  # Historical backup cohorts without verified terminal evidence remain.
+  # Name exact ambiguous cohorts for a later bounded recovery audit.
+  local protected_count=0
+  local held_name held_path
+  for held_path in "$backup_dir"/*; do
+    [[ -d "$held_path" && ! -L "$held_path" ]] || continue
+    held_name="$(/usr/bin/basename -- "$held_path")"
+    [[ "$held_name" =~ ^[0-9]{8}T[0-9]{6}Z-[0-9a-f]{40}$ ]] || continue
+    if ! rollout_artifact_is_terminal "$log_dir/$held_name"; then
+      echo "rollout retention protected_backup=$held_name reason=terminal_evidence_missing_or_invalid"
+      protected_count=$((protected_count + 1))
+    fi
+  done
+  echo "rollout retention protected_ambiguous_count=${protected_count}"
 }
 
 # The active pointer is the only rollback baseline for this transaction.  The
@@ -2577,4 +2606,8 @@ completed=1
 record_phase COMPLETE
 printf '{"status":"complete","targetCommit":"%s","artifactSha256":"%s","environment":"%s","approvalReference":"%s","artifactDir":"%s","completedAt":"%s"}\n' "$expected_commit" "$deployer_artifact_sha256" "$deployer_environment" "$deployer_approval_reference" "$artifact_dir" "$(/usr/bin/date -u '+%Y-%m-%dT%H:%M:%SZ')" > "$artifact_dir/deployment-result.json"
 /usr/bin/sha256sum "$artifact_dir/deployment-result.json" > "$artifact_dir/deployment-result.sha256"
+# Post-acceptance hygiene never invalidates a healthy deployed release.
+# The completed cohort is now the newest terminal restore point, so older
+# proven backups can be pruned without waiting for another deployment.
+( prune_rollout_retention ) || echo "post-acceptance rollout retention deferred; recovery evidence preserved" >&2
 echo "rollout completed commit=$expected_commit artifacts=$artifact_dir"
