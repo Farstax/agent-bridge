@@ -212,6 +212,7 @@ export function schemaTablesForRole(databaseRole = "shared"): readonly string[] 
  * Version 23 records an explicit provider objective disposition on its owning Run (#1050).
  * Version 24 retains execution records fenced during recovery-copy isolation.
  * Version 25 adds Workstream title/archive metadata to outward ACP sessions (#1101).
+ * Version 26 stores idempotent outward ACP prompt receipts on canonical Runs.
  * Each step is transactional and user_version remains authoritative.
  */
 const DEFAULT_MIGRATIONS: readonly Migration[] = [

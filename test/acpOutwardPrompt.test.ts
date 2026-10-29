@@ -206,7 +206,7 @@ describe("outward ACP prompt execution", () => {
           return agent.request(acp.methods.agent.session.prompt, {
             sessionId: session.sessionId,
             prompt: [{ type: "text", text: "hi" }],
-            _meta: { "farstax/request-id": "desk-request-75b56b05-1dfd-46c0-a5c4-36db0bc3f527" },
+            _meta: { "agent-bridge/request-id": "desk-request-75b56b05-1dfd-46c0-a5c4-36db0bc3f527" },
           });
         },
       );

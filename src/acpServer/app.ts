@@ -286,9 +286,9 @@ export function createOutwardAcpAgent(options: OutwardAcpAgentOptions = {}): Age
     }
     const authorizedCwd = authorizeWorkspacePath(session.cwd, workspaceRoot);
     const prompt = promptText(ctx.params.prompt);
-    const requestId = ctx.params._meta?.["farstax/request-id"];
+    const requestId = ctx.params._meta?.["agent-bridge/request-id"];
     if (requestId !== undefined && (typeof requestId !== "string" || !/^[A-Za-z0-9._:-]{16,128}$/.test(requestId))) {
-      throw acp.RequestError.invalidParams({ field: "_meta.farstax/request-id" }, "invalid client request id");
+      throw acp.RequestError.invalidParams({ field: "_meta.agent-bridge/request-id" }, "invalid client request id");
     }
     // Bridge commands run only through their owners, never as model text.
     if (isDeskBridgeCommand(prompt)) {
