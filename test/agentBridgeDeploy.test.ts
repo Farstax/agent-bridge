@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { execFileSync, spawnSync } from "node:child_process";
-import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { describe, expect, it } from "vitest";
@@ -171,6 +171,24 @@ describe("single-input deployer contract", () => {
     expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
     expect(result.stdout).toContain(`validated ${COMMIT}`);
     expect(result.stdout).not.toMatch(/evidence|bundle|validator/i);
+  });
+
+  it("reports candidate disk admission failure without leaving a staging directory", () => {
+    const fixture = makeRelease();
+    const releaseRoot = mkdtempSync(join(tmpdir(), "agent-bridge-deploy-disk-"));
+    const result = spawnSync("python3", [DEPLOYER, "--release", fixture.archive, "--approval", fixture.approval], {
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        AGENT_BRIDGE_DEPLOY_TEST: "1",
+        AGENT_BRIDGE_DEPLOY_TEST_RELEASE_ROOT: releaseRoot,
+        AGENT_BRIDGE_RELEASE_STAGE_TEST_AVAILABLE_BYTES: "1",
+      },
+    });
+    expect(result.status, `${result.stdout}\n${result.stderr}`).not.toBe(0);
+    expect(`${result.stdout}\n${result.stderr}`).toContain("release_disk_space_insufficient");
+    expect(existsSync(join(releaseRoot, COMMIT))).toBe(false);
+    rmSync(releaseRoot, { recursive: true, force: true });
   });
 
   it("rejects a tampered archive and wrong commit/environment/SHA or expired approval", () => {
@@ -532,7 +550,7 @@ else:
 
   it("uses the validated staging helper for the production staging invocation", () => {
     const source = readFileSync(DEPLOYER, "utf8");
-    expect(source).toContain('"/usr/bin/python3", str(stage_helper)');
+    expect(source).toContain('invoke_release_stage("/usr/bin/python3", stage_helper,');
     expect(source).not.toContain('str(staging_helper)');
   });
 

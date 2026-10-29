@@ -128,31 +128,47 @@ def parse_approval(path: Path, expected_commit: str, release_sha256: str, now: d
 def validate_archive(archive: Path, approval: Path | None, now: datetime, production: bool, fixed_environment: str | None = None, stage_helper: Path | None = None) -> tuple[str, str, dict | None]:
     if archive.is_symlink() or not archive.is_file():
         fail("release archive must be a regular non-symlink file")
-    release_sha256 = digest(archive)
-    with tempfile.TemporaryDirectory(prefix="agent-bridge-deploy-validate-") as directory:
-        root = Path(directory)
+    try:
+        stage = staging_module(stage_helper or Path(__file__).with_name("release-stage.py"))
+        inspected = stage.inspect_archive(archive)
+    except Exception as error:
+        fail(f"release archive or manifest validation failed: {error}")
+    manifest = inspected["manifest"]
+    release_sha256 = inspected["archive_sha256"]
+    if not isinstance(release_sha256, str) or not SHA256.fullmatch(release_sha256):
+        fail("release archive SHA-256 is invalid")
+    if not SHA.fullmatch(manifest["commit"]):
+        fail("release manifest commit is invalid")
+    qualification_text = inspected.get("qualification_text")
+    if production and not isinstance(qualification_text, str):
+        fail("release archive must contain embedded qualification-evidence.json")
+    if isinstance(qualification_text, str):
         try:
-            stage = staging_module(stage_helper or Path(__file__).with_name("release-stage.py"))
-            with archive.open("rb") as stream:
-                stage.extract_archive(stream, root)
-            manifest = stage.load_manifest(root)
-            stage.verify_manifest(root, manifest)
-        except Exception as error:
-            fail(f"release archive or manifest validation failed: {error}")
-        if not SHA.fullmatch(manifest["commit"]):
-            fail("release manifest commit is invalid")
-        qualification = root / "qualification-evidence.json"
-        if production and (not qualification.is_file() or qualification.is_symlink()):
-            fail("release archive must contain embedded qualification-evidence.json")
-        if qualification.is_file() and not qualification.is_symlink():
-            try:
-                qualification_document = json.loads(qualification.read_text(encoding="utf-8"))
-            except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
-                fail(f"embedded qualification evidence is invalid: {error}")
-            if qualification_document.get("commit") != manifest["commit"] or qualification_document.get("tree") != manifest["tree"]:
-                fail("embedded qualification evidence does not match the release manifest")
+            qualification_document = json.loads(qualification_text)
+        except (UnicodeDecodeError, json.JSONDecodeError) as error:
+            fail(f"embedded qualification evidence is invalid: {error}")
+        if qualification_document.get("commit") != manifest["commit"] or qualification_document.get("tree") != manifest["tree"]:
+            fail("embedded qualification evidence does not match the release manifest")
     approval_document = parse_approval(Path(approval), manifest["commit"], release_sha256, now, production, fixed_environment) if approval else None
     return manifest["commit"], release_sha256, approval_document
+
+
+def invoke_release_stage(interpreter: str, stage_helper: Path, archive: Path, release_root: Path, commit: str, archive_sha256: str, environment: dict[str, str] | None) -> None:
+    result = subprocess.run(
+        [interpreter, str(stage_helper), "--archive", str(archive), "--release-root", str(release_root),
+         "--expected-commit", commit, "--archive-sha256", archive_sha256],
+        check=False, capture_output=True, text=True, env=environment,
+    )
+    if result.stdout:
+        sys.stdout.write(result.stdout)
+    if result.returncode == 0:
+        return
+    if result.stderr:
+        sys.stderr.write(result.stderr)
+    if "release_disk_space_insufficient" in f"{result.stderr}\n{result.stdout}":
+        fail("release_disk_space_insufficient")
+    detail = (result.stderr or result.stdout or "release staging failed").strip()
+    fail(detail)
 
 
 def parse_owner_request(path: Path, expected_commit: str, now: datetime, production: bool) -> dict:
@@ -939,11 +955,7 @@ def _run_deployment(archive: Path, approval: Path | None, owner_request: Path | 
         if release_root_value:
             release_root = Path(release_root_value)
             environment = {**os.environ, "AGENT_BRIDGE_RELEASE_STAGE_TEST": "1"}
-            subprocess.run([
-                sys.executable, str(stage_helper), "--archive", str(archive),
-                "--release-root", str(release_root), "--expected-commit", commit,
-                "--archive-sha256", archive_sha256,
-            ], check=True, env=environment)
+            invoke_release_stage(sys.executable, stage_helper, archive, release_root, commit, archive_sha256, environment)
             test_helper_root = os.environ.get("AGENT_BRIDGE_DEPLOY_TEST_HELPER_ROOT")
             test_rollout_config = os.environ.get("AGENT_BRIDGE_DEPLOY_TEST_ROLLOUT_CONFIG")
             if test_helper_root and test_rollout_config:
@@ -964,11 +976,7 @@ def _run_deployment(archive: Path, approval: Path | None, owner_request: Path | 
     assert config is not None
     release_root = Path(configured_value(config, "release_root"))
     rollout_helper = Path("/usr/local/sbin/rollout-agent-bridge")
-    subprocess.run([
-        "/usr/bin/python3", str(stage_helper), "--archive", str(archive),
-        "--release-root", str(release_root), "--expected-commit", commit,
-        "--archive-sha256", archive_sha256,
-    ], check=True)
+    invoke_release_stage("/usr/bin/python3", stage_helper, archive, release_root, commit, archive_sha256, None)
     refresh_privileged_helpers(release_root / commit, config)
     environment = os.environ.copy()
     environment["AGENT_BRIDGE_DEPLOYER_MODE"] = "1"

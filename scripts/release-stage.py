@@ -125,13 +125,10 @@ def publish_provenance(release_root: Path, expected_commit: str, archive_sha256:
         temporary.unlink(missing_ok=True)
 
 
-def load_manifest(root: Path) -> dict:
-    path = root / "manifest.json"
-    if not path.is_file() or path.is_symlink():
-        fail("release artifact is missing a regular manifest.json")
+def parse_manifest_text(raw: str) -> dict:
     try:
-        manifest = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as error:
+        manifest = json.loads(raw)
+    except json.JSONDecodeError as error:
         fail(f"invalid release manifest: {error}")
     if manifest.get("schema_version") != 1:
         fail("unsupported release manifest schema")
@@ -144,6 +141,17 @@ def load_manifest(root: Path) -> dict:
     if not isinstance(manifest.get("files"), list):
         fail("manifest files must be a list")
     return manifest
+
+
+def load_manifest(root: Path) -> dict:
+    path = root / "manifest.json"
+    if not path.is_file() or path.is_symlink():
+        fail("release artifact is missing a regular manifest.json")
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except OSError as error:
+        fail(f"invalid release manifest: {error}")
+    return parse_manifest_text(raw)
 
 
 def verify_manifest(root: Path, manifest: dict) -> None:
@@ -282,6 +290,188 @@ def validate_existing(release: Path, release_root: Path, expected_commit: str, a
     return f"already staged {expected_commit}"
 
 
+# Same reserve as ROLLOUT_SAFETY_RESERVE_BYTES in rollout-agent-bridge.sh.
+# Staging admission uses it in addition to the candidate size. Do not lower it.
+CANDIDATE_SAFETY_RESERVE_BYTES = 268435456
+LOGICAL_INSPECT_ROOT = Path("/agent-bridge-release-inspect")
+METADATA_CAPTURE_LIMIT = 16 * 1024 * 1024
+METADATA_FILES = ("manifest.json", "qualification-evidence.json")
+
+
+def verify_scanned_records(records: dict[str, dict], manifest: dict) -> None:
+    expected: dict[str, dict] = {}
+    for entry in manifest["files"]:
+        path = entry.get("path") if isinstance(entry, dict) else None
+        if not isinstance(path, str):
+            fail("manifest file path is invalid")
+        path = safe_relative(path)
+        if path == "manifest.json" or path in expected:
+            fail(f"manifest contains duplicate or self-referential file: {path}")
+        expected[path] = entry
+    if set(records) != set(expected):
+        fail("release contents do not match the manifest")
+    for path, entry in expected.items():
+        actual = records[path]
+        if entry.get("type") == "symlink":
+            if actual.get("type") != "symlink" or actual.get("target") != entry.get("target"):
+                fail(f"release symlink does not match manifest: {path}")
+            continue
+        if actual.get("type") != "file" or actual.get("sha256") != entry.get("sha256") or actual.get("size") != entry.get("size"):
+            fail(f"release file hash or size mismatch: {path}")
+    lock = expected.get("package-lock.json")
+    if not lock or lock.get("sha256") != manifest.get("package_lock_sha256"):
+        fail("package-lock hash binding is invalid")
+
+
+def scan_archive(stream: BinaryIO) -> tuple[dict[str, dict], bytes | None, bytes | None, int, int]:
+    records: dict[str, dict] = {}
+    seen: set[str] = set()
+    manifest_bytes: bytes | None = None
+    qualification_bytes: bytes | None = None
+    uncompressed = 0
+    file_count = 0
+    with tarfile.open(fileobj=stream, mode="r:gz") as bundle:
+        for member in bundle:
+            if member.name in (".", "./"):
+                continue
+            relative = safe_relative(member.name)
+            if not relative:
+                fail(f"unsafe archive path: {member.name}")
+            if relative in seen:
+                fail(f"duplicate archive member: {relative}")
+            seen.add(relative)
+            if member.isdir():
+                continue
+            if member.issym():
+                if relative in METADATA_FILES:
+                    fail(f"archive metadata must be a regular file: {relative}")
+                safe_target(LOGICAL_INSPECT_ROOT / relative, member.linkname, LOGICAL_INSPECT_ROOT)
+                records[relative] = {"type": "symlink", "target": member.linkname}
+                continue
+            if member.islnk():
+                linkname = member.linkname
+                while linkname.startswith("./"):
+                    linkname = linkname[2:]
+                link_relative = safe_relative(linkname)
+                prior = records.get(link_relative)
+                if link_relative not in seen or not prior or prior.get("type") != "file":
+                    fail(f"hardlink target must precede link: {relative} -> {linkname}")
+                records[relative] = {"type": "file", "sha256": prior["sha256"], "size": prior["size"]}
+                uncompressed += int(prior["size"])
+                file_count += 1
+                continue
+            if not member.isfile():
+                fail(f"unsupported archive member: {relative}")
+            source = bundle.extractfile(member)
+            if source is None:
+                fail(f"unable to read archive member: {relative}")
+            hasher = hashlib.sha256()
+            size = 0
+            captured = bytearray()
+            capture = relative in METADATA_FILES
+            while True:
+                chunk = source.read(1024 * 1024)
+                if not chunk:
+                    break
+                hasher.update(chunk)
+                size += len(chunk)
+                if capture:
+                    if size > METADATA_CAPTURE_LIMIT:
+                        fail(f"archive metadata is too large: {relative}")
+                    captured.extend(chunk)
+            entry = {"type": "file", "sha256": hasher.hexdigest(), "size": size}
+            uncompressed += size
+            file_count += 1
+            if relative == "manifest.json":
+                manifest_bytes = bytes(captured)
+            else:
+                records[relative] = entry
+                if relative == "qualification-evidence.json":
+                    qualification_bytes = bytes(captured)
+    return records, manifest_bytes, qualification_bytes, uncompressed, file_count
+
+
+def inspect_archive(archive: Path) -> dict:
+    """Hash and verify one archive without writing a release tree."""
+    with open_archive(archive) as stream:
+        archive_sha256 = digest_stream(stream)
+        stream.seek(0)
+        records, manifest_bytes, qualification_bytes, uncompressed_bytes, file_count = scan_archive(stream)
+    if manifest_bytes is None:
+        fail("release artifact is missing a regular manifest.json")
+    try:
+        manifest = parse_manifest_text(manifest_bytes.decode("utf-8"))
+    except UnicodeDecodeError as error:
+        fail(f"invalid release manifest: {error}")
+    verify_scanned_records(records, manifest)
+    qualification_text = None
+    if qualification_bytes is not None:
+        try:
+            qualification_text = qualification_bytes.decode("utf-8")
+        except UnicodeDecodeError as error:
+            fail(f"invalid qualification evidence: {error}")
+    return {
+        "manifest": manifest,
+        "archive_sha256": archive_sha256,
+        "qualification_text": qualification_text,
+        "uncompressed_bytes": uncompressed_bytes,
+        "file_count": file_count,
+    }
+
+
+def measure_archive(stream: BinaryIO) -> tuple[int, int]:
+    sizes: dict[str, int] = {}
+    uncompressed = 0
+    file_count = 0
+    with tarfile.open(fileobj=stream, mode="r:gz") as bundle:
+        for member in bundle:
+            if member.name in (".", "./"):
+                continue
+            if member.isdir() or member.issym():
+                continue
+            if member.islnk():
+                linkname = member.linkname
+                while linkname.startswith("./"):
+                    linkname = linkname[2:]
+                try:
+                    link_relative = safe_relative(linkname)
+                except RuntimeError:
+                    link_relative = ""
+                size = sizes.get(link_relative, member.size)
+            elif member.isfile():
+                size = member.size
+                try:
+                    sizes[safe_relative(member.name)] = size
+                except RuntimeError:
+                    pass
+            else:
+                continue
+            file_count += 1
+            uncompressed += max(int(size), 0)
+    return uncompressed, file_count
+
+
+def candidate_available_bytes(release_root: Path) -> int | None:
+    if not production_mode():
+        override = os.environ.get("AGENT_BRIDGE_RELEASE_STAGE_TEST_AVAILABLE_BYTES")
+        if override is None:
+            return None
+        if not override.isdigit():
+            fail("AGENT_BRIDGE_RELEASE_STAGE_TEST_AVAILABLE_BYTES must be a non-negative integer")
+        return int(override)
+    stats = os.statvfs(release_root)
+    return stats.f_bavail * stats.f_frsize
+
+
+def require_candidate_space(release_root: Path, uncompressed_bytes: int, file_count: int) -> None:
+    available = candidate_available_bytes(release_root)
+    if available is None:
+        return
+    needed = uncompressed_bytes + (4096 * file_count) + CANDIDATE_SAFETY_RESERVE_BYTES
+    if available < needed:
+        fail(f"release_disk_space_insufficient: need {needed} bytes, {available} available")
+
+
 def stage(archive: Path, release_root: Path, expected_commit: str, expected_archive_sha256: str) -> str:
     if len(expected_commit) != SHA or any(c not in "0123456789abcdef" for c in expected_commit):
         fail("expected commit must be a full lowercase 40-character SHA")
@@ -305,9 +495,13 @@ def stage(archive: Path, release_root: Path, expected_commit: str, expected_arch
             if release.exists() or release.is_symlink():
                 return validate_existing(release, release_root, expected_commit, archive_sha256)
 
+            snapshot.seek(0)
+            uncompressed_bytes, file_count = measure_archive(snapshot)
+            snapshot.seek(0)
+            require_candidate_space(release_root, uncompressed_bytes, file_count)
+
             temporary = Path(tempfile.mkdtemp(prefix=f".staging-{expected_commit}-", dir=release_root))
             try:
-                snapshot.seek(0)
                 extract_archive(snapshot, temporary)
                 manifest = load_manifest(temporary)
                 if manifest["commit"] != expected_commit:

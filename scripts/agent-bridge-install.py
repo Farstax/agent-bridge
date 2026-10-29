@@ -15,7 +15,6 @@ import stat
 import sqlite3
 import subprocess
 import sys
-import tempfile
 import time
 from pathlib import Path
 from typing import Mapping, Sequence
@@ -433,24 +432,60 @@ def validate_host(runtime_user: str, node_bin: Path) -> pwd.struct_passwd:
     return account
 
 
-def inspect_archive(archive: Path, stage_module, destination: Path) -> tuple[dict, str]:
+def release_was_created_by_stage(stage_message: str) -> bool:
+    return stage_message.startswith("staged ")
+
+
+def discard_staged_release(release_root: Path, commit: str) -> None:
+    if not SHA.fullmatch(commit):
+        fail("refusing to discard a release with an invalid commit")
+    release = release_root / commit
+    if release.is_symlink():
+        fail("refusing to discard a symlinked release path")
+    if release.exists():
+        if not release.is_dir():
+            fail("refusing to discard a release path that is not a directory")
+        for current, _directories, files in os.walk(release, topdown=True, followlinks=False):
+            current_path = Path(current)
+            if current_path.is_symlink():
+                continue
+            os.chmod(current_path, 0o755)
+            for name in files:
+                path = current_path / name
+                if not path.is_symlink():
+                    os.chmod(path, 0o644)
+        shutil.rmtree(release)
+    provenance = release_root / f".{commit}.staging-provenance.json"
+    if provenance.is_symlink():
+        fail("refusing to discard symlinked staging provenance")
+    if provenance.exists():
+        os.chmod(provenance, 0o644)
+        provenance.unlink()
+
+
+def prepare_install_release(archive: Path, release_root: Path, stage_module) -> tuple[dict, str, Path, str]:
+    """Inspect an archive once, then stage one immutable candidate."""
     if archive.is_symlink() or not archive.is_file():
         fail("release archive must be a regular non-symlink file")
-    archive_sha256 = digest(archive)
-    with archive.open("rb") as stream:
-        stage_module.extract_archive(stream, destination)
-    manifest = stage_module.load_manifest(destination)
-    stage_module.verify_manifest(destination, manifest)
-    evidence_path = destination / "qualification-evidence.json"
-    if evidence_path.is_symlink() or not evidence_path.is_file():
+    inspected = stage_module.inspect_archive(archive)
+    manifest = inspected["manifest"]
+    archive_sha256 = inspected["archive_sha256"]
+    qualification_text = inspected.get("qualification_text")
+    if not isinstance(qualification_text, str):
         fail("release archive must contain qualification-evidence.json")
     try:
-        evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as error:
+        evidence = json.loads(qualification_text)
+    except json.JSONDecodeError as error:
         fail(f"invalid qualification evidence: {error}")
     if evidence.get("commit") != manifest.get("commit") or evidence.get("tree") != manifest.get("tree"):
         fail("qualification evidence does not match the release manifest")
-    return manifest, archive_sha256
+    commit = manifest["commit"]
+    if not isinstance(commit, str) or not SHA.fullmatch(commit):
+        fail("release manifest commit is invalid")
+    if not isinstance(archive_sha256, str):
+        fail("release archive SHA-256 is invalid")
+    message = stage_module.stage(archive, release_root, commit, archive_sha256)
+    return manifest, archive_sha256, release_root / commit, message
 
 
 def service_values(
@@ -680,51 +715,49 @@ def main(argv: Sequence[str] | None = None) -> int:
     bootstrapped_databases: list[Path] = []
     activated_commit = ""
     archive_sha256 = ""
+    stage_message = ""
     try:
-        with tempfile.TemporaryDirectory(prefix="agent-bridge-install-") as directory:
-            extracted = Path(directory)
-            manifest, archive_sha256 = inspect_archive(args.release, bootstrap_stage, extracted)
-            activated_commit = manifest["commit"]
-            if not SHA.fullmatch(activated_commit):
-                fail("release manifest commit is invalid")
-            units, databases = configure_host(
-                extracted, account, node_bin, selected, os.environ, release_root,
-                state_root, backup_dir, log_dir, args.environment,
-            )
-            managed_units = [*units, CLEANUP_TIMER]
-            systemctl("daemon-reload")
-            systemctl("enable", *managed_units)
+        manifest, archive_sha256, staged_dir, stage_message = prepare_install_release(args.release, release_root, bootstrap_stage)
+        activated_commit = manifest["commit"]
+        print(stage_message, flush=True)
+        units, databases = configure_host(
+            staged_dir, account, node_bin, selected, os.environ, release_root,
+            state_root, backup_dir, log_dir, args.environment,
+        )
+        managed_units = [*units, CLEANUP_TIMER]
+        systemctl("daemon-reload")
+        systemctl("enable", *managed_units)
 
-            stage = load_module("agent_bridge_release_stage", extracted / "scripts/release-stage.py")
-            print(stage.stage(args.release, release_root, activated_commit, archive_sha256), flush=True)
-            activate = load_module("agent_bridge_release_activate", extracted / "scripts/release-activate.py")
-            activate.validate_release(release_root / activated_commit, activated_commit, strict=True)
-            install_shared_skills(release_root / activated_commit, node_bin, account, os.environ)
-            bootstrapped_databases = list(databases)
-            bootstrap_databases(release_root / activated_commit, node_bin, account, selected, databases)
-            print(activate.activate(release_root, current, activated_commit), flush=True)
+        activate = load_module("agent_bridge_release_activate", staged_dir / "scripts/release-activate.py")
+        activate.validate_release(staged_dir, activated_commit, strict=True)
+        install_shared_skills(staged_dir, node_bin, account, os.environ)
+        bootstrapped_databases = list(databases)
+        bootstrap_databases(staged_dir, node_bin, account, selected, databases)
+        print(activate.activate(release_root, current, activated_commit), flush=True)
 
-            systemctl("start", *managed_units)
-            accept(units, databases, args.acceptance_timeout, state_root)
-            result = {
-                "schema_version": 1,
-                "status": "installed",
-                "commit": activated_commit,
-                "archive_sha256": archive_sha256,
-                "runtime_user": args.runtime_user,
-                "environment": args.environment,
-                "units": units,
-                "databases": [str(path) for path in databases],
-            }
-            safe_write(state_root / "installation-result.json", json.dumps(result, sort_keys=True, indent=2) + "\n", 0o600)
-            print(f"installed {activated_commit} {archive_sha256}")
-            return 0
+        systemctl("start", *managed_units)
+        accept(units, databases, args.acceptance_timeout, state_root)
+        result = {
+            "schema_version": 1,
+            "status": "installed",
+            "commit": activated_commit,
+            "archive_sha256": archive_sha256,
+            "runtime_user": args.runtime_user,
+            "environment": args.environment,
+            "units": units,
+            "databases": [str(path) for path in databases],
+        }
+        safe_write(state_root / "installation-result.json", json.dumps(result, sort_keys=True, indent=2) + "\n", 0o600)
+        print(f"installed {activated_commit} {archive_sha256}")
+        return 0
     except Exception as error:
         if managed_units:
             systemctl("disable", "--now", *reversed(managed_units), check=False)
         remove_bootstrapped_databases(bootstrapped_databases)
         if current.is_symlink() and os.readlink(current) == activated_commit:
             current.unlink()
+        if release_was_created_by_stage(stage_message) and activated_commit and not (current.is_symlink() and os.readlink(current) == activated_commit):
+            discard_staged_release(release_root, activated_commit)
         if activated_commit:
             try:
                 safe_write(state_root / "installation-result.json", json.dumps({
