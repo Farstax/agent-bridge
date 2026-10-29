@@ -798,7 +798,11 @@ def finish_handoff_worker(identity: str, archive: Path, approval: Path | None, o
         # Archive bytes have been consumed and the immutable installed release
         # is accepted. Keep only the small durable receipt, not a redundant
         # duplicate archive on this capacity-constrained host.
-        archive.unlink(missing_ok=True)
+        try:
+            archive.unlink(missing_ok=True)
+        except OSError:
+            # Hygiene cannot reverse an already verified healthy rollout.
+            print("verified deployment archive cleanup deferred", file=sys.stderr)
         return outcome
     except Exception as error:
         # Only known resource/session refusals can retry automatically.
