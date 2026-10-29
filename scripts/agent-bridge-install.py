@@ -133,6 +133,9 @@ def digest(path: Path) -> str:
 
 
 def load_module(name: str, path: Path):
+    # Helpers are loaded from the verified immutable release. Root ignores its
+    # read-only modes, so never write __pycache__ into the release tree.
+    sys.dont_write_bytecode = True
     spec = importlib.util.spec_from_file_location(name, path)
     if spec is None or spec.loader is None:
         fail(f"unable to load helper: {path}")
@@ -721,6 +724,13 @@ def main(argv: Sequence[str] | None = None) -> int:
 
         activate = load_module("agent_bridge_release_activate", staged / "scripts/release-activate.py")
         activate.validate_release(staged, activated_commit, strict=True)
+        # Activation requires the commit-addressed host-component receipt, as
+        # guarded rollout prepares before containment. Prepare it here too,
+        # with the runtime account the rollout passes to component installers.
+        os.environ["AGENT_BRIDGE_RUNTIME_USER"] = args.runtime_user
+        # Component installers resolve node from PATH; use the admitted binary.
+        os.environ["PATH"] = f"{node_bin.parent}{os.pathsep}{os.environ.get('PATH', '/usr/bin:/bin')}"
+        print(json.dumps(activate.prepare_release_host_components(release_root, staged, activated_commit), sort_keys=True), flush=True)
         install_shared_skills(release_root / activated_commit, node_bin, account, os.environ)
         bootstrapped_databases = list(databases)
         bootstrap_databases(release_root / activated_commit, node_bin, account, selected, databases)

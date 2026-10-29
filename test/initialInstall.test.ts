@@ -29,6 +29,32 @@ ${body}
 }
 
 describe("exact-release initial installer", () => {
+  it("loads release helpers without writing bytecode into the immutable release (#1100)", () => {
+    const result = probe(`
+import shutil
+with tempfile.TemporaryDirectory() as directory:
+  helper = pathlib.Path(directory) / "scripts" / "release-activate.py"
+  helper.parent.mkdir()
+  helper.write_text("VALUE = 1\\n")
+  sys.dont_write_bytecode = False
+  loaded = module.load_module("agent_bridge_install_bytecode_probe", helper)
+  print(json.dumps({"value": loaded.VALUE, "entries": sorted(p.name for p in helper.parent.iterdir())}))
+`) as { value: number; entries: string[] };
+    expect(result.value).toBe(1);
+    expect(result.entries).toEqual(["release-activate.py"]);
+  });
+
+  it("prepares host components before the first activation (#1100)", () => {
+    const source = readFileSync(installer, "utf8");
+    const prepare = source.indexOf("activate.prepare_release_host_components(release_root, staged, activated_commit)");
+    expect(prepare).toBeGreaterThan(0);
+    expect(prepare).toBeLessThan(source.indexOf("activate.activate(release_root, current, activated_commit)"));
+    // Component installers need the rollout's runtime account and the admitted node.
+    const environment = source.slice(source.lastIndexOf("try:", prepare), prepare);
+    expect(environment).toContain('os.environ["AGENT_BRIDGE_RUNTIME_USER"] = args.runtime_user');
+    expect(environment).toContain('os.environ["PATH"] = f"{node_bin.parent}');
+  });
+
   it("stages the archive once with the bootstrap helper and writes no inspection copy (#1100)", () => {
     const result = probe(`
 import hashlib, io, tarfile
