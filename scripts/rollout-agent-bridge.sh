@@ -1452,6 +1452,20 @@ prune_rollout_retention() {
     retained=$(( ${#terminal[@]} - pruned ))
   fi
   echo "rollout retention pruned=${pruned} retained_terminal=${retained}"
+  # Historical backup cohorts without verified terminal evidence remain.
+  # Name exact ambiguous cohorts for a later bounded recovery audit.
+  local protected_count=0
+  local held_name held_path
+  for held_path in "$backup_dir"/*; do
+    [[ -d "$held_path" && ! -L "$held_path" ]] || continue
+    held_name="$(/usr/bin/basename -- "$held_path")"
+    [[ "$held_name" =~ ^[0-9]{8}T[0-9]{6}Z-[0-9a-f]{40}$ ]] || continue
+    if ! rollout_artifact_is_terminal "$log_dir/$held_name"; then
+      echo "rollout retention protected_backup=$held_name reason=terminal_evidence_missing_or_invalid"
+      protected_count=$((protected_count + 1))
+    fi
+  done
+  echo "rollout retention protected_ambiguous_count=${protected_count}"
 }
 
 # The active pointer is the only rollback baseline for this transaction.  The
