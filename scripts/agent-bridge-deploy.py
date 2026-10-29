@@ -600,6 +600,17 @@ def secure_handoff_directory(root: Path, production: bool) -> None:
         fail("deployment handoff directory must be root-owned")
 
 
+def secure_handoff_archive(path: Path, expected_sha256: str, production: bool) -> bool:
+    if path.is_symlink() or not path.is_file():
+        return False
+    metadata = path.stat()
+    if not stat.S_ISREG(metadata.st_mode) or metadata.st_mode & 0o077:
+        return False
+    if production and metadata.st_uid != 0:
+        return False
+    return digest(path) == expected_sha256
+
+
 def persist_handoff_file(path: Path, content: bytes) -> None:
     if path.exists() or path.is_symlink():
         if secure_file(path, False) != content:
@@ -698,7 +709,7 @@ def accept_handoff(archive: Path, approval: Path | None, owner_request: Path | N
             except BaseException:
                 release_copy.unlink(missing_ok=True)
                 raise
-        elif digest(release_copy) != sha256:
+        elif not secure_handoff_archive(release_copy, sha256, production):
             fail("durable deployment archive checksum mismatch")
         approved_copy = None
         owner_copy = None
@@ -751,6 +762,7 @@ def resume_pending_handoff() -> str:
         if not directory.is_dir() or directory.is_symlink():
             continue
         try:
+            secure_handoff_directory(directory, production)
             commit, sha256 = directory.name.split("-", 1)
             if handoff_identity(commit, sha256) != directory.name:
                 continue
@@ -772,7 +784,7 @@ def resume_pending_handoff() -> str:
     directory = pending[0]
     commit, sha256 = directory.name.split("-", 1)
     archive = directory / "release.tar.gz"
-    if archive.is_symlink() or not archive.is_file() or digest(archive) != sha256:
+    if not secure_handoff_archive(archive, sha256, production):
         fail("accepted handoff archive is missing or has changed")
     unit = handoff_unit(commit, sha256)
     # The root-owned receipt records authority accepted before the original
@@ -804,7 +816,7 @@ def finish_handoff_worker(identity: str, archive: Path, approval: Path | None, o
     if not directory.is_dir() or directory.is_symlink() or archive != directory / "release.tar.gz":
         fail("worker handoff input does not match durable owner receipt")
     commit, sha256 = identity.split("-", 1)
-    if not SHA.fullmatch(commit) or not SHA256.fullmatch(sha256) or digest(archive) != sha256:
+    if not SHA.fullmatch(commit) or not SHA256.fullmatch(sha256) or not secure_handoff_archive(archive, sha256, production):
         fail("worker handoff artifact identity mismatch")
     receipt = json.loads(secure_file(directory / "result.json", production))
     if receipt.get("targetCommit") != commit or receipt.get("archiveSha256") != sha256:
