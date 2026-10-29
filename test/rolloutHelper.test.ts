@@ -378,7 +378,7 @@ describe("guarded rollout helper", { timeout: 30_000 }, () => {
     execFileSync("chmod", ["-R", "u+w", obsoleteDir]);
     writeFileSync(join(obsoleteDir, "manifest.json"), JSON.stringify({ schema_version: 1, commit: obsoleteCommit, files: [] }));
     execFileSync("chmod", ["-R", "a-w", obsoleteDir]);
-    for (const commit of [obsoleteCommit, fixture.previousCommit]) {
+    for (const commit of [obsoleteCommit, fixture.previousCommit, fixture.expectedCommit]) {
       writeFileSync(join(receipts, `${commit}.json`), JSON.stringify({ commit, components: [], schema_version: 1 }));
     }
     const unrelated = join(receipts, "notes.txt");
@@ -393,6 +393,7 @@ describe("guarded rollout helper", { timeout: 30_000 }, () => {
     expect(existsSync(join(releaseRoot, fixture.previousCommit))).toBe(true);
     expect(existsSync(join(receipts, `${fixture.previousCommit}.json`))).toBe(true);
     expect(existsSync(join(releaseRoot, fixture.expectedCommit))).toBe(true);
+    expect(existsSync(join(receipts, `${fixture.expectedCommit}.json`))).toBe(true);
     expect(existsSync(unrelated)).toBe(true);
     expect(output).toContain("host component receipt retirement retired=1");
     expect(output).toContain(`immutable release retention pruned=1 retained_active=${fixture.previousCommit} retained_target=${fixture.expectedCommit}`);
