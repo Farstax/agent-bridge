@@ -758,8 +758,12 @@ def resume_pending_handoff() -> str:
             result = json.loads(secure_file(directory / "result.json", production))
             if result.get("targetCommit") != commit or result.get("archiveSha256") != sha256:
                 fail("pending handoff identity does not match receipt")
+            if result.get("status") == "failed":
+                fail("unresolved manual deployment requires a recovery decision")
             if result.get("status") in ("accepted", "activating", "deferred"):
                 pending.append(directory)
+            elif result.get("status") != "verified":
+                fail("pending handoff has an unknown terminal status")
         except (OSError, ValueError, json.JSONDecodeError):
             fail("pending handoff cannot be safely inventoried")
     if len(pending) > 1:
