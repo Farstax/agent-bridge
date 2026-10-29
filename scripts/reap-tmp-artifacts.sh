@@ -185,7 +185,7 @@ reap_detached_checkout_dependencies() {
 # Narrowly owned, reproducible cache locations only. Do not recurse through
 # arbitrary user homes or touch any cache referenced by a running process.
 sweep_owned_build_cache() {
-  local cache_root="$1" expected_parent="$2" pattern="$3" entry age now recent
+  local cache_root="$1" expected_parent="$2" entry age now recent pattern
   [[ -d "$cache_root" && ! -L "$cache_root" && "$cache_root" == "$expected_parent/"* ]] || return 0
   [[ "$(realpath -e -- "$cache_root" 2>/dev/null)" == "$cache_root" ]] || return 0
   [[ "$(stat -c %u -- "$cache_root" 2>/dev/null)" == "$(id -u)" ]] || return 0
@@ -198,17 +198,19 @@ sweep_owned_build_cache() {
     return 0
   fi
   now="$(date +%s)"
-  for entry in "$cache_root"/$pattern; do
-    [[ -e "$entry" ]] || continue
-    [[ ! -L "$entry" && -d "$entry" ]] || continue
-    [[ "$(stat -c %u -- "$entry" 2>/dev/null)" == "$(id -u)" ]] || continue
-    age="$(stat -c %Y -- "$entry" 2>/dev/null)" || continue
-    (( now - age > MAX_AGE_MIN * 60 )) || continue
-    recent="$(find "$entry" -xdev -mmin "-$MAX_AGE_MIN" -print -quit 2>/dev/null)" || continue
-    [[ -z "$recent" ]] || continue
-    has_ownership_signal "$entry" && continue
-    checkout_has_active_process "$entry" && continue
-    remove_entry "$entry" "verified inactive reproducible cache"
+  shift 2
+  for pattern in "$@"; do
+    for entry in "$cache_root"/$pattern; do
+      [[ -e "$entry" ]] || continue
+      [[ ! -L "$entry" && -d "$entry" ]] || continue
+      [[ "$(stat -c %u -- "$entry" 2>/dev/null)" == "$(id -u)" ]] || continue
+      age="$(stat -c %Y -- "$entry" 2>/dev/null)" || continue
+      (( now - age > MAX_AGE_MIN * 60 )) || continue
+      recent="$(find "$entry" -xdev -mmin "-$MAX_AGE_MIN" -print -quit 2>/dev/null)" || continue
+      [[ -z "$recent" ]] || continue
+      has_ownership_signal "$entry" && continue
+      remove_entry "$entry" "verified inactive reproducible cache"
+    done
   done
 }
 
@@ -329,10 +331,8 @@ prune_acp_telemetry
 cache_home="${HOME:-}"
 if [[ "$cache_home" == /* && -d "$cache_home" && ! -L "$cache_home" ]]; then
   sweep_owned_build_cache "$cache_home/.npm/_cacache" "$cache_home/.npm" "tmp"
-  sweep_owned_build_cache "$cache_home/.cache/ms-playwright" "$cache_home/.cache" "chromium-[0-9]*"
-  sweep_owned_build_cache "$cache_home/.cache/ms-playwright" "$cache_home/.cache" "chromium_headless_shell-[0-9]*"
-  sweep_owned_build_cache "$cache_home/.cache/ms-playwright" "$cache_home/.cache" "firefox-[0-9]*"
-  sweep_owned_build_cache "$cache_home/.cache/ms-playwright" "$cache_home/.cache" "webkit-[0-9]*"
+  sweep_owned_build_cache "$cache_home/.cache/ms-playwright" "$cache_home/.cache" \
+    "chromium-[0-9]*" "chromium_headless_shell-[0-9]*" "firefox-[0-9]*" "webkit-[0-9]*"
 fi
 
 IFS=',' read -r -a REPOS <<< "${REAP_WORKTREE_REPOS:-${HOME:-}/agent-bridge}"
