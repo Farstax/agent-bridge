@@ -16,6 +16,7 @@ const db = openProductionDb(dbPath, {
   databaseRole: "interactive",
 });
 try {
+  db.pruneExpiredSessions();
   await cleanupStaleOutwardAcpAttachments(workspaceRoot, new OutwardAcpSessionRepository(db.raw).listWorkspaces());
 } finally {
   db.close();

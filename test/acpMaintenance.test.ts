@@ -34,7 +34,7 @@ describe("ACP maintenance owner", () => {
       expect(result.stderr).toBe("");
       expect(result.status).toBe(0);
       expect(existsSync(staging)).toBe(false);
-      const check = openDb(database, { databaseRole: "interactive", deferSessionExpiry: true });
+      const check = openDb(database, { databaseRole: "interactive" });
       try {
         expect(check.raw.prepare("SELECT codex_session_id FROM bridge_state").get()).toEqual({ codex_session_id: null });
       } finally { check.close(); }

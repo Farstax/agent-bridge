@@ -32,7 +32,6 @@ const db = openProductionDb(dbPath, {
   requireInstallationIdentity:
     process.env.NODE_ENV === "production" && Boolean(process.env.AGENT_BRIDGE_INSTALLATION_ID?.trim()),
   databaseRole: "interactive",
-  deferSessionExpiry: true,
 });
 
 // Reconcile only when process ownership and provider containment are proven.

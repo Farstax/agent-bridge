@@ -13,6 +13,9 @@ describe("session expiry at use", () => {
       db.raw.prepare("UPDATE bridge_state SET codex_session_created_at = datetime('now', '-8 days')").run();
       db.raw.prepare("UPDATE acp_session_bindings SET updated_at = datetime('now', '-8 days')").run();
       expect(db.getSession(identity, "codex")).toBeNull();
+      expect(db.raw.prepare("SELECT codex_session_id FROM bridge_state").get()).toEqual({ codex_session_id: "native-old" });
+      db.pruneExpiredSessions();
+      expect(db.raw.prepare("SELECT codex_session_id FROM bridge_state").get()).toEqual({ codex_session_id: null });
       expect(bindings.get(identity, "codex")).toBeNull();
     } finally { db.close(); }
   });
