@@ -36,8 +36,8 @@ and must never forward a client-chosen root. Archive is metadata only; an archiv
 still be loaded and prompted, and `update` with `archived: false` restores it.
 
 Command entries reuse `src/commands.ts` and existing setting, provider switch,
-cancellation, reset and side-question owners. A Bridge command typed into
-`session/prompt` is rejected before a provider Run starts. `/queue_mode` is
+cancellation, reset and side-question owners. Literal `session/prompt` text is
+forwarded to the provider; Bridge commands require the explicit command extension. `/queue_mode` is
 listed as unavailable because outward ACP rejects concurrent prompts instead
 of queueing them. `/sensors` and `/autonomy` fail closed because this local ACP
 surface has no authorisation context for those controls. `/stop` uses the

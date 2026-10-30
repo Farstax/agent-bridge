@@ -552,7 +552,7 @@ function configuredProviderChain(env: NodeJS.ProcessEnv): readonly BotKind[] {
   return chain;
 }
 
-/** Settings view for outward Desk commands (/models reads provider bot config). */
+/** Settings view for outward ACP commands (/models reads provider bot config). */
 export function outwardCommandConfig(dbPath: string, env: NodeJS.ProcessEnv = process.env): BridgeConfig {
   const head = configuredProviderChain(env)[0];
   return {

@@ -79,8 +79,6 @@ describe("Claude ACP provider", () => {
       },
     });
     expect((safe?.meta as any).claudeCode.options.tools).toBeUndefined();
-    const review = claudeAcpPolicy.sessionSettings?.(request({ executionMode: "safe" }), { BRIDGE_ACP_REVIEW_MODE: "1" });
-    expect((review?.meta as any).claudeCode.options.tools).toEqual(["Read", "Glob", "Grep"]);
     expect(trusted).toMatchObject({
       modeId: "default",
       meta: {
@@ -92,8 +90,8 @@ describe("Claude ACP provider", () => {
     expect((claudeAcpPolicy.sessionSettings?.(request({ toolMode: "none" }), {})?.meta as any).claudeCode.options.tools).toEqual([]);
   });
 
-  it("disables Bridge-managed MCP tools only for bounded review Runs", () => {
-    const home = mkdtempSync(join(tmpdir(), "claude-review-mcp-"));
+  it("preserves Bridge-managed MCP tools for ordinary safe and trusted Runs", () => {
+    const home = mkdtempSync(join(tmpdir(), "claude-managed-mcp-"));
     writeFileSync(join(home, ".claude.json"), JSON.stringify({
       mcpServers: {
         managed: {
@@ -103,12 +101,14 @@ describe("Claude ACP provider", () => {
       },
     }));
 
-    const ordinary = claudeAcpPolicy.sessionSettings?.(request(), { HOME: home });
-    const review = claudeAcpPolicy.sessionSettings?.(request(), { HOME: home, BRIDGE_ACP_REVIEW_MODE: "1" });
-    expect((ordinary?.meta as any).claudeCode.options.mcpServers).toHaveProperty("managed");
-    expect((ordinary?.meta as any).claudeCode.options.tools).toBeUndefined();
-    expect((review?.meta as any).claudeCode.options.mcpServers).toEqual({});
-    expect((review?.meta as any).claudeCode.options.tools).toEqual(["Read", "Glob", "Grep"]);
+    for (const executionMode of ["safe", "trusted"] as const) {
+      const ordinary = claudeAcpPolicy.sessionSettings?.(request({ executionMode }), { HOME: home });
+      expect((ordinary?.meta as any).claudeCode.options.mcpServers).toHaveProperty("managed");
+      expect((ordinary?.meta as any).claudeCode.options.tools).toBeUndefined();
+    }
+    const toolFree = claudeAcpPolicy.sessionSettings?.(request({ toolMode: "none" }), { HOME: home });
+    expect((toolFree?.meta as any).claudeCode.options.mcpServers).toEqual({});
+    expect((toolFree?.meta as any).claudeCode.options.tools).toEqual([]);
   });
 
   it("expresses model and effort as semantic ACP intents without provider-id translation", () => {

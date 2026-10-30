@@ -8,7 +8,7 @@ import type {
   OutwardAcpSessionRecord,
 } from "../repositories/outwardAcpSessionRepository.js";
 import type { OutwardAcpPromptExecutor, OutwardWorkstreamControl } from "./execution.js";
-import { isDeskBridgeCommand, type DeskCommands } from "./commands.js";
+import { type AcpCommands } from "./commands.js";
 import { stageOutwardAcpAttachments } from "./attachments.js";
 import {
   bridgeAgentCapabilities,
@@ -34,7 +34,7 @@ export interface OutwardAcpAgentOptions {
   sessions?: OutwardAcpSessionStore;
   promptExecutor?: OutwardAcpPromptExecutor;
   workstreams?: OutwardWorkstreamControl;
-  commands?: DeskCommands;
+  commands?: AcpCommands;
   /** Trusted process-local root; client-supplied cwd values are confined beneath it. */
   workspaceRoot?: string;
 }
@@ -285,13 +285,6 @@ export function createOutwardAcpAgent(options: OutwardAcpAgentOptions = {}): Age
     }
     const authorizedCwd = authorizeWorkspacePath(session.cwd, workspaceRoot);
     const prompt = promptText(ctx.params.prompt);
-    // Bridge commands run only through their owners, never as model text.
-    if (isDeskBridgeCommand(prompt)) {
-      throw acp.RequestError.invalidParams(
-        { field: "prompt" },
-        `Bridge commands are not prompts; run them with ${WORKSTREAM_METHODS.runCommand}`,
-      );
-    }
     try {
       return await stageOutwardAcpAttachments(authorizedCwd, ctx.params.prompt, (attachments, runId) => promptExecutor.execute({
         session,
