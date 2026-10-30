@@ -6,7 +6,7 @@ import * as acp from "@agentclientprotocol/sdk";
 import { openDb, type BridgeDb } from "../src/db.js";
 import { type as eventType } from "../src/events/types.js";
 import { getHandoffReason } from "../src/handoffState.js";
-import { requestRunContinuation, settleRunContinuation } from "../src/runContinuation.js";
+import { listRunContinuations, requestRunContinuation, settleRunContinuation } from "../src/runContinuation.js";
 import { OutwardAcpSessionRepository } from "../src/repositories/outwardAcpSessionRepository.js";
 import { createOutwardAcpAgent, WORKSTREAM_METHODS, type OutwardAcpAgentOptions, type OutwardAcpSessionStore } from "../src/acpServer/app.js";
 import { BridgeOutwardAcpPromptExecutor, OUTWARD_ACP_SURFACE } from "../src/acpServer/execution.js";
