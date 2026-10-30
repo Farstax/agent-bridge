@@ -396,10 +396,10 @@ export function claimDueRunContinuation(
       db.raw.prepare("UPDATE settings SET value = ? WHERE key = ?").run(JSON.stringify(expired), key(id));
       return null;
     }
-    const cancel = (error: string): null => {
+    const cancel = (error: string, terminalState: "cancelled" | "failed" = "cancelled"): null => {
       const cancelled: RunContinuation = {
         ...current,
-        state: "cancelled",
+        state: terminalState,
         completedAt: new Date(nowMs).toISOString(),
         error,
       };
@@ -435,7 +435,7 @@ export function claimDueRunContinuation(
           // A completed response is the only safe evidence of success. A
           // non-capacity failed successor must not be replayed after restart.
           if (successor.status === "cancelled") return cancel("outward ACP successor was cancelled");
-          if (successor.status === "failed") return cancel("outward ACP successor failed before durable retry was confirmed; inspect before re-execution");
+          if (successor.status === "failed") return cancel("outward ACP successor failed before durable retry was confirmed; inspect before re-execution", "failed");
         }
         if (current.retainedPendingMessageIds?.length && !db.hasAnyPendingMessageId(current.surfaceIdentity, current.chatKey, current.retainedPendingMessageIds)) {
           const failure = capacitySuccessorFailure(db, current);
