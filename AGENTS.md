@@ -86,6 +86,8 @@ Do not repeat the issue, commit history, review prose, and CI narrative in multi
 
 `review it` is defined only by `release-readiness-review`. `ship it` delegates to it; do not maintain a second review checklist here.
 
+Independent review uses that existing Skill and its phase-based process. Do not introduce a dedicated review executable, broker, or service without an explicit architectural decision.
+
 Run an early adversarial review before expensive final qualification where practical. Final review independence is **phase-based**, not identity-based: the implementing agent may end implementation and perform a fresh, non-mutating exact-head review itself after required checks pass. A separate reviewer or session is preferred but not required. The reviewer starts from the issue/acceptance contract and exact candidate, independently restates intended outcome/authority, and tries to disprove readiness across the real journey, sibling invariant, production-shaped boundary, relevant transitions, and final consequential authority.
 
 A review finding that requires mutation ends that review of the pinned head. Repair in implementation mode, run focused evidence, then start a fresh review of the new head.
