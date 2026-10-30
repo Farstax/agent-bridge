@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { readFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { resolve } from "node:path";
+import { getLockedAcpRegistryEntry } from "../src/providers/acpRegistry.js";
 
 const repoRoot = resolve(import.meta.dirname, "..");
 
@@ -18,9 +21,9 @@ describe("Agy ACP managed host component", () => {
 
   it("installs from the release-locked ACP registry entry rather than a duplicated version constant", () => {
     const installer = readFileSync(resolve(repoRoot, "scripts/install-agy-acp.sh"), "utf8");
-    expect(installer).toContain("dist/providers/acpRegistry.js");
-    expect(installer).toContain("getLockedAcpRegistryEntry");
-    expect(installer).toContain("binary.sha256");
+    expect(installer).toContain("dist/providers/acpRegistry.locked.json");
+    expect(installer).toContain('get("agy")');
+    expect(installer).toContain('binary.get("sha256")');
     expect(installer).toContain("host_component_status=");
     expect(installer).toContain("localharness_external");
     expect(installer).toContain("harnessSha256");
@@ -30,6 +33,43 @@ describe("Agy ACP managed host component", () => {
     expect(installer).toContain("archiveSha256");
     expect(installer).toContain("AGENT_BRIDGE_AGY_HARNESS_LINK");
     expect(installer).not.toMatch(/antigravity-acp@\d/);
+  });
+
+  it("reads release-locked metadata without executing a runtime-user Node binary as root", () => {
+    const installer = readFileSync(resolve(repoRoot, "scripts/install-agy-acp.sh"), "utf8");
+    expect(installer).toContain("acpRegistry.locked.json");
+    expect(installer).toContain("json.load");
+    expect(installer).not.toContain("node --input-type=module");
+  });
+
+  it("exports immutable ACP registry data for root installers", () => {
+    const outputDir = mkdtempSync(resolve(tmpdir(), "agent-bridge-registry-export-"));
+    const output = resolve(outputDir, "registry.json");
+    try {
+      execFileSync(resolve(repoRoot, "node_modules/.bin/tsx"), [
+        resolve(repoRoot, "scripts/exportAcpRegistry.ts"), "--output", output,
+      ]);
+      const document = JSON.parse(readFileSync(output, "utf8")) as {
+        schema_version: number;
+        providers: Record<string, unknown>;
+      };
+      expect(document.schema_version).toBe(1);
+      expect(document.providers.agy).toEqual(getLockedAcpRegistryEntry("agy"));
+      expect(document.providers.cursor).toEqual(getLockedAcpRegistryEntry("cursor"));
+    } finally {
+      rmSync(outputDir, { recursive: true, force: true });
+    }
+  });
+
+  it("exports the locked metadata before pruning and verifies it in the release archive", () => {
+    const workflow = readFileSync(resolve(repoRoot, ".github/workflows/release-artifact.yml"), "utf8");
+    const exportAt = workflow.indexOf("scripts/exportAcpRegistry.ts --output dist/providers/acpRegistry.locked.json");
+    const pruneAt = workflow.indexOf("npm prune --omit=dev");
+    const manifestAt = workflow.indexOf("node scripts/releaseManifest.mjs");
+    expect(exportAt).toBeGreaterThan(-1);
+    expect(exportAt).toBeLessThan(pruneAt);
+    expect(exportAt).toBeLessThan(manifestAt);
+    expect(workflow).toContain('test -f "$verify_root/dist/providers/acpRegistry.locked.json"');
   });
 
   it("streams large managed executables instead of buffering them in activation memory", () => {

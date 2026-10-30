@@ -29,6 +29,127 @@ ${body}
 }
 
 describe("exact-release initial installer", () => {
+  it("loads release helpers without writing bytecode into the immutable release (#1100)", () => {
+    const result = probe(`
+import shutil
+with tempfile.TemporaryDirectory() as directory:
+  helper = pathlib.Path(directory) / "scripts" / "release-activate.py"
+  helper.parent.mkdir()
+  helper.write_text("VALUE = 1\\n")
+  sys.dont_write_bytecode = False
+  loaded = module.load_module("agent_bridge_install_bytecode_probe", helper)
+  print(json.dumps({"value": loaded.VALUE, "entries": sorted(p.name for p in helper.parent.iterdir())}))
+`) as { value: number; entries: string[] };
+    expect(result.value).toBe(1);
+    expect(result.entries).toEqual(["release-activate.py"]);
+  });
+
+  it("prepares host components before the first activation (#1100)", () => {
+    const source = readFileSync(installer, "utf8");
+    const prepare = source.indexOf("activate.prepare_release_host_components(release_root, staged, activated_commit)");
+    expect(prepare).toBeGreaterThan(0);
+    expect(prepare).toBeLessThan(source.indexOf("activate.activate(release_root, current, activated_commit)"));
+    // Component installers need the rollout's runtime account and the admitted node.
+    const environment = source.slice(source.lastIndexOf("activate.validate_release(staged", prepare), prepare);
+    expect(source).toContain('validate_runtime_temp_root(Path("/run"), account)');
+    // Only the admitted node is exposed to root, never its (user-owned) directory.
+    expect(source).not.toContain("node_bin.parent");
+    expect(source).toContain('copy_node_binary(node_bin, node_dir / "node")');
+    expect(source).toContain("component_installer_environment(node_dir, args.runtime_user, os.environ)");
+    expect(environment).toContain("with component_environment_context(component_environment):");
+  });
+
+  it("uses only a fixed system PATH after the private Node shim", () => {
+    const result = probe(`
+import pathlib, shutil, tempfile
+with tempfile.TemporaryDirectory() as directory:
+  root = pathlib.Path(directory)
+  node_dir = root / "node-tools"; node_dir.mkdir()
+  malicious = root / "caller-tools"; malicious.mkdir()
+  (malicious / "curl").write_text("#!/bin/sh\\nexit 99\\n")
+  (malicious / "curl").chmod(0o755)
+  os.environ["PATH"] = str(malicious)
+  path = module.component_installer_path(node_dir)
+  curl = shutil.which("curl", path=path)
+  print(json.dumps({"path": path, "curl": curl, "malicious": str(malicious / "curl")}))
+`) as { path: string; curl: string; malicious: string };
+    expect(result.curl).not.toBe(result.malicious);
+    expect(result.path).not.toContain("caller-tools");
+  });
+
+  it("validates the runtime-accessible root temporary directory and snapshots Node", () => {
+    const result = probe(`
+import pathlib, pwd, tempfile
+account = pwd.getpwuid(os.getuid())
+safe = module.validate_runtime_temp_root(pathlib.Path("/run"), account)
+try:
+  module.validate_runtime_temp_root(pathlib.Path("/tmp"), account)
+except RuntimeError as error:
+  unsafe = str(error)
+else:
+  unsafe = "accepted"
+with tempfile.TemporaryDirectory() as directory:
+  source = pathlib.Path(directory) / "node"
+  source.write_bytes(b"validated-node-image")
+  source.chmod(0o755)
+  copy_dir = pathlib.Path(directory) / "copy"
+  copy_dir.mkdir()
+  snapshot = module.copy_node_binary(source, copy_dir / "node")
+  source.write_bytes(b"replaced-after-validation")
+  copied = snapshot.read_bytes().decode()
+print(json.dumps({"safe": str(safe), "unsafe": unsafe, "is_symlink": snapshot.is_symlink(), "copied": copied}))
+`) as { safe: string; unsafe: string; is_symlink: boolean; copied: string };
+    expect(result.safe).toBe("/run");
+    expect(result.unsafe).toContain("unsafe runtime temporary directory");
+    expect(result.is_symlink).toBe(false);
+    expect(result.copied).toBe("validated-node-image");
+  });
+
+  it("does not execute the mutable Node pathname during host validation", () => {
+    const result = probe(`
+import pathlib, pwd, types
+account = next(user for user in pwd.getpwall() if user.pw_uid > 0 and module.USERNAME.fullmatch(user.pw_name))
+with tempfile.TemporaryDirectory() as directory:
+  node = pathlib.Path(directory) / "node"
+  node.write_text("#!/bin/sh\\nexit 0\\n")
+  node.chmod(0o755)
+  calls = []
+  module.subprocess.run = lambda command, **kwargs: (calls.append(command), types.SimpleNamespace(returncode=0, stdout=""))[1]
+  module.validate_host(account.pw_name, node)
+  print(json.dumps({"calls": calls, "node": str(node)}))
+`) as { calls: string[][]; node: string };
+    expect(result.calls.flat().join(" ")).not.toContain(result.node);
+  });
+
+  it("blocks caller shell and Node loader environment from component installers", () => {
+    const result = probe(`
+import pathlib, subprocess, tempfile
+with tempfile.TemporaryDirectory() as directory:
+  root = pathlib.Path(directory)
+  node_dir = root / "node-tools"; node_dir.mkdir()
+  os.symlink(${JSON.stringify(process.execPath)}, node_dir / "node")
+  marker = root / "executed"
+  bash_env = root / "bash-env"
+  bash_env.write_text("touch " + str(marker) + "\\n")
+  preload = root / "preload.cjs"
+  preload.write_text("require('fs').writeFileSync(" + json.dumps(str(marker)) + ", 'node')")
+  source = {"PATH": "/caller/tools", "BASH_ENV": str(bash_env), "NODE_OPTIONS": "--require=" + str(preload),
+            "LD_PRELOAD": str(root / "library.so"), "AGENT_BRIDGE_RUNTIME_USER": "agentbridge"}
+  environment = module.component_installer_environment(node_dir, "agentbridge", source)
+  run = subprocess.run(["/bin/bash", "-c", "node -e ''"], env=environment, check=False)
+  print(json.dumps({"status": run.returncode, "marker": marker.exists(), "path": environment["PATH"],
+                    "user": environment["AGENT_BRIDGE_RUNTIME_USER"], "keys": sorted(environment)}))
+`) as { status: number; marker: boolean; path: string; user: string; keys: string[] };
+    expect(result.status).toBe(0);
+    expect(result.marker).toBe(false);
+    expect(result.path).toContain("/usr/bin");
+    expect(result.path).not.toContain("/caller/tools");
+    expect(result.user).toBe("agentbridge");
+    expect(result.keys).not.toContain("BASH_ENV");
+    expect(result.keys).not.toContain("NODE_OPTIONS");
+    expect(result.keys).not.toContain("LD_PRELOAD");
+  });
+
   it("stages the archive once with the bootstrap helper and writes no inspection copy (#1100)", () => {
     const result = probe(`
 import hashlib, io, tarfile
