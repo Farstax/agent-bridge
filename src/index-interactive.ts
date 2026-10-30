@@ -68,7 +68,7 @@ import {
   buildTelegramRunContinuationTurn,
 } from "./runContinuation.js";
 import { fetchCodexCapacityResetAt } from "./codexUsage.js";
-import { capacityRetryAfterSeconds, combineCapacityRetryOpportunities } from "./providers/capacityRetryTiming.js";
+import { createCapacityFallbackRequestedHook } from "./providers/capacityFallbackHook.js";
 import { recoveryCopySurfaceIdentity } from "./db/recoveryCopyIsolation.js";
 
 loadInteractiveEnvFile();
@@ -265,28 +265,11 @@ const engines = Object.fromEntries(
                 return { text: `Unable to load live ACP settings for ${kind}: ${userText}` };
               }
             },
-            onProviderFallbackRequested: async (chatKey, reason, context) => {
-              fallbackRequests.set(chatKey, reason);
-              if (reason === "capacity" && context) {
-                const resetAt = kind === "codex" && context.retryAfterSeconds === undefined
-                  ? await fetchCodexCapacityResetAt().catch(() => null)
-                  : null;
-                const retryAfterSeconds = resetAt
-                  ? capacityRetryAfterSeconds({ data: { capacityResetsAt: resetAt } }) ?? undefined
-                  : context.retryAfterSeconds;
-                const previous = capacityFallbackAttempts.get(chatKey);
-                const combined = combineCapacityRetryOpportunities(previous, {
-                  ...(retryAfterSeconds !== undefined ? { retryAfterSeconds } : {}),
-                  ...(context.hasUnknownCapacityTiming || retryAfterSeconds === undefined ? { hasUnknownCapacityTiming: true } : {}),
-                });
-                capacityFallbackAttempts.set(chatKey, {
-                  ...context,
-                  provider: kind,
-                  retryAfterSeconds: combined.retryAfterSeconds,
-                  ...(combined.hasUnknownCapacityTiming ? { hasUnknownCapacityTiming: true as const } : {}),
-                });
-              }
-            },
+            onProviderFallbackRequested: createCapacityFallbackRequestedHook(kind, {
+              fallbackRequests,
+              capacityFallbackAttempts,
+              fetchCodexCapacityResetAt,
+            }),
           },
         },
         db,

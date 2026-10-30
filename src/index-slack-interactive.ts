@@ -25,6 +25,7 @@ import { getAvailableCliKinds } from "./interactiveCliAuth.js";
 import {
   dispatchClaimedInteractiveWithFallback,
   dispatchInteractiveTurnWithFallback,
+  resumeCapacityHeldQueue,
   type CliKind,
 } from "./interactiveBot.js";
 import type { BridgeConfig, BotKind } from "./types.js";
@@ -32,6 +33,8 @@ import { parseCliChain, interactiveChainKinds } from "./providers/selection.js";
 import { deriveConversationOwnerKey } from "./conversationOwnerKey.js";
 import { ScheduledRoutineRunner, buildScheduledInteractiveTurn } from "./scheduledRoutines.js";
 import { RunContinuationRunner, buildTelegramRunContinuationTurn } from "./runContinuation.js";
+import { fetchCodexCapacityResetAt } from "./codexUsage.js";
+import { createCapacityFallbackRequestedHook } from "./providers/capacityFallbackHook.js";
 import { SlackClient } from "./slack.js";
 import { loadSlackConfig, SlackConfigError } from "./slackConfig.js";
 import {
@@ -169,6 +172,7 @@ const client = new SlackClient(web as unknown as import("./slack.js").SlackPosti
 const cliChain = parseCliChain(process.env.INTERACTIVE_CLI_CHAIN, { allowed: interactiveChainKinds(), fallback: ["codex", "claude", "antigravity", "grok", "cursor"] });
 const fallbackChain = new ProviderFallbackChain(cliChain, db, surfaceIdentity, (cli) => getAvailableCliKinds().has(cli as CliKind));
 const fallbackRequests = new Map<string, import("./engine.js").ProviderFallbackReason>();
+const capacityFallbackAttempts = new Map<string, { runId: string; chatId: number | string; chatType: string; threadId?: number | string; provider?: CliKind; retryAfterSeconds?: number; hasUnknownCapacityTiming?: true }>();
 
 const CLI_KINDS: CliKind[] = interactiveChainKinds();
 const engines = Object.fromEntries(CLI_KINDS.map((kind) => [kind, new BridgeEngine({
@@ -183,7 +187,13 @@ const engines = Object.fromEntries(CLI_KINDS.map((kind) => [kind, new BridgeEngi
   fullConfig: config,
   maxConcurrentExecutions: executionCapacity.maxConcurrentExecutions,
   executionCapacityDb: executionCapacityDb ?? undefined,
-  hooks: { onProviderFallbackRequested: async (chatKey, reason) => { fallbackRequests.set(chatKey, reason); } },
+  hooks: {
+    onProviderFallbackRequested: createCapacityFallbackRequestedHook(kind, {
+      fallbackRequests,
+      capacityFallbackAttempts,
+      fetchCodexCapacityResetAt,
+    }),
+  },
 }, db, client)])) as Record<CliKind, BridgeEngine>;
 
 /** Reply coordinates for a Run/queue row whose chat key is `<channel>[:<thread-ts>]`. */
@@ -196,7 +206,7 @@ async function notifyNative(channel: string, thread: string | undefined, text: s
     .catch((error) => console.warn(`${TAG} notice delivery failed`, safeSlackErrorCode(error)));
 }
 const dispatchDeps = (channel: string, thread: string | undefined, chatKey: string) => ({
-  surfaceIdentity, engines, fallbackChain, fallbackRequests, db,
+  surfaceIdentity, engines, fallbackChain, fallbackRequests, capacityFallbackAttempts, db,
   notify: async (msg: string) => { await notifyNative(channel, thread, msg); },
 });
 
@@ -257,11 +267,19 @@ if (scheduledOwnerKey) {
   });
 }
 runContinuationRunner = new RunContinuationRunner(db, surfaceIdentity, async (continuation) => {
+  if (continuation.capacityWait) {
+    return resumeCapacityHeldQueue(continuation, { engines, fallbackChain, db });
+  }
   const provider = continuation.provider as CliKind;
   if (!engines[provider]) throw new Error(`continuation provider is unavailable: ${provider}`);
   fallbackChain.setActiveCli(continuation.chatKey, provider);
   const turn = buildTelegramRunContinuationTurn(continuation, scheduledActorId);
   return dispatchInteractiveTurnWithFallback(turn, dispatchDeps(String(turn.delivery.chatId), turn.threadId, continuation.chatKey), new Set([provider]));
+}, undefined, {
+  onCapacityExpired: async (continuation) => {
+    const { channel, thread } = nativeCoordinates(continuation.chatKey);
+    await notifyNative(channel, thread, "I could not retry your task before the provider recovery window expired. Please send it again when you are ready.");
+  },
 });
 
 // ── Socket Mode ──────────────────────────────────────────────────────────────

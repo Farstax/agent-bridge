@@ -523,10 +523,22 @@ const NO_DELIVERY_PLATFORM: MessagingPlatform = {
  * (dedicated single-provider systemd unit) yields a single-entry chain --
  * the router still works, it just never has anywhere to fall back to.
  */
+/**
+ * "custom-acp" has no fixed CLI binary: interactive chat surfaces load its
+ * command/model per conversation via slash commands
+ * (interactiveAcpConfig.ts). Outward ACP builds one BridgeEngine per
+ * provider for the whole process from a static loadBotsConfig() lookup,
+ * which has no "custom-acp" entry and no per-session config channel — so it
+ * must never be selected here. Fail closed before admission rather than
+ * construct a BridgeEngine with an undefined bot config (#1114 gap item 7).
+ */
 function configuredProviderChain(env: NodeJS.ProcessEnv): readonly BotKind[] {
-  const allowed = interactiveChainKinds() as BotKind[];
+  const allowed = (interactiveChainKinds() as RouteableBotKind[]).filter((kind): kind is BotKind => kind !== "custom-acp");
   const locked = env.BRIDGE_PROVIDER_LOCK?.trim();
   if (locked) {
+    if (locked === "custom-acp") {
+      throw new Error("outward ACP does not support a custom-acp provider lock: no per-session ACP configuration exists outside interactive chat chains");
+    }
     if (!allowed.includes(locked as BotKind)) {
       throw new Error(`unsupported outward ACP provider lock: ${locked}`);
     }
