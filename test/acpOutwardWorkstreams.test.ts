@@ -6,6 +6,7 @@ import * as acp from "@agentclientprotocol/sdk";
 import { openDb, type BridgeDb } from "../src/db.js";
 import { type as eventType } from "../src/events/types.js";
 import { getHandoffReason } from "../src/handoffState.js";
+import { requestRunContinuation, settleRunContinuation } from "../src/runContinuation.js";
 import { OutwardAcpSessionRepository } from "../src/repositories/outwardAcpSessionRepository.js";
 import { createOutwardAcpAgent, WORKSTREAM_METHODS, type OutwardAcpAgentOptions, type OutwardAcpSessionStore } from "../src/acpServer/app.js";
 import { BridgeOutwardAcpPromptExecutor, OUTWARD_ACP_SURFACE } from "../src/acpServer/execution.js";
@@ -310,6 +311,28 @@ describe("outward ACP Workstreams (#1101)", () => {
       sessionId: session.sessionId, cwd: f.root,
     });
     expect(cancelled.status.state).toBe("cancelled");
+  });
+
+  it("shows an expired deferred Workstream distinctly from an ordinary failed Run", () => {
+    const f = fixture();
+    const session = f.repo.create({ sessionId: "expired-1", conversationId: "acp:expired-1", cwd: f.root });
+    const identity = { surfaceIdentity: OUTWARD_ACP_SURFACE, chatKey: session.conversationId };
+    f.db.insertRun("expired-origin", identity, "codex");
+    f.db.updateRunFailed("expired-origin", "MODEL_CAPACITY_EXHAUSTED");
+    const wait = requestRunContinuation(f.db, {
+      originRunId: "expired-origin", surfaceIdentity: OUTWARD_ACP_SURFACE,
+      chatKey: session.conversationId, provider: "codex",
+      reason: "provider capacity", afterSeconds: 5, capacityWait: true,
+      outward: { sessionId: session.sessionId, prompt: "resume later", attachmentCount: 0 },
+    });
+    const status = new BridgeOutwardAcpPromptExecutor({
+      db: f.db, providerChain: ["codex"], createEngine: () => {
+        throw new Error("status must not invoke a provider");
+      },
+    });
+    expect(status.status(session).state).toBe("waiting");
+    settleRunContinuation(f.db, wait.id, "expired");
+    expect(status.status(session).state).toBe("expired");
   });
 
   it("reports an available next provider before the first turn, or null when none are available", () => {
