@@ -313,6 +313,51 @@ describe("outward ACP Workstreams (#1101)", () => {
     expect(cancelled.status.state).toBe("cancelled");
   });
 
+  it("waits for mixed capacity/auth exhaustion, but not for authentication alone", async () => {
+    for (const [chain, shouldWait] of [
+      [["codex", "claude"], true],
+      [["claude"], false],
+    ] as const) {
+      const f = fixture();
+      const session = f.repo.create({
+        sessionId: shouldWait ? "mixed-capacity" : "auth-only",
+        conversationId: shouldWait ? "acp:mixed-capacity" : "acp:auth-only",
+        cwd: f.root,
+      });
+      const attempted: BotKind[] = [];
+      const execution = new BridgeOutwardAcpPromptExecutor({
+        db: f.db, providerChain: chain, enableDeferredCapacity: true,
+        createEngine: (_session, provider) => ({
+          executeSurfaceNeutralTurn: async (input) => {
+            attempted.push(provider);
+            input.collect(eventType.runStarted({
+              runId: input.runId, bot: provider, chatId: String(input.chatId),
+              chatKey: input.chatKey, command: provider, cwd: f.root, model: null,
+            }));
+            throw new Error(provider === "codex" ? "MODEL_CAPACITY_EXHAUSTED" : "login required");
+          },
+        }),
+      });
+      const app = agent(f, { promptExecutor: execution, workstreams: execution });
+      const prompt = () => call<acp.PromptResponse>(app, acp.methods.agent.session.prompt, {
+        sessionId: session.sessionId,
+        prompt: [{ type: "text", text: "resume only if capacity can recover" }],
+        _meta: { "agent-bridge/defer-capacity": 1 },
+      });
+      if (shouldWait) {
+        const result = await prompt();
+        expect(result.stopReason).toBe("end_turn");
+        expect(result._meta).toMatchObject({ "agent-bridge": { outcome: "deferred" } });
+        expect(execution.status(session).state).toBe("waiting");
+        expect(listRunContinuations(f.db, OUTWARD_ACP_SURFACE)[0].provider).toBe("claude");
+        expect(attempted).toEqual(["codex", "claude"]);
+      } else {
+        await expect(prompt()).rejects.toThrow();
+        expect(listRunContinuations(f.db, OUTWARD_ACP_SURFACE)).toEqual([]);
+      }
+    }
+  });
+
   it("shows an expired deferred Workstream distinctly from an ordinary failed Run", () => {
     const f = fixture();
     const session = f.repo.create({ sessionId: "expired-1", conversationId: "acp:expired-1", cwd: f.root });
