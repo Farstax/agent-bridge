@@ -62,8 +62,11 @@ export function createSurfaceNeutralProviderRouter(
       snapshot = new Map();
       // Read-only peek: a status/list poll must never mutate shared per-chat
       // routing state while a real attempt may be concurrently executing or
-      // about to advance (#1114 P0).
-      return initialized.has(chatKey) ? fallback.peekActiveCli(chatKey) as BotKind : options.initialProvider;
+      // about to advance (#1114 P0). This also covers the uninitialised-chat
+      // case correctly: chatActiveIdx defaults to the configured head either
+      // way, so an unavailable head is never advertised as nextProvider
+      // before the first turn.
+      return fallback.peekActiveCli(chatKey) as BotKind;
     },
     async executeSurfaceNeutralTurn(input: SurfaceNeutralTurnInput) {
       if (!initialized.has(input.chatKey)) {

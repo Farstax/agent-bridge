@@ -203,6 +203,14 @@ describe("surface-neutral provider availability (#954)", () => {
     } finally { db.close(); }
   });
 
+  it("never advertises an unavailable head as nextProvider before the first turn (#1114)", () => {
+    const { router } = routerWith(["codex", "claude"], () => new Set(["claude"]));
+    // No turn has executed yet for this chat — codex (the configured head)
+    // is unavailable. A status/list read must not advertise an unroutable
+    // provider as what the next turn will use.
+    expect(router.activeProvider("autonomous:episode-1")).toBe("claude");
+  });
+
   it("does not loop on an exhausted chain", async () => {
     const { db, router, calls } = routerWith(
       ["codex", "claude"],
