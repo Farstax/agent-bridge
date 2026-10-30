@@ -150,12 +150,6 @@ export class EventStore {
         const updated = new RunRepository(this.db.raw).updateRunningRunBot(e.runId, e.bot);
         if (!updated) throw new Error("running Run provider attribution update rejected");
       }
-      // Each spawned provider process stays attributable to this Run.
-      if (e.process) {
-        const nextSeq = this.seq + 1;
-        this.db.insertEvent(e.runId, nextSeq, e.type, e.timestamp, e);
-        this.seq = nextSeq;
-      }
       return;
     }
     const seq = this.seq + 1;
