@@ -14,7 +14,7 @@ import { openDb } from "../src/db.js";
 import { BridgeEngine } from "../src/engine.js";
 import { ProviderFallbackChain } from "../src/providerFallback.js";
 import { dispatchClaimedInteractiveWithFallback, dispatchInteractiveTurnWithFallback, resumeCapacityHeldQueue, type CliKind } from "../src/interactiveBot.js";
-import { listRunContinuations } from "../src/runContinuation.js";
+import { listRunContinuations, scanRunContinuations } from "../src/runContinuation.js";
 import { createCapacityFallbackRequestedHook } from "../src/providers/capacityFallbackHook.js";
 
 // Claude (and, by shared ACP transport, Codex) resolve to ACP-stdio by
@@ -139,7 +139,12 @@ describe("Slack capacity-wait parity (#1114)", () => {
       // Provider recovers before the scheduled scan is due: resumeCapacityHeldQueue
       // (the same function RunContinuationRunner's capacityWait branch calls)
       // must be able to drain and retry the retained Slack admission directly.
-      const recovered = await resumeCapacityHeldQueue(continuations[0], { engines, fallbackChain, db });
+      await scanRunContinuations(db, surfaceIdentity,
+        (continuation) => resumeCapacityHeldQueue(continuation, { engines, fallbackChain, db }),
+        Date.parse(continuations[0].dueAt) + 1);
+      const settled = listRunContinuations(db, surfaceIdentity)[0];
+      expect(settled.state).toBe("completed");
+      expect(db.getRun(settled.successorRunId!)?.status).toBe("done");
 
       // A claimed-message resume re-enters dispatch with a fresh tried set, so
       // it restarts from the chat's stored CLI preference (codex, the
@@ -147,7 +152,6 @@ describe("Slack capacity-wait parity (#1114)", () => {
       // behaviour the existing Telegram/Discord capacity-wait resume already
       // exercises. Codex fails again (still exhausted), falls back to claude,
       // which has now recovered.
-      expect(recovered).toBe(true);
       expect(codexRun).toHaveBeenCalledTimes(2);
       expect(claudeRun).toHaveBeenCalledTimes(2);
       expect(db.pendingMsgCount(surfaceIdentity, chatKey)).toBe(0);

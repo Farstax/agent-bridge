@@ -338,6 +338,22 @@ export interface ClaimRunContinuationOptions {
   claimToken?: string;
 }
 
+function capacitySuccessorFailure(db: BridgeDb, wait: RunContinuation): "failed" | "cancelled" | null {
+  if (!wait.successorRunId || !wait.retainedPendingMessageIds?.length ||
+      db.hasAnyPendingMessageId(wait.surfaceIdentity, wait.chatKey, wait.retainedPendingMessageIds)) return null;
+  const run = db.getRun(wait.successorRunId);
+  if (!run || run.surface_identity !== wait.surfaceIdentity || run.chat_id !== wait.chatKey) return null;
+  return run.status === "failed" || run.status === "cancelled" ? run.status : null;
+}
+
+/** A receipt disappearing is ambiguous unless its correlated successor actually completed. */
+function capacityCompletionProven(db: BridgeDb, wait: RunContinuation): boolean {
+  if (!wait.successorRunId || !wait.retainedPendingMessageIds?.length) return false;
+  const run = db.getRun(wait.successorRunId);
+  return run?.status === "done" && run.surface_identity === wait.surfaceIdentity && run.chat_id === wait.chatKey
+    && !db.hasAnyPendingMessageId(wait.surfaceIdentity, wait.chatKey, wait.retainedPendingMessageIds);
+}
+
 export function claimDueRunContinuation(
   db: BridgeDb,
   id: string,
@@ -387,12 +403,14 @@ export function claimDueRunContinuation(
       }
       if (isClaimedCapacity) {
         if (current.retainedPendingMessageIds?.length && !db.hasAnyPendingMessageId(current.surfaceIdentity, current.chatKey, current.retainedPendingMessageIds)) {
-          const settled: RunContinuation = {
-            ...current,
-            state: "completed",
-            completedAt: new Date(nowMs).toISOString(),
-          };
-          db.raw.prepare("UPDATE settings SET value = ? WHERE key = ?").run(JSON.stringify(settled), key(id));
+          const failure = capacitySuccessorFailure(db, current);
+          const state = capacityCompletionProven(db, current) ? "completed" : failure;
+          if (state) {
+            db.raw.prepare("UPDATE settings SET value = ? WHERE key = ?")
+              .run(JSON.stringify({ ...current, state, completedAt: new Date(nowMs).toISOString(),
+                ...(failure ? { error: `successor Run ${failure}` } : {}) }), key(id));
+          }
+          // No receipt and no terminal successor is an ambiguous outcome; never replay it.
           return null;
         }
         const claimantRunId = current.claimRunId;
@@ -601,6 +619,7 @@ export function settleRunContinuation(
     if (!current) return;
     if (current.state === "completed" || current.state === "cancelled") return;
     if (outcome === "expired" && current.state === "expired") return;
+    if (current.capacityWait && outcome === "completed" && !capacityCompletionProven(db, current)) return;
     if (outcome !== "expired"
       && current.state !== "claimed"
       && !(current.capacityWait && outcome === "completed" && current.state === "pending")) return;
@@ -623,8 +642,26 @@ export function linkRunContinuationRun(db: BridgeDb, id: string, runId: string):
   return db.runInTransaction(() => {
     const row = db.raw.prepare("SELECT value FROM settings WHERE key = ?").get(key(id)) as { value: string } | undefined;
     const current = row ? parse(row.value) : null;
-    if (!current || (current.capacityWait && current.state !== "claimed")) return false;
+    if (!current || current.capacityWait) return false;
     if (current.successorRunId === runId) return true;
+    db.raw.prepare("UPDATE settings SET value = ? WHERE key = ?")
+      .run(JSON.stringify({ ...current, successorRunId: runId }), key(id));
+    return true;
+  });
+}
+
+/** Link a capacity wake only while its exact runner claim still owns the task. */
+export function linkCapacityContinuationRun(db: BridgeDb, id: string, claimToken: string, runId: string): boolean {
+  return db.runInTransaction(() => {
+    const row = db.raw.prepare("SELECT value FROM settings WHERE key = ?").get(key(id)) as { value: string } | undefined;
+    const current = row ? parse(row.value) : null;
+    const run = db.getRun(runId);
+    if (!current?.capacityWait || current.state !== "claimed" || current.claimToken !== claimToken ||
+        !run || run.surface_identity !== current.surfaceIdentity || run.chat_id !== current.chatKey) return false;
+    if (current.successorRunId && current.successorRunId !== runId) {
+      const previous = db.getRun(current.successorRunId);
+      if (!previous || previous.status !== "failed") return false;
+    }
     db.raw.prepare("UPDATE settings SET value = ? WHERE key = ?")
       .run(JSON.stringify({ ...current, successorRunId: runId }), key(id));
     return true;
@@ -695,7 +732,10 @@ export async function scanRunContinuations(
       const ids = candidate.retainedPendingMessageIds ?? [];
       if (!candidate.expiryDeliveryPending) {
         if (ids.length > 0 && !db.hasAnyPendingMessageId(candidate.surfaceIdentity, candidate.chatKey, ids)) {
-          settleRunContinuation(db, candidate.id, "completed", undefined, nowMs, candidate.claimToken);
+          const failure = capacitySuccessorFailure(db, candidate);
+          if (capacityCompletionProven(db, candidate)) settleRunContinuation(db, candidate.id, "completed", undefined, nowMs, candidate.claimToken);
+          else if (failure) settleRunContinuation(db, candidate.id, failure, `successor Run ${failure}`, nowMs, candidate.claimToken);
+          // A lost receipt without terminal evidence is ambiguous, even at expiry.
           continue;
         }
         if (db.hasChatLock(candidate.chatKey) || db.isAnyPendingMessageClaimed(candidate.surfaceIdentity, candidate.chatKey, ids)) {
@@ -752,7 +792,14 @@ export async function scanRunContinuations(
     try {
       const outcome = await dispatch(claimed);
       if (claimed.capacityWait) {
-        if (outcome === false || outcome === "queued") {
+        const current = listRunContinuations(db, surfaceIdentity).find((item) => item.id === claimed.id);
+        if (!current || current.state !== "claimed" || current.claimToken !== claimed.claimToken) continue;
+        const failure = capacitySuccessorFailure(db, current);
+        if (failure) {
+          settleRunContinuation(db, current.id, failure, `successor Run ${failure}`, nowMs, claimed.claimToken);
+          continue;
+        }
+        if (!capacityCompletionProven(db, current) || outcome === false || outcome === "queued") {
           requeueClaimedCapacityWait(db, claimed.id, nowMs, claimed.claimToken);
           continue;
         }

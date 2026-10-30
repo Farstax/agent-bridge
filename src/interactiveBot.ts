@@ -297,7 +297,7 @@ export interface InteractiveDispatchEngine {
   handleInteractiveTurn?: (turn: InteractiveTurnInput) => Promise<ExecutionOutcome | void>;
   handleUpdate?: (update: TelegramUpdate, chatKey?: string) => Promise<ExecutionOutcome | void>;
   executeClaimedMessage(message: PendingMessage): Promise<ExecutionOutcome>;
-  recoverPendingQueue?: (chatKey: string, activeContinuationId?: string) => Promise<boolean>;
+  recoverPendingQueue?: (chatKey: string, activeContinuationId?: string, claimToken?: string) => Promise<boolean>;
 }
 
 export interface InteractiveDispatchDeps {
@@ -321,14 +321,14 @@ export interface InteractiveDispatchDeps {
  * queue claim re-enters the normal fallback chain with a fresh tried set.
  */
 export async function resumeCapacityHeldQueue(
-  input: { chatKey: string; provider: string; surfaceIdentity: string; id?: string; retainedPendingMessageIds?: number[] },
+  input: { chatKey: string; provider: string; surfaceIdentity: string; id?: string; claimToken?: string; retainedPendingMessageIds?: number[] },
   deps: Pick<InteractiveDispatchDeps, "engines" | "fallbackChain"> & Partial<Pick<InteractiveDispatchDeps, "db">>,
 ): Promise<boolean> {
   const candidates = [input.provider, ...deps.fallbackChain.getChain()];
   for (const candidate of candidates) {
     const engine = deps.engines[candidate];
     if (!engine?.recoverPendingQueue) continue;
-    const recovered = input.id !== undefined ? await engine.recoverPendingQueue(input.chatKey, input.id) : await engine.recoverPendingQueue(input.chatKey);
+    const recovered = input.id !== undefined ? await engine.recoverPendingQueue(input.chatKey, input.id, input.claimToken) : await engine.recoverPendingQueue(input.chatKey);
     if (recovered) {
       // A callback returning is not proof of recovery. The original receipt
       // must have been consumed by its queue owner before this wait settles.

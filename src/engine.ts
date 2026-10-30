@@ -80,7 +80,7 @@ import {
   type FinalDeliveryPhase,
 } from "./executionLaneCoordinator.js";
 import { scheduleDurableQueueRecovery } from "./durableQueueRecovery.js";
-import { cancelPendingRunContinuation, cancelPendingRunContinuationsForChat, clearContinuationLimitNotice, peekContinuationLimitNotice, RUN_CONTINUATION_PREFIX, linkRunContinuationRun, settleRunContinuation, hasPendingCapacityWait } from "./runContinuation.js";
+import { cancelPendingRunContinuation, cancelPendingRunContinuationsForChat, clearContinuationLimitNotice, peekContinuationLimitNotice, RUN_CONTINUATION_PREFIX, linkRunContinuationRun, linkCapacityContinuationRun, listRunContinuations, settleRunContinuation, hasPendingCapacityWait } from "./runContinuation.js";
 import { capacityRetryAfterSeconds } from "./providers/capacityRetryTiming.js";
 
 export interface HookContext {
@@ -112,6 +112,7 @@ export interface PendingMessage {
   queueRecoveryAttempt?: number;
   laneHandle?: ExecutionLaneHandle;
   laneLifecycleManaged?: boolean;
+  capacityContinuation?: { id: string; claimToken: string };
 }
 
 /** `deferred` retains the claimed admission for an existing durable continuation. */
@@ -335,12 +336,12 @@ export class BridgeEngine {
     }));
   }
 
-  async recoverPendingQueue(chatKey: string, activeContinuationId?: string): Promise<boolean> {
+  async recoverPendingQueue(chatKey: string, activeContinuationId?: string, capacityClaimToken?: string): Promise<boolean> {
     if (this.db.pendingMsgCount(this.surfaceIdentity, chatKey) === 0) return false;
     if (hasPendingCapacityWait(this.db, this.surfaceIdentity, chatKey, activeContinuationId)) return true;
     const handle = this.db.acquireLock(this.surfaceIdentity, chatKey);
     if (handle) {
-      await this._drainQueueAndUnlock(handle, undefined, 0, false, this.opts.busyMessageMode === "augment", undefined, activeContinuationId);
+      await this._drainQueueAndUnlock(handle, undefined, 0, false, this.opts.busyMessageMode === "augment", undefined, activeContinuationId, capacityClaimToken);
       return true;
     }
     this._scheduleDurableQueueRecovery(chatKey);
@@ -678,6 +679,7 @@ export class BridgeEngine {
     preProviderScope: PreProviderIngressScope | null = null,
     executionMode?: "safe" | "trusted",
     verificationOnly = false,
+    capacityContinuation?: { id: string; claimToken: string },
   ): Promise<ExecutionOutcome> {
     void attachmentLocalPath;
     let prompt = rawPrompt;
@@ -790,6 +792,10 @@ export class BridgeEngine {
     let continuationsLinked = continuationKeys.length === 0;
     const collect = (event: BridgeEvent) => {
       collectEvent(event);
+      if (capacityContinuation && this.db.getRun(runId) &&
+          !linkCapacityContinuationRun(this.db, capacityContinuation.id, capacityContinuation.claimToken, runId)) {
+        throw new Error("capacity continuation claim lost before Run correlation");
+      }
       if (!continuationsLinked && this.db.getRun(runId)) {
         try {
           // Retried on later events until it succeeds: a missed link would reset the chain depth.
@@ -827,6 +833,9 @@ export class BridgeEngine {
         return "fenced";
       }
       finalize();
+      if (capacityContinuation && !linkCapacityContinuationRun(this.db, capacityContinuation.id, capacityContinuation.claimToken, runId)) {
+        throw new LostExecutionLeaseError();
+      }
       this._linkScheduledOccurrences(scheduledOccurrenceKeys, runId);
       await this._deliverContinuationLimitNotice(chatKey, chatId, threadId);
       if (activePendingIds.length && !this.db.completePendingMsgs(laneHandle, activePendingIds)) throw new LostExecutionLeaseError();
@@ -1513,13 +1522,13 @@ export class BridgeEngine {
     }
   }
 
-  private async _drainQueueAndUnlock(handle: ExecutionLaneHandle, initial?: PendingMessage, recoveryAttempt = 0, lifecycleAlreadyManaged = false, coalesce = false, augmentation?: AugmentedTask, activeContinuationId?: string): Promise<void> {
+  private async _drainQueueAndUnlock(handle: ExecutionLaneHandle, initial?: PendingMessage, recoveryAttempt = 0, lifecycleAlreadyManaged = false, coalesce = false, augmentation?: AugmentedTask, activeContinuationId?: string, capacityClaimToken?: string): Promise<void> {
     const executionLane = this._executionLane(handle.chatKey);
     const existing = this.laneCoordinator.getDrainer(executionLane);
     if (existing) return existing.promise;
 
     const record = { promise: Promise.resolve() } as LaneDrainer;
-    const operation = this._drainQueueAndUnlockOwned(handle, initial, recoveryAttempt, lifecycleAlreadyManaged, coalesce, augmentation, activeContinuationId);
+    const operation = this._drainQueueAndUnlockOwned(handle, initial, recoveryAttempt, lifecycleAlreadyManaged, coalesce, augmentation, activeContinuationId, capacityClaimToken);
     record.promise = operation.finally(() => {
       this.laneCoordinator.clearDrainer(executionLane, record);
     });
@@ -1560,6 +1569,7 @@ export class BridgeEngine {
     coalesce: boolean,
     augmentation?: AugmentedTask,
     activeContinuationId?: string,
+    capacityClaimToken?: string,
   ): Promise<void> {
     const chatKey = handle.chatKey;
     const executionLane = this._executionLane(chatKey);
@@ -1600,9 +1610,21 @@ export class BridgeEngine {
         continue;
       }
       try {
+        let capacityContinuation: PendingMessage["capacityContinuation"];
+        if (activeContinuationId) {
+          const wait = listRunContinuations(this.db, this.surfaceIdentity).find((item) => item.id === activeContinuationId);
+          const ids = next.pendingIds ?? [next.id];
+          if (!wait?.capacityWait || wait.state !== "claimed" || !capacityClaimToken || wait.claimToken !== capacityClaimToken || wait.chatKey !== chatKey ||
+              !wait.retainedPendingMessageIds?.length || ids.length !== wait.retainedPendingMessageIds.length ||
+              ids.some((id) => !wait.retainedPendingMessageIds!.includes(id))) {
+            throw new Error("capacity continuation does not own the claimed queue messages");
+          }
+          capacityContinuation = { id: wait.id, claimToken: wait.claimToken };
+        }
+        const message = { ...next, laneHandle: handle, laneLifecycleManaged: lifecycleAlreadyManaged, capacityContinuation };
         const outcome = this.queuedMessageHandler
-          ? await this.queuedMessageHandler({ ...next, laneHandle: handle, laneLifecycleManaged: lifecycleAlreadyManaged })
-          : await this.executeClaimedMessage({ ...next, laneHandle: handle, laneLifecycleManaged: lifecycleAlreadyManaged });
+          ? await this.queuedMessageHandler(message)
+          : await this.executeClaimedMessage(message);
         if (outcome === "fenced") {
           for (const id of next.pendingIds ?? [next.id]) this.db.releasePendingClaim(handle, id);
           return;
@@ -1714,6 +1736,7 @@ export class BridgeEngine {
       next.queueRecoveryAttempt == null || next.queueRecoveryAttempt >= MAX_QUEUE_RECOVERY_ATTEMPTS,
       next.pendingIds ?? [next.id],
       next.scheduledOccurrenceKeys ?? (next.scheduledOccurrenceKey ? [next.scheduledOccurrenceKey] : []),
+      null, undefined, false, next.capacityContinuation,
     );
   }
 

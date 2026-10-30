@@ -19,6 +19,7 @@ import {
   hasPendingCapacityWait,
   reconcileRunContinuations,
   linkRunContinuationRun,
+  linkCapacityContinuationRun,
 } from "../src/runContinuation.js";
 import { BridgeEngine } from "../src/engine.js";
 
@@ -113,6 +114,38 @@ describe("ordinary Run continuation", () => {
     db.close();
   });
 
+  it("does not complete a capacity wait merely because its queue receipt disappeared", async () => {
+    const { db } = setup();
+    const continuation = requestForActiveRun(db, {
+      originRunId: "run-capacity-ambiguous", surfaceIdentity: "telegram:interactive", chatKey: "123",
+      provider: "codex", reason: "capacity wait", afterSeconds: 5, capacityWait: true,
+      retainedPendingMessageIds: [999],
+    }, 1_000);
+    expect(db.updateRunFailed(continuation.originRunId, "MODEL_CAPACITY_EXHAUSTED")).toBe(true);
+    await scanRunContinuations(db, "telegram:interactive", async () => true, 6_000);
+    expect(listRunContinuations(db)[0].state).not.toBe("completed");
+    db.close();
+  });
+
+  it.each(["done", "failed", "running"] as const)("requires a matching completed successor to settle a capacity wait (%s)", async (status) => {
+    const { db } = setup();
+    const continuation = requestForActiveRun(db, {
+      originRunId: `origin-${status}`, surfaceIdentity: "telegram:interactive", chatKey: "123",
+      provider: "codex", reason: "capacity wait", afterSeconds: 5, capacityWait: true,
+      retainedPendingMessageIds: [999],
+    }, 1_000);
+    db.updateRunFailed(continuation.originRunId, "MODEL_CAPACITY_EXHAUSTED");
+    await scanRunContinuations(db, "telegram:interactive", async (claim) => {
+      db.insertRun(`successor-${status}`, { surfaceIdentity: claim.surfaceIdentity, chatKey: claim.chatKey }, "codex");
+      expect(linkCapacityContinuationRun(db, claim.id, claim.claimToken!, `successor-${status}`)).toBe(true);
+      if (status === "done") completeOriginRun(db, `successor-${status}`);
+      if (status === "failed") db.updateRunFailed(`successor-${status}`, "failure");
+      return true;
+    }, 6_000);
+    expect(listRunContinuations(db)[0].state === "completed").toBe(status === "done");
+    db.close();
+  });
+
   it("survives restart and dispatches a settled capacity wait only once", async () => {
     const { db, path } = setup();
     const continuation = requestForActiveRun(db, {
@@ -123,12 +156,17 @@ describe("ordinary Run continuation", () => {
       reason: "all permitted providers are temporarily at capacity",
       afterSeconds: 5,
       capacityWait: true,
+      retainedPendingMessageIds: [999],
     }, 1_000);
     expect(db.updateRunFailed(continuation.originRunId, "MODEL_CAPACITY_EXHAUSTED")).toBe(true);
     db.close();
 
     const reopened = openDb(path, { serviceId: "run-continuation-test-reopen", runId: "test-process-2" });
-    const dispatch = vi.fn(async () => undefined);
+    const dispatch = vi.fn(async (claim) => {
+      reopened.insertRun(`successor-${claim.id}`, { surfaceIdentity: claim.surfaceIdentity, chatKey: claim.chatKey }, "codex");
+      expect(linkCapacityContinuationRun(reopened, claim.id, claim.claimToken!, `successor-${claim.id}`)).toBe(true);
+      completeOriginRun(reopened, `successor-${claim.id}`);
+    });
     await scanRunContinuations(reopened, "telegram:interactive", dispatch, 6_000);
     await scanRunContinuations(reopened, "telegram:interactive", dispatch, 7_000);
     expect(dispatch).toHaveBeenCalledTimes(1);
@@ -138,6 +176,8 @@ describe("ordinary Run continuation", () => {
 
   it("recovers a capacity continuation claimed before a crash and dispatches it exactly once on restart", async () => {
     const { db, path } = setup();
+    db.enqueueMsg("telegram:interactive", "123", { prompt: "task", chatId: 123, chatType: "private", userId: 42 });
+    const receipt = db.dequeueMsgs("telegram:interactive", "123")[0];
     const continuation = requestForActiveRun(db, {
       originRunId: "run-capacity-crash-claimed",
       surfaceIdentity: "telegram:interactive",
@@ -146,6 +186,7 @@ describe("ordinary Run continuation", () => {
       reason: "all permitted providers are temporarily at capacity",
       afterSeconds: 5,
       capacityWait: true,
+      retainedPendingMessageIds: [receipt.id],
     }, 1_000);
     expect(db.updateRunFailed(continuation.originRunId, "MODEL_CAPACITY_EXHAUSTED")).toBe(true);
 
@@ -160,7 +201,12 @@ describe("ordinary Run continuation", () => {
     const reopened = openDb(path, { serviceId: "run-continuation-test-reopen-crash", runId: "test-process-3" });
     expect(hasPendingCapacityWait(reopened, "telegram:interactive", "123")).toBe(true);
 
-    const dispatch = vi.fn(async () => undefined);
+    const dispatch = vi.fn(async (claim) => {
+      reopened.insertRun(`successor-${claim.id}`, { surfaceIdentity: claim.surfaceIdentity, chatKey: claim.chatKey }, "codex");
+      expect(linkCapacityContinuationRun(reopened, claim.id, claim.claimToken!, `successor-${claim.id}`)).toBe(true);
+      completeOriginRun(reopened, `successor-${claim.id}`);
+      expect(reopened.retireQueuedPendingMsgs(claim.surfaceIdentity, claim.chatKey, [receipt.id])).toBe(true);
+    });
     await scanRunContinuations(reopened, "telegram:interactive", dispatch, 6_500);
     expect(dispatch).toHaveBeenCalledTimes(1);
     expect(listRunContinuations(reopened)[0]).toEqual(expect.objectContaining({ state: "completed", capacityWait: true }));
@@ -653,7 +699,10 @@ describe("ordinary Run continuation", () => {
     expect(db.updateRunFailed("run-origin-done", "MODEL_CAPACITY_EXHAUSTED")).toBe(true);
 
     // Claimed before crash:
-    claimDueRunContinuation(db, continuation.id, 6_000, { runId: "dead-runner" });
+    const claim = claimDueRunContinuation(db, continuation.id, 6_000, { runId: "dead-runner" })!;
+    db.insertRun("successor-before-crash", { surfaceIdentity: continuation.surfaceIdentity, chatKey: continuation.chatKey }, "codex");
+    expect(linkCapacityContinuationRun(db, continuation.id, claim.claimToken!, "successor-before-crash")).toBe(true);
+    completeOriginRun(db, "successor-before-crash");
 
     const dispatch = vi.fn();
     // Scan after crash:
@@ -665,6 +714,25 @@ describe("ordinary Run continuation", () => {
     expect(dispatch).not.toHaveBeenCalled();
     // Should be settled as completed:
     expect(listRunContinuations(db)[0].state).toBe("completed");
+    db.close();
+  });
+
+  it("reconciles a failed successor after restart without replaying its consumed receipt", async () => {
+    const { db } = setup();
+    const continuation = requestForActiveRun(db, {
+      originRunId: "origin-failed-restart", surfaceIdentity: "telegram:interactive", chatKey: "123",
+      provider: "codex", reason: "capacity wait", afterSeconds: 5, capacityWait: true,
+      retainedPendingMessageIds: [888],
+    }, 1_000);
+    db.updateRunFailed(continuation.originRunId, "MODEL_CAPACITY_EXHAUSTED");
+    const claim = claimDueRunContinuation(db, continuation.id, 6_000)!;
+    db.insertRun("successor-failed-restart", { surfaceIdentity: continuation.surfaceIdentity, chatKey: continuation.chatKey }, "codex");
+    expect(linkCapacityContinuationRun(db, continuation.id, claim.claimToken!, "successor-failed-restart")).toBe(true);
+    db.updateRunFailed("successor-failed-restart", "auth required");
+    const dispatch = vi.fn();
+    await scanRunContinuations(db, continuation.surfaceIdentity, dispatch, 100_000, { isProcessAlive: () => false });
+    expect(dispatch).not.toHaveBeenCalled();
+    expect(listRunContinuations(db)[0].state).toBe("failed");
     db.close();
   });
 
@@ -744,6 +812,8 @@ describe("ordinary Run continuation", () => {
 
   it("stale claimant callback cannot settle or requeue continuation after newer claimant took ownership", () => {
     const { db } = setup();
+    db.enqueueMsg("telegram:interactive", "123", { prompt: "task", chatId: 123, chatType: "private", userId: 42 });
+    const receipt = db.dequeueMsgs("telegram:interactive", "123")[0];
     const continuation = requestForActiveRun(db, {
       originRunId: "run-stale-callback",
       surfaceIdentity: "telegram:interactive",
@@ -752,6 +822,7 @@ describe("ordinary Run continuation", () => {
       reason: "capacity wait",
       afterSeconds: 5,
       capacityWait: true,
+      retainedPendingMessageIds: [receipt.id],
     }, 1_000);
     expect(db.updateRunFailed("run-stale-callback", "MODEL_CAPACITY_EXHAUSTED")).toBe(true);
 
@@ -761,6 +832,13 @@ describe("ordinary Run continuation", () => {
     // Lease expires at t=8000; Runner 2 claims continuation
     const runner2Claim = claimDueRunContinuation(db, continuation.id, 8_000, { runId: "runner-2", leaseMs: 10_000 });
     expect(runner2Claim?.claimRunId).toBe("runner-2");
+
+    db.insertRun("successor-fenced", { surfaceIdentity: continuation.surfaceIdentity, chatKey: continuation.chatKey }, "codex");
+    expect(linkCapacityContinuationRun(db, continuation.id, runner1Claim.claimToken!, "successor-fenced")).toBe(false);
+    expect(linkRunContinuationRun(db, continuation.id, "successor-fenced")).toBe(false);
+    expect(linkCapacityContinuationRun(db, continuation.id, runner2Claim!.claimToken!, "successor-fenced")).toBe(true);
+    completeOriginRun(db, "successor-fenced");
+    expect(db.retireQueuedPendingMsgs(continuation.surfaceIdentity, continuation.chatKey, [receipt.id])).toBe(true);
 
     // Stale runner 1 returns late at t=8500 and attempts to requeue:
     requeueClaimedCapacityWait(db, continuation.id, 8_500, runner1Claim.claimToken);
@@ -965,6 +1043,8 @@ describe("ordinary Run continuation", () => {
 
   it("fences a stale callback after same-service lease reclamation", () => {
     const { db } = setup();
+    db.enqueueMsg("telegram:interactive", "123", { prompt: "task", chatId: 123, chatType: "private", userId: 42 });
+    const receipt = db.dequeueMsgs("telegram:interactive", "123")[0];
     const continuation = requestForActiveRun(db, {
       originRunId: "run-same-service-stale",
       surfaceIdentity: "telegram:interactive",
@@ -973,6 +1053,7 @@ describe("ordinary Run continuation", () => {
       reason: "capacity wait",
       afterSeconds: 5,
       capacityWait: true,
+      retainedPendingMessageIds: [receipt.id],
     }, 1_000);
     expect(db.updateRunFailed(continuation.originRunId, "MODEL_CAPACITY_EXHAUSTED")).toBe(true);
 
@@ -980,6 +1061,11 @@ describe("ordinary Run continuation", () => {
     const second = claimDueRunContinuation(db, continuation.id, 8_000, { runId: "same-service", leaseMs: 10_000 })!;
     const firstToken = (first as any).claimToken ?? first.claimRunId;
     const secondToken = (second as any).claimToken ?? second.claimRunId;
+
+    db.insertRun("successor-fenced", { surfaceIdentity: continuation.surfaceIdentity, chatKey: continuation.chatKey }, "codex");
+    expect(linkCapacityContinuationRun(db, continuation.id, second.claimToken!, "successor-fenced")).toBe(true);
+    completeOriginRun(db, "successor-fenced");
+    expect(db.retireQueuedPendingMsgs(continuation.surfaceIdentity, continuation.chatKey, [receipt.id])).toBe(true);
 
     expect(firstToken).not.toBe(secondToken);
     settleRunContinuation(db, continuation.id, "completed", undefined, 8_100, firstToken);
@@ -1033,6 +1119,9 @@ describe("ordinary Run continuation", () => {
     }, 1_000);
     expect(db.updateRunFailed(continuation.originRunId, "MODEL_CAPACITY_EXHAUSTED")).toBe(true);
     const claimed = claimDueRunContinuation(db, continuation.id, 6_000, { leaseMs: 500 })!;
+    db.insertRun("successor-expiry", { surfaceIdentity: continuation.surfaceIdentity, chatKey: continuation.chatKey }, "codex");
+    expect(linkCapacityContinuationRun(db, continuation.id, claimed.claimToken!, "successor-expiry")).toBe(true);
+    completeOriginRun(db, "successor-expiry");
     expect(db.retireQueuedPendingMsgs("telegram:interactive", "123", [pendingMsg.id])).toBe(true);
 
     await scanRunContinuations(db, "telegram:interactive", vi.fn(), Date.parse(continuation.expiresAt) + 1_000);
