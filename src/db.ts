@@ -874,7 +874,7 @@ export class BridgeDb {
     });
   }
 
-  claimPendingMsgs(handle: ExecutionLaneHandle): Array<{
+  claimPendingMsgs(handle: ExecutionLaneHandle, onlyIds?: readonly number[]): Array<{
     id: number; chatKey: string; prompt: string; chatId: number | string; threadId: number | string | null; chatType: string; userId: number | string | null; attachments: string[]; scheduledOccurrenceKey: string | null;
   }> {
     const { surface, chatKey } = handle;
@@ -894,6 +894,13 @@ export class BridgeDb {
           AND (state = 'queued' OR (state = 'claimed' AND claim_run_id = ? AND claim_acquisition_id = ?))
         ORDER BY id ASC
       `).all(surface, chatKey, handle.runId, handle.acquisitionId) as any[];
+      if (onlyIds) {
+        const wanted = new Set(onlyIds);
+        for (let index = rows.length - 1; index >= 0; index -= 1) {
+          if (!wanted.has(rows[index].id)) rows.splice(index, 1);
+        }
+        if (rows.length !== wanted.size) return [];
+      }
       // A queued /btw side question never merges with ordinary turns.
       const btwIndex = rows.findIndex((row) => row.scheduledOccurrenceKey === BTW_PENDING_OCCURRENCE_KEY);
       if (btwIndex >= 0) rows.splice(btwIndex === 0 ? 1 : btwIndex);

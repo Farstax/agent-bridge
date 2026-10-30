@@ -1584,7 +1584,18 @@ export class BridgeEngine {
     }
     let nextPending = initial;
     for (;;) {
-      const claimed: PendingMessage[] = nextPending ? [nextPending] : (coalesce ? this.db.claimPendingMsgs(handle) : (() => {
+      const capacityWait = activeContinuationId
+        ? listRunContinuations(this.db, this.surfaceIdentity).find((item) => item.id === activeContinuationId)
+        : undefined;
+      if (activeContinuationId && (!capacityWait?.capacityWait || capacityWait.state !== "claimed" ||
+          !capacityClaimToken || capacityWait.claimToken !== capacityClaimToken || capacityWait.chatKey !== chatKey ||
+          !capacityWait.retainedPendingMessageIds?.length)) {
+        if (this.db.ownsLock(handle)) this.db.unlock(handle);
+        return;
+      }
+      const claimed: PendingMessage[] = nextPending ? [nextPending] : (capacityWait
+        ? this.db.claimPendingMsgs(handle, capacityWait.retainedPendingMessageIds)
+        : coalesce ? this.db.claimPendingMsgs(handle) : (() => {
         const one = this.db.claimNextPendingMsg(handle);
         return one ? [one] : [];
       })());
@@ -1601,6 +1612,10 @@ export class BridgeEngine {
       };
       nextPending = undefined;
       if (!next) {
+        if (activeContinuationId) {
+          if (this.db.ownsLock(handle)) this.db.unlock(handle);
+          return;
+        }
         if (this.db.pendingMsgCount(this.surfaceIdentity, chatKey) > 0) return;
         if (this.db.unlockIfQueueEmpty(handle)) {
           if (!this.laneCoordinator.hasCancellation(executionLane)) this.laneCoordinator.clearAugmentedTask(executionLane);
@@ -1643,6 +1658,10 @@ export class BridgeEngine {
         }
         if (!(next.pendingIds ? this.db.completePendingMsgs(handle, next.pendingIds) : this.db.completePendingMsg(handle, next.id))) return;
         this._deleteQueuedAttachments(next.attachments);
+        if (activeContinuationId) {
+          if (this.db.ownsLock(handle)) this.db.unlock(handle);
+          return;
+        }
       } catch (error) {
         for (const id of next.pendingIds ?? [next.id]) this.db.releasePendingClaim(handle, id);
         this.db.unlock(handle);

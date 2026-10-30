@@ -889,7 +889,7 @@ describe("interactive capacity fallback durable admission", () => {
         botConfig: { command: kind, modelPreference: [] },
         allowedUserIds: new Set(["42"]),
         executionMode: "safe",
-        busyMessageMode: "queue",
+        busyMessageMode: "augment",
         pollIntervalMs: 1_000,
         hooks: {
           onProviderFallbackRequested: async (chatKey, reason, context) => {

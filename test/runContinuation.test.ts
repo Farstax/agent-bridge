@@ -717,6 +717,25 @@ describe("ordinary Run continuation", () => {
     db.close();
   });
 
+  it("releases the lane when a claimed wait has lost its retained receipt", async () => {
+    const { db } = setup();
+    const continuation = requestForActiveRun(db, {
+      originRunId: "origin-missing-receipt", surfaceIdentity: "telegram:interactive", chatKey: "123",
+      provider: "codex", reason: "capacity wait", afterSeconds: 5, capacityWait: true,
+      retainedPendingMessageIds: [999],
+    }, 1_000);
+    db.updateRunFailed(continuation.originRunId, "MODEL_CAPACITY_EXHAUSTED");
+    const claim = claimDueRunContinuation(db, continuation.id, 6_000)!;
+    db.enqueueMsg(continuation.surfaceIdentity, continuation.chatKey, { prompt: "other task", chatId: 123, chatType: "private", userId: 42 });
+    const engine = new BridgeEngine({ surfaceIdentity: continuation.surfaceIdentity, kind: "codex",
+      botConfig: { command: "codex", modelPreference: [] }, allowedUserIds: new Set(["42"]),
+      executionMode: "safe", busyMessageMode: "augment", pollIntervalMs: 1000 }, db, {} as any);
+    await engine.recoverPendingQueue(continuation.chatKey, continuation.id, claim.claimToken);
+    expect(db.hasChatLock(continuation.chatKey)).toBe(false);
+    expect(db.pendingMsgCount(continuation.surfaceIdentity, continuation.chatKey)).toBe(1);
+    db.close();
+  });
+
   it("reconciles a failed successor after restart without replaying its consumed receipt", async () => {
     const { db } = setup();
     const continuation = requestForActiveRun(db, {
