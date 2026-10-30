@@ -10,7 +10,7 @@ import { cleanupStaleOutwardAcpAttachments } from "./attachments.js";
 import { prepareInteractiveCliAuth } from "../interactiveCliAuth.js";
 import { getCodexUsageText } from "../codexUsage.js";
 import { getRunOwnedProcessState, type RunOwnedProcessState } from "../runOwnedProcesses.js";
-import { DeskCommands } from "./commands.js";
+import { AcpCommands } from "./commands.js";
 import {
   OUTWARD_ACP_SURFACE,
   type BridgeOutwardAcpPromptExecutor,
@@ -96,7 +96,7 @@ try {
     Writable.toWeb(process.stdout),
     Readable.toWeb(process.stdin) as ReadableStream<Uint8Array>,
   );
-  const commands = new DeskCommands({
+  const commands = new AcpCommands({
     db,
     config: outwardCommandConfig(dbPath),
     control: promptExecutor,

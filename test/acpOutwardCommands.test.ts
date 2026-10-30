@@ -8,7 +8,7 @@ import { effortSettingKey } from "../src/effort.js";
 import { clearAcpSessionConfigSnapshot, replaceAcpSessionConfigSnapshot } from "../src/acp/sessionConfig.js";
 import { OutwardAcpSessionRepository } from "../src/repositories/outwardAcpSessionRepository.js";
 import { createOutwardAcpAgent, WORKSTREAM_METHODS, type OutwardAcpSessionStore } from "../src/acpServer/app.js";
-import { DeskCommands, isDeskBridgeCommand } from "../src/acpServer/commands.js";
+import { AcpCommands } from "../src/acpServer/commands.js";
 import { BridgeOutwardAcpPromptExecutor, OUTWARD_ACP_SURFACE } from "../src/acpServer/execution.js";
 import type { BotKind, BridgeConfig } from "../src/types.js";
 
@@ -33,7 +33,7 @@ const config = {
 } as unknown as BridgeConfig;
 
 function setup(options: { chain?: BotKind[]; btw?: boolean; gate?: Promise<void>; available?: BotKind[] } = {}) {
-  const root = mkdtempSync(join(tmpdir(), "agent-bridge-desk-commands-"));
+  const root = mkdtempSync(join(tmpdir(), "agent-bridge-acp-commands-"));
   roots.push(root);
   const db = openDb(join(root, "bridge.sqlite"), { databaseRole: "interactive" });
   dbs.push(db);
@@ -69,21 +69,21 @@ function setup(options: { chain?: BotKind[]; btw?: boolean; gate?: Promise<void>
       },
     }),
   });
-  const commands = new DeskCommands({ db, config, control: exec, codexUsage: async () => "Codex usage: 12%" });
+  const commands = new AcpCommands({ db, config, control: exec, codexUsage: async () => "Codex usage: 12%" });
   const app = createOutwardAcpAgent({ sessions, promptExecutor: exec, workstreams: exec, commands, workspaceRoot: root });
   const run = <T = { command: string; text: string; options?: Array<{ label: string; selected: boolean; token: string }> }>(
     params: Record<string, unknown>,
-  ) => acp.client({ name: "desk" }).connectWith(app, (agent) =>
+  ) => acp.client({ name: "generic" }).connectWith(app, (agent) =>
     agent.request<T>(WORKSTREAM_METHODS.runCommand, { sessionId: "s1", cwd: root, ...params }));
-  const list = () => acp.client({ name: "desk" }).connectWith(app, (agent) =>
+  const list = () => acp.client({ name: "generic" }).connectWith(app, (agent) =>
     agent.request<{ commands: Array<{ name: string; available: boolean; reason?: string; route: string }> }>(
       WORKSTREAM_METHODS.commands, { sessionId: "s1", cwd: root }));
   return { root, db, repo, exec, app, run, list, prompts, btwCalls, attachmentPaths, attachmentContents };
 }
 
-describe("outward ACP Desk commands (#1101)", () => {
+describe("outward ACP commands", () => {
   it("publishes a provider-aware catalogue with explicit disabled reasons", async () => {
-    const { list, exec, repo } = setup();
+    const { list, run, exec, repo } = setup();
     const byName = (await list()).commands;
     const names = byName.map((c) => c.name);
     for (const name of ["start", "reset", "models", "effort", "queue_mode", "skills", "usage", "narration", "context", "btw", "stop", "cli", "switch", "sensors", "autonomy", "help", "new", "status"]) {
@@ -96,6 +96,8 @@ describe("outward ACP Desk commands (#1101)", () => {
     expect(get("sensors").available).toBe(false);
     expect(get("autonomy").available).toBe(false);
     expect(get("stop").route).toBe("session/cancel");
+    expect(get("new").description).toBe("Create a session");
+    expect((await run({ command: "new" })).text).toBe("Create a new session with session/new.");
 
     exec.selectProvider(repo.get("s1")!, "claude");
     const claude = (await list()).commands;
@@ -104,7 +106,7 @@ describe("outward ACP Desk commands (#1101)", () => {
 
   it("advertises command controls only when their owners are wired", async () => {
     const { app } = setup();
-    const initialized = await acp.client({ name: "desk" }).connectWith(app, (agent) =>
+    const initialized = await acp.client({ name: "generic" }).connectWith(app, (agent) =>
       agent.request(acp.methods.agent.initialize, { protocolVersion: 1, clientCapabilities: {} }));
     expect(initialized.agentCapabilities?._meta).toEqual({ "agent-bridge": { workstreams: 1, commands: 1 } });
   });
@@ -128,24 +130,36 @@ describe("outward ACP Desk commands (#1101)", () => {
     await expect(run({ command: "context", select: "x" })).rejects.toMatchObject({ code: -32602 });
   });
 
-  it("never sends a Bridge command to the model as prompt text", async () => {
-    const { app, prompts } = setup();
-    for (const text of ["/reset", "/models", "/STOP", "/cli claude", "/btw hi"]) {
-      expect(isDeskBridgeCommand(text)).toBe(true);
-      await expect(acp.client({ name: "t" }).connectWith(app, (agent) =>
-        agent.request(acp.methods.agent.session.prompt, { sessionId: "s1", prompt: [{ type: "text", text }] })))
-        .rejects.toMatchObject({ code: -32602 });
+  it("forwards literal slash text without resetting history or cancelling an active Run", async () => {
+    const { app, prompts, db } = setup();
+    db.addConvTurn("acp:c1", "user", "existing history", "codex", { surfaceIdentity: OUTWARD_ACP_SURFACE });
+    const texts = ["/status", "/reset", "/stop", "/models", "/STOP", "/cli claude", "/btw hi"];
+    for (const text of texts) {
+      await acp.client({ name: "generic" }).connectWith(app, (agent) =>
+        agent.request(acp.methods.agent.session.prompt, { sessionId: "s1", prompt: [{ type: "text", text }] }));
     }
-    expect(prompts).toEqual([]);
-    // Provider-native slash commands and ordinary text still reach the provider.
-    await acp.client({ name: "t" }).connectWith(app, (agent) =>
-      agent.request(acp.methods.agent.session.prompt, { sessionId: "s1", prompt: [{ type: "text", text: "/review this" }] }));
-    expect(prompts).toEqual(["/review this"]);
+    expect(prompts).toEqual(texts);
+    expect(db.getRecentConvTurns("acp:c1", 30, undefined, OUTWARD_ACP_SURFACE).map((turn) => turn.text))
+      .toEqual(["existing history", ...texts.flatMap((text) => [text, "answer from codex"])]);
+
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const active = setup({ gate });
+    const pending = acp.client({ name: "generic" }).connectWith(active.app, (agent) =>
+      agent.request(acp.methods.agent.session.prompt, { sessionId: "s1", prompt: [{ type: "text", text: "long" }] }));
+    for (let i = 0; i < 50 && !active.prompts.length; i++) await new Promise((resolve) => setTimeout(resolve, 2));
+    expect(active.exec.status(active.repo.get("s1")!).state).toBe("running");
+    await expect(acp.client({ name: "generic" }).connectWith(active.app, (agent) =>
+      agent.request(acp.methods.agent.session.prompt, { sessionId: "s1", prompt: [{ type: "text", text: "/stop" }] })))
+      .rejects.toMatchObject({ code: -32002 });
+    expect(active.exec.status(active.repo.get("s1")!).state).toBe("running");
+    release();
+    expect((await pending).stopReason).toBe("end_turn");
   });
 
   it("ingests ACP resource and image blocks for the Run and removes task files after completion", async () => {
     const { root, app, attachmentPaths, attachmentContents, prompts } = setup();
-    const result = await acp.client({ name: "desk" }).connectWith(app, (agent) =>
+    const result = await acp.client({ name: "generic" }).connectWith(app, (agent) =>
       agent.request(acp.methods.agent.session.prompt, {
         sessionId: "s1",
         prompt: [
@@ -169,7 +183,7 @@ describe("outward ACP Desk commands (#1101)", () => {
     const nested = join(root, "nested-workstream");
     mkdirSync(nested);
     repo.create({ sessionId: "nested", conversationId: "acp:nested", cwd: nested });
-    await acp.client({ name: "desk" }).connectWith(app, (agent) =>
+    await acp.client({ name: "generic" }).connectWith(app, (agent) =>
       agent.request(acp.methods.agent.session.prompt, {
         sessionId: "nested",
         prompt: [{ type: "resource", resource: { uri: "file:///input/notes.txt", mimeType: "text/plain", text: "nested content" } }],
@@ -183,7 +197,7 @@ describe("outward ACP Desk commands (#1101)", () => {
     let release!: () => void;
     const gate = new Promise<void>((resolve) => { release = resolve; });
     const { app, run, attachmentPaths } = setup({ gate });
-    const done = acp.client({ name: "desk" }).connectWith(app, (agent) =>
+    const done = acp.client({ name: "generic" }).connectWith(app, (agent) =>
       agent.request(acp.methods.agent.session.prompt, {
         sessionId: "s1",
         prompt: [{ type: "resource", resource: { uri: "file:///input/notes.md", mimeType: "text/markdown", text: "cancel me" } }],

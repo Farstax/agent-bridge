@@ -9,11 +9,10 @@ import type { BotKind, BridgeConfig, RouteableBotKind } from "../types.js";
 import { OUTWARD_ACP_SURFACE, type OutwardWorkstreamControl } from "./execution.js";
 
 /**
- * Desk command parity (#1101). Each command runs through its existing Bridge
- * owner before any model prompting; nothing here becomes prompt text.
- * Commands with a standard ACP or Workstream equivalent point at it.
+ * Optional ACP commands use existing Bridge owners. Commands with a standard
+ * ACP or workstream equivalent point at it.
  */
-export type DeskCommandRoute =
+export type AcpCommandRoute =
   | "run"
   | "session/cancel"
   | "session/new"
@@ -21,13 +20,13 @@ export type DeskCommandRoute =
   | "_agent-bridge/workstreams/select_provider"
   | "_agent-bridge/commands/list";
 
-export interface DeskCommandEntry {
+export interface AcpCommandEntry {
   name: string;
   description: string;
   available: boolean;
   /** Why the command is unavailable for this Workstream/provider. */
   reason?: string;
-  route: DeskCommandRoute;
+  route: AcpCommandRoute;
   /** Free-text argument the command takes, if any. */
   argument?: string;
   /** Destructive: `run` requires `confirm: true`. */
@@ -36,44 +35,44 @@ export interface DeskCommandEntry {
   selectable?: boolean;
 }
 
-export interface DeskCommandOption {
+export interface AcpCommandOption {
   label: string;
   selected: boolean;
   token: string;
 }
 
-export interface DeskCommandResult {
+export interface AcpCommandResult {
   command: string;
   text: string;
-  options?: DeskCommandOption[];
+  options?: AcpCommandOption[];
 }
 
-export interface DeskCommandControl extends OutwardWorkstreamControl {
+export interface AcpCommandControl extends OutwardWorkstreamControl {
   cancel(session: OutwardAcpSessionRecord): Promise<void>;
   /** Run `operation` holding the Workstream lane; throws busy when a Run holds it. */
   withIdleLane<T>(session: OutwardAcpSessionRecord, operation: () => T): T;
   btw?(session: OutwardAcpSessionRecord, provider: BotKind, prompt: string): Promise<string>;
 }
 
-export interface DeskCommandOptions {
+export interface AcpCommandOptions {
   db: BridgeDb;
   config: BridgeConfig;
-  control: DeskCommandControl;
+  control: AcpCommandControl;
   codexUsage?: () => Promise<string>;
 }
 
 const NOT_ON_OUTWARD = "owner/admin command; not authorised on the outward ACP surface";
 const UNKNOWN_COMMAND_ERROR = "unknown Bridge command";
 
-type Definition = Omit<DeskCommandEntry, "available" | "reason"> & {
-  unavailable?: (provider: RouteableBotKind, options: DeskCommandOptions, session: OutwardAcpSessionRecord) => string | null;
+type Definition = Omit<AcpCommandEntry, "available" | "reason"> & {
+  unavailable?: (provider: RouteableBotKind, options: AcpCommandOptions, session: OutwardAcpSessionRecord) => string | null;
 };
 
 const DEFINITIONS: readonly Definition[] = [
   { name: "start", description: "Show readiness", route: "run" },
   { name: "help", description: "List commands", route: "_agent-bridge/commands/list" },
-  { name: "new", description: "Start a new Workstream", route: "session/new" },
-  { name: "status", description: "Show Workstream status", route: "_agent-bridge/workstreams/status" },
+  { name: "new", description: "Create a session", route: "session/new" },
+  { name: "status", description: "Show session status", route: "_agent-bridge/workstreams/status" },
   { name: "stop", description: "Abort running execution", route: "session/cancel" },
   {
     name: "reset",
@@ -125,15 +124,9 @@ const DEFINITIONS: readonly Definition[] = [
 
 const BY_NAME = new Map(DEFINITIONS.map((definition) => [definition.name, definition]));
 
-/** Bridge command names a standard prompt must not silently forward to a model. */
-export function isDeskBridgeCommand(promptText: string): boolean {
-  const name = normalizeCommand(promptText).replace(/^\//, "");
-  return promptText.trim().startsWith("/") && BY_NAME.has(name);
-}
-
 type KeyboardButton = { text: string; callback_data: string };
 
-function keyboardOptions(markup: unknown): DeskCommandOption[] {
+function keyboardOptions(markup: unknown): AcpCommandOption[] {
   const rows = (markup as { inline_keyboard?: KeyboardButton[][] } | undefined)?.inline_keyboard ?? [];
   return rows.flat().map((button) => ({
     label: button.text.replace(/^✓ /, ""),
@@ -142,8 +135,8 @@ function keyboardOptions(markup: unknown): DeskCommandOption[] {
   }));
 }
 
-export class DeskCommands {
-  constructor(private readonly options: DeskCommandOptions) {}
+export class AcpCommands {
+  constructor(private readonly options: AcpCommandOptions) {}
 
   private provider(session: OutwardAcpSessionRecord): BotKind {
     return this.options.control.status(session).selectedProvider;
@@ -153,7 +146,7 @@ export class DeskCommands {
     return this.options.control.status(session).providers.find((candidate) => candidate.id === provider)?.available ?? false;
   }
 
-  catalogue(session: OutwardAcpSessionRecord): DeskCommandEntry[] {
+  catalogue(session: OutwardAcpSessionRecord): AcpCommandEntry[] {
     const provider = this.provider(session);
     return DEFINITIONS.map(({ unavailable, ...entry }) => {
       let reason = unavailable?.(provider, this.options, session) ?? null;
@@ -168,7 +161,7 @@ export class DeskCommands {
   async run(
     session: OutwardAcpSessionRecord,
     request: { command: string; argument?: string; select?: string; confirm?: boolean },
-  ): Promise<DeskCommandResult> {
+  ): Promise<AcpCommandResult> {
     const name = request.command.replace(/^\//, "").toLowerCase();
     const entry = this.catalogue(session).find((candidate) => candidate.name === name);
     if (!entry) throw acp.RequestError.invalidParams({ field: "command" }, UNKNOWN_COMMAND_ERROR);
@@ -193,7 +186,7 @@ export class DeskCommands {
         return { command: name, text: lines.join("\n") };
       }
       case "new":
-        return { command: name, text: "Start a new Workstream with ACP session/new." };
+        return { command: name, text: "Create a new session with session/new." };
       case "status": {
         const status = control.status(session);
         return { command: name, text: `State: ${status.state}. Provider: ${status.nextProvider}.` };
@@ -243,7 +236,7 @@ export class DeskCommands {
     }
   }
 
-  private providerOptions(session: OutwardAcpSessionRecord): DeskCommandOption[] {
+  private providerOptions(session: OutwardAcpSessionRecord): AcpCommandOption[] {
     const status = this.options.control.status(session);
     return status.providers.filter((p) => p.available).map((p) => ({
       label: p.id,
@@ -262,7 +255,7 @@ export class DeskCommands {
     name: "models" | "effort",
     provider: RouteableBotKind,
     select: string | undefined,
-  ): DeskCommandResult {
+  ): AcpCommandResult {
     const { db, config } = this.options;
     const view = () => {
       const result = handleCommand(provider, `/${name}`, { db, chatId: session.conversationId, config, surfaceIdentity: OUTWARD_ACP_SURFACE });
