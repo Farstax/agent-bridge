@@ -12,6 +12,7 @@ import argparse
 import hashlib
 import json
 import os
+import signal
 import shutil
 import stat
 import sys
@@ -315,6 +316,12 @@ def stage(archive: Path, release_root: Path, expected_commit: str, expected_arch
                 return validate_existing(release, release_root, expected_commit, archive_sha256)
 
             temporary = Path(tempfile.mkdtemp(prefix=f".staging-{expected_commit}-", dir=release_root))
+            previous_sigterm = signal.getsignal(signal.SIGTERM)
+
+            def terminate_staging(signum: int, _frame) -> None:
+                raise SystemExit(128 + signum)
+
+            signal.signal(signal.SIGTERM, terminate_staging)
             try:
                 snapshot.seek(0)
                 extract_archive(snapshot, temporary)
@@ -330,10 +337,12 @@ def stage(archive: Path, release_root: Path, expected_commit: str, expected_arch
                     return validate_existing(release, release_root, expected_commit, archive_sha256)
                 publish_provenance(release_root, expected_commit, archive_sha256)
                 return f"staged {expected_commit}"
-            except Exception:
+            except BaseException:
                 if temporary.exists():
                     shutil.rmtree(temporary)
                 raise
+            finally:
+                signal.signal(signal.SIGTERM, previous_sigterm)
 
 
 def main() -> int:
