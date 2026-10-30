@@ -7,12 +7,13 @@ import { PROTOCOL_VERSION, type AgentCapabilities, type Implementation } from "@
  * promising a capability the current wiring cannot satisfy.
  */
 export function bridgeAgentCapabilities(
-  options: { loadSession: boolean; workstreams?: boolean; commands?: boolean },
+  options: { loadSession: boolean; workstreams?: boolean; commands?: boolean; deferredCapacity?: boolean },
 ): AgentCapabilities {
   // Extension controls are advertised only when wired (#1101).
   const bridge = {
     ...(options.workstreams ? { workstreams: 1 } : {}),
     ...(options.commands ? { commands: 1 } : {}),
+    ...(options.deferredCapacity ? { deferredCapacity: 1 } : {}),
   };
   return {
     loadSession: options.loadSession,
