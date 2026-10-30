@@ -97,7 +97,7 @@ describe("outward ACP durable capacity continuations (#1114)", () => {
     const dispatch = vi.fn();
     await scanRunContinuations(db, identity.surfaceIdentity, dispatch, 100_000, { isProcessAlive: () => false });
     expect(dispatch).not.toHaveBeenCalled();
-    expect(listRunContinuations(db, identity.surfaceIdentity)[0].state).toBe("cancelled");
+    expect(listRunContinuations(db, identity.surfaceIdentity)[0]).toMatchObject({ state: "failed", successorRunId: "outward-ambiguous-successor" });
     db.close();
   });
 });
