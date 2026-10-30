@@ -1,7 +1,8 @@
 import type { ContentBlock } from "@agentclientprotocol/sdk";
-import { lstat, mkdir, mkdtemp, readFile, readdir, realpath, rm, stat, writeFile } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, open, readFile, readdir, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { basename, extname, isAbsolute, join, relative, sep } from "node:path";
 import { createHash } from "node:crypto";
+import { constants } from "node:fs";
 
 const MAX_FILES = 8;
 const MAX_FILE_BYTES = 8 * 1024 * 1024;
@@ -151,41 +152,91 @@ export async function stageOutwardAcpAttachments<T>(
  * `operation` callback, before it returns. Bounded by the same
  * MAX_FILES/MAX_TOTAL_BYTES already enforced at staging time.
  */
+const RETAINED_MANIFEST = ".manifest.json";
+type RetainedEntry = { name: string; size: number; sha256: string };
+
+async function readPrivateFile(path: string, maximum: number): Promise<Buffer> {
+  const handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+  try {
+    const info = await handle.stat();
+    if (!info.isFile() || info.size > maximum || (info.mode & 0o777) !== 0o600 ||
+        (typeof process.getuid === "function" && info.uid !== process.getuid())) {
+      throw new Error("invalid retained attachment file");
+    }
+    const bytes = await handle.readFile();
+    if (bytes.length !== info.size || bytes.length > maximum) throw new Error("attachment changed during read");
+    return bytes;
+  } finally { await handle.close(); }
+}
+
 export async function retainOutwardAcpAttachmentsForWait(
   cwd: string,
   stagedPaths: readonly string[],
   continuationId: string,
 ): Promise<void> {
-  if (stagedPaths.length === 0) return;
+  if (stagedPaths.length > MAX_FILES) throw new Error("attachment file limit exceeded");
   const workspace = await realpath(cwd);
   const dir = join(workspace, retainedWaitDirName(continuationId));
-  // Non-recursive, non-following create: an existing path at this name
-  // (planted by another uid, or a symlink) must never be silently reused or
-  // written through. Only a path we can verify we own already (same
-  // ownership/permission/marker invariants as the staging directory) is
-  // treated as a legitimate crash-recovery retry of the same retention call.
-  try {
-    await mkdir(dir, { mode: 0o700 });
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-    if (!(await verifiedOwnedDir(dir, RETAINED_WAIT_OWNER_MARKER_CONTENT))) {
-      throw new Error(`refusing to reuse an unverified path while retaining attachments for ${continuationId}`);
-    }
+  try { await mkdir(dir, { mode: 0o700 }); } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "EEXIST") throw new Error("refusing to reuse an unverified path for retained attachments");
+    throw error;
   }
-  await writeFile(join(dir, OWNER_MARKER), RETAINED_WAIT_OWNER_MARKER_CONTENT, { mode: 0o600 });
-  for (const path of stagedPaths) {
-    const bytes = await readFile(path);
-    await writeFile(join(dir, basename(path)), bytes, { mode: 0o600 });
+  try {
+    const entries: RetainedEntry[] = [];
+    let total = 0;
+    for (const path of stagedPaths) {
+      const parent = await realpath(join(path, ".."));
+      if (relative(workspace, parent).startsWith(`..${sep}`) || parent === workspace ||
+          !basename(parent).startsWith(STAGING_PREFIX) || !(await verifiedOwnedDir(parent, OWNER_MARKER_CONTENT))) {
+        throw new Error("attachment source is not owned staging");
+      }
+      const name = basename(path);
+      if (name === OWNER_MARKER || name === RETAINED_MANIFEST || entries.some((entry) => entry.name === name)) {
+        throw new Error("invalid attachment name");
+      }
+      const bytes = await readPrivateFile(path, MAX_FILE_BYTES);
+      total += bytes.length;
+      if (total > MAX_TOTAL_BYTES) throw new Error("attachment total size limit exceeded");
+      await writeFile(join(dir, name), bytes, { flag: "wx", mode: 0o600 });
+      entries.push({ name, size: bytes.length, sha256: createHash("sha256").update(bytes).digest("hex") });
+    }
+    await writeFile(join(dir, RETAINED_MANIFEST), JSON.stringify({ continuationId, entries }), { flag: "wx", mode: 0o600 });
+    // Publishing the marker last makes incomplete directories unreadable.
+    await writeFile(join(dir, OWNER_MARKER), RETAINED_WAIT_OWNER_MARKER_CONTENT, { flag: "wx", mode: 0o600 });
+  } catch (error) {
+    await rm(dir, { recursive: true, force: true });
+    throw error;
   }
 }
 
-/** Verified-ownership read-back of a wait's retained attachments, newest sweep-safe. */
 export async function readRetainedOutwardAcpAttachments(cwd: string, continuationId: string): Promise<string[]> {
   const workspace = await realpath(cwd);
   const dir = join(workspace, retainedWaitDirName(continuationId));
-  if (!(await verifiedOwnedDir(dir, RETAINED_WAIT_OWNER_MARKER_CONTENT))) return [];
-  const entries = await readdir(dir);
-  return entries.filter((entry) => entry !== OWNER_MARKER).sort().map((entry) => join(dir, entry));
+  if (!(await verifiedOwnedDir(dir, RETAINED_WAIT_OWNER_MARKER_CONTENT))) throw new Error("retained attachments missing or unverified");
+  const manifestBytes = await readPrivateFile(join(dir, RETAINED_MANIFEST), 16 * 1024);
+  const manifest: unknown = JSON.parse(manifestBytes.toString("utf8"));
+  if (!manifest || typeof manifest !== "object" || !("continuationId" in manifest) || manifest.continuationId !== continuationId ||
+      !("entries" in manifest) || !Array.isArray(manifest.entries) || manifest.entries.length > MAX_FILES) {
+    throw new Error("invalid retained attachment manifest");
+  }
+  const paths: string[] = [];
+  let total = 0;
+  const names = new Set<string>();
+  for (const entry of manifest.entries) {
+    if (!entry || typeof entry.name !== "string" || basename(entry.name) !== entry.name || entry.name.startsWith(".") ||
+        names.has(entry.name) || !Number.isSafeInteger(entry.size) || entry.size < 0 || entry.size > MAX_FILE_BYTES ||
+        typeof entry.sha256 !== "string" || !/^[a-f0-9]{64}$/.test(entry.sha256)) throw new Error("invalid retained attachment entry");
+    names.add(entry.name);
+    total += entry.size;
+    if (total > MAX_TOTAL_BYTES) throw new Error("attachment total size limit exceeded");
+    const path = join(dir, entry.name);
+    const bytes = await readPrivateFile(path, MAX_FILE_BYTES);
+    if (bytes.length !== entry.size || createHash("sha256").update(bytes).digest("hex") !== entry.sha256) throw new Error("retained attachment integrity mismatch");
+    paths.push(path);
+  }
+  const expected = new Set([OWNER_MARKER, RETAINED_MANIFEST, ...names]);
+  if ((await readdir(dir)).some((name) => !expected.has(name))) throw new Error("unexpected retained attachment entry");
+  return paths;
 }
 
 /** Idempotent cleanup on settlement (completed/cancelled/expired) or explicit release. */

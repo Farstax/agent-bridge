@@ -6,7 +6,7 @@
  * transcript store, without referencing deleted paths, and without becoming
  * an unbounded accumulation.
  */
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
@@ -59,6 +59,8 @@ describe("durable attachment retention for a capacity wait (#1114)", () => {
 
   it("returns an empty list for a continuation with no retained attachments", async () => {
     const cwd = workspace();
+    await expect(readRetainedOutwardAcpAttachments(cwd, "acp-capacity-wait:none")).rejects.toThrow();
+    await retainOutwardAcpAttachmentsForWait(cwd, [], "acp-capacity-wait:none");
     expect(await readRetainedOutwardAcpAttachments(cwd, "acp-capacity-wait:none")).toEqual([]);
   });
 
@@ -71,7 +73,7 @@ describe("durable attachment retention for a capacity wait (#1114)", () => {
 
     expect(await readRetainedOutwardAcpAttachments(cwd, continuationId)).toHaveLength(1);
     await releaseRetainedOutwardAcpAttachments(cwd, continuationId);
-    expect(await readRetainedOutwardAcpAttachments(cwd, continuationId)).toEqual([]);
+    await expect(readRetainedOutwardAcpAttachments(cwd, continuationId)).rejects.toThrow();
   });
 
   it("refuses to reuse a pre-existing, unverified directory at the retained-attachment path", async () => {
@@ -91,6 +93,39 @@ describe("durable attachment retention for a capacity wait (#1114)", () => {
     })).rejects.toThrow(/unverified path/);
 
     expect(existsSync(join(plantedDir, "evidence-of-attacker-content"))).toBe(true);
+  });
+
+  it("rejects missing, modified, and symlinked retained files", async () => {
+    const cwd = workspace();
+    const id = "integrity-check";
+    await stageOutwardAcpAttachments(cwd, [
+      { type: "resource", resource: { uri: "file:///note.txt", mimeType: "text/plain", text: "original" } },
+    ] as ContentBlock[], async (files) => { await retainOutwardAcpAttachmentsForWait(cwd, files, id); });
+    const [path] = await readRetainedOutwardAcpAttachments(cwd, id);
+    writeFileSync(path, "changed");
+    await expect(readRetainedOutwardAcpAttachments(cwd, id)).rejects.toThrow();
+    rmSync(path);
+    await expect(readRetainedOutwardAcpAttachments(cwd, id)).rejects.toThrow();
+    symlinkSync(join(cwd, "outside"), path);
+    await expect(readRetainedOutwardAcpAttachments(cwd, id)).rejects.toThrow();
+  });
+
+  it("publishes at most one retention and rejects unverified extra entries", async () => {
+    const cwd = workspace();
+    const id = "concurrent-retention";
+    await stageOutwardAcpAttachments(cwd, [
+      { type: "resource", resource: { uri: "file:///note.txt", mimeType: "text/plain", text: "original" } },
+    ] as ContentBlock[], async (files) => {
+      const results = await Promise.allSettled([
+        retainOutwardAcpAttachmentsForWait(cwd, files, id),
+        retainOutwardAcpAttachmentsForWait(cwd, files, id),
+      ]);
+      expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+      expect(results.filter((result) => result.status === "rejected")).toHaveLength(1);
+    });
+    const [path] = await readRetainedOutwardAcpAttachments(cwd, id);
+    writeFileSync(join(path, "..", "unexpected"), "untrusted");
+    await expect(readRetainedOutwardAcpAttachments(cwd, id)).rejects.toThrow();
   });
 
   it("releasing a continuation that was never retained is a safe no-op", async () => {
