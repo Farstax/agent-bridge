@@ -179,6 +179,7 @@ export function createOutwardAcpAgent(options: OutwardAcpAgentOptions = {}): Age
       loadSession: supportsLoad,
       workstreams: supportsWorkstreams,
       commands: supportsWorkstreams && Boolean(options.commands),
+      deferredCapacity: supportsWorkstreams && options.promptExecutor?.supportsDeferredCapacity === true,
     }),
     agentInfo: { ...BRIDGE_ACP_AGENT_INFO },
   }));
@@ -300,6 +301,7 @@ export function createOutwardAcpAgent(options: OutwardAcpAgentOptions = {}): Age
           : prompt,
         attachments,
         signal: ctx.signal,
+        deferCapacity: ctx.params._meta?.["agent-bridge/defer-capacity"] === 1,
         onUpdate: (update) => ctx.client.notify(acp.methods.client.session.update, {
           sessionId: session.sessionId,
           update,
