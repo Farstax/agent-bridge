@@ -473,13 +473,7 @@ async function dispatchInteractiveExecutionWithFallback(
     fallbackRequests?.delete(chatKey);
     exhaustedChats?.delete(chatKey);
     authRequiredChats?.delete(chatKey);
-    let next: CliKind | null = null;
-    for (const cli of fallbackChain.getChain()) {
-      if (!tried.has(cli)) {
-        next = cli as CliKind;
-        break;
-      }
-    }
+    const next = fallbackChain.nextUntriedAvailable(chatKey, tried) as CliKind | null;
     if (next) {
       prepareCliHandoff(db, identity, next, `fallback_from_${activeCli}`);
       fallbackChain.setActiveCli(chatKey, next);
