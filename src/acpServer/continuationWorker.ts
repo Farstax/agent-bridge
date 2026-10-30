@@ -54,6 +54,16 @@ export async function resumeOutwardCapacityWait(
   }
 }
 
+/** Read-only, claim-fenced evidence required before retiring retained inputs. */
+export function outwardCapacityCompletionProven(db: BridgeDb, wait: RunContinuation): boolean {
+  const current = listRunContinuations(db, OUTWARD_ACP_SURFACE).find((item) => item.id === wait.id);
+  const successor = current?.successorRunId ? db.getRun(current.successorRunId) : null;
+  return Boolean(current && current.state === "claimed" &&
+    current.claimToken === wait.claimToken && successor &&
+    successor.status === "done" && successor.chat_id === wait.chatKey &&
+    successor.surface_identity === OUTWARD_ACP_SURFACE);
+}
+
 async function main(): Promise<void> {
   const dbPath = process.env.DB_PATH;
   if (!dbPath || !dbPath.startsWith("/") || !dbPath.endsWith(".sqlite")) {
@@ -76,14 +86,8 @@ async function main(): Promise<void> {
     try {
       const outcome = await resumeOutwardCapacityWait(db, (id) => repository.get(id), executor, wait);
       if (outcome) {
-        const current = listRunContinuations(db, OUTWARD_ACP_SURFACE).find((item) => item.id === wait.id);
-        const successor = current?.successorRunId ? db.getRun(current.successorRunId) : null;
-        // A fulfilled ACP request is not proof that its Run/events committed.
-        // Never destroy the only retained input before the authoritative
-        // successor has reached a successful, correctly owned terminal state.
-        if (!current || current.state !== "claimed" || current.claimToken !== wait.claimToken ||
-            !successor || successor.status !== "done" ||
-            successor.chat_id !== wait.chatKey || successor.surface_identity !== OUTWARD_ACP_SURFACE) {
+        // An ACP end_turn cannot alone prove that the Run/events committed.
+        if (!outwardCapacityCompletionProven(db, wait)) {
           throw new Error("outward capacity successor completion is not durably proven");
         }
         await releaseRetainedOutwardAcpAttachments(repository.get(wait.outward!.sessionId)!.cwd, wait.id);
