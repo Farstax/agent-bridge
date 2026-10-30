@@ -7,16 +7,15 @@ description: Use for `review it` and before merge/release/deploy to adversariall
 
 This skill owns the `review it` command. The reviewer's job is to try to disprove readiness, not confirm the implementer's narrative.
 
-## Independence
+## Independence by review phase
 
-Use a **fresh, context-isolated reviewer with working repository source access**. Either route qualifies:
+A qualifying `review it` is a **fresh, read-only, adversarial phase** against one pinned PR head. Independence means **separating implementation from judgement**, not requiring a second contributor, agent, provider, model, account, or chat. The same agent that implemented the code may perform the final review, including in the same session, after explicitly ending implementation and switching to this phase. Prefer a separate native subagent/reviewer or an external GitHub-connected reviewer when readily available, but neither is mandatory.
 
-1. **Native reviewer/subagent:** Start a separate review session with repository read/search tools, preferably using a different available provider. A fresh isolated same-provider session is acceptable when alternatives are unavailable. The implementing session's own analysis is not an independent review.
-2. **External GitHub-connected reviewer:** A separate source-review session (including external ChatGPT with GitHub access) inspects the pinned PR head and leaves a head-pinned GitHub COMMENT review or PR conversation comment. A single maintainer may record real external source-review evidence under their connected identity; it is not a formal second-person GitHub APPROVE.
+For a same-agent final review, confirm that required exact-head CI has passed, pin that head, then **re-derive the expected outcome from the issue and acceptance criteria**, inspect the actual diff and relevant repository source/tests/checks, and actively search for reasons to reject it. Never use the implementation narrative or green CI alone as a PASS. Review tools and actions are **read-only**: no edits, commits, PR updates, merges, releases, or deployments during the review, even if write-capable tools are available. No extra review infrastructure or permission system is required.
 
-Both routes must independently read the exact PR head, original issue/acceptance contract, repository instructions, relevant source and tests, and check evidence. Record **PASS or actionable findings**, what was inspected, the exact head, reviewer environment and evidence limitations. Treat green CI as evidence, never as the review itself. A tool-free opinion, invented reviewer identity or implementing-session self-approval does not qualify.
+Record a head-pinned PASS or actionable findings in the PR conversation or COMMENT review, with what was inspected, evidence, limits, and whether this was a **same-agent phase**, separate native reviewer, or separate external GitHub-connected reviewer. A comment from the sole maintainer is acceptable evidence of the recorded assessment, not a second human GitHub APPROVE. Never claim a separate reviewer identity when there was none.
 
-If a reviewer cannot inspect repository source, use another supported route or report a blocker. A finding requiring changes ends the current review; implement the repair and conduct a fresh review on the changed head. Do not bypass exact-head CI or the merge safety rules.
+A finding that requires mutation **ends the review phase**. Record findings first, return to implementation, repair, rerun invalidated checks and perform a fresh review of the new exact head. If real source inspection or required CI evidence is unavailable, report the blocker rather than grant PASS. Do not bypass repository merge or deployment authority.
 
 Before reading the implementation in detail, independently restate the intended observable outcome, actor/resource/authority, and important non-goals. If that contract is wrong or incomplete, report it rather than reviewing the wrong solution more carefully.
 
