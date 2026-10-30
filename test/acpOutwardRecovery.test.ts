@@ -59,4 +59,20 @@ describe("outward ACP crash recovery", () => {
       expect(db.getRun("old-provider").status).toBe("running");
     } finally { db.close(); }
   });
+  it("provides controlled recovery for legacy locks only at a quiesced rollout boundary", () => {
+    const db = openDb(":memory:", { serviceId: "acp:outward", runId: "legacy" });
+    try {
+      const identity = { surfaceIdentity: OUTWARD_ACP_SURFACE, chatKey: "acp:legacy-rollout" };
+      db.insertRun("legacy-provider", identity, "codex");
+      expect(db.acquireLock(identity.surfaceIdentity, identity.chatKey)).not.toBeNull();
+      db.raw.prepare("UPDATE execution_locks SET lease_expires_at = ?").run(new Date(0).toISOString());
+      // Connection startup cannot prove that the old process is gone.
+      // The administrative, quiesced-rollout owner has a separate audited path.
+      const result = db.reconcileControlledRollout({ reason: "operator_verified_quiescence" });
+      expect(result.releasedLockCount).toBe(1);
+      expect(db.hasChatLock(identity.chatKey)).toBe(false);
+      expect(db.getRun("legacy-provider").status).toBe("failed");
+    } finally { db.close(); }
+  });
+
 });
