@@ -8,6 +8,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { afterAll, describe, expect, it } from "vitest";
 import * as acp from "@agentclientprotocol/sdk";
+import Database from "better-sqlite3";
 import { openDb } from "../src/db.js";
 import { OUTWARD_ACP_SURFACE } from "../src/acpServer/execution.js";
 import { OutwardAcpSessionRepository } from "../src/repositories/outwardAcpSessionRepository.js";
@@ -299,6 +300,27 @@ async function waitForRunningRun(dbPath: string, conversationId: string, timeout
 }
 
 describe("outward ACP stdio boundary", { timeout: 30_000 }, () => {
+  it("initializes while another connection holds the SQLite writer lock", async () => {
+    const root = mkdtempSync(join(tmpdir(), "acp-writer-lock-"));
+    const dbPath = join(root, "bridge.sqlite");
+    openDb(dbPath, { databaseRole: "interactive" }).close();
+    const writer = new Database(dbPath);
+    writer.exec("BEGIN IMMEDIATE");
+    const server = startOutwardAcpProcess(dbPath);
+    try {
+      const result = await Promise.race([
+        initialize(server, 1),
+        delay(4000).then(() => { throw new Error("initialize blocked by SQLite writer"); }),
+      ]);
+      expect(result.result?.protocolVersion).toBe(acp.PROTOCOL_VERSION);
+    } finally {
+      writer.exec("ROLLBACK");
+      writer.close();
+      await stopProcess(server);
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("uses a trusted launch workspace independent of the installation directory", async () => {
     const root = mkdtempSync(join(tmpdir(), "acp-launch-root-"));
     const install = join(root, "install");

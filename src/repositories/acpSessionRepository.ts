@@ -11,7 +11,8 @@ export class AcpSessionRepository {
       `SELECT surface_identity AS surfaceIdentity, conversation_id AS conversationId, provider_id AS providerId,
               acp_session_id AS acpSessionId, last_run_id AS runId
          FROM acp_session_bindings
-        WHERE surface_identity = ? AND conversation_id = ? AND provider_id = ?`,
+        WHERE surface_identity = ? AND conversation_id = ? AND provider_id = ?
+          AND datetime(updated_at) >= datetime('now', '-7 days')`,
     ).get(identity.surfaceIdentity, identity.chatKey, providerId) as {
       surfaceIdentity: string;
       conversationId: string;

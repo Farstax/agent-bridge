@@ -33,6 +33,7 @@ const db = openProductionDb(dbPath, {
   requireInstallationIdentity:
     process.env.NODE_ENV === "production" && Boolean(process.env.AGENT_BRIDGE_INSTALLATION_ID?.trim()),
   databaseRole: "interactive",
+  deferSessionExpiry: true,
 });
 
 // Recover only this outward ACP surface. Existing process markers and lock
