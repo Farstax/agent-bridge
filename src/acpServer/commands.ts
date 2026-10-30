@@ -71,8 +71,8 @@ type Definition = Omit<AcpCommandEntry, "available" | "reason"> & {
 const DEFINITIONS: readonly Definition[] = [
   { name: "start", description: "Show readiness", route: "run" },
   { name: "help", description: "List commands", route: "_agent-bridge/commands/list" },
-  { name: "new", description: "Start a new Workstream", route: "session/new" },
-  { name: "status", description: "Show Workstream status", route: "_agent-bridge/workstreams/status" },
+  { name: "new", description: "Create a session", route: "session/new" },
+  { name: "status", description: "Show session status", route: "_agent-bridge/workstreams/status" },
   { name: "stop", description: "Abort running execution", route: "session/cancel" },
   {
     name: "reset",
@@ -186,7 +186,7 @@ export class AcpCommands {
         return { command: name, text: lines.join("\n") };
       }
       case "new":
-        return { command: name, text: "Start a new Workstream with ACP session/new." };
+        return { command: name, text: "Create a new session with session/new." };
       case "status": {
         const status = control.status(session);
         return { command: name, text: `State: ${status.state}. Provider: ${status.nextProvider}.` };

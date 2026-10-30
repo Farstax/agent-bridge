@@ -83,7 +83,7 @@ function setup(options: { chain?: BotKind[]; btw?: boolean; gate?: Promise<void>
 
 describe("outward ACP commands", () => {
   it("publishes a provider-aware catalogue with explicit disabled reasons", async () => {
-    const { list, exec, repo } = setup();
+    const { list, run, exec, repo } = setup();
     const byName = (await list()).commands;
     const names = byName.map((c) => c.name);
     for (const name of ["start", "reset", "models", "effort", "queue_mode", "skills", "usage", "narration", "context", "btw", "stop", "cli", "switch", "sensors", "autonomy", "help", "new", "status"]) {
@@ -96,6 +96,8 @@ describe("outward ACP commands", () => {
     expect(get("sensors").available).toBe(false);
     expect(get("autonomy").available).toBe(false);
     expect(get("stop").route).toBe("session/cancel");
+    expect(get("new").description).toBe("Create a session");
+    expect((await run({ command: "new" })).text).toBe("Create a new session with session/new.");
 
     exec.selectProvider(repo.get("s1")!, "claude");
     const claude = (await list()).commands;
@@ -130,7 +132,7 @@ describe("outward ACP commands", () => {
 
   it("forwards literal slash text as ordinary prompt content", async () => {
     const { app, prompts } = setup();
-    const texts = ["/status", "/reset", "/models", "/STOP", "/cli claude", "/btw hi"];
+    const texts = ["/status", "/reset", "/stop", "/models", "/STOP", "/cli claude", "/btw hi"];
     for (const text of texts) {
       await acp.client({ name: "generic" }).connectWith(app, (agent) =>
         agent.request(acp.methods.agent.session.prompt, { sessionId: "s1", prompt: [{ type: "text", text }] }));
