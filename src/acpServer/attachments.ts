@@ -1,5 +1,5 @@
 import type { ContentBlock } from "@agentclientprotocol/sdk";
-import { lstat, mkdir, mkdtemp, open, readFile, readdir, realpath, rm, stat, writeFile } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, open, readFile, readdir, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
 import { basename, extname, isAbsolute, join, relative, sep } from "node:path";
 import { createHash } from "node:crypto";
 import { constants } from "node:fs";
@@ -17,6 +17,7 @@ const OWNER_MARKER_CONTENT = "agent-bridge-outward-attachment-v1\n";
 // sweep bound must exceed that so it only ever reclaims a directory whose
 // continuation has definitely already settled or expired, never a live one.
 const RETAINED_WAIT_PREFIX = ".agent-bridge-attachments-wait-";
+const RETAINED_TMP_PREFIX = ".agent-bridge-attachments-wait-tmp-";
 const RETAINED_WAIT_OWNER_MARKER_CONTENT = "agent-bridge-outward-attachment-wait-v1\n";
 const STALE_RETAINED_WAIT_AGE_MS = 8 * 24 * 60 * 60 * 1000;
 
@@ -177,10 +178,10 @@ export async function retainOutwardAcpAttachmentsForWait(
   if (stagedPaths.length > MAX_FILES) throw new Error("attachment file limit exceeded");
   const workspace = await realpath(cwd);
   const dir = join(workspace, retainedWaitDirName(continuationId));
-  try { await mkdir(dir, { mode: 0o700 }); } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "EEXIST") throw new Error("refusing to reuse an unverified path for retained attachments");
-    throw error;
-  }
+  // Construct a complete, private snapshot before publishing the deterministic
+  // continuation path. An interruption before rename leaves only an expirable
+  // temporary directory; retry is never blocked by a half-written final path.
+  const temporary = await mkdtemp(join(workspace, RETAINED_TMP_PREFIX));
   try {
     const entries: RetainedEntry[] = [];
     let total = 0;
@@ -197,15 +198,24 @@ export async function retainOutwardAcpAttachmentsForWait(
       const bytes = await readPrivateFile(path, MAX_FILE_BYTES);
       total += bytes.length;
       if (total > MAX_TOTAL_BYTES) throw new Error("attachment total size limit exceeded");
-      await writeFile(join(dir, name), bytes, { flag: "wx", mode: 0o600 });
+      await writeFile(join(temporary, name), bytes, { flag: "wx", mode: 0o600 });
       entries.push({ name, size: bytes.length, sha256: createHash("sha256").update(bytes).digest("hex") });
     }
-    await writeFile(join(dir, RETAINED_MANIFEST), JSON.stringify({ continuationId, entries }), { flag: "wx", mode: 0o600 });
-    // Publishing the marker last makes incomplete directories unreadable.
-    await writeFile(join(dir, OWNER_MARKER), RETAINED_WAIT_OWNER_MARKER_CONTENT, { flag: "wx", mode: 0o600 });
-  } catch (error) {
-    await rm(dir, { recursive: true, force: true });
-    throw error;
+    await writeFile(join(temporary, RETAINED_MANIFEST), JSON.stringify({ continuationId, entries }), { flag: "wx", mode: 0o600 });
+    await writeFile(join(temporary, OWNER_MARKER), RETAINED_WAIT_OWNER_MARKER_CONTENT, { flag: "wx", mode: 0o600 });
+    // No-overwrite check: a concurrent completed retention or an attacker-
+    // planted path must not be reused. The final directory is never empty.
+    try {
+      await lstat(dir);
+      throw new Error("refusing to reuse an unverified path for retained attachments");
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
+    await rename(temporary, dir);
+  } finally {
+    // No-op after successful rename. Also cleans partial temporary snapshots
+    // after a failed write without deleting a previously published retention.
+    await rm(temporary, { recursive: true, force: true });
   }
 }
 
@@ -289,6 +299,7 @@ export async function cleanupStaleOutwardAcpAttachments(
       // the same namespace) but must only ever be swept past its own much
       // longer, continuation-expiry-safe bound and marker (#1114).
       const isRetainedWait = entry.startsWith(RETAINED_WAIT_PREFIX);
+      const isRetainedTemporary = entry.startsWith(RETAINED_TMP_PREFIX);
       if (!isRetainedWait && !entry.startsWith(STAGING_PREFIX)) continue;
       const path = join(workspace, entry);
       const entryCutoff = isRetainedWait ? now - STALE_RETAINED_WAIT_AGE_MS : cutoff;
@@ -299,6 +310,15 @@ export async function cleanupStaleOutwardAcpAttachments(
         throw error;
       }
       if (!info.isDirectory() || (info.mode & 0o777) !== 0o700 || info.mtimeMs > entryCutoff) continue;
+      // The temporary snapshot may have been interrupted before its marker
+      // was written. Private UID-owned, 0700, expired tmp directories are
+      // safe to reclaim; never apply this exception to final retained paths.
+      if (isRetainedTemporary) {
+        if (typeof process.getuid === "function" && info.uid !== process.getuid()) continue;
+        await rm(path, { recursive: true, force: true });
+        removed += 1;
+        continue;
+      }
       const marker = join(path, OWNER_MARKER);
       let markerInfo;
       try { markerInfo = await lstat(marker); } catch (error) {
