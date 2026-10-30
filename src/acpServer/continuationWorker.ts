@@ -4,7 +4,7 @@
  * neither opens an ACP server nor relies on a browser or pooled stdio client.
  */
 import { realpath } from "node:fs/promises";
-import { isAbsolute, relative, sep } from "node:path";
+import { isAbsolute } from "node:path";
 import { openProductionDb, type BridgeDb } from "../db.js";
 import { RunContinuationRunner, type RunContinuation } from "../runContinuation.js";
 import { outwardServiceId, recoverOutwardLanes } from "./recovery.js";
@@ -32,7 +32,7 @@ export async function resumeOutwardCapacityWait(
   const session = lookup(wait.outward.sessionId);
   if (!session || session.conversationId !== wait.chatKey) throw new Error("outward capacity session identity changed");
   const cwd = await realpath(session.cwd);
-  if (!isAbsolute(cwd) || relative(cwd, session.cwd).startsWith(`..${sep}`)) {
+  if (!isAbsolute(cwd) || cwd !== session.cwd) {
     throw new Error("outward capacity workspace path is invalid");
   }
   const retained = await readRetainedOutwardAcpAttachments(cwd, wait.id);
