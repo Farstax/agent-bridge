@@ -135,7 +135,7 @@ authorization_root = root / "authorization"
 authorization_root.mkdir()
 footprint = module.VERIFIED_MANIFESTS[sha256]["_staging_footprint"]
 block = max(os.statvfs(root).f_frsize, os.statvfs(root).f_bsize, module.STAGING_BLOCK_BYTES)
-snapshot = -(-footprint[2] // block) * block
+snapshot = -(-footprint[2] // block) * block + block
 candidate = module.candidate_bytes(footprint[3], block) + 2 * block + 2 * block
 without_authorization = module.DEFAULT_STAGING_SAFETY_RESERVE_BYTES + snapshot + candidate
 os.environ["AGENT_BRIDGE_DEPLOY_TEST_AVAILABLE_BYTES"] = str(without_authorization)
