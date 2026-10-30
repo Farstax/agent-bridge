@@ -21,6 +21,8 @@ export interface RunStartedEvent extends BridgeEventBase {
   model: string | null;
   command: string;
   cwd: string;
+  /** Kernel identity of the provider process Bridge spawned for this Run. */
+  process?: { pid: number; startTicks: string };
 }
 
 export interface TextDeltaEvent extends BridgeEventBase {
@@ -114,9 +116,11 @@ export const type = {
     cwd: string;
     model: string | null;
     threadId?: string;
+    process?: { pid: number; startTicks: string } | null;
   }): RunStartedEvent {
     return {
       ...base(fields), type: "run.started", command: fields.command, cwd: fields.cwd, model: fields.model,
+      ...(fields.process ? { process: fields.process } : {}),
     };
   },
 
