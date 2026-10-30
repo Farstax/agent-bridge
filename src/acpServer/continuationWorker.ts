@@ -87,7 +87,8 @@ async function main(): Promise<void> {
     processState: (run) => processState(run.run_id),
     containmentState: (_run, state) => state === "absent" ? "proven" : "ambiguous",
   });
-  await prepareInteractiveCliAuth(process.env);
+  try { await prepareInteractiveCliAuth(process.env); }
+  catch (error) { console.error("[acp:outward:continuations] API-key verification failed", error); }
   const repository = new OutwardAcpSessionRepository(db.raw);
   const executor = createProductionOutwardAcpPromptExecutor(db, dbPath, process.env);
   const runner = new RunContinuationRunner(db, OUTWARD_ACP_SURFACE, async (wait) => {
