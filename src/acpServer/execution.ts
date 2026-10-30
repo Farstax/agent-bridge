@@ -15,6 +15,10 @@ import { createSurfaceNeutralProviderRouter, type SurfaceNeutralProviderRouter }
 import { getCachedAvailableCliKinds } from "../interactiveCliAuth.js";
 import { applyManualCliSwitchHandoff, getStoredCliPreference, type CliKind } from "../interactiveBot.js";
 import type { BotKind, BridgeConfig, CliResult, RouteableBotKind } from "../types.js";
+import { retainOutwardAcpAttachmentsForWait } from "./attachments.js";
+import { hasPendingCapacityWait, listRunContinuations, linkCapacityContinuationRun, requestRunContinuation } from "../runContinuation.js";
+import { decideProviderRecovery } from "../providers/recoveryVerdict.js";
+import { providerIdForBotName } from "../providers/registry.js";
 
 export const OUTWARD_ACP_SURFACE = "acp:outward";
 const OUTWARD_ACP_EXECUTION_ERROR = -32001;
@@ -39,15 +43,20 @@ export interface OutwardAcpPromptExecutionInput {
   attachments?: string[];
   signal: AbortSignal;
   onUpdate: (update: OutwardUpdate) => void | Promise<void>;
+  /** ACP v1 caller opted into the deferred capacity extension. */
+  deferCapacity?: boolean;
+  /** Trusted, claimed continuation only; not supplied by an ACP client. */
+  capacityResume?: { id: string; claimToken: string };
 }
 
 export interface OutwardAcpPromptExecutor {
   execute(input: OutwardAcpPromptExecutionInput): Promise<acp.PromptResponse>;
   cancel(session: OutwardAcpSessionRecord): Promise<void>;
+  readonly supportsDeferredCapacity?: boolean;
 }
 
 /** Truthful Workstream state, derived only from durable Run records (#1101). */
-export type OutwardWorkstreamState = "running" | "attention" | "failed" | "cancelled" | "idle";
+export type OutwardWorkstreamState = "running" | "waiting" | "attention" | "failed" | "cancelled" | "idle";
 
 export interface OutwardWorkstreamStatus {
   state: OutwardWorkstreamState;
@@ -86,6 +95,8 @@ export interface BridgeOutwardAcpPromptExecutorOptions {
   isProviderAvailable?: (provider: BotKind) => boolean;
   createEngine: (session: OutwardAcpSessionRecord, attemptProvider: BotKind) => OutwardAcpExecutionEngine;
   runId?: () => string;
+  /** Enabled only with an independently supervised workspace continuation owner. */
+  enableDeferredCapacity?: boolean;
   /** Fresh read-only side question for /btw; absent when not wired. */
   btw?: (session: OutwardAcpSessionRecord, provider: BotKind, prompt: string) => Promise<string>;
 }
@@ -190,6 +201,8 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
 
   constructor(private readonly options: BridgeOutwardAcpPromptExecutorOptions) {}
 
+  get supportsDeferredCapacity(): boolean { return this.options.enableDeferredCapacity === true; }
+
   private identity(session: OutwardAcpSessionRecord) {
     return { surfaceIdentity: OUTWARD_ACP_SURFACE, chatKey: session.conversationId };
   }
@@ -218,9 +231,16 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
 
   status(session: OutwardAcpSessionRecord): OutwardWorkstreamStatus {
     const { db, providerChain, isProviderAvailable } = this.options;
-    const run = db.getLatestRunForConversation(this.identity(session));
+    const latest = db.getLatestRunForConversation(this.identity(session));
+    const wait = listRunContinuations(db, OUTWARD_ACP_SURFACE).find((item) =>
+      item.chatKey === session.conversationId && item.outward?.sessionId === session.sessionId
+      && (item.state === "pending" || item.state === "claimed"));
+    // A waiting deferred Run owns the Workstream even though its original
+    // capacity-rejected attempt has a terminal failed event.
+    const run = wait && latest?.status !== "running" ? db.getRun(wait.originRunId) : latest;
     let state: OutwardWorkstreamState = "idle";
-    if (run?.status === "running") state = "running";
+    if (latest?.status === "running") state = "running";
+    else if (wait) state = "waiting";
     else if (run?.status === "failed") state = "failed";
     else if (run?.status === "cancelled") state = "cancelled";
     // Attention comes only from an explicit recorded provider disposition.
@@ -275,6 +295,9 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
   /** Run a Workstream mutation under its lane fence; busy when a Run holds the lane. */
   withIdleLane<T>(session: OutwardAcpSessionRecord, operation: () => T): T {
     const { db } = this.options;
+    if (hasPendingCapacityWait(db, OUTWARD_ACP_SURFACE, session.conversationId)) {
+      throw new acp.RequestError(OUTWARD_ACP_BUSY_ERROR, "outward ACP Workstream has a deferred task", { sessionId: session.sessionId });
+    }
     const lane = db.acquireLock(OUTWARD_ACP_SURFACE, session.conversationId);
     if (!lane) {
       throw new acp.RequestError(OUTWARD_ACP_BUSY_ERROR, "outward ACP session is busy", { sessionId: session.sessionId });
@@ -334,6 +357,9 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
 
   async execute(input: OutwardAcpPromptExecutionInput): Promise<acp.PromptResponse> {
     const { db } = this.options;
+    if (hasPendingCapacityWait(db, OUTWARD_ACP_SURFACE, input.session.conversationId, input.capacityResume?.id)) {
+      throw new acp.RequestError(OUTWARD_ACP_BUSY_ERROR, "outward ACP Workstream is awaiting provider capacity");
+    }
     const lane = db.acquireLock(OUTWARD_ACP_SURFACE, input.session.conversationId);
     if (!lane) {
       throw new acp.RequestError(
@@ -353,11 +379,18 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
       const identity = { surfaceIdentity: OUTWARD_ACP_SURFACE, chatKey: input.session.conversationId };
       db.runInTransaction(() => {
         db.insertRun(runId, identity, provider);
-        // An admitted prompt is durable even if its provider turn fails or the
-        // process restarts before a final answer exists.
-        db.addConvTurn(input.session.conversationId, "user", input.prompt, provider, {
-          surfaceIdentity: OUTWARD_ACP_SURFACE,
-        });
+        if (input.capacityResume) {
+          // Persist the exact continuation claim -> successor link before any
+          // provider can execute, so a crash cannot lead to blind replay.
+          if (!linkCapacityContinuationRun(db, input.capacityResume.id, input.capacityResume.claimToken, runId)) {
+            throw new Error("outward ACP capacity continuation claim was lost");
+          }
+        } else {
+          // A resumed turn must never append the original user request again.
+          db.addConvTurn(input.session.conversationId, "user", input.prompt, provider, {
+            surfaceIdentity: OUTWARD_ACP_SURFACE,
+          });
+        }
       });
       eventStore = new EventStore(db, identity, runId);
 
@@ -486,6 +519,32 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
         eventStore.collect(failedEvent(runId, activeProvider, input.session));
         eventStore.finalize();
       }
+      // A standard ACP client has no deferred-result semantics. Only clients
+      // that explicitly opted in, and only when the independently supervised
+      // workspace worker is enabled, may receive a durable waiting outcome.
+      if (input.deferCapacity && this.supportsDeferredCapacity && !input.capacityResume && !active?.cancelRequested &&
+          decideProviderRecovery(providerIdForBotName(activeProvider), error instanceof Error ? error : new Error(String(error))).reason === "capacity") {
+        const continuationId = `acp-capacity-wait:${runId}`;
+        await retainOutwardAcpAttachmentsForWait(input.session.cwd, input.attachments ?? [], continuationId);
+        try {
+          requestRunContinuation(db, {
+            continuationId,
+            originRunId: runId,
+            surfaceIdentity: OUTWARD_ACP_SURFACE,
+            chatKey: input.session.conversationId,
+            provider,
+            reason: "all eligible providers currently at capacity",
+            afterSeconds: 300,
+            capacityWait: true,
+            outward: { sessionId: input.session.sessionId, prompt: input.prompt, attachmentCount: input.attachments?.length ?? 0 },
+          });
+        } catch (persistError) {
+          // Leave a short-lived orphan for the bounded owner-marker cleanup;
+          // never signal deferred admission if its durable record was not made.
+          throw persistError;
+        }
+        return { stopReason: "end_turn", _meta: { "agent-bridge": { outcome: "deferred", runId } } };
+      }
       if (error instanceof acp.RequestError) throw error;
       throw new acp.RequestError(
         OUTWARD_ACP_EXECUTION_ERROR,
@@ -605,6 +664,7 @@ export function createProductionOutwardAcpPromptExecutor(
     db,
     providerChain,
     isProviderAvailable: (provider) => getCachedAvailableCliKinds({ env }).has(provider as CliKind),
+    enableDeferredCapacity: env.BRIDGE_OUTWARD_DEFERRED_CAPACITY_ENABLED === "1",
     btw: (session, provider, prompt) => buildEngine(session, provider).executeSurfaceNeutralBtw(prompt, session.conversationId),
     createEngine: (session, attemptProvider) => {
       const engine = buildEngine(session, attemptProvider);
