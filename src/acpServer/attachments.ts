@@ -1,3 +1,5 @@
+import { randomUUID } from "node:crypto";
+import { getRunOwnedProcessState } from "../runOwnedProcesses.js";
 import type { ContentBlock } from "@agentclientprotocol/sdk";
 import { lstat, mkdtemp, readFile, readdir, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { basename, extname, isAbsolute, join, relative, sep } from "node:path";
@@ -8,6 +10,8 @@ const MAX_TOTAL_BYTES = 16 * 1024 * 1024;
 const STALE_ATTACHMENT_AGE_MS = 24 * 60 * 60 * 1000;
 const STAGING_PREFIX = ".agent-bridge-attachments-";
 const OWNER_MARKER = ".agent-bridge-staging-owner";
+const RUN_MARKER = ".agent-bridge-staging-run";
+const PROCESS_MARKER = ".agent-bridge-staging-pid";
 const OWNER_MARKER_CONTENT = "agent-bridge-outward-attachment-v1\n";
 
 const MIME_EXTENSIONS: Readonly<Record<string, readonly string[]>> = {
@@ -96,7 +100,7 @@ function payloadFor(block: ContentBlock, index: number, remainingBytes: number):
 export async function stageOutwardAcpAttachments<T>(
   cwd: string,
   blocks: readonly ContentBlock[],
-  operation: (paths: string[]) => Promise<T>,
+  operation: (paths: string[], runId?: string) => Promise<T>,
 ): Promise<T> {
   // resource_link is a metadata-only prompt block handled by promptText(); it
   // is never fetched or staged as a file. Only embedded payload blocks enter
@@ -117,14 +121,17 @@ export async function stageOutwardAcpAttachments<T>(
   if (!(await stat(workspace)).isDirectory()) throw new Error("attachment workspace is not a directory");
   const staging = await mkdtemp(join(workspace, STAGING_PREFIX));
   const paths: string[] = [];
+  const runId = randomUUID();
   try {
     await writeFile(join(staging, OWNER_MARKER), OWNER_MARKER_CONTENT, { flag: "wx", mode: 0o600 });
+    await writeFile(join(staging, PROCESS_MARKER), `${process.pid}\n`, { flag: "wx", mode: 0o600 });
+    await writeFile(join(staging, RUN_MARKER), `${runId}\n`, { flag: "wx", mode: 0o600 });
     for (const payload of payloads) {
       const path = join(staging, payload.name);
       await writeFile(path, payload.bytes, { flag: "wx", mode: 0o600 });
       paths.push(path);
     }
-    return await operation(paths);
+    return await operation(paths, runId);
   } finally {
     await rm(staging, { recursive: true, force: true });
   }
@@ -166,6 +173,42 @@ export async function cleanupStaleOutwardAcpAttachments(
       if (!markerInfo.isFile() || (markerInfo.mode & 0o777) !== 0o600 ||
         (typeof process.getuid === "function" && (info.uid !== process.getuid() || markerInfo.uid !== process.getuid())) ||
         await readFile(marker, "utf8") !== OWNER_MARKER_CONTENT) continue;
+      // Legacy directories lack process evidence and are kept rather than risking
+      // deletion of a still-active pre-upgrade staging operation.
+      const pidPath = join(path, PROCESS_MARKER);
+      let pidInfo;
+      let pidText: string;
+      try {
+        pidInfo = await lstat(pidPath);
+        if (!pidInfo.isFile() || (pidInfo.mode & 0o777) !== 0o600 ||
+          (typeof process.getuid === "function" && pidInfo.uid !== process.getuid())) continue;
+        pidText = await readFile(pidPath, "utf8");
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") continue;
+        throw error;
+      }
+      if (!/^[1-9][0-9]*\n$/.test(pidText)) continue;
+      const pid = Number(pidText.trim());
+      if (!Number.isSafeInteger(pid) || pid > 0x7fffffff) continue;
+      try {
+        process.kill(pid, 0);
+        continue; // live or reused PID: retain conservatively
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ESRCH") continue;
+      }
+      const runPath = join(path, RUN_MARKER);
+      let runInfo;
+      let runText: string;
+      try {
+        runInfo = await lstat(runPath);
+        if (!runInfo.isFile() || (runInfo.mode & 0o777) !== 0o600 ||
+          (typeof process.getuid === "function" && runInfo.uid !== process.getuid())) continue;
+        runText = await readFile(runPath, "utf8");
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") continue;
+        throw error;
+      }
+      if (!/^[a-zA-Z0-9_-]{1,128}\n$/.test(runText) || getRunOwnedProcessState(runText.trim()) !== "absent") continue;
       await rm(path, { recursive: true, force: true });
       removed += 1;
     }

@@ -95,6 +95,39 @@ async function call<T>(app: ReturnType<typeof createOutwardAcpAgent>, method: st
 }
 
 describe("outward ACP Workstreams (#1101)", () => {
+  it("does not steal an expired lane that has not passed crash reconciliation", async () => {
+    const f = fixture();
+    f.repo.create({ sessionId: "s1", conversationId: "acp:c1", cwd: f.root });
+    expect(f.db.acquireLock(OUTWARD_ACP_SURFACE, "acp:c1")).not.toBeNull();
+    f.db.raw.prepare("UPDATE execution_locks SET lease_expires_at = ? WHERE surface = ? AND chat_key = ?")
+      .run(new Date(0).toISOString(), OUTWARD_ACP_SURFACE, "acp:c1");
+    const attempts: Attempt[] = [];
+    const exec = executor(f.db, attempts);
+    const app = agent(f, { promptExecutor: exec, workstreams: exec });
+    await expect(acp.client({ name: "generic" }).connectWith(app, (peer) =>
+      peer.request(acp.methods.agent.session.prompt, { sessionId: "s1", prompt: [{ type: "text", text: "do not replay" }] })))
+      .rejects.toMatchObject({ code: -32002 });
+    await expect(call(app, WORKSTREAM_METHODS.selectProvider, { sessionId: "s1", cwd: f.root, provider: "claude" }))
+      .rejects.toMatchObject({ code: -32002 });
+    expect(attempts).toEqual([]);
+  });
+
+  it("does not start a new prompt while an older Run remains unresolved", async () => {
+    const f = fixture();
+    f.repo.create({ sessionId: "s1", conversationId: "acp:c1", cwd: f.root });
+    const identity = { surfaceIdentity: OUTWARD_ACP_SURFACE, chatKey: "acp:c1" };
+    f.db.insertRun("unresolved", identity, "codex");
+    f.db.insertRun("later-terminal", identity, "codex");
+    f.db.raw.prepare("UPDATE bridge_runs SET status = 'done', started_at = ? WHERE run_id = ?").run(new Date(Date.now() + 10_000).toISOString(), "later-terminal");
+    const attempts: Attempt[] = [];
+    const exec = executor(f.db, attempts);
+    const app = agent(f, { promptExecutor: exec, workstreams: exec });
+    await expect(acp.client({ name: "generic" }).connectWith(app, (peer) =>
+      peer.request(acp.methods.agent.session.prompt, { sessionId: "s1", prompt: [{ type: "text", text: "do not replay" }] })))
+      .rejects.toMatchObject({ code: -32002 });
+    expect(attempts).toEqual([]);
+  });
+
   it("advertises Workstream controls only when wired", async () => {
     const f = fixture();
     const wired = agent(f, { workstreams: executor(f.db, []) });

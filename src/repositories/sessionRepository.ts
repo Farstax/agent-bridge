@@ -17,7 +17,7 @@ export class SessionRepository {
     assertBot(bot);
     const col = `${bot}_session_id`;
     const row = this.db
-      .prepare(`SELECT ${col} AS sid FROM bridge_state WHERE surface_identity = ? AND chat_id = ?`)
+      .prepare(`SELECT CASE WHEN datetime(${bot}_session_created_at) < datetime('now', '-7 days') THEN NULL ELSE ${col} END AS sid FROM bridge_state WHERE surface_identity = ? AND chat_id = ?`)
       .get(identity.surfaceIdentity, identity.chatKey) as { sid: string | null } | undefined;
     return row?.sid ?? null;
   }

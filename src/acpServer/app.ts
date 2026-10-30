@@ -286,12 +286,13 @@ export function createOutwardAcpAgent(options: OutwardAcpAgentOptions = {}): Age
     const authorizedCwd = authorizeWorkspacePath(session.cwd, workspaceRoot);
     const prompt = promptText(ctx.params.prompt);
     try {
-      return await stageOutwardAcpAttachments(authorizedCwd, ctx.params.prompt, (attachments) => promptExecutor.execute({
+      return await stageOutwardAcpAttachments(authorizedCwd, ctx.params.prompt, (attachments, runId) => promptExecutor.execute({
         session,
         prompt: attachments.length
           ? `${prompt}\n\n${attachments.map((path) => `[Attached file: ${basename(path)}]`).join("\n")}`
           : prompt,
         attachments,
+        ...(runId ? { runId } : {}),
         signal: ctx.signal,
         onUpdate: (update) => ctx.client.notify(acp.methods.client.session.update, {
           sessionId: session.sessionId,
