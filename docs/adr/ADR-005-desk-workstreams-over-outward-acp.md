@@ -28,15 +28,16 @@ ACP v1 equivalent use the ACP extension-method namespace and are advertised in
 Create is standard `session/new` followed by an optional `update` for the
 title. Every per-Workstream call must present the session's `cwd`, as
 `session/load` already requires. The stdio process pins an authorised workspace
-root from its trusted `BRIDGE_PROJECT_DIR` (or launch directory), resolves the
+root from trusted `BRIDGE_ACP_WORKSPACE_ROOT`, falling back to `BRIDGE_PROJECT_DIR`
+(or the launch directory), resolves the
 requested `cwd`, and rejects paths outside that root before creating or using
 a Workstream. Platform must launch the process for the principal's workspace
 and must never forward a client-chosen root. Archive is metadata only; an archived Workstream can
 still be loaded and prompted, and `update` with `archived: false` restores it.
 
 Command entries reuse `src/commands.ts` and existing setting, provider switch,
-cancellation, reset and side-question owners. A Bridge command typed into
-`session/prompt` is rejected before a provider Run starts. `/queue_mode` is
+cancellation, reset and side-question owners. Literal `session/prompt` text is
+forwarded to the provider; Bridge commands require the explicit command extension. `/queue_mode` is
 listed as unavailable because outward ACP rejects concurrent prompts instead
 of queueing them. `/sensors` and `/autonomy` fail closed because this local ACP
 surface has no authorisation context for those controls. `/stop` uses the
@@ -49,9 +50,10 @@ are text/code, JSON, CSV, logs, Markdown, PNG, JPEG and PDF. Input allows up to
 eight files, 8 MiB per file and 16 MiB total. Names are reduced to bounded safe
 filenames, and content stays inside the authorized workspace. Unsupported
 blocks and file types fail before provider execution. Staged files are removed
-after success, failure or cancellation. On startup, the stdio process removes
-only owner-marked staging directories more than 24 hours old to recover from a
-hard process exit. A `resource_link` alone is metadata, not uploaded bytes,
+after success, failure or cancellation. The existing daily maintenance owner
+removes only owner-marked staging directories more than 24 hours old when
+the staging process is known to be absent. Legacy directories without a
+process marker are retained because their ownership cannot be proven. A `resource_link` alone is metadata, not uploaded bytes,
 and is not treated as an attachment.
 
 ## Status truth

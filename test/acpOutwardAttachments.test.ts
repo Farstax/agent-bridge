@@ -1,7 +1,9 @@
+import { spawn, spawnSync } from "node:child_process";
 import { existsSync, lstatSync, mkdirSync, readFileSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { mkdtempSync, rmSync } from "node:fs";
+import { once } from "node:events";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import type { ContentBlock } from "@agentclientprotocol/sdk";
 import { cleanupStaleOutwardAcpAttachments, stageOutwardAcpAttachments } from "../src/acpServer/attachments.js";
@@ -58,6 +60,41 @@ describe("outward ACP attachment staging", () => {
     expect(decoded).toBe(false);
   });
 
+  it("preserves old staging directories while their owning process is active", async () => {
+    const cwd = workspace();
+    await stageOutwardAcpAttachments(cwd, [
+      { type: "resource", resource: { uri: "file:///note.txt", mimeType: "text/plain", text: "body" } },
+    ] as ContentBlock[], async (files) => {
+      const staging = dirname(files[0]!);
+      const now = Date.now();
+      const old = new Date(now - 25 * 60 * 60 * 1000);
+      utimesSync(staging, old, old);
+      expect(await cleanupStaleOutwardAcpAttachments(cwd, [], now)).toBe(0);
+      expect(readFileSync(files[0]!, "utf8")).toBe("body");
+    });
+  });
+
+  it("preserves staging while the provider child outlives its owner", async () => {
+    const cwd = workspace();
+    const dead = spawnSync(process.execPath, ["-e", "process.exit(0)"]);
+    const runId = `staging-child-${process.pid}`;
+    const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {
+      stdio: "ignore", env: { ...process.env, AGENT_BRIDGE_RUN_ID: runId },
+    });
+    await once(child, "spawn");
+    const staging = join(cwd, ".agent-bridge-attachments-provider-live");
+    mkdirSync(staging, { mode: 0o700 });
+    writeFileSync(join(staging, ".agent-bridge-staging-owner"), "agent-bridge-outward-attachment-v1\n", { mode: 0o600 });
+    writeFileSync(join(staging, ".agent-bridge-staging-pid"), `${dead.pid}\n`, { mode: 0o600 });
+    writeFileSync(join(staging, ".agent-bridge-staging-run"), `${runId}\n`, { mode: 0o600 });
+    const now = Date.now();
+    utimesSync(staging, new Date(now - 25 * 60 * 60 * 1000), new Date(now - 25 * 60 * 60 * 1000));
+    try {
+      expect(await cleanupStaleOutwardAcpAttachments(cwd, [], now)).toBe(0);
+      expect(existsSync(staging)).toBe(true);
+    } finally { child.kill("SIGKILL"); await once(child, "exit"); }
+  });
+
   it("cleans staged files when the provider operation fails", async () => {
     const cwd = workspace();
     let staged = "";
@@ -80,11 +117,18 @@ describe("outward ACP attachment staging", () => {
     const linked = join(cwd, ".agent-bridge-attachments-linked");
     const outside = workspace();
     const outsideStale = join(outside, ".agent-bridge-attachments-outside-stale");
+    const exited = spawnSync(process.execPath, ["-e", "process.exit(0)"]);
+    expect(exited.status).toBe(0);
+    const deadPid = `${exited.pid}\n`;
     mkdirSync(stale, { mode: 0o700 });
     writeFileSync(join(stale, ".agent-bridge-staging-owner"), "agent-bridge-outward-attachment-v1\n", { mode: 0o600 });
     mkdirSync(nested);
     mkdirSync(nestedStale, { mode: 0o700 });
     writeFileSync(join(nestedStale, ".agent-bridge-staging-owner"), "agent-bridge-outward-attachment-v1\n", { mode: 0o600 });
+    writeFileSync(join(stale, ".agent-bridge-staging-pid"), deadPid, { mode: 0o600 });
+    writeFileSync(join(nestedStale, ".agent-bridge-staging-pid"), deadPid, { mode: 0o600 });
+    writeFileSync(join(stale, ".agent-bridge-staging-run"), "dead-provider-one\n", { mode: 0o600 });
+    writeFileSync(join(nestedStale, ".agent-bridge-staging-run"), "dead-provider-two\n", { mode: 0o600 });
     mkdirSync(recent);
     mkdirSync(unowned, { mode: 0o700 });
     mkdirSync(outsideStale, { mode: 0o700 });

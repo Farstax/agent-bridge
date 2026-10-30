@@ -45,7 +45,8 @@ describe("TelegramClient", () => {
 
     expect(callCount).toBe(2);
     expect(result.ok).toBe(true);
-    expect(duration).toBeGreaterThanOrEqual(1000);
+    // Date.now() millisecond granularity can round a genuine 1s wait to 999ms.
+    expect(duration).toBeGreaterThanOrEqual(990);
   });
 
   it("keeps the Telegram description text on non-429 errors", async () => {

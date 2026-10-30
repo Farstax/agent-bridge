@@ -36,7 +36,7 @@ export class LockRepository {
     this.now = options.clock ?? Date.now;
   }
 
-  acquire(surface: string, chatKey: string): ExecutionLaneHandle | null {
+  acquire(surface: string, chatKey: string, replaceExpired = true): ExecutionLaneHandle | null {
     const now = this.now();
     const acquisitionId = randomUUID();
     const acquiredAt = new Date(now).toISOString();
@@ -50,8 +50,8 @@ export class LockRepository {
         acquisition_id = excluded.acquisition_id,
         acquired_at = excluded.acquired_at,
         lease_expires_at = excluded.lease_expires_at
-      WHERE execution_locks.lease_expires_at <= excluded.acquired_at
-    `).run(surface, chatKey, this.options.serviceId, this.options.runId, acquisitionId, acquiredAt, leaseExpiresAt);
+      WHERE execution_locks.lease_expires_at <= excluded.acquired_at AND ? = 1
+    `).run(surface, chatKey, this.options.serviceId, this.options.runId, acquisitionId, acquiredAt, leaseExpiresAt, replaceExpired ? 1 : 0);
     return changes === 1 ? Object.freeze({
       surface, chatKey, serviceId: this.options.serviceId, runId: this.options.runId, acquisitionId,
     }) : null;
@@ -116,8 +116,8 @@ export class LockRepository {
     if (claimed) return false;
     return this.db.prepare(`
       DELETE FROM execution_locks
-      WHERE surface = ? AND chat_key = ? AND service_id = ? AND run_id = ? AND acquisition_id = ?
-    `).run(record.surface, record.chat_key, record.service_id, record.run_id, record.acquisition_id).changes === 1;
+      WHERE surface = ? AND chat_key = ? AND service_id = ? AND run_id = ? AND acquisition_id = ? AND lease_expires_at = ?
+    `).run(record.surface, record.chat_key, record.service_id, record.run_id, record.acquisition_id, record.lease_expires_at).changes === 1;
   }
 
   unlock(handle: ExecutionLaneHandle): boolean {

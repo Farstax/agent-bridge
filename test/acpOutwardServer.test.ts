@@ -1,6 +1,6 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { once } from "node:events";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { createInterface, type Interface } from "node:readline";
@@ -8,6 +8,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { afterAll, describe, expect, it } from "vitest";
 import * as acp from "@agentclientprotocol/sdk";
+import Database from "better-sqlite3";
 import { openDb } from "../src/db.js";
 import { OUTWARD_ACP_SURFACE } from "../src/acpServer/execution.js";
 import { OutwardAcpSessionRepository } from "../src/repositories/outwardAcpSessionRepository.js";
@@ -299,6 +300,106 @@ async function waitForRunningRun(dbPath: string, conversationId: string, timeout
 }
 
 describe("outward ACP stdio boundary", { timeout: 30_000 }, () => {
+  it("keeps a crashed ACP lane fenced while its provider child is still alive", async () => {
+    const root = mkdtempSync(join(tmpdir(), "acp-live-child-"));
+    const database = join(root, "bridge.sqlite");
+    const runId = `live-provider-${process.pid}`;
+    const setup = openDb(database, { serviceId: "acp:outward", runId: "different-lock-owner", lockLeaseMs: 10, databaseRole: "interactive" });
+    new OutwardAcpSessionRepository(setup.raw).create({ sessionId: "live-s", conversationId: "acp:live", cwd: root });
+    setup.insertRun(runId, { surfaceIdentity: OUTWARD_ACP_SURFACE, chatKey: "acp:live" }, "codex");
+    expect(setup.acquireLock(OUTWARD_ACP_SURFACE, "acp:live")).not.toBeNull();
+    setup.close();
+    const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {
+      env: { ...process.env, AGENT_BRIDGE_RUN_ID: runId }, stdio: "ignore",
+    });
+    await once(child, "spawn");
+    await delay(30);
+    const server = startOutwardAcpProcess(database);
+    try {
+      await initialize(server, 1);
+      const db = openDb(database, { databaseRole: "interactive" });
+      try {
+        expect(db.getRun(runId).status).toBe("running");
+        expect(db.hasChatLock("acp:live")).toBe(true);
+      } finally { db.close(); }
+      expect((await promptSession(server, 2, "live-s", "do not replay")).response.error?.code).toBe(-32002);
+    } finally {
+      await stopProcess(server);
+      child.kill("SIGKILL");
+      await once(child, "exit");
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("initializes while another connection holds the SQLite writer lock", async () => {
+    const root = mkdtempSync(join(tmpdir(), "acp-writer-lock-"));
+    const dbPath = join(root, "bridge.sqlite");
+    openDb(dbPath, { databaseRole: "interactive" }).close();
+    const writer = new Database(dbPath);
+    writer.exec("BEGIN IMMEDIATE");
+    const server = startOutwardAcpProcess(dbPath);
+    try {
+      const result = await Promise.race([
+        initialize(server, 1),
+        delay(4000).then(() => { throw new Error("initialize blocked by SQLite writer"); }),
+      ]);
+      expect(result.result?.protocolVersion).toBe(acp.PROTOCOL_VERSION);
+    } finally {
+      writer.exec("ROLLBACK");
+      writer.close();
+      await stopProcess(server);
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("accepts a burst of clients during a live Run and a concurrent SQLite writer", async () => {
+    const root = mkdtempSync(join(tmpdir(), "acp-burst-"));
+    const dbPath = join(root, "bridge.sqlite");
+    const setup = openDb(dbPath, { serviceId: "acp:outward", runId: "owner", databaseRole: "interactive" });
+    setup.insertRun("active", { surfaceIdentity: OUTWARD_ACP_SURFACE, chatKey: "acp:active" }, "codex");
+    expect(setup.acquireLock(OUTWARD_ACP_SURFACE, "acp:active")).not.toBeNull();
+    setup.close();
+    const writer = new Database(dbPath);
+    writer.exec("BEGIN IMMEDIATE");
+    const clients = Array.from({ length: 4 }, () => startOutwardAcpProcess(dbPath));
+    try {
+      const results = await Promise.race([
+        Promise.all(clients.map((client, index) => initialize(client, index + 1))),
+        delay(10_000).then(() => { throw new Error("client burst blocked by SQLite writer"); }),
+      ]);
+      expect(results.map((result) => result.result?.protocolVersion)).toEqual([1, 1, 1, 1]);
+    } finally {
+      writer.exec("ROLLBACK");
+      writer.close();
+      await Promise.all(clients.map(stopProcess));
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("uses a trusted launch workspace independent of the installation directory", async () => {
+    const root = mkdtempSync(join(tmpdir(), "acp-launch-root-"));
+    const install = join(root, "install");
+    const workspace = join(root, "workspace");
+    mkdirSync(install);
+    mkdirSync(workspace);
+    symlinkSync(install, join(workspace, "escape"));
+    const dbPath = join(install, "bridge.sqlite");
+    openDb(dbPath, { databaseRole: "interactive" }).close();
+    const server = startOutwardAcpProcess(dbPath, { ...providerEnv(join(root, "provider.json")), BRIDGE_ACP_WORKSPACE_ROOT: workspace });
+    try {
+      expect((await initialize(server, 1)).result?.protocolVersion).toBe(acp.PROTOCOL_VERSION);
+      const sessionId = (await newSession(server, 2, workspace)).result?.sessionId;
+      expect(sessionId).toBeTruthy();
+      expect((await loadSession(server, 3, sessionId!, workspace)).response.result).toEqual({});
+      expect((await promptSession(server, 4, sessionId!, "hello")).response.result?.stopReason).toBe("end_turn");
+      expect((await newSession(server, 5, install)).error?.code).toBe(-32602);
+      expect((await newSession(server, 6, join(workspace, "escape"))).error?.code).toBe(-32602);
+    } finally {
+      await stopProcess(server);
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("initializes conservatively and persists stable outward session identity across process restart", async () => {
     const root = mkdtempSync(join(tmpdir(), "agent-bridge-outward-acp-"));
     const dbPath = join(root, "bridge.sqlite");
@@ -312,7 +413,7 @@ describe("outward ACP stdio boundary", { timeout: 30_000 }, () => {
     });
     const interruptedRunId = "interrupted-outward-run";
     const interruptedDb = openDb(dbPath, {
-      serviceId: "acp:outward",
+      serviceId: `acp:outward/${process.pid}/0`,
       runId: interruptedRunId,
       lockLeaseMs: 10,
       databaseRole: "interactive",
@@ -340,8 +441,8 @@ describe("outward ACP stdio boundary", { timeout: 30_000 }, () => {
     try {
       first = startOutwardAcpProcess(dbPath);
       const initialized = await initialize(first, 1);
-      expect(existsSync(staleAttachments)).toBe(false);
-      expect(existsSync(nestedStaleAttachments)).toBe(false);
+      expect(existsSync(staleAttachments)).toBe(true);
+      expect(existsSync(nestedStaleAttachments)).toBe(true);
       const recoveredDb = openDb(dbPath, { databaseRole: "interactive" });
       expect(recoveredDb.getRun(interruptedRunId)).toMatchObject({
         status: "failed",
