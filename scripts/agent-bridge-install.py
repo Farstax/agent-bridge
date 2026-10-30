@@ -31,6 +31,7 @@ DEFAULT_BACKUP_DIR = Path("/var/backups/agent-bridge")
 DEFAULT_LOG_DIR = Path("/var/log/agent-bridge/rollouts")
 DEFAULTS_DIR = Path("/etc/default")
 SYSTEMD_DIR = Path("/etc/systemd/system")
+TRUSTED_COMPONENT_PATH = "/usr/sbin:/usr/bin:/sbin:/bin"
 ROLLOUT_CONFIG = Path("/etc/agent-bridge/rollout.conf")
 CLEANUP_SERVICE = "agent-bridge-tmp-cleanup.service"
 CLEANUP_TIMER = "agent-bridge-tmp-cleanup.timer"
@@ -420,7 +421,7 @@ def validate_host(runtime_user: str, node_bin: Path) -> pwd.struct_passwd:
         fail("node binary must be an absolute executable regular non-symlink file")
     try:
         version = subprocess.run(
-            [str(node_bin), "-p", "process.versions.node"],
+            ["/usr/sbin/runuser", "--user", runtime_user, "--", str(node_bin), "-p", "process.versions.node"],
             check=True, capture_output=True, text=True,
         ).stdout.strip()
     except (OSError, subprocess.CalledProcessError) as error:
@@ -435,6 +436,72 @@ def validate_host(runtime_user: str, node_bin: Path) -> pwd.struct_passwd:
     if sudo_check.returncode != 0:
         fail(f"passwordless sudo verification failed for {runtime_user}")
     return account
+
+
+def validate_runtime_temp_root(path: Path, account: pwd.struct_passwd) -> Path:
+    """Require a root-controlled directory that the runtime account can traverse."""
+    path = path.absolute()
+    groups = {account.pw_gid, *os.getgrouplist(account.pw_name, account.pw_gid)}
+    directories = [*reversed(path.parents), path]
+    for directory in directories:
+        try:
+            metadata = directory.lstat()
+        except OSError as error:
+            fail(f"unable to inspect runtime temporary directory {directory}: {error}")
+        if (
+            stat.S_ISLNK(metadata.st_mode)
+            or not stat.S_ISDIR(metadata.st_mode)
+            or metadata.st_uid != 0
+            or metadata.st_mode & 0o022
+        ):
+            fail(f"unsafe runtime temporary directory: {directory}")
+        if account.pw_uid == metadata.st_uid:
+            searchable = bool(metadata.st_mode & stat.S_IXUSR)
+        elif metadata.st_gid in groups:
+            searchable = bool(metadata.st_mode & stat.S_IXGRP)
+        else:
+            searchable = bool(metadata.st_mode & stat.S_IXOTH)
+        if not searchable:
+            fail(f"runtime user cannot traverse temporary directory: {directory}")
+    return path
+
+
+def component_installer_path(node_dir: Path) -> str:
+    """Expose the pinned Node copy and trusted system tools only."""
+    return f"{node_dir}:{TRUSTED_COMPONENT_PATH}"
+
+
+def copy_node_binary(source: Path, destination: Path) -> Path:
+    """Snapshot the selected Node executable into a root-owned private directory."""
+    source_fd = os.open(source, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0))
+    try:
+        before = os.fstat(source_fd)
+        if not stat.S_ISREG(before.st_mode):
+            fail("node binary must be a regular file")
+        destination_fd = os.open(
+            destination,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0),
+            0o700,
+        )
+        try:
+            with os.fdopen(source_fd, "rb", closefd=False) as input_stream, os.fdopen(destination_fd, "wb", closefd=False) as output_stream:
+                shutil.copyfileobj(input_stream, output_stream)
+                output_stream.flush()
+                os.fsync(destination_fd)
+            after = os.fstat(source_fd)
+            if (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns, before.st_ctime_ns) != (
+                after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns, after.st_ctime_ns,
+            ):
+                fail("node binary changed while it was being copied")
+            os.fchmod(destination_fd, 0o755)
+        except Exception:
+            os.close(destination_fd)
+            destination.unlink(missing_ok=True)
+            raise
+        os.close(destination_fd)
+        return destination
+    finally:
+        os.close(source_fd)
 
 
 def stage_and_inspect(archive: Path, stage_module, release_root: Path) -> tuple[dict, str, Path]:
@@ -729,20 +796,25 @@ def main(argv: Sequence[str] | None = None) -> int:
         # guarded rollout prepares before containment. Prepare it here too,
         # with the runtime account the rollout passes to component installers.
         os.environ["AGENT_BRIDGE_RUNTIME_USER"] = args.runtime_user
-        # Component installers resolve node from PATH. Expose only the admitted
-        # binary through a private root-owned directory; its own directory may
-        # be runtime-user controlled and must never shadow root's tools.
-        # Do not inherit TMPDIR from the caller. A private directory below a
-        # caller-writable ancestor can be renamed and replaced before the
-        # root-run component installer resolves its `node` command.
-        node_dir = Path(tempfile.mkdtemp(prefix="agent-bridge-install-node-", dir="/run"))
-        os.symlink(node_bin, node_dir / "node")
-        # Root-owned and holding only the node link; the Cursor installer runs
-        # as the runtime user and must be able to resolve it.
-        os.chmod(node_dir, 0o755)
-        original_path = os.environ.get("PATH", "/usr/bin:/bin")
-        os.environ["PATH"] = f"{node_dir}{os.pathsep}{original_path}"
+        # Snapshot the selected Node binary outside the caller-controlled tree.
+        # Root component installers must not follow a runtime-user-writable
+        # executable path after host validation.
+        runtime_tmp_root = validate_runtime_temp_root(Path("/run"), account)
+        node_dir = Path(tempfile.mkdtemp(prefix="agent-bridge-install-node-", dir=runtime_tmp_root))
+        original_path = os.environ.get("PATH", "/usr/sbin:/usr/bin:/sbin:/bin")
+        original_runtime_user = os.environ.get("AGENT_BRIDGE_RUNTIME_USER")
         try:
+            pinned_node = copy_node_binary(node_bin, node_dir / "node")
+            os.chmod(node_dir, 0o755)
+            pinned_version = subprocess.run(
+                ["/usr/sbin/runuser", "--user", args.runtime_user, "--", str(pinned_node), "-p", "process.versions.node"],
+                check=True, capture_output=True, text=True,
+            ).stdout.strip()
+            if not node_version_admitted(pinned_version):
+                fail(f"copied Node.js {pinned_version} is unsupported or has known vulnerabilities")
+            os.environ["AGENT_BRIDGE_RUNTIME_USER"] = args.runtime_user
+            # Component installers get the pinned Node and fixed system tools.
+            os.environ["PATH"] = component_installer_path(node_dir)
             print(json.dumps(activate.prepare_release_host_components(release_root, staged, activated_commit), sort_keys=True), flush=True)
             install_shared_skills(release_root / activated_commit, node_bin, account, os.environ)
             bootstrapped_databases = list(databases)
@@ -751,6 +823,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             print(activate.activate(release_root, current, activated_commit), flush=True)
         finally:
             os.environ["PATH"] = original_path
+            if original_runtime_user is None:
+                os.environ.pop("AGENT_BRIDGE_RUNTIME_USER", None)
+            else:
+                os.environ["AGENT_BRIDGE_RUNTIME_USER"] = original_runtime_user
             shutil.rmtree(node_dir, ignore_errors=True)
 
         systemctl("start", *managed_units)

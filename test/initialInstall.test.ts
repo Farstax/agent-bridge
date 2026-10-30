@@ -52,11 +52,57 @@ with tempfile.TemporaryDirectory() as directory:
     // Component installers need the rollout's runtime account and the admitted node.
     const environment = source.slice(source.lastIndexOf("activate.validate_release(staged", prepare), prepare);
     expect(environment).toContain('os.environ["AGENT_BRIDGE_RUNTIME_USER"] = args.runtime_user');
-    expect(environment).toContain('tempfile.mkdtemp(prefix="agent-bridge-install-node-", dir="/run")');
+    expect(environment).toContain('validate_runtime_temp_root(Path("/run"), account)');
     // Only the admitted node is exposed to root, never its (user-owned) directory.
     expect(source).not.toContain("node_bin.parent");
-    expect(environment).toContain('os.symlink(node_bin, node_dir / "node")');
-    expect(environment).toContain('os.environ["PATH"] = f"{node_dir}{os.pathsep}{original_path}"');
+    expect(environment).toContain('copy_node_binary(node_bin, node_dir / "node")');
+    expect(environment).toContain("component_installer_path(node_dir)");
+  });
+
+  it("uses only a fixed system PATH after the private Node shim", () => {
+    const result = probe(`
+import pathlib, shutil, tempfile
+with tempfile.TemporaryDirectory() as directory:
+  root = pathlib.Path(directory)
+  node_dir = root / "node-tools"; node_dir.mkdir()
+  malicious = root / "caller-tools"; malicious.mkdir()
+  (malicious / "curl").write_text("#!/bin/sh\\nexit 99\\n")
+  (malicious / "curl").chmod(0o755)
+  os.environ["PATH"] = str(malicious)
+  path = module.component_installer_path(node_dir)
+  curl = shutil.which("curl", path=path)
+  print(json.dumps({"path": path, "curl": curl, "malicious": str(malicious / "curl")}))
+`) as { path: string; curl: string; malicious: string };
+    expect(result.curl).not.toBe(result.malicious);
+    expect(result.path).not.toContain("caller-tools");
+  });
+
+  it("validates the runtime-accessible root temporary directory and snapshots Node", () => {
+    const result = probe(`
+import pathlib, pwd, tempfile
+account = pwd.getpwuid(os.getuid())
+safe = module.validate_runtime_temp_root(pathlib.Path("/run"), account)
+try:
+  module.validate_runtime_temp_root(pathlib.Path("/tmp"), account)
+except RuntimeError as error:
+  unsafe = str(error)
+else:
+  unsafe = "accepted"
+with tempfile.TemporaryDirectory() as directory:
+  source = pathlib.Path(directory) / "node"
+  source.write_bytes(b"validated-node-image")
+  source.chmod(0o755)
+  copy_dir = pathlib.Path(directory) / "copy"
+  copy_dir.mkdir()
+  snapshot = module.copy_node_binary(source, copy_dir / "node")
+  source.write_bytes(b"replaced-after-validation")
+  copied = snapshot.read_bytes().decode()
+print(json.dumps({"safe": str(safe), "unsafe": unsafe, "is_symlink": snapshot.is_symlink(), "copied": copied}))
+`) as { safe: string; unsafe: string; is_symlink: boolean; copied: string };
+    expect(result.safe).toBe("/run");
+    expect(result.unsafe).toContain("unsafe runtime temporary directory");
+    expect(result.is_symlink).toBe(false);
+    expect(result.copied).toBe("validated-node-image");
   });
 
   it("stages the archive once with the bootstrap helper and writes no inspection copy (#1100)", () => {
