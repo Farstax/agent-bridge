@@ -93,6 +93,19 @@ describe("recovery-readiness reconciliation guards", () => {
     expect(bridge.raw.prepare("SELECT COUNT(*) AS n FROM execution_locks").get()).toEqual({ n: 0 });
   });
 
+  it("does not release a lease renewed after the stale snapshot", () => {
+    const bridge = open();
+    const lane = bridge.acquireLock("telegram:interactive", "chat-1")!;
+    bridge.raw.prepare("UPDATE execution_locks SET lease_expires_at = ?").run(new Date(0).toISOString());
+    const removed = bridge.reconcileStaleExecutionLocks({
+      reason: "heartbeat-race",
+      containmentState: () => { expect(bridge.heartbeatLock(lane)).toBe(true); return "proven"; },
+      lockState: () => "stale",
+    });
+    expect(removed).toEqual([]);
+    expect(bridge.ownsLock(lane)).toBe(true);
+  });
+
   it("does not release a stale-classified lock while its acquisition still owns a claim", () => {
     const bridge = open();
     const lock = bridge.acquireLock("telegram:interactive", "chat-1");

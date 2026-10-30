@@ -16,7 +16,8 @@ import { getCachedAvailableCliKinds } from "../interactiveCliAuth.js";
 import { applyManualCliSwitchHandoff, getStoredCliPreference, type CliKind } from "../interactiveBot.js";
 import type { BotKind, BridgeConfig, CliResult, RouteableBotKind } from "../types.js";
 
-export const OUTWARD_ACP_SURFACE = "acp:outward";
+import { OUTWARD_ACP_SURFACE, recoverOutwardLanes } from "./recovery.js";
+export { OUTWARD_ACP_SURFACE } from "./recovery.js";
 const OUTWARD_ACP_EXECUTION_ERROR = -32001;
 const OUTWARD_ACP_BUSY_ERROR = -32002;
 const CANCELLATION_SWEEP_MS = 10;
@@ -37,6 +38,7 @@ export interface OutwardAcpPromptExecutionInput {
   session: OutwardAcpSessionRecord;
   prompt: string;
   attachments?: string[];
+  runId?: string;
   signal: AbortSignal;
   onUpdate: (update: OutwardUpdate) => void | Promise<void>;
 }
@@ -273,11 +275,14 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
   /** Run a Workstream mutation under its lane fence; busy when a Run holds the lane. */
   withIdleLane<T>(session: OutwardAcpSessionRecord, operation: () => T): T {
     const { db } = this.options;
-    const lane = db.acquireLock(OUTWARD_ACP_SURFACE, session.conversationId);
+    const lane = db.acquireLock(OUTWARD_ACP_SURFACE, session.conversationId, false);
     if (!lane) {
       throw new acp.RequestError(OUTWARD_ACP_BUSY_ERROR, "outward ACP session is busy", { sessionId: session.sessionId });
     }
     try {
+      if (db.listRunningRuns(OUTWARD_ACP_SURFACE).some((run) => run.chat_id === session.conversationId)) {
+        throw new acp.RequestError(OUTWARD_ACP_BUSY_ERROR, "outward ACP session is busy", { sessionId: session.sessionId });
+      }
       return db.runWithLockFence(lane, operation);
     } finally {
       db.unlock(lane);
@@ -332,7 +337,11 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
 
   async execute(input: OutwardAcpPromptExecutionInput): Promise<acp.PromptResponse> {
     const { db } = this.options;
-    const lane = db.acquireLock(OUTWARD_ACP_SURFACE, input.session.conversationId);
+    let lane = db.acquireLock(OUTWARD_ACP_SURFACE, input.session.conversationId, false);
+    if (!lane) {
+      await recoverOutwardLanes(db);
+      lane = db.acquireLock(OUTWARD_ACP_SURFACE, input.session.conversationId, false);
+    }
     if (!lane) {
       throw new acp.RequestError(
         OUTWARD_ACP_BUSY_ERROR,
@@ -341,8 +350,12 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
       );
     }
 
+    if (db.listRunningRuns(OUTWARD_ACP_SURFACE).some((run) => run.chat_id === input.session.conversationId)) {
+      db.unlock(lane);
+      throw new acp.RequestError(OUTWARD_ACP_BUSY_ERROR, "outward ACP session is busy", { sessionId: input.session.sessionId });
+    }
     const provider = this.selectedProvider(input.session);
-    const runId = this.options.runId?.() ?? randomUUID();
+    const runId = input.runId ?? this.options.runId?.() ?? randomUUID();
     let eventStore: EventStore | null = null;
     let active: ActiveOutwardExecution | null = null;
     let signalAbort: (() => void) | null = null;

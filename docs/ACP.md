@@ -301,3 +301,34 @@ sources, clears MCP servers, and enables strict MCP configuration.
 - Remote interactive authentication UI. Provider API-key authentication uses
   the ACP authenticate method when configured; existing provider-local login
   state remains available to the managed adapter.
+
+
+## Outward ACP launch and maintenance
+
+Launch `npm run acp:serve` with a trusted process environment. `BRIDGE_PROJECT_DIR`
+identifies the Bridge installation and supplies the default for `DB_PATH`;
+`BRIDGE_ACP_WORKSPACE_ROOT` independently sets the authorized workspace root.
+If omitted, the root remains `BRIDGE_PROJECT_DIR`, or the launch directory when
+that variable is unset. The root must be an existing directory. The server resolves
+symlinks and only accepts existing absolute `cwd` directories within the root;
+a client cannot specify or broaden that root through ACP requests. A launcher
+must choose the root for its authenticated principal, not copy it from a request.
+
+For example, a generic stdio ACP client can launch `npm run acp:serve` from the
+Bridge installation with `DB_PATH=/var/lib/bridge/interactive.sqlite` and
+`BRIDGE_ACP_WORKSPACE_ROOT=/srv/projects/team-a`, then use a `cwd` within that
+workspace in standard `session/new` and `session/load` requests. Give the existing
+daily cleanup service the same trusted root and its configured `BRIDGE_DB_PATH`
+so it can expire stale resume pointers and inspect only workspaces inside that
+root. Different trust roots require matching maintenance configuration; do not
+configure a broader shared parent merely for convenience.
+
+On upgrade, old staging directories without process ownership evidence and
+legacy locks without a provable owner remain fenced for safety. Inspect those
+artifacts and processes through the existing recovery procedure before removing
+them. When rolling back, stop outward clients and confirm that no provider Run is
+active before starting an older version: older versions use
+`BRIDGE_PROJECT_DIR` as the root and perform broader age-based startup cleanup.
+Restore the previous launcher settings and verify workspace confinement before
+accepting clients. No database schema change is
+required by this launch setting.

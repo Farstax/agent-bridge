@@ -329,9 +329,9 @@ export class BridgeDb {
 
   // ── Per-chat execution lock ──────────────────────────────────────────────
 
-  acquireLock(surface: string, chatKey: string): ExecutionLaneHandle | null {
+  acquireLock(surface: string, chatKey: string, replaceExpired = true): ExecutionLaneHandle | null {
     assertExecutionScope(surface, chatKey);
-    return this.locks.acquire(surface, chatKey);
+    return this.locks.acquire(surface, chatKey, replaceExpired);
   }
 
   heartbeatLock(handle: ExecutionLaneHandle): boolean {

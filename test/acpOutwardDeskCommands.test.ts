@@ -48,6 +48,7 @@ function setup(options: { chain?: BotKind[]; btw?: boolean; gate?: Promise<void>
   const prompts: string[] = [];
   const attachmentPaths: string[][] = [];
   const attachmentContents: string[][] = [];
+  const attachmentRunIds: Array<string | undefined> = [];
   const btwCalls: Array<[BotKind, string]> = [];
   let n = 0;
   const exec = new BridgeOutwardAcpPromptExecutor({
@@ -64,6 +65,7 @@ function setup(options: { chain?: BotKind[]; btw?: boolean; gate?: Promise<void>
         prompts.push(input.prompt);
         attachmentPaths.push(input.attachments ?? []);
         attachmentContents.push((input.attachments ?? []).map((path) => readFileSync(path, "utf8")));
+        attachmentRunIds.push(input.runId);
         if (options.gate) await options.gate;
         return { text: `answer from ${provider}`, sessionId: `${provider}-session`, stopReason: "end_turn" };
       },
@@ -78,7 +80,7 @@ function setup(options: { chain?: BotKind[]; btw?: boolean; gate?: Promise<void>
   const list = () => acp.client({ name: "desk" }).connectWith(app, (agent) =>
     agent.request<{ commands: Array<{ name: string; available: boolean; reason?: string; route: string }> }>(
       WORKSTREAM_METHODS.commands, { sessionId: "s1", cwd: root }));
-  return { root, db, repo, exec, app, run, list, prompts, btwCalls, attachmentPaths, attachmentContents };
+  return { root, db, repo, exec, app, run, list, prompts, btwCalls, attachmentPaths, attachmentContents, attachmentRunIds };
 }
 
 describe("outward ACP Desk commands (#1101)", () => {
@@ -144,7 +146,7 @@ describe("outward ACP Desk commands (#1101)", () => {
   });
 
   it("ingests ACP resource and image blocks for the Run and removes task files after completion", async () => {
-    const { root, app, attachmentPaths, attachmentContents, prompts } = setup();
+    const { root, app, attachmentPaths, attachmentContents, attachmentRunIds, prompts } = setup();
     const result = await acp.client({ name: "desk" }).connectWith(app, (agent) =>
       agent.request(acp.methods.agent.session.prompt, {
         sessionId: "s1",
@@ -159,6 +161,7 @@ describe("outward ACP Desk commands (#1101)", () => {
     expect(paths).toHaveLength(2);
     expect(paths.every((path) => path.startsWith(root))).toBe(true);
     expect(attachmentContents[0]).toEqual(["name\nAda\n", "png fixture"]);
+    expect(attachmentRunIds[0]).toMatch(/^[a-f0-9-]{36}$/);
     expect(prompts[0]).toContain("[Attached file: 01-report.csv]");
     expect(prompts[0]).toContain("[Attached file: 02-chart.png]");
     expect(paths.every((path) => !existsSync(path))).toBe(true);

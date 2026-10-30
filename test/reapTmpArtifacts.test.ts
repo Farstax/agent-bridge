@@ -62,6 +62,15 @@ describe("reap-tmp-artifacts.sh", () => {
     };
   }
 
+  it("runs ACP maintenance through the existing cleanup owner", () => {
+    const { root, env } = telemetryFixture("exit 0");
+    mkdirSync(join(root, "release", "src", "acpServer"), { recursive: true });
+    writeFileSync(join(root, "release", "src", "acpServer", "maintenance.ts"), "");
+    const result = run({ ...env, BRIDGE_ACP_WORKSPACE_ROOT: root });
+    expect(result.status).toBe(0);
+    expect(readFileSync(join(root, "calls"), "utf8")).toContain("src/acpServer/maintenance.ts");
+  });
+
   it("prunes ACP telemetry through the active release without a rollout", () => {
     const { root, env } = telemetryFixture("exit 0");
     const result = run(env);

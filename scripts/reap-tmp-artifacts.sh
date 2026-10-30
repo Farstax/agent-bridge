@@ -50,6 +50,30 @@ prune_acp_telemetry() {
   FAILURES=$((FAILURES + 1))
 }
 
+# ACP session expiry and attachment cleanup share this existing timer.  Only
+# the explicitly configured database and workspace root are eligible.
+run_acp_maintenance() {
+  local database="${BRIDGE_DB_PATH:-}" release node_bin error
+  (( DRY_RUN )) && return 0
+  [[ "$database" == /* && -f "$database" && ! -L "$database" ]] || return 0
+  release="${BRIDGE_CURRENT_RELEASE_DIR:-}"
+  [[ -L "$release" ]] || return 0
+  release="$(realpath -e "$release")" || return 1
+  node_bin="${NODE_BIN:-node}"
+  command -v "$node_bin" >/dev/null 2>&1 || return 0
+  [[ -f "$release/node_modules/tsx/dist/cli.mjs" && -f "$release/src/acpServer/maintenance.ts" ]] || return 0
+  if error="$("$node_bin" "$release/node_modules/tsx/dist/cli.mjs" "$release/src/acpServer/maintenance.ts" 2>&1 >/dev/null)"; then
+    return 0
+  fi
+  if [[ "$error" == *SQLITE_BUSY* || "$error" == *"database is locked"* ]]; then
+    log "ACP maintenance deferred: configured database is busy"
+    return 0
+  fi
+  printf '%s\n' "$error" >&2
+  log "ACP maintenance failed" >&2
+  FAILURES=$((FAILURES + 1))
+}
+
 remove_entry() {
   local entry="$1" reason="$2" rm_error="" sudo_error=""
   if (( DRY_RUN )); then
@@ -324,6 +348,7 @@ sweep_by_age "${TMP_ROOT}/agent-bridge-voice" "voice-*"
 sweep_agent_bridge_scratch "${TMP_ROOT}"
 
 prune_acp_telemetry
+run_acp_maintenance
 
 # Named producer caches, never a blanket ~/.cache or ~/.npm sweep.
 cache_home="${HOME:-}"
