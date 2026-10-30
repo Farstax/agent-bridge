@@ -118,6 +118,40 @@ describe("single-input deployer contract", () => {
     expect(readdirSync(releaseRoot).filter((name) => name !== ".agent-bridge-deploy.lock")).toEqual([]);
   });
 
+  it("budgets the owner authorization inode before the later staging admission", () => {
+    const fixture = makeRelease();
+    const probe = String.raw`
+import importlib.util, os, tempfile
+from datetime import datetime, timezone
+from pathlib import Path
+spec = importlib.util.spec_from_file_location("agent_bridge_deploy", ${JSON.stringify(resolve(DEPLOYER))})
+module = importlib.util.module_from_spec(spec); spec.loader.exec_module(module)
+stage = module.staging_module(Path(${JSON.stringify(resolve("scripts/release-stage.py"))}))
+archive = Path(${JSON.stringify(fixture.archive)})
+commit, sha256, _ = module.validate_archive(archive, None, datetime.now(timezone.utc), False)
+root = Path(tempfile.mkdtemp())
+release_root = root / "releases"
+authorization_root = root / "authorization"
+authorization_root.mkdir()
+footprint = module.VERIFIED_MANIFESTS[sha256]["_staging_footprint"]
+block = max(os.statvfs(root).f_frsize, os.statvfs(root).f_bsize, module.STAGING_BLOCK_BYTES)
+snapshot = -(-footprint[2] // block) * block
+candidate = module.candidate_bytes(footprint[3], block) + 2 * block + 2 * block
+without_authorization = module.DEFAULT_STAGING_SAFETY_RESERVE_BYTES + snapshot + candidate
+os.environ["AGENT_BRIDGE_DEPLOY_TEST_AVAILABLE_BYTES"] = str(without_authorization)
+try:
+    module.admit_staging(archive, commit, sha256, release_root, False, authorization_directory=authorization_root)
+except RuntimeError as error:
+    print(error)
+else:
+    raise SystemExit("admission omitted owner authorization storage")
+assert not (authorization_root / ("deployment-authorization-" + commit + ".json")).exists()
+`;
+    const result = spawnSync("python3", ["-c", probe], { encoding: "utf8" });
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout).toContain("staging disk admission refused");
+  });
+
   it("removes owned staging data when release extraction is interrupted with SIGTERM", async () => {
     const fixture = makeRelease();
     const releaseRoot = mkdtempSync(join(tmpdir(), "agent-bridge-stage-sigterm-"));
@@ -867,6 +901,54 @@ print(json.dumps({"footprint": footprint, "limited": limited, "staged": (directo
     expect(outcome.footprint).toBeGreaterThanOrEqual(100 * 4096);
     expect(outcome.limited).toContain("archive is larger than its verified size");
     expect(outcome.staged).toBe(false);
+  });
+
+  it("bounds directory metadata independently of filesystem packing and charges snapshot directory fallback", () => {
+    const probe = String.raw`
+import importlib.util, json
+from pathlib import Path
+spec = importlib.util.spec_from_file_location("agent_bridge_deploy", ${JSON.stringify(resolve(DEPLOYER))})
+module = importlib.util.module_from_spec(spec); spec.loader.exec_module(module)
+block = 65536
+raw = ((0, 1), 1, ((12, 12), (12,)))
+data_bytes = block * 2
+directory_entries = sum(len(records) + 2 for records in raw[2])
+print(json.dumps({"actual": module.candidate_bytes(raw, block),
+  "minimum": data_bytes + directory_entries * block}))
+`;
+    const result = spawnSync("python3", ["-c", probe], { encoding: "utf8" });
+    expect(result.status, result.stderr).toBe(0);
+    const outcome = JSON.parse(result.stdout) as { actual: number; minimum: number };
+    expect(outcome.actual).toBeGreaterThanOrEqual(outcome.minimum);
+  });
+
+  it("charges a snapshot directory entry when O_TMPFILE is unavailable", () => {
+    const fixture = makeRelease();
+    const probe = String.raw`
+import importlib.util, os, tempfile
+from datetime import datetime, timezone
+from pathlib import Path
+spec = importlib.util.spec_from_file_location("agent_bridge_deploy", ${JSON.stringify(resolve(DEPLOYER))})
+module = importlib.util.module_from_spec(spec); spec.loader.exec_module(module)
+stage = module.staging_module(Path(${JSON.stringify(resolve("scripts/release-stage.py"))}))
+archive = Path(${JSON.stringify(fixture.archive)})
+commit, sha256, _ = module.validate_archive(archive, None, datetime.now(timezone.utc), False)
+root = Path(tempfile.mkdtemp())
+(root / commit).mkdir()
+footprint = module.VERIFIED_MANIFESTS[sha256]["_staging_footprint"]
+block = max(os.statvfs(root).f_frsize, os.statvfs(root).f_bsize, module.STAGING_BLOCK_BYTES)
+snapshot = -(-footprint[2] // block) * block
+os.environ["AGENT_BRIDGE_DEPLOY_TEST_AVAILABLE_BYTES"] = str(module.DEFAULT_STAGING_SAFETY_RESERVE_BYTES + snapshot)
+try:
+  module.admit_staging(archive, commit, sha256, root, False)
+except RuntimeError as error:
+  print(error)
+else:
+  raise SystemExit("snapshot directory allocation was not admitted")
+`;
+    const result = spawnSync("python3", ["-c", probe], { encoding: "utf8" });
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout).toContain("staging disk admission refused");
   });
 
   it("rejects release-stage test mode for a root deployment (#1100)", () => {

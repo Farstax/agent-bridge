@@ -152,22 +152,16 @@ def archive_members(archive: Path, stage):
 
 
 def candidate_bytes(raw: tuple, block: int) -> int:
-    """Allocation of one expanded candidate on a filesystem with this block size.
+    """Conservative candidate allocation without assuming directory packing.
 
-    Data blocks per regular file, one block per symlink (long targets need
-    one), and each directory packed from its entry records ("." and ".."
-    first; records never straddle blocks), plus hashed-index blocks for
-    multi-block directories and a 1% metadata margin.
+    Charge one filesystem block for every directory entry, including dot
+    entries. This deliberately overcounts packed directories and covers
+    metadata layouts that differ from ext4. File data and symlinks are charged
+    separately, with a 1% margin.
     """
     file_sizes, symlinks, directories = raw
     total = sum(-(-size // block) * block for size in file_sizes) + symlinks * block
-    for records in directories:
-        blocks, used = 1, 24
-        for record in records:
-            if used + record > block:
-                blocks, used = blocks + 1, 0
-            used += record
-        total += (blocks + (blocks > 1) * (1 + blocks // 64)) * block
+    total += sum(len(records) + 2 for records in directories) * block
     return total + total // 100
 
 
@@ -371,14 +365,15 @@ def snapshot_limit_args(stage_helper: Path, archive: Path, archive_sha256: str, 
 
 
 def admit_staging(archive: Path, commit: str, archive_sha256: str, release_root: Path, production: bool,
-                  handoff_directory: Path | None = None) -> None:
+                  handoff_directory: Path | None = None, authorization_directory: Path | None = None) -> None:
     """Refuse before writing, while services still run, unless one candidate fits (#1100).
 
     Charges, per filesystem, the expanded candidate (counted from the verified
     archive members, including directories and inodes), release-stage's archive
     snapshot and staging metadata in TMPDIR, plus the stage directory and
-    provenance inode. For a new handoff, it also charges the durable copy and
-    its metadata. Each
+    provenance inode. Owner-request deployments also reserve the authorization
+    record before materializing it. Handoffs charge the durable copy and its
+    metadata. Each
     filesystem keeps the rollout safety reserve. An already staged release needs
     no new candidate, but release-stage still writes its snapshot.
     """
@@ -388,6 +383,7 @@ def admit_staging(archive: Path, commit: str, archive_sha256: str, release_root:
         fail("release root must already exist before staging")
     missing_release_dirs = missing_directories(release_root)
     missing_handoff_dirs = missing_directories(handoff_directory) if handoff_directory is not None else []
+    missing_authorization_dirs = missing_directories(authorization_directory) if authorization_directory is not None else []
     manifest = VERIFIED_MANIFESTS.get(archive_sha256)
     if manifest is None or manifest.get("commit") != commit or "_staging_footprint" not in manifest:
         fail("staging disk admission requires the verified release manifest")
@@ -416,6 +412,10 @@ def admit_staging(archive: Path, commit: str, archive_sha256: str, release_root:
         # The archive, two optional authorization receipts, and atomic result
         # replacement may all allocate. Directory creation is charged below.
         charges.append((handoff_directory, "handoff", 0))
+    if authorization_directory is not None:
+        authorization = authorization_directory / f"deployment-authorization-{commit}.json"
+        if not authorization.exists() and not authorization.is_symlink():
+            charges.append((authorization_directory, "authorization", 1 + len(missing_authorization_dirs)))
     required: dict[int, list] = {}
     for path, kind, inodes in charges:
         probe = filesystem_probe(path)
@@ -427,7 +427,14 @@ def admit_staging(archive: Path, commit: str, archive_sha256: str, release_root:
             size = (candidate_bytes(raw, block) if raw is not None else candidate_at_default) + 2 * block
             size += len(missing_release_dirs) * 2 * block
         elif kind == "snapshot":
-            size = file_charge(archive_bytes, block)
+            # TemporaryFile may fall back to a named file when O_TMPFILE is
+            # unavailable. Charge its parent-directory entry as well.
+            size = file_charge(archive_bytes, block) + block
+        elif kind == "authorization":
+            # Reserve a block for the authorization record and another for its
+            # parent-directory entry. Include any directory chain that the
+            # owner-request path must materialize.
+            size = 2 * block + len(missing_authorization_dirs) * 2 * block
         else:
             handoff_archive = handoff_directory / "release.tar.gz"
             if handoff_archive.exists():
@@ -1289,7 +1296,8 @@ def _run_deployment(archive: Path, approval: Path | None, owner_request: Path | 
                 # Capacity refusal must happen before the durable owner approval
                 # record is materialized. The ordinary staging path repeats the
                 # check immediately before extracting the release.
-                admit_staging(archive, commit, archive_sha256, release_root, production)
+                admit_staging(archive, commit, archive_sha256, release_root, production,
+                              authorization_directory=authorization_dir)
             approval = materialize_owner_approval(request, commit, archive_sha256, fixed_environment or "production-content-crawler", authorization_dir)
     commit, archive_sha256, approval_document = validate_archive(archive, approval, datetime.now(timezone.utc), production, fixed_environment, stage_helper)
     if approval_document is None:
