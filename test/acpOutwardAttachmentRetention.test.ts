@@ -151,6 +151,23 @@ describe("durable attachment retention for a capacity wait (#1114)", () => {
     expect(await readRetainedOutwardAcpAttachments(cwd, continuationId)).toHaveLength(1);
   });
 
+  it("retries after an interrupted temporary write and sweeps old markerless temp snapshots", async () => {
+    const cwd = workspace();
+    const broken = mkdtempSync(join(cwd, ".agent-bridge-attachments-wait-tmp-"));
+    // A process can crash immediately after mkdtemp, before an owner marker.
+    writeFileSync(join(broken, "partial.txt"), "incomplete private snapshot");
+    const old = (Date.now() - 9 * 24 * 60 * 60 * 1000) / 1000;
+    utimesSync(broken, old, old);
+    const id = "retry-after-interrupted-write";
+    await stageOutwardAcpAttachments(cwd, [
+      { type: "resource", resource: { uri: "file:///note.txt", mimeType: "text/plain", text: "complete" } },
+    ] as ContentBlock[], async (files) => { await retainOutwardAcpAttachmentsForWait(cwd, files, id); });
+    expect(readFileSync((await readRetainedOutwardAcpAttachments(cwd, id))[0], "utf8")).toBe("complete");
+    await cleanupStaleOutwardAcpAttachments(cwd);
+    expect(existsSync(broken)).toBe(false);
+    expect(await readRetainedOutwardAcpAttachments(cwd, id)).toHaveLength(1);
+  });
+
   it("the stale-wait sweep eventually reclaims an orphaned retained directory past its own long bound", async () => {
     const cwd = workspace();
     const continuationId = "acp-capacity-wait:run-4";
