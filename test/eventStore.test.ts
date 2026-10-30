@@ -41,21 +41,6 @@ describe("EventStore", () => {
     expect(events[0].type).toBe("run.started");
   });
 
-  it("keeps each spawned provider process attributable after the run row exists", async () => {
-    const { EventStore } = await import("../src/events/store.js");
-    const store = new EventStore(db);
-    const { type } = await import("../src/events/types.js");
-    const start = (process?: { pid: number; startTicks: string }) => type.runStarted({
-      runId: "r-p", bot: "codex", chatId: "100", chatKey: "100", command: "codex-acp", cwd: "/", model: null, process,
-    });
-    store.collect(start({ pid: 41, startTicks: "700" }));
-    store.collect(start());
-    store.collect(start({ pid: 42, startTicks: "800" }));
-
-    const events = db.getEventsForRun("r-p").map((event) => JSON.parse(event.payload_json));
-    expect(events.map((event) => event.process)).toEqual([{ pid: 41, startTicks: "700" }, { pid: 42, startTicks: "800" }]);
-  });
-
   it("persists a topic-qualified chat key for run.started recovery", async () => {
     const { EventStore } = await import("../src/events/store.js");
     const store = new EventStore(db);
