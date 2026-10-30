@@ -237,6 +237,16 @@ describe("outward ACP Workstreams (#1101)", () => {
     expect(status.status).toMatchObject({ state: "idle", lastRun: { status: "done" } });
   });
 
+  it("reports an available next provider before the first turn, or null when none are available", () => {
+    const f = fixture();
+    const session = f.repo.create({ sessionId: "s1", conversationId: "acp:c1", cwd: f.root });
+    let available: BotKind[] = ["claude"];
+    const exec = executor(f.db, [], { available: (p) => available.includes(p) });
+    expect(exec.status(session)).toMatchObject({ selectedProvider: "codex", nextProvider: "claude" });
+    available = [];
+    expect(exec.status(session)).toMatchObject({ selectedProvider: "codex", nextProvider: null });
+  });
+
   it("reports the provider the next Run actually uses after fallback", async () => {
     const f = fixture();
     f.repo.create({ sessionId: "s1", conversationId: "acp:c1", cwd: f.root });

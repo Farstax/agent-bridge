@@ -57,7 +57,7 @@ export interface OutwardWorkstreamStatus {
    * Provider the next Run starts with. Differs from the selection after an
    * in-process fallback; a restart returns to the selection.
    */
-  nextProvider: BotKind;
+  nextProvider: BotKind | null;
   /** Configured chain members, with current routeability. */
   providers: Array<{ id: BotKind; available: boolean }>;
   lastRun: {
@@ -230,7 +230,9 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
     return {
       state,
       selectedProvider,
-      nextProvider: cached?.provider === selectedProvider ? cached.router.activeProvider(session.conversationId) : selectedProvider,
+      nextProvider: cached?.provider === selectedProvider ? cached.router.activeProvider(session.conversationId)
+        : [selectedProvider, ...providerChain.filter((provider) => provider !== selectedProvider)]
+          .find((provider) => isProviderAvailable?.(provider) ?? true) ?? null,
       providers: providerChain.map((id) => ({ id, available: isProviderAvailable?.(id) ?? true })),
       lastRun: run ? {
         runId: run.run_id,
@@ -543,6 +545,9 @@ function configuredProviderChain(env: NodeJS.ProcessEnv): readonly BotKind[] {
       throw new Error(`unsupported outward ACP provider lock: ${locked}`);
     }
     return [locked as BotKind];
+  }
+  if (env.INTERACTIVE_CLI_CHAIN?.split(",").some((kind) => kind.trim() === "custom-acp")) {
+    throw new Error("outward ACP does not support custom-acp in the configured provider chain");
   }
   const fallback = (["codex", "claude", "antigravity", "grok", "cursor"] as BotKind[])
     .filter((kind) => allowed.includes(kind));

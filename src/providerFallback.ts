@@ -69,7 +69,7 @@ export class ProviderFallbackChain {
    * must use this — mutating here races with a real attempt's own advance()
    * and can cause it to skip a valid fallback (#1114 P0).
    */
-  peekActiveCli(chatKey: string): string {
+  peekActiveCli(chatKey: string): string | null {
     const idx = Math.min(this.chatActiveIdx.get(chatKey) ?? 0, this.chain.length - 1);
     for (let candidate = idx; candidate < this.chain.length; candidate += 1) {
       if (this.isCliAvailable(this.chain[candidate])) return this.chain[candidate];
@@ -77,7 +77,7 @@ export class ProviderFallbackChain {
     for (let candidate = 0; candidate < idx; candidate += 1) {
       if (this.isCliAvailable(this.chain[candidate])) return this.chain[candidate];
     }
-    return this.chain[idx];
+    return null;
   }
 
   /**

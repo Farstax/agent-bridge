@@ -25,15 +25,11 @@ describe("outward ACP custom-acp guard (#1114)", () => {
     }
   });
 
-  it("drops custom-acp from an unlocked configured chain rather than ever selecting it", () => {
+  it.each(["custom-acp", "custom-acp,codex", "codex,custom-acp"])("rejects an explicit unsupported chain %s before admission", (chain) => {
     const db = openDb(":memory:");
     try {
-      // custom-acp present alongside routeable providers must not surface as
-      // a usable outward ACP head/fallback member.
-      const executor = createProductionOutwardAcpPromptExecutor(db, ":memory:", {
-        INTERACTIVE_CLI_CHAIN: "custom-acp,codex",
-      });
-      expect(executor).toBeTruthy();
+      expect(() => createProductionOutwardAcpPromptExecutor(db, ":memory:", { INTERACTIVE_CLI_CHAIN: chain }))
+        .toThrow(/custom-acp/i);
     } finally {
       db.close();
     }
