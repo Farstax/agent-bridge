@@ -318,7 +318,13 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
     const lane = db.acquireLock(OUTWARD_ACP_SURFACE, session.conversationId);
     if (!lane) throw new acp.RequestError(OUTWARD_ACP_BUSY_ERROR, "deferred Workstream is busy");
     try {
-      if (!db.runWithLockFence(lane, () => cancelPendingRunContinuation(db, wait.id, "cancelled_by_owner"))) {
+      const cancelled = db.runWithLockFence(lane, () => db.runInTransaction(() => {
+        // Read the same durable row under the transaction that changes it;
+        // the worker's compare-and-swap claim may have won before this point.
+        const current = listRunContinuations(db, OUTWARD_ACP_SURFACE).find((item) => item.id === wait.id);
+        return current?.state === "pending" && cancelPendingRunContinuation(db, wait.id, "cancelled_by_owner");
+      }));
+      if (!cancelled) {
         throw new acp.RequestError(OUTWARD_ACP_BUSY_ERROR, "deferred capacity task was already claimed");
       }
     } finally { db.unlock(lane); }
