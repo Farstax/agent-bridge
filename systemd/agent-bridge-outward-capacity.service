@@ -1,0 +1,19 @@
+[Unit]
+Description=Agent Bridge outward ACP durable capacity continuations
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=BRIDGE_USER
+EnvironmentFile=-/etc/default/agent-bridge-shared
+EnvironmentFile=/etc/default/agent-bridge-release
+EnvironmentFile=/etc/default/agent-bridge-interactive
+ExecStart=/usr/bin/env bash -lc 'set -Eeuo pipefail; export PATH="$(dirname "${NODE_BIN:?}"):$PATH"; [[ -L "${BRIDGE_CURRENT_RELEASE_DIR:?}" ]] || exit 78; cd "${BRIDGE_CURRENT_RELEASE_DIR:?}"; [[ -f manifest.json && ! -L manifest.json ]] || exit 78; [[ "${DB_PATH:?}" == /var/lib/agent-bridge/*.sqlite ]] || exit 78; export NODE_ENV=production; exec "${NODE_BIN:?}" ./node_modules/tsx/dist/cli.mjs src/acpServer/continuationWorker.ts'
+Restart=always
+RestartSec=5
+KillMode=control-group
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target
