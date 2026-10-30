@@ -115,6 +115,7 @@ export function createSurfaceNeutralProviderRouter(
           // failure proven to precede prompt submission may advance the chain.
           const failure = error instanceof Error ? error : new Error(String(error));
           const decision = decideProviderRecovery(providerIdForBotName(provider), failure);
+          input.onProviderRecoveryDecision?.(decision.reason);
           const recoverable = decision.reason !== null;
           if (!recoverable) {
             for (const event of attemptEvents) input.collect(event);
