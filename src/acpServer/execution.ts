@@ -15,8 +15,8 @@ import { createSurfaceNeutralProviderRouter, type SurfaceNeutralProviderRouter }
 import { getCachedAvailableCliKinds } from "../interactiveCliAuth.js";
 import { applyManualCliSwitchHandoff, getStoredCliPreference, type CliKind } from "../interactiveBot.js";
 import type { BotKind, BridgeConfig, CliResult, RouteableBotKind } from "../types.js";
-import { retainOutwardAcpAttachmentsForWait } from "./attachments.js";
-import { hasPendingCapacityWait, listRunContinuations, linkCapacityContinuationRun, requestRunContinuation } from "../runContinuation.js";
+import { retainOutwardAcpAttachmentsForWait, releaseRetainedOutwardAcpAttachments } from "./attachments.js";
+import { hasPendingCapacityWait, listRunContinuations, linkCapacityContinuationRun, requestRunContinuation, cancelPendingRunContinuation } from "../runContinuation.js";
 import { decideProviderRecovery } from "../providers/recoveryVerdict.js";
 import { providerIdForBotName } from "../providers/registry.js";
 
@@ -89,6 +89,7 @@ export interface OutwardWorkstreamStatus {
 export interface OutwardWorkstreamControl {
   status(session: OutwardAcpSessionRecord): OutwardWorkstreamStatus;
   selectProvider(session: OutwardAcpSessionRecord, provider: string): OutwardWorkstreamStatus;
+  cancelDeferred?(session: OutwardAcpSessionRecord): Promise<OutwardWorkstreamStatus>;
 }
 
 export type OutwardAcpExecutionEngine = Pick<BridgeEngine, "executeSurfaceNeutralTurn">;
@@ -237,15 +238,18 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
   status(session: OutwardAcpSessionRecord): OutwardWorkstreamStatus {
     const { db, providerChain, isProviderAvailable } = this.options;
     const latest = db.getLatestRunForConversation(this.identity(session));
-    const wait = listRunContinuations(db, OUTWARD_ACP_SURFACE).find((item) =>
-      item.chatKey === session.conversationId && item.outward?.sessionId === session.sessionId
-      && (item.state === "pending" || item.state === "claimed"));
+    const allWaits = listRunContinuations(db, OUTWARD_ACP_SURFACE)
+      .filter((item) => item.chatKey === session.conversationId && item.outward?.sessionId === session.sessionId)
+      .sort((a, b) => a.requestedAt.localeCompare(b.requestedAt));
+    const lastWait = allWaits.at(-1);
+    const wait = allWaits.find((item) => item.state === "pending" || item.state === "claimed");
     // A waiting deferred Run owns the Workstream even though its original
     // capacity-rejected attempt has a terminal failed event.
     const run = wait && latest?.status !== "running" ? db.getRun(wait.originRunId) : latest;
     let state: OutwardWorkstreamState = "idle";
     if (latest?.status === "running") state = "running";
     else if (wait) state = "waiting";
+    else if (lastWait?.state === "cancelled" && latest?.run_id === lastWait.originRunId) state = "cancelled";
     else if (run?.status === "failed") state = "failed";
     else if (run?.status === "cancelled") state = "cancelled";
     // Attention comes only from an explicit recorded provider disposition.
@@ -294,6 +298,29 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
         this.routers.delete(session.conversationId);
       }
     });
+    return this.status(session);
+  }
+
+  /** Cancel a durably waiting task, never an already-claimed active provider.
+   * The ACP v1 session/cancel notification only cancels a live request.
+   */
+  async cancelDeferred(session: OutwardAcpSessionRecord): Promise<OutwardWorkstreamStatus> {
+    const { db } = this.options;
+    const wait = listRunContinuations(db, OUTWARD_ACP_SURFACE).find((item) =>
+      item.chatKey === session.conversationId && item.outward?.sessionId === session.sessionId
+      && (item.state === "pending" || item.state === "claimed"));
+    if (!wait) throw new acp.RequestError(OUTWARD_ACP_BUSY_ERROR, "no pending deferred Workstream task");
+    if (wait.state !== "pending") {
+      throw new acp.RequestError(OUTWARD_ACP_BUSY_ERROR, "the deferred provider is already executing; cancellation requires active process containment");
+    }
+    const lane = db.acquireLock(OUTWARD_ACP_SURFACE, session.conversationId);
+    if (!lane) throw new acp.RequestError(OUTWARD_ACP_BUSY_ERROR, "deferred Workstream is busy");
+    try {
+      if (!db.runWithLockFence(lane, () => cancelPendingRunContinuation(db, wait.id, "cancelled_by_owner"))) {
+        throw new acp.RequestError(OUTWARD_ACP_BUSY_ERROR, "deferred capacity task was already claimed");
+      }
+    } finally { db.unlock(lane); }
+    await releaseRetainedOutwardAcpAttachments(session.cwd, wait.id);
     return this.status(session);
   }
 
