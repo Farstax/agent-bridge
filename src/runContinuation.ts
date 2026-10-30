@@ -752,6 +752,33 @@ export function requeueClaimedCapacityWait(
   });
 }
 
+/** The worker has positively classified this *specific* successor as a
+ * pre-submission capacity rejection. Clear only that failed successor link
+ * under its exact claim, permitting a bounded repeat without blind replay. */
+export function requeueProvenOutwardCapacityRejection(
+  db: BridgeDb,
+  id: string,
+  claimantToken: string,
+  nowMs = Date.now(),
+): boolean {
+  return db.runInTransaction(() => {
+    const row = db.raw.prepare("SELECT value FROM settings WHERE key = ?").get(key(id)) as { value: string } | undefined;
+    const current = row ? parse(row.value) : null;
+    if (!current?.outward || current.state !== "claimed" || current.claimToken !== claimantToken
+        || !current.successorRunId || db.hasChatLock(current.chatKey)
+        || Date.parse(current.expiresAt) <= nowMs) return false;
+    const successor = db.getRun(current.successorRunId);
+    if (!successor || successor.status !== "failed"
+        || successor.surface_identity !== current.surfaceIdentity || successor.chat_id !== current.chatKey) return false;
+    const dueAt = new Date(Math.min(Date.parse(current.expiresAt), nowMs + 300_000)).toISOString();
+    db.raw.prepare("UPDATE settings SET value = ? WHERE key = ?").run(JSON.stringify({
+      ...current, state: "pending", dueAt, successorRunId: undefined,
+      claimedAt: undefined, claimRunId: undefined, claimToken: undefined, claimExpiresAt: undefined,
+    }), key(id));
+    return true;
+  });
+}
+
 export async function scanRunContinuations(
   db: BridgeDb,
   surfaceIdentity: string,
@@ -833,7 +860,7 @@ export async function scanRunContinuations(
         // pre-submission capacity rejection requests a safe bounded retry.
         // All other failures require authoritative terminal evidence.
         if (current.outward && outcome === false) {
-          requeueClaimedCapacityWait(db, claimed.id, nowMs, claimed.claimToken);
+          requeueProvenOutwardCapacityRejection(db, claimed.id, claimed.claimToken!, nowMs);
           continue;
         }
         const failure = capacitySuccessorFailure(db, current);
