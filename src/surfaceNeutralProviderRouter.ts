@@ -115,9 +115,9 @@ export function createSurfaceNeutralProviderRouter(
           // failure proven to precede prompt submission may advance the chain.
           const failure = error instanceof Error ? error : new Error(String(error));
           const decision = decideProviderRecovery(providerIdForBotName(provider), failure);
-          input.onProviderRecoveryDecision?.(decision.reason);
           const recoverable = decision.reason !== null;
           if (!recoverable) {
+            input.onProviderRecoveryDecision?.(null, false);
             for (const event of attemptEvents) input.collect(event);
             throw error;
           }
@@ -125,6 +125,7 @@ export function createSurfaceNeutralProviderRouter(
           // whatever chatActiveIdx currently holds — a concurrent status peek
           // must never be able to shift this (#1114 P0).
           const next = fallback.advance(input.chatKey, provider);
+          input.onProviderRecoveryDecision?.(decision.reason, next === null);
           if (!next) {
             for (const event of attemptEvents) input.collect(event);
             throw error;
