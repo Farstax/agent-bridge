@@ -17,8 +17,7 @@ import { applyManualCliSwitchHandoff, getStoredCliPreference, type CliKind } fro
 import type { BotKind, BridgeConfig, CliResult, RouteableBotKind } from "../types.js";
 import { retainOutwardAcpAttachmentsForWait, releaseRetainedOutwardAcpAttachments } from "./attachments.js";
 import { hasPendingCapacityWait, listRunContinuations, linkCapacityContinuationRun, requestRunContinuation, cancelPendingRunContinuation } from "../runContinuation.js";
-import { decideProviderRecovery } from "../providers/recoveryVerdict.js";
-import { providerIdForBotName } from "../providers/registry.js";
+
 
 import { OUTWARD_ACP_SURFACE, recoverOutwardLanes } from "./recovery.js";
 export { OUTWARD_ACP_SURFACE } from "./recovery.js";
@@ -428,6 +427,7 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
     let signalAbort: (() => void) | null = null;
     let activeProvider: RouteableBotKind = provider;
     let encounteredCapacity = false;
+    let recoveryChainExhausted = false;
     try {
       const identity = { surfaceIdentity: OUTWARD_ACP_SURFACE, chatKey: input.session.conversationId };
       db.runInTransaction(() => {
@@ -509,7 +509,10 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
         runId,
         eventContext,
         collect,
-        onProviderRecoveryDecision: (reason) => { if (reason === "capacity") encounteredCapacity = true; },
+        onProviderRecoveryDecision: (reason, exhausted) => {
+          if (reason === "capacity") encounteredCapacity = true;
+          if (exhausted) recoveryChainExhausted = true;
+        },
       });
 
       const cancelled = active.cancelRequested || result.stopReason === "cancelled";
@@ -576,14 +579,13 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
       // A standard ACP client has no deferred-result semantics. Only clients
       // that explicitly opted in, and only when the independently supervised
       // workspace worker is enabled, may receive a durable waiting outcome.
-      const isCapacityRejection = decideProviderRecovery(providerIdForBotName(activeProvider),
-        error instanceof Error ? error : new Error(String(error))).reason === "capacity";
-      if (input.capacityResume && isCapacityRejection && !active?.cancelRequested) {
+      const capacityWaitEligible = recoveryChainExhausted && encounteredCapacity;
+      if (input.capacityResume && capacityWaitEligible && !active?.cancelRequested) {
         // The continuation runner, not this request, owns the retry schedule.
         throw new OutwardCapacityRetry();
       }
       if (input.deferCapacity && this.supportsDeferredCapacity && !input.capacityResume && !active?.cancelRequested &&
-          (isCapacityRejection || encounteredCapacity)) {
+          capacityWaitEligible) {
         const continuationId = `acp-capacity-wait:${runId}`;
         await retainOutwardAcpAttachmentsForWait(input.session.cwd, input.attachments ?? [], continuationId);
         try {
@@ -593,7 +595,7 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
             surfaceIdentity: OUTWARD_ACP_SURFACE,
             chatKey: input.session.conversationId,
             provider: activeProvider,
-            reason: "all eligible providers currently at capacity",
+            reason: "configured providers at capacity or requiring authentication",
             afterSeconds: 300,
             capacityWait: true,
             outward: { sessionId: input.session.sessionId, prompt: input.prompt, attachmentCount: input.attachments?.length ?? 0 },
