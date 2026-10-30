@@ -33,9 +33,9 @@ describe("ACP maintenance owner", () => {
       mkdirSync(otherStaging, { mode: 0o700 });
       for (const name of [".agent-bridge-staging-owner", ".agent-bridge-staging-pid", ".agent-bridge-staging-run"]) {
         const values: Record<string, string> = {
-          ".agent-bridge-staging-owner": "agent-bridge-outward-attachment-v1\\n",
+          ".agent-bridge-staging-owner": "agent-bridge-outward-attachment-v1\n",
           ".agent-bridge-staging-pid": `${dead.pid}\\n`,
-          ".agent-bridge-staging-run": "dead-maintenance-provider\\n",
+          ".agent-bridge-staging-run": "dead-maintenance-provider\n",
         };
         writeFileSync(join(otherStaging, name), values[name], { mode: 0o600 });
       }
