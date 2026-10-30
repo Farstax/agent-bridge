@@ -317,16 +317,21 @@ must choose the root for its authenticated principal, not copy it from a request
 For example, a generic stdio ACP client can launch `npm run acp:serve` from the
 Bridge installation with `DB_PATH=/var/lib/bridge/interactive.sqlite` and
 `BRIDGE_ACP_WORKSPACE_ROOT=/srv/projects/team-a`, then use a `cwd` within that
-workspace in standard `session/new` and `session/load` requests. Give the existing
-daily cleanup service the same trusted root and its configured `BRIDGE_DB_PATH`
-so it can expire stale resume pointers and inspect only workspaces inside that
-root. Different trust roots require matching maintenance configuration; do not
-configure a broader shared parent merely for convenience.
+workspace in standard `session/new` and `session/load` requests. The existing daily cleanup service requires the configured `BRIDGE_DB_PATH` and an existing root. It expires stale resume pointers and examines the explicitly recorded ACP session directories, each originally admitted by its own trusted launcher. Attachment cleanup still requires owner-only markers, expiry, absent process and absent provider Run; it must not walk arbitrary directories or broaden any ACP session root.
 
 On upgrade, old staging directories without process ownership evidence and
-legacy locks without a provable owner remain fenced for safety. Inspect those
-artifacts and processes through the existing recovery procedure before removing
-them. When rolling back, stop outward clients and confirm that no provider Run is
+legacy locks without a provable owner remain fenced for safety. **Do not**
+remove these locks by waiting for a lease to expire or by allowing a new ACP
+client to replace an expired lease. An older ACP service cannot be proven dead
+from its legacy service ID alone. If a legacy session remains busy after a
+crash, use the **existing controlled-rollout reconciliation path** only while
+the affected Bridge service and all outward ACP client processes are stopped,
+after confirming that no provider child/Run is active and retaining a restorable
+database backup. That path records reconciliation audits and fails the
+interrupted Run rather than replaying it. Verify the audit, no active provider
+child and released lane before bringing the service back. If these checks
+cannot be established, keep the lane fenced and escalate; never bulk-clear
+`execution_locks` or edit the SQLite database manually. When rolling back, stop outward clients and confirm that no provider Run is
 active before starting an older version: older versions use
 `BRIDGE_PROJECT_DIR` as the root and perform broader age-based startup cleanup.
 Restore the previous launcher settings and verify workspace confinement before
