@@ -214,4 +214,29 @@ describe("surface-neutral provider availability (#954)", () => {
       expect(calls).toEqual(["codex", "claude"]);
     } finally { db.close(); }
   });
+
+  it("a concurrent read-only status peek does not cause fallback to skip the failed provider's successor (#1114 P0)", async () => {
+    // Reproduces the Desk regression: a status/list poll calls
+    // router.activeProvider() (read-only by contract) while codex is still
+    // executing. If that peek mutates shared per-chat routing state, the
+    // subsequent capacity failure advances from the peek's mutated index
+    // instead of from codex's own attempt, and skips claude entirely.
+    let codexAvailable = true;
+    const chatKey = "autonomous:episode-1";
+    const { db, router, calls } = routerWith(
+      ["codex", "claude"],
+      () => new Set(["codex", "claude"].filter((provider) => provider !== "codex" || codexAvailable)),
+      { codex: new Error("usage limit reached") },
+      (provider) => {
+        if (provider === "codex") {
+          codexAvailable = false;
+          router.activeProvider(chatKey);
+        }
+      },
+    );
+    try {
+      expect((await router.executeSurfaceNeutralTurn(input() as any)).text).toBe("claude answer");
+      expect(calls).toEqual(["codex", "claude"]);
+    } finally { db.close(); }
+  });
 });

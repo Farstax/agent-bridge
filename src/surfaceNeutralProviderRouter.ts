@@ -60,7 +60,10 @@ export function createSurfaceNeutralProviderRouter(
   return {
     activeProvider(chatKey: string): BotKind {
       snapshot = new Map();
-      return initialized.has(chatKey) ? fallback.getActiveCli(chatKey) as BotKind : options.initialProvider;
+      // Read-only peek: a status/list poll must never mutate shared per-chat
+      // routing state while a real attempt may be concurrently executing or
+      // about to advance (#1114 P0).
+      return initialized.has(chatKey) ? fallback.peekActiveCli(chatKey) as BotKind : options.initialProvider;
     },
     async executeSurfaceNeutralTurn(input: SurfaceNeutralTurnInput) {
       if (!initialized.has(input.chatKey)) {
@@ -127,7 +130,10 @@ export function createSurfaceNeutralProviderRouter(
             for (const event of attemptEvents) input.collect(event);
             throw error;
           }
-          const next = fallback.advance(input.chatKey);
+          // Anchor to the provider that actually attempted and failed, not to
+          // whatever chatActiveIdx currently holds — a concurrent status peek
+          // must never be able to shift this (#1114 P0).
+          const next = fallback.advance(input.chatKey, provider);
           if (!next) {
             for (const event of attemptEvents) input.collect(event);
             throw error;
