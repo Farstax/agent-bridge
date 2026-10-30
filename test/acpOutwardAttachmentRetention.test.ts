@@ -6,9 +6,10 @@
  * transcript store, without referencing deleted paths, and without becoming
  * an unbounded accumulation.
  */
-import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, utimesSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { createHash } from "node:crypto";
 import { afterEach, describe, expect, it } from "vitest";
 import type { ContentBlock } from "@agentclientprotocol/sdk";
 import {
@@ -26,6 +27,11 @@ function workspace(): string {
   const path = mkdtempSync(join(tmpdir(), "bridge-outward-attachment-retention-"));
   roots.push(path);
   return path;
+}
+
+/** Mirrors attachments.ts's retainedWaitDirName() naming scheme exactly. */
+function retainedWaitDirNameFor(continuationId: string): string {
+  return `.agent-bridge-attachments-wait-${createHash("sha256").update(continuationId).digest("hex").slice(0, 32)}`;
 }
 
 describe("durable attachment retention for a capacity wait (#1114)", () => {
@@ -66,6 +72,25 @@ describe("durable attachment retention for a capacity wait (#1114)", () => {
     expect(await readRetainedOutwardAcpAttachments(cwd, continuationId)).toHaveLength(1);
     await releaseRetainedOutwardAcpAttachments(cwd, continuationId);
     expect(await readRetainedOutwardAcpAttachments(cwd, continuationId)).toEqual([]);
+  });
+
+  it("refuses to reuse a pre-existing, unverified directory at the retained-attachment path", async () => {
+    const cwd = workspace();
+    const continuationId = "acp-capacity-wait:attacker-planted";
+    // Simulate a directory already sitting at the deterministic retained path
+    // that we did not create (no owner marker) -- must never be silently
+    // written into.
+    const plantedDir = join(cwd, retainedWaitDirNameFor(continuationId));
+    mkdirSync(plantedDir, { mode: 0o700 });
+    writeFileSync(join(plantedDir, "evidence-of-attacker-content"), "not ours");
+
+    await expect(stageOutwardAcpAttachments(cwd, [
+      { type: "resource", resource: { uri: "file:///note.txt", mimeType: "text/plain", text: "hi" } },
+    ] as ContentBlock[], async (files) => {
+      await retainOutwardAcpAttachmentsForWait(cwd, files, continuationId);
+    })).rejects.toThrow(/unverified path/);
+
+    expect(existsSync(join(plantedDir, "evidence-of-attacker-content"))).toBe(true);
   });
 
   it("releasing a continuation that was never retained is a safe no-op", async () => {

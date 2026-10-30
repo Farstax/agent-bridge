@@ -159,7 +159,19 @@ export async function retainOutwardAcpAttachmentsForWait(
   if (stagedPaths.length === 0) return;
   const workspace = await realpath(cwd);
   const dir = join(workspace, retainedWaitDirName(continuationId));
-  await mkdir(dir, { recursive: true, mode: 0o700 });
+  // Non-recursive, non-following create: an existing path at this name
+  // (planted by another uid, or a symlink) must never be silently reused or
+  // written through. Only a path we can verify we own already (same
+  // ownership/permission/marker invariants as the staging directory) is
+  // treated as a legitimate crash-recovery retry of the same retention call.
+  try {
+    await mkdir(dir, { mode: 0o700 });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+    if (!(await verifiedOwnedDir(dir, RETAINED_WAIT_OWNER_MARKER_CONTENT))) {
+      throw new Error(`refusing to reuse an unverified path while retaining attachments for ${continuationId}`);
+    }
+  }
   await writeFile(join(dir, OWNER_MARKER), RETAINED_WAIT_OWNER_MARKER_CONTENT, { mode: 0o600 });
   for (const path of stagedPaths) {
     const bytes = await readFile(path);
