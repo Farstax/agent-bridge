@@ -63,7 +63,7 @@ export interface OutwardAcpPromptExecutor {
 }
 
 /** Truthful Workstream state, derived only from durable Run records (#1101). */
-export type OutwardWorkstreamState = "running" | "waiting" | "attention" | "failed" | "cancelled" | "idle";
+export type OutwardWorkstreamState = "running" | "waiting" | "attention" | "failed" | "cancelled" | "expired" | "idle";
 
 export interface OutwardWorkstreamStatus {
   state: OutwardWorkstreamState;
@@ -252,6 +252,7 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
     if (latest?.status === "running") state = "running";
     else if (wait) state = "waiting";
     else if (lastWait?.state === "cancelled" && latest?.run_id === lastWait.originRunId) state = "cancelled";
+    else if (lastWait?.state === "expired" && (latest?.run_id === lastWait.originRunId || latest?.run_id === lastWait.successorRunId)) state = "expired";
     else if (run?.status === "failed") state = "failed";
     else if (run?.status === "cancelled") state = "cancelled";
     // Attention comes only from an explicit recorded provider disposition.
