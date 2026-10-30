@@ -4,7 +4,7 @@ import { openProductionDb } from "../db.js";
 import { OutwardAcpSessionRepository } from "../repositories/outwardAcpSessionRepository.js";
 import { cleanupStaleOutwardAcpAttachments } from "./attachments.js";
 
-const dbPath = process.env.BRIDGE_DB_PATH;
+const dbPath = process.env.BRIDGE_DB_PATH || process.env.DB_PATH;
 const configuredRoot = process.env.BRIDGE_ACP_WORKSPACE_ROOT || process.env.BRIDGE_PROJECT_DIR || process.env.BRIDGE_CURRENT_RELEASE_DIR;
 if (!dbPath || !configuredRoot) throw new Error("ACP maintenance requires a configured database and trusted workspace root");
 const workspaceRoot = realpathSync(configuredRoot);

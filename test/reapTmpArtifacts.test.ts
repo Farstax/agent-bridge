@@ -62,6 +62,16 @@ describe("reap-tmp-artifacts.sh", () => {
     };
   }
 
+  it("uses the stock interactive DB_PATH for ACP maintenance", () => {
+    const { root, env } = telemetryFixture("exit 0");
+    mkdirSync(join(root, "release", "src", "acpServer"), { recursive: true });
+    writeFileSync(join(root, "release", "src", "acpServer", "maintenance.ts"), "");
+    const { BRIDGE_DB_PATH: _bridgeDbPath, ...stockEnv } = env;
+    const result = run({ ...stockEnv, DB_PATH: env.BRIDGE_DB_PATH, BRIDGE_ACP_WORKSPACE_ROOT: root });
+    expect(result.status).toBe(0);
+    expect(readFileSync(join(root, "calls"), "utf8")).toContain("src/acpServer/maintenance.ts");
+  });
+
   it("runs ACP maintenance through the existing cleanup owner", () => {
     const { root, env } = telemetryFixture("exit 0");
     mkdirSync(join(root, "release", "src", "acpServer"), { recursive: true });

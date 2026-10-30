@@ -26,7 +26,7 @@ log() { echo "[reap-tmp-artifacts] $*"; }
 # only through rollout-db's terminal-run ACP predicate.  A missing or unsafe
 # path is a no-op: cleanup must never discover databases by scanning disk.
 prune_acp_telemetry() {
-  local database="${BRIDGE_DB_PATH:-}" release node_bin
+  local database="${BRIDGE_DB_PATH:-${DB_PATH:-}}" release node_bin
   [[ -n "$database" ]] || { log "ACP telemetry retention skipped: BRIDGE_DB_PATH is unset"; return 0; }
   [[ "$database" == /* && -f "$database" && ! -L "$database" ]] || { log "ACP telemetry retention skipped: database path is unsafe"; return 0; }
   release="${BRIDGE_CURRENT_RELEASE_DIR:-}"
@@ -53,7 +53,7 @@ prune_acp_telemetry() {
 # ACP session expiry and attachment cleanup share this existing timer.  Only
 # the explicitly configured database and workspace root are eligible.
 run_acp_maintenance() {
-  local database="${BRIDGE_DB_PATH:-}" release node_bin error
+  local database="${BRIDGE_DB_PATH:-${DB_PATH:-}}" release node_bin error
   (( DRY_RUN )) && return 0
   [[ "$database" == /* && -f "$database" && ! -L "$database" ]] || return 0
   release="${BRIDGE_CURRENT_RELEASE_DIR:-}"
