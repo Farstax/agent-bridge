@@ -435,6 +435,7 @@ export function claimDueRunContinuation(
           // A completed response is the only safe evidence of success. A
           // non-capacity failed successor must not be replayed after restart.
           if (successor.status === "cancelled") return cancel("outward ACP successor was cancelled");
+          if (successor.status === "failed") return cancel("outward ACP successor failed before durable retry was confirmed; inspect before re-execution");
         }
         if (current.retainedPendingMessageIds?.length && !db.hasAnyPendingMessageId(current.surfaceIdentity, current.chatKey, current.retainedPendingMessageIds)) {
           const failure = capacitySuccessorFailure(db, current);
@@ -828,6 +829,13 @@ export async function scanRunContinuations(
       if (claimed.capacityWait) {
         const current = listRunContinuations(db, surfaceIdentity).find((item) => item.id === claimed.id);
         if (!current || current.state !== "claimed" || current.claimToken !== claimed.claimToken) continue;
+        // A worker that has positively classified this attempt as a
+        // pre-submission capacity rejection requests a safe bounded retry.
+        // All other failures require authoritative terminal evidence.
+        if (current.outward && outcome === false) {
+          requeueClaimedCapacityWait(db, claimed.id, nowMs, claimed.claimToken);
+          continue;
+        }
         const failure = capacitySuccessorFailure(db, current);
         if (failure) {
           settleRunContinuation(db, current.id, failure, `successor Run ${failure}`, nowMs, claimed.claimToken);
@@ -846,6 +854,12 @@ export async function scanRunContinuations(
       }
       settleRunContinuation(db, claimed.id, "completed", undefined, nowMs, claimed.claimToken);
     } catch (error) {
+      if (claimed.outward) {
+        // Never retry a thrown/ambiguous provider outcome just because the
+        // continuation callback failed. Preserve the task for inspection.
+        settleRunContinuation(db, claimed.id, "failed", error instanceof Error ? error.message : "outward ACP resume failed", nowMs, claimed.claimToken);
+        continue;
+      }
       if (claimed.capacityWait) {
         requeueClaimedCapacityWait(db, claimed.id, nowMs, claimed.claimToken);
         continue;
