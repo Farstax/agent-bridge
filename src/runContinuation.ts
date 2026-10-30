@@ -80,6 +80,10 @@ export interface RunContinuation {
   capacityNoticeSent?: true;
   /** Original queue receipt retained through capacity recovery. */
   retainedPendingMessageIds?: number[];
+  /** An ACP-v1 deferred Workstream payload. The existing settings-backed
+   * continuation record owns the original admitted input; no second queue or
+   * transcript database is introduced. */
+  outward?: { sessionId: string; prompt: string; attachmentCount: number };
   /** The task was retired due to capacity expiry and awaits final notification. */
   expiryDeliveryPending?: true;
 }
@@ -100,6 +104,7 @@ export interface RequestRunContinuationInput {
   delivery?: { chatId: string | number; chatType: string; threadId?: string | number };
   capacityWait?: boolean;
   retainedPendingMessageIds?: number[];
+  outward?: { sessionId: string; prompt: string; attachmentCount: number };
 }
 
 function key(id: string): string {
@@ -149,6 +154,14 @@ function parse(value: string): RunContinuation | null {
     if (candidate.claimToken !== undefined && (typeof candidate.claimToken !== "string" || !candidate.claimToken)) return null;
     if (candidate.retainedPendingMessageIds !== undefined && (!Array.isArray(candidate.retainedPendingMessageIds) || candidate.retainedPendingMessageIds.some((id) => !Number.isSafeInteger(id) || id < 1))) return null;
     if (candidate.successorRunId !== undefined && typeof candidate.successorRunId !== "string") return null;
+    if (candidate.outward !== undefined && (
+      candidate.surfaceIdentity !== "acp:outward" || candidate.capacityWait !== true ||
+      typeof candidate.outward.sessionId !== "string" || !candidate.outward.sessionId ||
+      candidate.outward.sessionId.length > 256 ||
+      typeof candidate.outward.prompt !== "string" || candidate.outward.prompt.length > 160_000 ||
+      !Number.isSafeInteger(candidate.outward.attachmentCount) ||
+      candidate.outward.attachmentCount < 0 || candidate.outward.attachmentCount > 8
+    )) return null;
     if (candidate.rolloutProvenance) {
       const p = candidate.rolloutProvenance;
       if (
@@ -162,6 +175,7 @@ function parse(value: string): RunContinuation | null {
         || typeof p.provider !== "string"
       ) return null;
     }
+    if (candidate.outward && candidate.surfaceIdentity === "acp:outward") return candidate;
     if (candidate.delivery) return candidate;
     if (candidate.surfaceIdentity.startsWith("telegram:")) {
       const match = /^(-?\d+)(?::(\d+))?$/.exec(candidate.chatKey);
@@ -203,6 +217,13 @@ export function requestRunContinuation(
       throw new Error(`after-seconds must be an integer between ${MIN_DELAY_SECONDS} and ${maximumDelay}`);
     }
   }
+  if (input.outward && (
+    !input.capacityWait || input.surfaceIdentity !== "acp:outward" ||
+    !input.outward.sessionId || input.outward.sessionId.length > 256 ||
+    input.outward.prompt.length > 160_000 ||
+    !Number.isSafeInteger(input.outward.attachmentCount) || input.outward.attachmentCount < 0 ||
+    input.outward.attachmentCount > 8
+  )) throw new Error("invalid outward ACP continuation payload");
   const originRunId = bounded(input.originRunId, "origin run id", 200);
   const surfaceIdentity = bounded(input.surfaceIdentity, "surface identity", 160);
   const chatKey = bounded(input.chatKey, "chat key", 200);
@@ -254,6 +275,7 @@ export function requestRunContinuation(
       state: "pending",
       ...(input.delivery ? { delivery: input.delivery } : {}),
       ...(input.capacityWait ? { capacityWait: true as const } : {}),
+      ...(input.outward ? { outward: input.outward } : existing?.outward ? { outward: existing.outward } : {}),
       ...(existing?.capacityNoticeSent ? { capacityNoticeSent: true as const } : {}),
       ...(input.capacityWait && (input.retainedPendingMessageIds?.length || existing?.retainedPendingMessageIds?.length)
         ? { retainedPendingMessageIds: input.retainedPendingMessageIds ?? existing!.retainedPendingMessageIds! }
@@ -339,8 +361,8 @@ export interface ClaimRunContinuationOptions {
 }
 
 function capacitySuccessorFailure(db: BridgeDb, wait: RunContinuation): "failed" | "cancelled" | null {
-  if (!wait.successorRunId || !wait.retainedPendingMessageIds?.length ||
-      db.hasAnyPendingMessageId(wait.surfaceIdentity, wait.chatKey, wait.retainedPendingMessageIds)) return null;
+  if (!wait.successorRunId || (!wait.outward && (!wait.retainedPendingMessageIds?.length ||
+      db.hasAnyPendingMessageId(wait.surfaceIdentity, wait.chatKey, wait.retainedPendingMessageIds)))) return null;
   const run = db.getRun(wait.successorRunId);
   if (!run || run.surface_identity !== wait.surfaceIdentity || run.chat_id !== wait.chatKey) return null;
   return run.status === "failed" || run.status === "cancelled" ? run.status : null;
@@ -348,10 +370,10 @@ function capacitySuccessorFailure(db: BridgeDb, wait: RunContinuation): "failed"
 
 /** A receipt disappearing is ambiguous unless its correlated successor actually completed. */
 function capacityCompletionProven(db: BridgeDb, wait: RunContinuation): boolean {
-  if (!wait.successorRunId || !wait.retainedPendingMessageIds?.length) return false;
+  if (!wait.successorRunId || (!wait.outward && !wait.retainedPendingMessageIds?.length)) return false;
   const run = db.getRun(wait.successorRunId);
   return run?.status === "done" && run.surface_identity === wait.surfaceIdentity && run.chat_id === wait.chatKey
-    && !db.hasAnyPendingMessageId(wait.surfaceIdentity, wait.chatKey, wait.retainedPendingMessageIds);
+    && (wait.outward !== undefined || !db.hasAnyPendingMessageId(wait.surfaceIdentity, wait.chatKey, wait.retainedPendingMessageIds!));
 }
 
 export function claimDueRunContinuation(
@@ -402,6 +424,18 @@ export function claimDueRunContinuation(
         return null;
       }
       if (isClaimedCapacity) {
+        if (current.outward && current.successorRunId) {
+          const successor = db.getRun(current.successorRunId);
+          if (!successor || successor.status === "running") return null;
+          if (capacityCompletionProven(db, current)) {
+            db.raw.prepare("UPDATE settings SET value = ? WHERE key = ?").run(
+              JSON.stringify({ ...current, state: "completed", completedAt: new Date(nowMs).toISOString() }), key(id));
+            return null;
+          }
+          // A completed response is the only safe evidence of success. A
+          // non-capacity failed successor must not be replayed after restart.
+          if (successor.status === "cancelled") return cancel("outward ACP successor was cancelled");
+        }
         if (current.retainedPendingMessageIds?.length && !db.hasAnyPendingMessageId(current.surfaceIdentity, current.chatKey, current.retainedPendingMessageIds)) {
           const failure = capacitySuccessorFailure(db, current);
           const state = capacityCompletionProven(db, current) ? "completed" : failure;
@@ -731,14 +765,14 @@ export async function scanRunContinuations(
 // Candidate state is pending or claimed capacity wait
       const ids = candidate.retainedPendingMessageIds ?? [];
       if (!candidate.expiryDeliveryPending) {
-        if (ids.length > 0 && !db.hasAnyPendingMessageId(candidate.surfaceIdentity, candidate.chatKey, ids)) {
+        if ((ids.length > 0 && !db.hasAnyPendingMessageId(candidate.surfaceIdentity, candidate.chatKey, ids)) || (candidate.outward && candidate.successorRunId)) {
           const failure = capacitySuccessorFailure(db, candidate);
           if (capacityCompletionProven(db, candidate)) settleRunContinuation(db, candidate.id, "completed", undefined, nowMs, candidate.claimToken);
           else if (failure) settleRunContinuation(db, candidate.id, failure, `successor Run ${failure}`, nowMs, candidate.claimToken);
           // A lost receipt without terminal evidence is ambiguous, even at expiry.
           continue;
         }
-        if (db.hasChatLock(candidate.chatKey) || db.isAnyPendingMessageClaimed(candidate.surfaceIdentity, candidate.chatKey, ids)) {
+        if (db.hasChatLock(candidate.chatKey) || (ids.length > 0 && db.isAnyPendingMessageClaimed(candidate.surfaceIdentity, candidate.chatKey, ids))) {
           continue;
         }
       }
