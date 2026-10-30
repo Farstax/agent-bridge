@@ -82,9 +82,10 @@ outward conversation identity stable.
 `acp_session_bindings` follows the same seven-day stale-session policy as
 legacy provider sessions (`bridge_state`), keyed by `updated_at` (last
 successful use) rather than creation time. A binding untouched for seven
-days is cleared on the next database open; only the stale native-resume
-pointer goes away, Bridge conversation identity is untouched, and the next
-turn starts a fresh ACP session automatically.
+days is rejected on read even before maintenance runs; the existing daily
+maintenance owner later removes the stale native-resume pointer. Bridge
+conversation identity is untouched, so the next turn starts a fresh ACP
+session automatically.
 
 ## Canonical ACP provider onboarding
 
@@ -317,7 +318,23 @@ must choose the root for its authenticated principal, not copy it from a request
 For example, a generic stdio ACP client can launch `npm run acp:serve` from the
 Bridge installation with `DB_PATH=/var/lib/bridge/interactive.sqlite` and
 `BRIDGE_ACP_WORKSPACE_ROOT=/srv/projects/team-a`, then use a `cwd` within that
-workspace in standard `session/new` and `session/load` requests. The existing daily cleanup service requires the configured `BRIDGE_DB_PATH` and an existing root. It expires stale resume pointers and examines the explicitly recorded ACP session directories, each originally admitted by its own trusted launcher. Attachment cleanup still requires owner-only markers, expiry, absent process and absent provider Run; it must not walk arbitrary directories or broaden any ACP session root.
+workspace in standard `session/new` and `session/load` requests.
+
+The existing daily cleanup service requires a configured `BRIDGE_DB_PATH` (or
+`DB_PATH`), the active release pointer, the ACP maintenance entry point and
+an existing workspace root. It expires stale resume pointers and examines
+persisted ACP session directories originally admitted by their trusted
+launchers. Attachment cleanup still requires owner-only markers, expiry,
+absent process and absent provider Run; it must not walk arbitrary directories
+or broaden any ACP session root.
+
+**Deployment qualification:** On the actual host, confirm the existing daily
+cleanup timer invokes `scripts/reap-tmp-artifacts.sh` with those settings and
+that its logs do not report skipped or failed ACP maintenance. Verify an
+expired resume pointer is ignored and later pruned, and safely owned expired
+staging is cleaned without deleting live/unknown-owned staging. A passing
+unit test is not proof of the deployed timer environment. Do not create a
+separate scheduler or remove fencing to make cleanup pass.
 
 On upgrade, old staging directories without process ownership evidence and
 legacy locks without a provable owner remain fenced for safety. **Do not**
