@@ -16,6 +16,7 @@ import { CURRENT_SCHEMA_VERSION, migrationGrowthClass } from "../src/db/schema.j
 import { assertDatabaseForeignKeyIntegrity } from "../src/db/roleAssignmentsMigration.js";
 import { applyRoleSchema, canonicalSchemaTablesForRole, type DatabaseRole } from "../src/db/schemaContract.js";
 import { isolateRecoveryCopyDatabase } from "../src/db/recoveryCopyIsolation.js";
+import { sha256File } from "../src/fileDigest.js";
 
 /** The active database roles. */
 const VALID_ROLES = new Set(["shared", "discord", "health", "interactive", "slack"]);
@@ -302,10 +303,6 @@ function parseBootstrapArgs(argv: string[]): BootstrapOptions {
   return { path, role, evidencePath };
 }
 
-function hashFile(path: string): string {
-  return createHash("sha256").update(readFileSync(path)).digest("hex");
-}
-
 function columnNames(db: Database.Database, table: string): string[] {
   return (db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>).map((row) => row.name).sort();
 }
@@ -432,7 +429,7 @@ function inspectDatabase(path: string, requireCurrent: boolean, resolvingUnits: 
       })
       : [];
     return {
-      path, sha256: hashFile(path), integrity, schemaVersion: userVersion, schema, legacyQueueCount, pendingQueueCount,
+      path, sha256: sha256File(path), integrity, schemaVersion: userVersion, schema, legacyQueueCount, pendingQueueCount,
       tables, pendingColumns, lockColumns, resolvingUnits, queueStateCounts, claimStateCounts, executionLockState,
       claimRunAcquisitionCorrelation: digestRows({ queueRows, lockRows }),
       runLockCorrelation: { queue: queueRows, locks: lockRows as Array<Record<string, unknown>> }, deliveryState,
