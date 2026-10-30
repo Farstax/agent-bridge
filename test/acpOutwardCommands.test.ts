@@ -240,6 +240,70 @@ describe("outward ACP commands", () => {
     await expect(run({ command: "cli", select: "provider:grok" })).rejects.toMatchObject({ code: -32602 });
   });
 
+  it("rejects model and effort mutations during an active Run but permits read-only catalogues", async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const { run, app, exec, repo, db, prompts } = setup({ gate });
+    replaceAcpSessionConfigSnapshot("codex", [{
+      id: "reasoning_effort",
+      name: "Reasoning",
+      category: "thought_level",
+      type: "select",
+      currentValue: "medium",
+      options: [{ value: "medium", name: "Medium" }, { value: "high", name: "High" }],
+    }]);
+    onTestFinished(() => clearAcpSessionConfigSnapshot("codex"));
+    db.setSetting("codex", "previous-model");
+
+    const modelChoice = (await run({ command: "models" })).options![0]!.token;
+    const effortChoice = (await run({ command: "effort" })).options!
+      .find((option) => !option.selected && option.token.split(":").length === 3)!.token;
+    const pending = acp.client({ name: "generic" }).connectWith(app, (agent) =>
+      agent.request(acp.methods.agent.session.prompt, {
+        sessionId: "s1", prompt: [{ type: "text", text: "long task" }],
+      }));
+    for (let i = 0; i < 50 && !prompts.length; i++) await new Promise((resolve) => setTimeout(resolve, 2));
+    expect(exec.status(repo.get("s1")!).state).toBe("running");
+    try {
+      expect((await run({ command: "models" })).options?.length).toBeGreaterThan(0);
+      expect((await run({ command: "effort" })).options?.length).toBeGreaterThan(0);
+      await expect(run({ command: "models", select: modelChoice })).rejects.toMatchObject({ code: -32002 });
+      await expect(run({ command: "effort", select: effortChoice })).rejects.toMatchObject({ code: -32002 });
+      expect(db.getSetting("codex")).toBe("previous-model");
+      expect(db.getSetting(effortSettingKey("codex"))).toBeNull();
+    } finally {
+      release();
+    }
+    expect((await pending).stopReason).toBe("end_turn");
+    await run({ command: "models", select: modelChoice });
+    await run({ command: "effort", select: effortChoice });
+    expect(db.getSetting("codex")).not.toBe("previous-model");
+    expect(db.getSetting(effortSettingKey("codex"))).toBe("high");
+  });
+
+  it("allows narration status but fences narration changes during an active Run", async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const { run, app, exec, repo, db, prompts } = setup({ chain: ["antigravity"], gate });
+    const key = "antigravity:narration:acp:outward:acp:c1";
+    const pending = acp.client({ name: "generic" }).connectWith(app, (agent) =>
+      agent.request(acp.methods.agent.session.prompt, {
+        sessionId: "s1", prompt: [{ type: "text", text: "long task" }],
+      }));
+    for (let i = 0; i < 50 && !prompts.length; i++) await new Promise((resolve) => setTimeout(resolve, 2));
+    expect(exec.status(repo.get("s1")!).state).toBe("running");
+    try {
+      expect((await run({ command: "narration", argument: "status" })).text).toContain("hidden");
+      await expect(run({ command: "narration", argument: "on" })).rejects.toMatchObject({ code: -32002 });
+      expect(db.getSetting(key)).toBeNull();
+    } finally {
+      release();
+    }
+    expect((await pending).stopReason).toBe("end_turn");
+    await run({ command: "narration", argument: "on" });
+    expect(db.getSetting(key)).toBe("visible");
+  });
+
   it("sets effort only to an offered option through the existing settings owner", async () => {
     const { run, db } = setup();
     // Options come from the live provider catalogue, as on Telegram.

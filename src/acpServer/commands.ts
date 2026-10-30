@@ -222,8 +222,12 @@ export class AcpCommands {
       case "usage":
         return { command: name, text: await this.options.codexUsage!() };
       case "narration": {
-        const result = legacy(`/narration ${request.argument ?? "status"}`.trim());
-        return { command: name, text: result && "text" in result ? result.text : "" };
+        const mode = request.argument?.trim().toLowerCase() || "status";
+        const render = () => {
+          const result = legacy(`/narration ${mode}`);
+          return { command: name, text: result && "text" in result ? result.text : "" };
+        };
+        return mode === "status" ? render() : control.withIdleLane(session, render);
       }
       default: {
         // start, context, skills: read-only owners returning plain text.
@@ -263,11 +267,15 @@ export class AcpCommands {
       return { command: name, text: result.text, options: keyboardOptions(result.reply_markup) };
     };
     if (select === undefined) return view();
-    if (!view().options.some((option) => option.token === select)) {
-      throw acp.RequestError.invalidParams({ field: "select" }, "option is no longer offered; list the command again");
-    }
-    applySettingSelection(db, provider, name, select);
-    return view();
+    // Validate and mutate under the existing Run lane; never change settings
+    // midway through an active prompt or while the offered options change.
+    return this.options.control.withIdleLane(session, () => {
+      if (!view().options.some((option) => option.token === select)) {
+        throw acp.RequestError.invalidParams({ field: "select" }, "option is no longer offered; list the command again");
+      }
+      applySettingSelection(db, provider, name, select);
+      return view();
+    });
   }
 }
 
