@@ -6,7 +6,7 @@
 import { realpath } from "node:fs/promises";
 import { isAbsolute } from "node:path";
 import { openProductionDb, type BridgeDb } from "../db.js";
-import { RunContinuationRunner, type RunContinuation } from "../runContinuation.js";
+import { RunContinuationRunner, listRunContinuations, type RunContinuation } from "../runContinuation.js";
 import { outwardServiceId, recoverOutwardLanes } from "./recovery.js";
 import { prepareInteractiveCliAuth } from "../interactiveCliAuth.js";
 import { OutwardAcpSessionRepository, type OutwardAcpSessionRecord } from "../repositories/outwardAcpSessionRepository.js";
@@ -76,15 +76,23 @@ async function main(): Promise<void> {
     try {
       const outcome = await resumeOutwardCapacityWait(db, (id) => repository.get(id), executor, wait);
       if (outcome) {
-        // The claimed successor is durably complete. scanRunContinuations
-        // settles the wait by checking Run evidence, independent of this
-        // callback's boolean; cleanup may be replayed safely after restart.
+        const current = listRunContinuations(db, OUTWARD_ACP_SURFACE).find((item) => item.id === wait.id);
+        const successor = current?.successorRunId ? db.getRun(current.successorRunId) : null;
+        // A fulfilled ACP request is not proof that its Run/events committed.
+        // Never destroy the only retained input before the authoritative
+        // successor has reached a successful, correctly owned terminal state.
+        if (!current || current.state !== "claimed" || current.claimToken !== wait.claimToken ||
+            !successor || successor.status !== "done" ||
+            successor.chat_id !== wait.chatKey || successor.surface_identity !== OUTWARD_ACP_SURFACE) {
+          throw new Error("outward capacity successor completion is not durably proven");
+        }
         await releaseRetainedOutwardAcpAttachments(repository.get(wait.outward!.sessionId)!.cwd, wait.id);
       }
       return outcome;
     } catch (error) {
-      const session = wait.outward ? repository.get(wait.outward.sessionId) : null;
-      if (session) await releaseRetainedOutwardAcpAttachments(session.cwd, wait.id);
+      // An ambiguous or failed wake needs its original admitted attachments
+      // for inspection. Expiry/cancellation owns final cleanup; never discard
+      // inputs as an exception side effect.
       throw error;
     }
   }, undefined, {
