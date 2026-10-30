@@ -32,6 +32,13 @@ describe("Agy ACP managed host component", () => {
     expect(installer).not.toMatch(/antigravity-acp@\d/);
   });
 
+  it("runs release metadata parsing as the runtime user when invoked by root", () => {
+    const installer = readFileSync(resolve(repoRoot, "scripts/install-agy-acp.sh"), "utf8");
+    expect(installer).toContain('command=(/usr/sbin/runuser --user "${AGENT_BRIDGE_RUNTIME_USER}" -- "${command[@]}")');
+    expect(installer).toContain('command -v node');
+    expect(installer).toContain('command=("${node_command}" --input-type=module');
+  });
+
   it("streams large managed executables instead of buffering them in activation memory", () => {
     const installer = readFileSync(resolve(repoRoot, "scripts/install-agy-acp.sh"), "utf8");
     expect(installer).toContain("shutil.copyfileobj");
