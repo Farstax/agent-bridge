@@ -25,7 +25,7 @@ console.log = (...args: unknown[]) => console.error(...args);
 console.info = (...args: unknown[]) => console.error(...args);
 
 const bridgeProjectDir = process.env.BRIDGE_PROJECT_DIR || process.cwd();
-const workspaceRoot = realpathSync(bridgeProjectDir);
+const workspaceRoot = realpathSync(process.env.BRIDGE_ACP_WORKSPACE_ROOT || bridgeProjectDir);
 const dbPath = process.env.DB_PATH || `${bridgeProjectDir}/.data/bridge.sqlite`;
 const db = openProductionDb(dbPath, {
   serviceId: "acp:outward",

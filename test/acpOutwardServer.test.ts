@@ -1,6 +1,6 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { once } from "node:events";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { createInterface, type Interface } from "node:readline";
@@ -299,6 +299,27 @@ async function waitForRunningRun(dbPath: string, conversationId: string, timeout
 }
 
 describe("outward ACP stdio boundary", { timeout: 30_000 }, () => {
+  it("uses a trusted launch workspace independent of the installation directory", async () => {
+    const root = mkdtempSync(join(tmpdir(), "acp-launch-root-"));
+    const install = join(root, "install");
+    const workspace = join(root, "workspace");
+    mkdirSync(install);
+    mkdirSync(workspace);
+    symlinkSync(install, join(workspace, "escape"));
+    const dbPath = join(install, "bridge.sqlite");
+    openDb(dbPath, { databaseRole: "interactive" }).close();
+    const server = startOutwardAcpProcess(dbPath, { BRIDGE_ACP_WORKSPACE_ROOT: workspace });
+    try {
+      expect((await initialize(server, 1)).result?.protocolVersion).toBe(acp.PROTOCOL_VERSION);
+      expect((await newSession(server, 2, workspace)).result?.sessionId).toBeTruthy();
+      expect((await newSession(server, 3, install)).error?.code).toBe(-32602);
+      expect((await newSession(server, 4, join(workspace, "escape"))).error?.code).toBe(-32602);
+    } finally {
+      await stopProcess(server);
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("initializes conservatively and persists stable outward session identity across process restart", async () => {
     const root = mkdtempSync(join(tmpdir(), "agent-bridge-outward-acp-"));
     const dbPath = join(root, "bridge.sqlite");
