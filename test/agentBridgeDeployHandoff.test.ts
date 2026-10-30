@@ -175,7 +175,7 @@ describe("handoff staging disk admission (#1100)", () => {
       "else:",
       "    raise SystemExit('handoff unexpectedly accepted')",
       "handoffs = root / 'handoffs'",
-      "assert not handoffs.exists() or not any(handoffs.iterdir()), list(handoffs.iterdir())",
+      "assert not handoffs.exists(), list(handoffs.iterdir()) if handoffs.exists() else []",
       "assert calls == []",
     ].join("\n"));
     expect(result.status, result.stderr).toBe(0);
