@@ -80,23 +80,6 @@ const ACQUISITION_MARKER_ENV = "AGENT_BRIDGE_ACQUISITION_ID";
 
 export type ExecutionProcessState = "live" | "absent" | "ambiguous";
 
-/** Kernel start time (clock ticks since boot); with the PID it names one process instance. */
-export function readProcessStartTicks(pid: number | undefined): string | null {
-  if (!pid) return null;
-  try {
-    const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
-    const ticks = stat.slice(stat.lastIndexOf(")") + 2).split(" ")[19];
-    return ticks && /^\d+$/.test(ticks) ? ticks : null;
-  } catch {
-    return null;
-  }
-}
-
-function spawnedProcess(pid: number | undefined): { pid: number; startTicks: string } | null {
-  const startTicks = readProcessStartTicks(pid);
-  return pid && startTicks ? { pid, startTicks } : null;
-}
-
 export function resolveSupervisorTimeouts(options: Pick<CliOptions, "timeoutMs" | "idleTimeoutMs"> = {}): {
   timeoutMs: number;
   idleTimeoutMs: number | null;
@@ -440,7 +423,7 @@ export async function runSupervisedProcess(
     let pendingError: Error | null = null;
     let pendingKill: Promise<void> | null = null;
 
-    if (evtCtx) emit(evtType.runStarted({ ...evtCtx, command, cwd, model: null, process: spawnedProcess(pid) }));
+    if (evtCtx) emit(evtType.runStarted({ ...evtCtx, command, cwd, model: null }));
 
     const doReject = (err: Error) => {
       if (settled) return;
@@ -654,7 +637,7 @@ export async function runSupervisedStdioSession<T>(
   const evtCtx = options.eventContext;
   const onEvent = options.onEvent;
   if (evtCtx) {
-    onEvent?.(evtType.runStarted({ ...evtCtx, command, cwd, model: null, process: spawnedProcess(child.pid) }));
+    onEvent?.(evtType.runStarted({ ...evtCtx, command, cwd, model: null }));
   }
 
   let settled = false;
