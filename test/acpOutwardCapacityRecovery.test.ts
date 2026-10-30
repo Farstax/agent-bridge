@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, mkdirSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -13,6 +13,36 @@ const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
 
 describe("outward ACP durable capacity worker (#1114)", () => {
+  it("rejects a Workstream root replaced by a symlink before background wake", async () => {
+    const root = mkdtempSync(join(tmpdir(), "bridge-acp-root-switch-"));
+    roots.push(root);
+    const canonical = join(root, "owned");
+    const redirected = join(root, "elsewhere");
+    mkdirSync(canonical);
+    mkdirSync(redirected);
+    const link = join(root, "redirected");
+    symlinkSync(redirected, link);
+    const db = openDb(join(root, "state.sqlite"), { databaseRole: "interactive" });
+    try {
+      const session = new OutwardAcpSessionRepository(db.raw).create({
+        sessionId: "symlink", conversationId: "acp:symlink", cwd: link,
+      });
+      db.insertRun("bad-origin", { surfaceIdentity: "acp:outward", chatKey: "acp:symlink" }, "codex");
+      db.updateRunFailed("bad-origin", "MODEL_CAPACITY_EXHAUSTED");
+      const now = Date.now();
+      const wait = requestRunContinuation(db, {
+        originRunId: "bad-origin", surfaceIdentity: "acp:outward", chatKey: "acp:symlink",
+        provider: "codex", capacityWait: true, afterSeconds: 5, reason: "capacity",
+        outward: { sessionId: session.sessionId, prompt: "unsafe", attachmentCount: 0 },
+      }, now);
+      const claimed = claimDueRunContinuation(db, wait.id, now + 6_000, { runId: "worker" })!;
+      const execute = vi.fn();
+      await expect(resumeOutwardCapacityWait(db, () => session, { execute } as unknown as OutwardAcpPromptExecutor, claimed))
+        .rejects.toThrow("workspace path is invalid");
+      expect(execute).not.toHaveBeenCalled();
+    } finally { db.close(); }
+  });
+
   it("resumes a retained task and its exact attachments after DB restart without an ACP client", async () => {
     const root = mkdtempSync(join(tmpdir(), "bridge-acp-wait-restart-"));
     roots.push(root);
