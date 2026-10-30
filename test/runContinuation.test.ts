@@ -52,6 +52,56 @@ afterEach(() => {
   for (const path of paths.splice(0)) try { rmSync(path); } catch { /* already removed */ }
 });
 
+describe("outward ACP durable capacity continuations (#1114)", () => {
+  it("retains bounded admitted input without a messaging queue and settles only after a successor Run completes", async () => {
+    const { db } = setup();
+    const identity = { surfaceIdentity: "acp:outward", chatKey: "acp:conversation-1" };
+    db.insertRun("outward-origin", identity, "codex");
+    db.updateRunFailed("outward-origin", "MODEL_CAPACITY_EXHAUSTED");
+    const wait = requestRunContinuation(db, {
+      originRunId: "outward-origin", surfaceIdentity: identity.surfaceIdentity,
+      chatKey: identity.chatKey, provider: "codex", reason: "capacity",
+      afterSeconds: 5, capacityWait: true,
+      outward: { sessionId: "workstream-1", prompt: "retain exact input", attachmentCount: 0 },
+    }, 1_000);
+    expect(listRunContinuations(db, identity.surfaceIdentity)[0].outward?.prompt).toBe("retain exact input");
+    const dispatch = vi.fn(async (claimed) => {
+      db.insertRun("outward-successor", identity, "codex");
+      expect(linkCapacityContinuationRun(db, claimed.id, claimed.claimToken!, "outward-successor")).toBe(true);
+      completeOriginRun(db, "outward-successor");
+      return true;
+    });
+    await scanRunContinuations(db, identity.surfaceIdentity, dispatch, 6_000);
+    expect(dispatch).toHaveBeenCalledOnce();
+    expect(listRunContinuations(db, identity.surfaceIdentity)[0]).toMatchObject({
+      id: wait.id, state: "completed", successorRunId: "outward-successor",
+    });
+    db.close();
+  });
+
+  it("holds ambiguous outward ACP successors for inspection instead of replaying them", async () => {
+    const { db } = setup();
+    const identity = { surfaceIdentity: "acp:outward", chatKey: "acp:conversation-2" };
+    db.insertRun("outward-failed-origin", identity, "codex");
+    db.updateRunFailed("outward-failed-origin", "MODEL_CAPACITY_EXHAUSTED");
+    const wait = requestRunContinuation(db, {
+      originRunId: "outward-failed-origin", surfaceIdentity: identity.surfaceIdentity,
+      chatKey: identity.chatKey, provider: "codex", reason: "capacity",
+      afterSeconds: 5, capacityWait: true,
+      outward: { sessionId: "workstream-2", prompt: "never duplicate", attachmentCount: 1 },
+    }, 1_000);
+    const claimed = claimDueRunContinuation(db, wait.id, 6_000)!;
+    db.insertRun("outward-ambiguous-successor", identity, "codex");
+    expect(linkCapacityContinuationRun(db, wait.id, claimed.claimToken!, "outward-ambiguous-successor")).toBe(true);
+    db.updateRunFailed("outward-ambiguous-successor", "ambiguous after submission");
+    const dispatch = vi.fn();
+    await scanRunContinuations(db, identity.surfaceIdentity, dispatch, 100_000, { isProcessAlive: () => false });
+    expect(dispatch).not.toHaveBeenCalled();
+    expect(listRunContinuations(db, identity.surfaceIdentity)[0].state).toBe("cancelled");
+    db.close();
+  });
+});
+
 describe("ordinary Run continuation", () => {
   it("persists one bounded continuation for the originating Run", () => {
     const { db } = setup();
