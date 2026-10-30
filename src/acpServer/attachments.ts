@@ -1,6 +1,7 @@
 import type { ContentBlock } from "@agentclientprotocol/sdk";
-import { lstat, mkdtemp, readFile, readdir, realpath, rm, stat, writeFile } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, readFile, readdir, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { basename, extname, isAbsolute, join, relative, sep } from "node:path";
+import { createHash } from "node:crypto";
 
 const MAX_FILES = 8;
 const MAX_FILE_BYTES = 8 * 1024 * 1024;
@@ -9,6 +10,19 @@ const STALE_ATTACHMENT_AGE_MS = 24 * 60 * 60 * 1000;
 const STAGING_PREFIX = ".agent-bridge-attachments-";
 const OWNER_MARKER = ".agent-bridge-staging-owner";
 const OWNER_MARKER_CONTENT = "agent-bridge-outward-attachment-v1\n";
+
+// A durable capacity-wait continuation lives up to MAX_CAPACITY_LIFETIME_MS
+// (7 days, runContinuation.ts) past its creation. The retained-attachment
+// sweep bound must exceed that so it only ever reclaims a directory whose
+// continuation has definitely already settled or expired, never a live one.
+const RETAINED_WAIT_PREFIX = ".agent-bridge-attachments-wait-";
+const RETAINED_WAIT_OWNER_MARKER_CONTENT = "agent-bridge-outward-attachment-wait-v1\n";
+const STALE_RETAINED_WAIT_AGE_MS = 8 * 24 * 60 * 60 * 1000;
+
+/** Deterministic, filesystem-safe directory name for one wait's retained attachments. */
+function retainedWaitDirName(continuationId: string): string {
+  return `${RETAINED_WAIT_PREFIX}${createHash("sha256").update(continuationId).digest("hex").slice(0, 32)}`;
+}
 
 const MIME_EXTENSIONS: Readonly<Record<string, readonly string[]>> = {
   "text/plain": [".txt", ".log", ".md", ".rst", ".py", ".js", ".jsx", ".ts", ".tsx", ".html", ".htm", ".css", ".sh", ".sql", ".xml", ".yaml", ".yml", ".toml", ".ini", ".conf", ".env", ".go", ".rs", ".java", ".c", ".h", ".cpp", ".hpp", ".rb", ".php", ".cs", ".kt", ".swift", ".vue", ".svelte", ".jsonc"],
@@ -130,6 +144,65 @@ export async function stageOutwardAcpAttachments<T>(
   }
 }
 
+/**
+ * Copy already-staged attachment files into a durable, continuation-keyed
+ * directory before stageOutwardAcpAttachments's own cleanup deletes the
+ * ephemeral staging directory. Call this from inside the staging
+ * `operation` callback, before it returns. Bounded by the same
+ * MAX_FILES/MAX_TOTAL_BYTES already enforced at staging time.
+ */
+export async function retainOutwardAcpAttachmentsForWait(
+  cwd: string,
+  stagedPaths: readonly string[],
+  continuationId: string,
+): Promise<void> {
+  if (stagedPaths.length === 0) return;
+  const workspace = await realpath(cwd);
+  const dir = join(workspace, retainedWaitDirName(continuationId));
+  await mkdir(dir, { recursive: true, mode: 0o700 });
+  await writeFile(join(dir, OWNER_MARKER), RETAINED_WAIT_OWNER_MARKER_CONTENT, { mode: 0o600 });
+  for (const path of stagedPaths) {
+    const bytes = await readFile(path);
+    await writeFile(join(dir, basename(path)), bytes, { mode: 0o600 });
+  }
+}
+
+/** Verified-ownership read-back of a wait's retained attachments, newest sweep-safe. */
+export async function readRetainedOutwardAcpAttachments(cwd: string, continuationId: string): Promise<string[]> {
+  const workspace = await realpath(cwd);
+  const dir = join(workspace, retainedWaitDirName(continuationId));
+  if (!(await verifiedOwnedDir(dir, RETAINED_WAIT_OWNER_MARKER_CONTENT))) return [];
+  const entries = await readdir(dir);
+  return entries.filter((entry) => entry !== OWNER_MARKER).sort().map((entry) => join(dir, entry));
+}
+
+/** Idempotent cleanup on settlement (completed/cancelled/expired) or explicit release. */
+export async function releaseRetainedOutwardAcpAttachments(cwd: string, continuationId: string): Promise<void> {
+  const workspace = await realpath(cwd);
+  const dir = join(workspace, retainedWaitDirName(continuationId));
+  if (!(await verifiedOwnedDir(dir, RETAINED_WAIT_OWNER_MARKER_CONTENT))) return;
+  await rm(dir, { recursive: true, force: true });
+}
+
+/** Confirms `dir` is a privately-owned directory this module created, by permission, uid and marker content. */
+async function verifiedOwnedDir(dir: string, expectedMarkerContent: string): Promise<boolean> {
+  let info;
+  try { info = await lstat(dir); } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+    throw error;
+  }
+  if (!info.isDirectory() || (info.mode & 0o777) !== 0o700) return false;
+  const marker = join(dir, OWNER_MARKER);
+  let markerInfo;
+  try { markerInfo = await lstat(marker); } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+    throw error;
+  }
+  if (!markerInfo.isFile() || (markerInfo.mode & 0o777) !== 0o600) return false;
+  if (typeof process.getuid === "function" && (info.uid !== process.getuid() || markerInfo.uid !== process.getuid())) return false;
+  return (await readFile(marker, "utf8")) === expectedMarkerContent;
+}
+
 /** Remove only old, owner-marked staging directories in known Workstream directories. */
 export async function cleanupStaleOutwardAcpAttachments(
   workspaceRoot: string,
@@ -149,14 +222,20 @@ export async function cleanupStaleOutwardAcpAttachments(
     if (workspaceRelative === ".." || workspaceRelative.startsWith(`..${sep}`) || isAbsolute(workspaceRelative)) continue;
     if (!(await stat(workspace)).isDirectory()) continue;
     for (const entry of await readdir(workspace)) {
-      if (!entry.startsWith(STAGING_PREFIX)) continue;
+      // A retained-wait directory also matches STAGING_PREFIX (it extends
+      // the same namespace) but must only ever be swept past its own much
+      // longer, continuation-expiry-safe bound and marker (#1114).
+      const isRetainedWait = entry.startsWith(RETAINED_WAIT_PREFIX);
+      if (!isRetainedWait && !entry.startsWith(STAGING_PREFIX)) continue;
       const path = join(workspace, entry);
+      const entryCutoff = isRetainedWait ? now - STALE_RETAINED_WAIT_AGE_MS : cutoff;
+      const expectedMarker = isRetainedWait ? RETAINED_WAIT_OWNER_MARKER_CONTENT : OWNER_MARKER_CONTENT;
       let info;
       try { info = await lstat(path); } catch (error) {
         if ((error as NodeJS.ErrnoException).code === "ENOENT") continue;
         throw error;
       }
-      if (!info.isDirectory() || (info.mode & 0o777) !== 0o700 || info.mtimeMs > cutoff) continue;
+      if (!info.isDirectory() || (info.mode & 0o777) !== 0o700 || info.mtimeMs > entryCutoff) continue;
       const marker = join(path, OWNER_MARKER);
       let markerInfo;
       try { markerInfo = await lstat(marker); } catch (error) {
@@ -165,7 +244,7 @@ export async function cleanupStaleOutwardAcpAttachments(
       }
       if (!markerInfo.isFile() || (markerInfo.mode & 0o777) !== 0o600 ||
         (typeof process.getuid === "function" && (info.uid !== process.getuid() || markerInfo.uid !== process.getuid())) ||
-        await readFile(marker, "utf8") !== OWNER_MARKER_CONTENT) continue;
+        await readFile(marker, "utf8") !== expectedMarker) continue;
       await rm(path, { recursive: true, force: true });
       removed += 1;
     }
