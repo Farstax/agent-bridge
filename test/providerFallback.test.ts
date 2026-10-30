@@ -85,6 +85,25 @@ describe("ProviderFallbackChain", () => {
     });
   });
 
+  describe("shared next-provider selection (#1114)", () => {
+    it("preserves messaging preference ordering and never moves the active index on selection", () => {
+      chain.setActiveCli("chat:1", "claude");
+      expect(chain.nextUntriedAvailable("chat:1", new Set(["claude"]))).toBe("codex");
+      expect(chain.getActiveCli("chat:1")).toBe("claude");
+      chain.setActiveCli("chat:1", "codex");
+      expect(chain.getActiveCli("chat:1")).toBe("codex");
+    });
+
+    it("honours the actual failed provider anchor and excludes unavailable alternatives", () => {
+      const available = new Set(["codex", "antigravity"]);
+      const c = new ProviderFallbackChain(["codex", "claude", "antigravity"], db, "acp:outward",
+        (provider) => available.has(provider));
+      expect(c.nextUntriedAvailable("acp:1", new Set(["codex"]), "codex")).toBe("antigravity");
+      expect(c.advance("acp:1", "codex")).toBe("antigravity");
+      expect(c.nextUntriedAvailable("acp:1", new Set(["codex", "antigravity"]))).toBeNull();
+    });
+  });
+
   describe("peekActiveCli (#1114 P0)", () => {
     it("never mutates chatActiveIdx even when the current head is unavailable", () => {
       const availability = new Set(["codex", "claude", "antigravity"]);
