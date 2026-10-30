@@ -7,7 +7,7 @@ import { realpath } from "node:fs/promises";
 import { isAbsolute, relative, sep } from "node:path";
 import { openProductionDb, type BridgeDb } from "../db.js";
 import { RunContinuationRunner, type RunContinuation } from "../runContinuation.js";
-import { recoverOutwardLanes } from "./recovery.js";
+import { outwardServiceId, recoverOutwardLanes } from "./recovery.js";
 import { prepareInteractiveCliAuth } from "../interactiveCliAuth.js";
 import { OutwardAcpSessionRepository, type OutwardAcpSessionRecord } from "../repositories/outwardAcpSessionRepository.js";
 import { readRetainedOutwardAcpAttachments, releaseRetainedOutwardAcpAttachments } from "./attachments.js";
@@ -60,7 +60,7 @@ async function main(): Promise<void> {
     throw new Error("outward capacity worker requires the installed interactive DB_PATH");
   }
   const db = openProductionDb(dbPath, {
-    serviceId: "acp:outward:continuations",
+    serviceId: outwardServiceId(),
     installationId: process.env.AGENT_BRIDGE_INSTALLATION_ID,
     requireInstallationIdentity: process.env.NODE_ENV === "production" && Boolean(process.env.AGENT_BRIDGE_INSTALLATION_ID?.trim()),
     databaseRole: "interactive",
