@@ -427,6 +427,7 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
     let active: ActiveOutwardExecution | null = null;
     let signalAbort: (() => void) | null = null;
     let activeProvider: RouteableBotKind = provider;
+    let encounteredCapacity = false;
     try {
       const identity = { surfaceIdentity: OUTWARD_ACP_SURFACE, chatKey: input.session.conversationId };
       db.runInTransaction(() => {
@@ -508,6 +509,7 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
         runId,
         eventContext,
         collect,
+        onProviderRecoveryDecision: (reason) => { if (reason === "capacity") encounteredCapacity = true; },
       });
 
       const cancelled = active.cancelRequested || result.stopReason === "cancelled";
@@ -581,7 +583,7 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
         throw new OutwardCapacityRetry();
       }
       if (input.deferCapacity && this.supportsDeferredCapacity && !input.capacityResume && !active?.cancelRequested &&
-          isCapacityRejection) {
+          (isCapacityRejection || encounteredCapacity)) {
         const continuationId = `acp-capacity-wait:${runId}`;
         await retainOutwardAcpAttachmentsForWait(input.session.cwd, input.attachments ?? [], continuationId);
         try {
