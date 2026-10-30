@@ -50,6 +50,7 @@ export const WORKSTREAM_METHODS = {
   update: "_agent-bridge/workstreams/update",
   status: "_agent-bridge/workstreams/status",
   selectProvider: "_agent-bridge/workstreams/select_provider",
+  cancelDeferred: "_agent-bridge/workstreams/cancel_deferred",
   commands: "_agent-bridge/commands/list",
   runCommand: "_agent-bridge/commands/run",
 } as const;
@@ -215,6 +216,9 @@ export function createOutwardAcpAgent(options: OutwardAcpAgentOptions = {}): Age
         if (title === undefined && archived === undefined) {
           throw acp.RequestError.invalidParams({ field: "params" }, "nothing to update");
         }
+        if (control.status(session).state === "waiting") {
+          throw new acp.RequestError(-32002, "deferred Workstream cannot be modified until completion or cancellation");
+        }
         const updated = sessions.update!(session.sessionId, { title, archived });
         return { workstream: workstreamView(updated!) };
       })
@@ -226,6 +230,11 @@ export function createOutwardAcpAgent(options: OutwardAcpAgentOptions = {}): Age
         const session = getKnown(ctx.params);
         const status = control.selectProvider(session, stringParam(ctx.params, "provider", 64));
         return { workstream: workstreamView(session), status };
+      })
+      .onRequest(WORKSTREAM_METHODS.cancelDeferred, objectParams, async (ctx) => {
+        if (!control.cancelDeferred) throw new acp.RequestError(-32002, "deferred Workstream cancellation is unavailable");
+        const session = getKnown(ctx.params);
+        return { workstream: workstreamView(session), status: await control.cancelDeferred(session) };
       });
     if (options.commands) {
       const commands = options.commands;
@@ -235,6 +244,12 @@ export function createOutwardAcpAgent(options: OutwardAcpAgentOptions = {}): Age
         }))
         .onRequest(WORKSTREAM_METHODS.runCommand, objectParams, async (ctx) => {
           const session = getKnown(ctx.params);
+          if (control.status(session).state === "waiting") {
+            const command = stringParam(ctx.params, "command", 64);
+            if (command !== "help" && command !== "status") {
+              throw new acp.RequestError(-32002, "deferred Workstream is waiting; cancel it before modifying");
+            }
+          }
           return commands.run(session, {
             command: stringParam(ctx.params, "command", 64),
             argument: optionalString(ctx.params, "argument", 16_384),
