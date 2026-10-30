@@ -7,7 +7,7 @@ import { realpath } from "node:fs/promises";
 import { isAbsolute, relative, sep } from "node:path";
 import { openProductionDb, type BridgeDb } from "../db.js";
 import { RunContinuationRunner, type RunContinuation } from "../runContinuation.js";
-import { getRunOwnedProcessState, type RunOwnedProcessState } from "../runOwnedProcesses.js";
+import { recoverOutwardLanes } from "./recovery.js";
 import { prepareInteractiveCliAuth } from "../interactiveCliAuth.js";
 import { OutwardAcpSessionRepository, type OutwardAcpSessionRecord } from "../repositories/outwardAcpSessionRepository.js";
 import { readRetainedOutwardAcpAttachments, releaseRetainedOutwardAcpAttachments } from "./attachments.js";
@@ -65,28 +65,9 @@ async function main(): Promise<void> {
     requireInstallationIdentity: process.env.NODE_ENV === "production" && Boolean(process.env.AGENT_BRIDGE_INSTALLATION_ID?.trim()),
     databaseRole: "interactive",
   });
-  const states = new Map<string, RunOwnedProcessState>();
-  const processState = (runId: string): RunOwnedProcessState => {
-    const previous = states.get(runId);
-    if (previous) return previous;
-    const current = getRunOwnedProcessState(runId);
-    states.set(runId, current);
-    return current;
-  };
-  const recoveryNow = Date.now();
-  db.reconcileStaleExecutionLocks({
-    nowMs: recoveryNow, reason: "outward_acp_capacity_worker_restart",
-    containmentState: (lock) => lock.surface === OUTWARD_ACP_SURFACE && processState(lock.run_id) === "absent" ? "proven" : "ambiguous",
-    lockState: (lock) => lock.surface !== OUTWARD_ACP_SURFACE ? "live"
-      : processState(lock.run_id) !== "absent" ? "ambiguous"
-      : Date.parse(lock.lease_expires_at) <= recoveryNow ? "stale" : "live",
-  });
-  await db.reconcileOrphanedRuns({
-    nowMs: recoveryNow, minAgeMs: 0,
-    candidateRuns: db.listRunningRuns(OUTWARD_ACP_SURFACE),
-    processState: (run) => processState(run.run_id),
-    containmentState: (_run, state) => state === "absent" ? "proven" : "ambiguous",
-  });
+  // Use the same process-identity / containment-aware recovery policy as
+  // the outward ACP stdio server; do not independently release live lanes.
+  await recoverOutwardLanes(db);
   try { await prepareInteractiveCliAuth(process.env); }
   catch (error) { console.error("[acp:outward:continuations] API-key verification failed", error); }
   const repository = new OutwardAcpSessionRepository(db.raw);
