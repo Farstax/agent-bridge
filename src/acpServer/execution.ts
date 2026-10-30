@@ -25,6 +25,11 @@ const OUTWARD_ACP_EXECUTION_ERROR = -32001;
 const OUTWARD_ACP_BUSY_ERROR = -32002;
 const CANCELLATION_SWEEP_MS = 10;
 
+/** Internal-only: bounded requeue permitted after a verified capacity rejection. */
+export class OutwardCapacityRetry extends Error {
+  constructor() { super("outward provider capacity temporarily exhausted"); this.name = "OutwardCapacityRetry"; }
+}
+
 type OutwardUpdate = acp.SessionNotification["update"];
 type RunCancelledEvent = Extract<BridgeEvent, { type: "run.cancelled" }>;
 
@@ -522,8 +527,14 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
       // A standard ACP client has no deferred-result semantics. Only clients
       // that explicitly opted in, and only when the independently supervised
       // workspace worker is enabled, may receive a durable waiting outcome.
+      const isCapacityRejection = decideProviderRecovery(providerIdForBotName(activeProvider),
+        error instanceof Error ? error : new Error(String(error))).reason === "capacity";
+      if (input.capacityResume && isCapacityRejection && !active?.cancelRequested) {
+        // The continuation runner, not this request, owns the retry schedule.
+        throw new OutwardCapacityRetry();
+      }
       if (input.deferCapacity && this.supportsDeferredCapacity && !input.capacityResume && !active?.cancelRequested &&
-          decideProviderRecovery(providerIdForBotName(activeProvider), error instanceof Error ? error : new Error(String(error))).reason === "capacity") {
+          isCapacityRejection) {
         const continuationId = `acp-capacity-wait:${runId}`;
         await retainOutwardAcpAttachmentsForWait(input.session.cwd, input.attachments ?? [], continuationId);
         try {
