@@ -17,7 +17,16 @@ const db = openProductionDb(dbPath, {
 });
 try {
   db.pruneExpiredSessions();
-  await cleanupStaleOutwardAcpAttachments(workspaceRoot, new OutwardAcpSessionRepository(db.raw).listWorkspaces());
+  // Each persisted ACP cwd was admitted under its own trusted launch root.
+  // A janitor's release-directory root must not hide other clients' projects.
+  const workspaces = new Set([workspaceRoot, ...new OutwardAcpSessionRepository(db.raw).listWorkspaces()]);
+  for (const workspace of workspaces) {
+    try {
+      await cleanupStaleOutwardAcpAttachments(workspace);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
+  }
 } finally {
   db.close();
 }
