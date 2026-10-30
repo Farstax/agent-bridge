@@ -130,14 +130,31 @@ describe("outward ACP commands", () => {
     await expect(run({ command: "context", select: "x" })).rejects.toMatchObject({ code: -32602 });
   });
 
-  it("forwards literal slash text as ordinary prompt content", async () => {
-    const { app, prompts } = setup();
+  it("forwards literal slash text without resetting history or cancelling an active Run", async () => {
+    const { app, prompts, db } = setup();
+    db.addConvTurn("acp:c1", "user", "existing history", "codex", { surfaceIdentity: OUTWARD_ACP_SURFACE });
     const texts = ["/status", "/reset", "/stop", "/models", "/STOP", "/cli claude", "/btw hi"];
     for (const text of texts) {
       await acp.client({ name: "generic" }).connectWith(app, (agent) =>
         agent.request(acp.methods.agent.session.prompt, { sessionId: "s1", prompt: [{ type: "text", text }] }));
     }
     expect(prompts).toEqual(texts);
+    expect(db.getRecentConvTurns("acp:c1", 30, undefined, OUTWARD_ACP_SURFACE).map((turn) => turn.text))
+      .toEqual(["existing history", ...texts.flatMap((text) => [text, "answer from codex"])]);
+
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const active = setup({ gate });
+    const pending = acp.client({ name: "generic" }).connectWith(active.app, (agent) =>
+      agent.request(acp.methods.agent.session.prompt, { sessionId: "s1", prompt: [{ type: "text", text: "long" }] }));
+    for (let i = 0; i < 50 && !active.prompts.length; i++) await new Promise((resolve) => setTimeout(resolve, 2));
+    expect(active.exec.status(active.repo.get("s1")!).state).toBe("running");
+    await expect(acp.client({ name: "generic" }).connectWith(active.app, (agent) =>
+      agent.request(acp.methods.agent.session.prompt, { sessionId: "s1", prompt: [{ type: "text", text: "/stop" }] })))
+      .rejects.toMatchObject({ code: -32002 });
+    expect(active.exec.status(active.repo.get("s1")!).state).toBe("running");
+    release();
+    expect((await pending).stopReason).toBe("end_turn");
   });
 
   it("ingests ACP resource and image blocks for the Run and removes task files after completion", async () => {
