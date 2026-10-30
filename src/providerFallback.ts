@@ -80,6 +80,24 @@ export class ProviderFallbackChain {
     return null;
   }
 
+  /** Shared provider-selection decision for messaging and outward ACP.
+   * Interactive turns may start from a user preference; therefore their
+   * untried search starts at the configured head. Surface-neutral Turns pass
+   * the actual failed provider as an anchor to preserve forward-only order.
+   * Mutations occur only on a dispatch transition, never on status reads. */
+  nextUntriedAvailable(chatKey: string, tried: ReadonlySet<string>, afterProvider?: string): string | null {
+    const anchor = afterProvider === undefined ? -1 : this.chain.indexOf(afterProvider);
+    if (afterProvider !== undefined && anchor === -1) return null;
+    for (let idx = anchor + 1; idx < this.chain.length; idx += 1) {
+      const cli = this.chain[idx];
+      if (!tried.has(cli) && this.isCliAvailable(cli)) {
+        this.chatActiveIdx.set(chatKey, idx);
+        return cli;
+      }
+    }
+    return null;
+  }
+
   /**
    * Advance to the next available CLI. Returns null if none remains.
    * When `fromProvider` is given, advancement is anchored to that provider's
@@ -90,12 +108,7 @@ export class ProviderFallbackChain {
   advance(chatKey: string, fromProvider?: string): string | null {
     const currentIdx = fromProvider !== undefined ? this.chain.indexOf(fromProvider) : (this.chatActiveIdx.get(chatKey) ?? 0);
     if (currentIdx === -1) return null;
-    for (let nextIdx = currentIdx + 1; nextIdx < this.chain.length; nextIdx += 1) {
-      if (!this.isCliAvailable(this.chain[nextIdx])) continue;
-      this.chatActiveIdx.set(chatKey, nextIdx);
-      return this.chain[nextIdx];
-    }
-    return null;
+    return this.nextUntriedAvailable(chatKey, new Set<string>(), this.chain[currentIdx]);
   }
 
   isChainExhausted(chatKey: string): boolean {
