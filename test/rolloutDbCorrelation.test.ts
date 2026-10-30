@@ -1,4 +1,5 @@
 import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -29,6 +30,20 @@ function inspect(path: string, output: string): void {
 }
 
 describe("rollout database durable identity correlation", () => {
+  it("records the exact database file digest in inspect evidence", () => {
+    const root = mkdtempSync(join(tmpdir(), "rollout-db-digest-"));
+    try {
+      const dbPath = join(root, "bridge.sqlite");
+      const evidencePath = join(root, "evidence.json");
+      createDatabase(dbPath);
+      inspect(dbPath, evidencePath);
+      const expected = createHash("sha256").update(readFileSync(dbPath)).digest("hex");
+      expect(JSON.parse(readFileSync(evidencePath, "utf8")).databases[0].sha256).toBe(expected);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("rejects a replacement run with unchanged queue/status counts", () => {
     const root = mkdtempSync(join(tmpdir(), "rollout-db-correlation-"));
     try {
