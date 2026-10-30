@@ -86,7 +86,7 @@ Do not repeat the issue, commit history, review prose, and CI narrative in multi
 
 `review it` is defined only by `release-readiness-review`. `ship it` delegates to it; do not maintain a second review checklist here.
 
-Run it before expensive final qualification where practical. Prefer a fresh/context-isolated review execution. The reviewer starts from the issue/acceptance contract and exact candidate, independently restates intended outcome/authority, and tries to disprove readiness across the real journey, sibling invariant, production-shaped boundary, relevant transitions, and final consequential authority.
+Run an early adversarial review before expensive final qualification where practical. Final review independence is **phase-based**, not identity-based: the implementing agent may end implementation and perform a fresh, non-mutating exact-head review itself after required checks pass. A separate reviewer or session is preferred but not required. The reviewer starts from the issue/acceptance contract and exact candidate, independently restates intended outcome/authority, and tries to disprove readiness across the real journey, sibling invariant, production-shaped boundary, relevant transitions, and final consequential authority.
 
 A review finding that requires mutation ends that review of the pinned head. Repair in implementation mode, run focused evidence, then start a fresh review of the new head.
 
@@ -130,7 +130,7 @@ After scope is agreed, `ship it` authorizes the unchanged code-delivery scope en
 
 `issue/requirements -> draft PR -> implementation/focused evidence -> review it -> repairs/re-review -> final candidate -> exact-head checks -> merge -> cleanup -> compact report`
 
-Merge policy (single maintainer): a PR may merge when an independent, context-isolated `review it` returns PASS, every blocking finding is repaired and re-reviewed, required exact-head CI passes, and the candidate is mergeable against current `main`. A formal GitHub approval from another human maintainer is not required. Do not fabricate approvals, use alternate identities, or bypass required GitHub rules or checks.
+Merge policy (single maintainer): a PR may merge when a fresh, read-only, phase-separated `review it` returns PASS on the exact candidate, every blocking finding is repaired and re-reviewed, required exact-head CI passes, and the candidate is mergeable against current `main`. The same agent may review its earlier work only after implementation has ended and checks are green; no separate session, contributor, provider, or formal GitHub approval is required. Do not mutate while judging, misrepresent reviewer identity, or bypass required GitHub rules or checks.
 
 It does not authorize scope expansion, bypassing gates, production deployment, destructive operations, or credential/permission mutation unless those were explicitly part of the approved scope and separately qualified.
 
