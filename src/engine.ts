@@ -174,6 +174,8 @@ export interface SurfaceNeutralTurnInput {
   eventContext: NonNullable<CliOptions["eventContext"]>;
   collect: (event: BridgeEvent) => void;
   onProviderExecutionStarted?: () => void;
+  /** Per-Run provider recovery evidence for durable capacity decisions. */
+  onProviderRecoveryDecision?: (reason: ProviderFallbackReason | null) => void;
 }
 
 const MAX_QUEUE_DEPTH = 5;
