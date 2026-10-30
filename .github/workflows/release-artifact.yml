@@ -55,6 +55,9 @@ jobs:
       - name: Compile runtime
         run: npm run build
 
+      - name: Export immutable host-component registry data
+        run: node_modules/.bin/tsx scripts/exportAcpRegistry.ts --output dist/providers/acpRegistry.locked.json
+
       - name: Retain production dependencies only
         run: npm prune --omit=dev
 
@@ -167,6 +170,7 @@ jobs:
           test -f "$verify_root/scripts/install-voice-stt.sh"
           test -f "$verify_root/scripts/install-agy-acp.sh"
           test -f "$verify_root/scripts/install-cursor-acp.sh"
+          test -f "$verify_root/dist/providers/acpRegistry.locked.json"
           test -f "$verify_root/scripts/rollout-sentinel-clear.sh"
           test -f "$verify_root/scripts/load-interactive-telegram-credential.sh"
           test -f "$verify_root/scripts/qualify-logical-messages.ts"

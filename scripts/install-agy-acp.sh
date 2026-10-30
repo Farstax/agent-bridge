@@ -23,34 +23,27 @@ case "$(uname -m)" in
   *) fail "unsupported architecture: $(uname -m)" ;;
 esac
 
-for command in node curl python3 sha256sum readlink stat; do
+for command in curl python3 sha256sum readlink stat; do
   command -v "${command}" >/dev/null 2>&1 || fail "required command is missing: ${command}"
 done
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RELEASE_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
-REGISTRY_MODULE="${RELEASE_DIR}/dist/providers/acpRegistry.js"
-[[ -f "${REGISTRY_MODULE}" ]] || fail "compiled ACP registry is unavailable: ${REGISTRY_MODULE}"
+REGISTRY_DATA="${RELEASE_DIR}/dist/providers/acpRegistry.locked.json"
+[[ -f "${REGISTRY_DATA}" && ! -L "${REGISTRY_DATA}" ]] || fail "release-locked ACP registry data is unavailable: ${REGISTRY_DATA}"
+registry_row="$(python3 - "${REGISTRY_DATA}" "${registry_platform}" <<'PY'
+import json
+import sys
 
-read_registry_metadata() {
-  local node_command
-  node_command="$(command -v node)"
-  local -a command=("${node_command}" --input-type=module - "${REGISTRY_MODULE}" "${registry_platform}")
-  if [[ "$(id -u)" == "0" ]]; then
-    [[ "${AGENT_BRIDGE_RUNTIME_USER:-}" =~ ^[a-z_][a-z0-9_-]*[$]?$ ]] || fail "AGENT_BRIDGE_RUNTIME_USER is required when running as root"
-    command=(/usr/sbin/runuser --user "${AGENT_BRIDGE_RUNTIME_USER}" -- "${command[@]}")
-  fi
-  "${command[@]}" <<'NODE'
-import { pathToFileURL } from "node:url";
-const [modulePath, platform] = process.argv.slice(2);
-const registry = await import(pathToFileURL(modulePath).href);
-const entry = registry.getLockedAcpRegistryEntry("agy");
-const binary = entry?.distribution?.binary?.[platform];
-if (!entry?.version || !binary?.archive || !binary?.cmd) process.exit(2);
-process.stdout.write([entry.version, binary.archive, binary.cmd, binary.sha256 ?? "-"].join("\t"));
-NODE
-}
-registry_row="$(read_registry_metadata)" || fail "release-locked Agy ACP binary metadata is unavailable for ${registry_platform}"
+with open(sys.argv[1], encoding="utf-8") as source:
+    document = json.load(source)
+entry = document.get("providers", {}).get("agy")
+binary = (entry or {}).get("distribution", {}).get("binary", {}).get(sys.argv[2])
+if document.get("schema_version") != 1 or not entry or not binary:
+    raise SystemExit(2)
+print("\t".join((entry["version"], binary["archive"], binary["cmd"], binary.get("sha256") or "-")))
+PY
+)" || fail "release-locked Agy ACP binary metadata is unavailable for ${registry_platform}"
 IFS=$'\t' read -r VERSION ARCHIVE_URL REGISTRY_CMD ARCHIVE_SHA <<<"${registry_row}"
 [[ -n "${VERSION}" && -n "${ARCHIVE_URL}" && -n "${REGISTRY_CMD}" ]] || fail "invalid release-locked Agy ACP metadata"
 if [[ "${ARCHIVE_SHA}" == "-" ]]; then ARCHIVE_SHA=""; fi
