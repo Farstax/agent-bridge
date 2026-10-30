@@ -151,6 +151,20 @@ def archive_members(archive: Path, stage):
             yield relative, member, bundle
 
 
+def candidate_bytes(raw: tuple, block: int) -> int:
+    """Conservative candidate allocation without assuming directory packing.
+
+    Charge one filesystem block for every directory entry, including dot
+    entries. This deliberately overcounts packed directories and covers
+    metadata layouts that differ from ext4. File data and symlinks are charged
+    separately, with a 1% margin.
+    """
+    file_sizes, symlinks, directories = raw
+    total = sum(-(-size // block) * block for size in file_sizes) + symlinks * block
+    total += sum(len(records) + 2 for records in directories) * block
+    return total + total // 100
+
+
 def verify_archive_stream(archive: Path, stage) -> tuple[dict, bytes | None]:
     """Verify a release archive against its manifest without extracting it.
 
@@ -197,9 +211,40 @@ def verify_archive_stream(archive: Path, stage) -> tuple[dict, bytes | None]:
 
     actual: set[str] = set()
     regular: dict[str, tuple[str, int]] = {}
+    # Staging footprint, counted from the archive members themselves: data
+    # blocks per regular file, one block per symlink (long targets need one),
+    # and every directory sized by its entries (8-byte header plus the
+    # 4-byte-aligned name, as in ext4), at least one block.
+    # Per directory: [blocks, bytes used in the last block]; "." and ".." first.
+    entry_bytes: dict[str, list[int]] = {}
+    named: set[str] = set()
+
+    def add_entry(directory: str, name: str) -> None:
+        entry_bytes.setdefault(directory, []).append(8 + -(-len(name.encode()) // 4) * 4)
+
+    add_entry("", ".")
+    file_sizes: list[int] = []
+    symlinks = 0
+    footprint_inodes = 1
     for relative, member, bundle in archive_members(archive, stage):
+        parts = relative.split("/")
+        for index in range(1, len(parts) + 1):
+            path = "/".join(parts[:index])
+            if path in named:
+                continue
+            named.add(path)
+            add_entry("/".join(parts[:index - 1]), parts[index - 1])
+            if index < len(parts):
+                entry_bytes.setdefault(path, [])
         if member.isdir():
+            entry_bytes.setdefault(relative, [])
             continue
+        if not member.islnk():
+            footprint_inodes += 1
+        if member.isfile():
+            file_sizes.append(member.size)
+        elif member.issym():
+            symlinks += 1
         if member.issym():
             target = member.linkname
             resolved = os.path.normpath(os.path.join(os.path.dirname(relative), target))
@@ -236,12 +281,196 @@ def verify_archive_stream(archive: Path, stage) -> tuple[dict, bytes | None]:
         actual.add(relative)
     if "manifest.json" not in regular:
         raise RuntimeError("release artifact is missing a regular manifest.json")
+    footprint_inodes += len(entry_bytes)
+    raw = (tuple(file_sizes), symlinks, tuple(tuple(records) for records in entry_bytes.values()))
+    manifest = {**manifest, "_staging_footprint": (candidate_bytes(raw, STAGING_BLOCK_BYTES), footprint_inodes, archive.stat().st_size, raw)}
     if actual != set(expected):
         raise RuntimeError("release contents do not match the manifest")
     lock = expected.get("package-lock.json")
     if not lock or lock.get("sha256") != manifest.get("package_lock_sha256"):
         raise RuntimeError("package-lock hash binding is invalid")
     return manifest, qualification_bytes
+
+
+VERIFIED_MANIFESTS: dict[str, dict] = {}
+STAGING_BLOCK_BYTES = 4096
+DEFAULT_STAGING_SAFETY_RESERVE_BYTES = 268435456  # ROLLOUT_SAFETY_RESERVE_BYTES in rollout-agent-bridge.sh
+STAGING_INODE_RESERVE = 1024
+
+
+def filesystem_probe(path: Path) -> Path:
+    probe = path
+    while not probe.exists():
+        parent = probe.parent
+        if parent == probe:
+            fail(f"unable to locate a filesystem for staging path: {path}")
+        probe = parent
+    return probe
+
+
+def missing_directories(path: Path) -> list[Path]:
+    missing: list[Path] = []
+    probe = path
+    while not probe.exists():
+        if probe.is_symlink():
+            fail(f"staging directory must not be a symlink: {probe}")
+        missing.append(probe)
+        parent = probe.parent
+        if parent == probe:
+            fail(f"unable to locate a parent for staging directory: {path}")
+        probe = parent
+    if probe.is_symlink() or not probe.is_dir():
+        fail(f"staging directory parent is not a regular directory: {probe}")
+    return missing
+
+
+def in_handoff_spool(archive: Path) -> bool:
+    """True for the root-owned durable handoff copy, which no caller can grow or replace."""
+    try:
+        relative = archive.relative_to(HANDOFF_ROOT)
+    except ValueError:
+        return False
+    if len(relative.parts) != 2 or relative.parts[1] != "release.tar.gz":
+        return False
+    # Check every path component, not only the leaf and its parent. A safe
+    # root-owned directory below a caller-writable ancestor can still be
+    # renamed and replaced between admission and the legacy helper's snapshot.
+    components = [Path("/")]
+    current = Path("/")
+    for part in (*HANDOFF_ROOT.parts[1:], *relative.parts):
+        current = current / part
+        components.append(current)
+    for item in components:
+        metadata = item.lstat()
+        if stat.S_ISLNK(metadata.st_mode) or metadata.st_uid != 0 or metadata.st_mode & 0o022:
+            return False
+    return True
+
+
+def snapshot_limit_args(stage_helper: Path, archive: Path, archive_sha256: str, production: bool) -> list[str]:
+    """Bound release-stage's snapshot to the verified archive size.
+
+    A bootstrap helper installed before the limit existed cannot bound it, so
+    production then accepts only an archive that root alone can change, such as
+    the root-owned handoff copy, and otherwise fails closed (#1100).
+    """
+    manifest = VERIFIED_MANIFESTS.get(archive_sha256)
+    if manifest is None:
+        fail("staging disk admission requires the verified release manifest")
+    if getattr(staging_module(stage_helper), "SNAPSHOT_LIMIT_SUPPORTED", False):
+        return ["--max-archive-bytes", str(manifest["_staging_footprint"][2])]
+    if production and not in_handoff_spool(archive):
+        fail("installed release-stage cannot bound its archive snapshot; bootstrap release-stage or deploy with --handoff")
+    return []
+
+
+def admit_staging(archive: Path, commit: str, archive_sha256: str, release_root: Path, production: bool,
+                  handoff_directory: Path | None = None, authorization_directory: Path | None = None) -> None:
+    """Refuse before writing, while services still run, unless one candidate fits (#1100).
+
+    Charges, per filesystem, the expanded candidate (counted from the verified
+    archive members, including directories and inodes), release-stage's archive
+    snapshot and staging metadata in TMPDIR, plus the stage directory and
+    provenance inode. Owner-request deployments also reserve the authorization
+    record before materializing it. Handoffs charge the durable copy and its
+    metadata. Each
+    filesystem keeps the rollout safety reserve. An already staged release needs
+    no new candidate, but release-stage still writes its snapshot.
+    """
+    if release_root.is_symlink() or (release_root.exists() and not release_root.is_dir()):
+        fail("release root must be a regular directory")
+    if production and not release_root.is_dir():
+        fail("release root must already exist before staging")
+    missing_release_dirs = missing_directories(release_root)
+    missing_handoff_dirs = missing_directories(handoff_directory) if handoff_directory is not None else []
+    missing_authorization_dirs = missing_directories(authorization_directory) if authorization_directory is not None else []
+    manifest = VERIFIED_MANIFESTS.get(archive_sha256)
+    if manifest is None or manifest.get("commit") != commit or "_staging_footprint" not in manifest:
+        fail("staging disk admission requires the verified release manifest")
+    footprint = manifest["_staging_footprint"]
+    candidate_at_default, candidate_inodes, archive_bytes = footprint[:3]
+    raw = footprint[3] if len(footprint) > 3 else None
+    if archive.stat().st_size != archive_bytes:
+        fail("release archive changed after verification")
+
+    def blocks_of(path: Path) -> int:
+        usage = os.statvfs(path)
+        return max(usage.f_frsize, usage.f_bsize, STAGING_BLOCK_BYTES)
+
+    def file_charge(size: int, block: int) -> int:
+        return -(-size // block) * block
+
+    # release-stage always snapshots the archive into TMPDIR before it checks
+    # for an existing release, so only the candidate charge can be skipped.
+    charges: list[tuple[Path, str, int]] = [(Path(tempfile.gettempdir()), "snapshot", 1)]
+    if not (release_root / commit).exists():
+        # candidate_inodes includes the extracted tree root and every archive
+        # member. Staging creates one additional temporary directory and the
+        # immutable provenance record alongside the published release.
+        charges.append((release_root, "candidate", candidate_inodes + 2 + len(missing_release_dirs)))
+    if handoff_directory is not None:
+        # The archive, two optional authorization receipts, and atomic result
+        # replacement may all allocate. Directory creation is charged below.
+        charges.append((handoff_directory, "handoff", 0))
+    if authorization_directory is not None:
+        authorization = authorization_directory / f"deployment-authorization-{commit}.json"
+        if not authorization.exists() and not authorization.is_symlink():
+            charges.append((authorization_directory, "authorization", 1 + len(missing_authorization_dirs)))
+    required: dict[int, list] = {}
+    for path, kind, inodes in charges:
+        probe = filesystem_probe(path)
+        block = blocks_of(probe)
+        if kind == "candidate":
+            # Include release_root's temporary child entry and the provenance
+            # record. Every missing directory needs its own block and room for
+            # the entry in its parent directory.
+            size = (candidate_bytes(raw, block) if raw is not None else candidate_at_default) + 2 * block
+            size += len(missing_release_dirs) * 2 * block
+        elif kind == "snapshot":
+            # TemporaryFile may fall back to a named file when O_TMPFILE is
+            # unavailable. Charge its parent-directory entry as well.
+            size = file_charge(archive_bytes, block) + block
+        elif kind == "authorization":
+            # Reserve a block for the authorization record and another for its
+            # parent-directory entry. Include any directory chain that the
+            # owner-request path must materialize.
+            size = 2 * block + len(missing_authorization_dirs) * 2 * block
+        else:
+            handoff_archive = handoff_directory / "release.tar.gz"
+            if handoff_archive.exists():
+                size = 0
+                inodes = 0
+            else:
+                # The archive data and its parent-directory record.
+                size = file_charge(archive_bytes, block) + block
+                inodes = 1
+            # Three possible new metadata files: result temporary, approval,
+            # owner request. Reserve a data block and a parent entry block for
+            # each, even when the optional receipt is absent on this request.
+            size += 6 * block
+            inodes += 3
+            # Each absent directory needs a directory block and one parent
+            # entry block, plus its own inode.
+            size += len(missing_handoff_dirs) * 2 * block
+            inodes += len(missing_handoff_dirs)
+        entry = required.setdefault(probe.stat().st_dev, [probe, 0, 0])
+        entry[1] += size
+        entry[2] += inodes
+    override = rollout_safety_reserve_override()
+    reserve = int(override) if override else DEFAULT_STAGING_SAFETY_RESERVE_BYTES
+    simulated_bytes = None if production else os.environ.get("AGENT_BRIDGE_DEPLOY_TEST_AVAILABLE_BYTES")
+    simulated_inodes = None if production else os.environ.get("AGENT_BRIDGE_DEPLOY_TEST_AVAILABLE_INODES")
+    for probe, size, inodes in required.values():
+        usage = os.statvfs(probe)
+        available = int(simulated_bytes) if simulated_bytes is not None else usage.f_bavail * usage.f_frsize
+        free_inodes = int(simulated_inodes) if simulated_inodes is not None else usage.f_favail
+        if available < size + reserve:
+            fail(f"staging disk admission refused: {probe} needs {size + reserve} bytes "
+                 f"({size} staging + {reserve} reserve) but {available} are available")
+        # Filesystems without a fixed inode table report zero total inodes.
+        if (usage.f_files or simulated_inodes is not None) and free_inodes < inodes + STAGING_INODE_RESERVE:
+            fail(f"staging disk admission refused: {probe} needs {inodes + STAGING_INODE_RESERVE} inodes "
+                 f"but {free_inodes} are available")
 
 
 def validate_archive(archive: Path, approval: Path | None, now: datetime, production: bool, fixed_environment: str | None = None, stage_helper: Path | None = None) -> tuple[str, str, dict | None]:
@@ -251,6 +480,7 @@ def validate_archive(archive: Path, approval: Path | None, now: datetime, produc
     try:
         stage = staging_module(stage_helper or Path(__file__).with_name("release-stage.py"))
         manifest, qualification_bytes = verify_archive_stream(archive, stage)
+        VERIFIED_MANIFESTS[release_sha256] = manifest
     except Exception as error:
         fail(f"release archive or manifest validation failed: {error}")
     if not SHA.fullmatch(manifest["commit"]):
@@ -538,7 +768,8 @@ def refresh_privileged_helpers(release_dir: Path, config: Path, install_root: Pa
 
 
 def reject_root_test_overrides() -> None:
-    test_override_keys = sorted(key for key in os.environ if key.startswith("AGENT_BRIDGE_DEPLOY_TEST"))
+    test_override_keys = sorted(key for key in os.environ
+                                if key.startswith("AGENT_BRIDGE_DEPLOY_TEST") or key.startswith("AGENT_BRIDGE_RELEASE_STAGE_TEST"))
     if os.geteuid() == 0 and test_override_keys:
         fail(f"test overrides are forbidden for root deployment: {', '.join(test_override_keys)}")
 
@@ -700,11 +931,19 @@ def handoff_identity(commit: str, sha256: str) -> str:
     return commit + "-" + sha256
 
 
-def secure_handoff_directory(root: Path, production: bool) -> None:
+def secure_handoff_directory(root: Path, production: bool, create: bool = True) -> None:
     # The deployer is an installed, privileged trust boundary. Never use a
     # writable runtime-owned directory as the root of its handoff spool.
     if root.is_symlink():
         fail("deployment handoff directory must not be a symlink")
+    if not root.exists() and not create:
+        parent = root.parent
+        if parent.is_symlink() or not parent.is_dir():
+            fail("deployment handoff parent must already exist as a regular directory")
+        metadata = parent.stat()
+        if production and (metadata.st_uid != 0 or metadata.st_mode & 0o022):
+            fail("deployment handoff parent must be root-owned and not group/world writable")
+        return
     root.mkdir(mode=0o700, exist_ok=True)
     metadata = root.stat()
     if not stat.S_ISDIR(metadata.st_mode) or (metadata.st_mode & 0o077):
@@ -825,13 +1064,13 @@ def accept_handoff(archive: Path, approval: Path | None, owner_request: Path | N
     identity = handoff_identity(commit, sha256)
     root = handoff_root(production)
     with exclusive_deployment_lock(production):
-        secure_handoff_directory(root, production)
+        secure_handoff_directory(root, production, create=False)
         directory = root / identity
         if directory.is_symlink():
             fail("deployment handoff identity is a symlink")
         # One accepted request at a time: a different release must not displace
         # or race a request whose authority was already durably accepted.
-        for other in root.iterdir():
+        for other in root.iterdir() if root.exists() else ():
             if other.name == identity or other.is_symlink() or not other.is_dir():
                 continue
             try:
@@ -840,6 +1079,10 @@ def accept_handoff(archive: Path, approval: Path | None, owner_request: Path | N
                 fail("existing deployment handoff cannot be safely inventoried")
             if other_status != "verified":
                 fail("another accepted deployment request is unresolved")
+        staging_root = Path(configured_value(config, "release_root")) if config else Path(
+            os.environ.get("AGENT_BRIDGE_DEPLOY_TEST_RELEASE_ROOT") or tempfile.gettempdir())
+        admit_staging(archive, commit, sha256, staging_root, production, directory)
+        secure_handoff_directory(root, production)
         directory.mkdir(mode=0o700, exist_ok=True)
         secure_handoff_directory(directory, production)
         release_copy = directory / "release.tar.gz"
@@ -849,7 +1092,17 @@ def accept_handoff(archive: Path, approval: Path | None, owner_request: Path | N
             descriptor = os.open(release_copy, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
             try:
                 with os.fdopen(descriptor, "wb") as target, archive.open("rb") as source:
-                    shutil.copyfileobj(source, target, length=1024 * 1024)
+                    # Never copy more than the verified size, even if the
+                    # caller-owned source grows after admission (#1100).
+                    remaining = VERIFIED_MANIFESTS[sha256]["_staging_footprint"][2]
+                    while remaining:
+                        chunk = source.read(min(remaining, 1024 * 1024))
+                        if not chunk:
+                            break
+                        target.write(chunk)
+                        remaining -= len(chunk)
+                    if source.read(1):
+                        fail("release archive changed during handoff")
                     target.flush()
                     os.fsync(target.fileno())
                 if digest(release_copy) != sha256:
@@ -1036,7 +1289,16 @@ def _run_deployment(archive: Path, approval: Path | None, owner_request: Path | 
         commit, archive_sha256, _ = validate_archive(archive, None, datetime.now(timezone.utc), production, fixed_environment, stage_helper)
         request = parse_owner_request(Path(owner_request), commit, datetime.now(timezone.utc), production)
         authorization_dir = Path("/etc/agent-bridge") if production else Path(os.environ.get("AGENT_BRIDGE_DEPLOY_TEST_AUTHORIZATION_DIR", Path(owner_request).parent))
-        approval = materialize_owner_approval(request, commit, archive_sha256, fixed_environment or "production-content-crawler", authorization_dir)
+        if os.environ.get("AGENT_BRIDGE_DEPLOY_VALIDATE_ONLY") != "1":
+            release_root_value = configured_value(config, "release_root") if config else os.environ.get("AGENT_BRIDGE_DEPLOY_TEST_RELEASE_ROOT", "")
+            if production or release_root_value:
+                release_root = Path(release_root_value) if release_root_value else Path(configured_value(config, "release_root"))
+                # Capacity refusal must happen before the durable owner approval
+                # record is materialized. The ordinary staging path repeats the
+                # check immediately before extracting the release.
+                admit_staging(archive, commit, archive_sha256, release_root, production,
+                              authorization_directory=authorization_dir)
+            approval = materialize_owner_approval(request, commit, archive_sha256, fixed_environment or "production-content-crawler", authorization_dir)
     commit, archive_sha256, approval_document = validate_archive(archive, approval, datetime.now(timezone.utc), production, fixed_environment, stage_helper)
     if approval_document is None:
         approval_document = {
@@ -1052,10 +1314,11 @@ def _run_deployment(archive: Path, approval: Path | None, owner_request: Path | 
         if release_root_value:
             release_root = Path(release_root_value)
             environment = {**os.environ, "AGENT_BRIDGE_RELEASE_STAGE_TEST": "1"}
+            admit_staging(archive, commit, archive_sha256, release_root, production)
             subprocess.run([
                 sys.executable, str(stage_helper), "--archive", str(archive),
                 "--release-root", str(release_root), "--expected-commit", commit,
-                "--archive-sha256", archive_sha256,
+                "--archive-sha256", archive_sha256, *snapshot_limit_args(stage_helper, archive, archive_sha256, production),
             ], check=True, env=environment)
             test_helper_root = os.environ.get("AGENT_BRIDGE_DEPLOY_TEST_HELPER_ROOT")
             test_rollout_config = os.environ.get("AGENT_BRIDGE_DEPLOY_TEST_ROLLOUT_CONFIG")
@@ -1077,10 +1340,11 @@ def _run_deployment(archive: Path, approval: Path | None, owner_request: Path | 
     assert config is not None
     release_root = Path(configured_value(config, "release_root"))
     rollout_helper = Path("/usr/local/sbin/rollout-agent-bridge")
+    admit_staging(archive, commit, archive_sha256, release_root, production)
     subprocess.run([
         "/usr/bin/python3", str(stage_helper), "--archive", str(archive),
         "--release-root", str(release_root), "--expected-commit", commit,
-        "--archive-sha256", archive_sha256,
+        "--archive-sha256", archive_sha256, *snapshot_limit_args(stage_helper, archive, archive_sha256, production),
     ], check=True)
     refresh_privileged_helpers(release_root / commit, config)
     environment = os.environ.copy()

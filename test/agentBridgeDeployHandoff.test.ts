@@ -24,7 +24,10 @@ function probe(program: string) {
     "os.environ['AGENT_BRIDGE_DEPLOY_TEST_LOCK_FILE'] = str(root / 'deploy.lock')",
     "os.environ['AGENT_BRIDGE_DEPLOY_TEST_HANDOFF_ROOT'] = str(root / 'handoffs')",
     "module.os.geteuid = lambda: 1000",
-    "module.validate_archive = lambda *args: (commit, sha256, None)",
+    "def fake_validate(path, *args):",
+    "    module.VERIFIED_MANIFESTS[sha256] = {'commit': commit, '_staging_footprint': (4096, 2, path.stat().st_size)}",
+    "    return (commit, sha256, None)",
+    "module.validate_archive = fake_validate",
     "calls = []",
     "def fake_run(argv, **kwargs):",
     "    calls.append(argv)",
@@ -157,5 +160,75 @@ describe("durable independent OSS deployer handoff (#1347)", () => {
     ].join("\n"));
     expect(result.status, result.stderr).toBe(0);
     expect(result.stdout).toContain("checked");
+  });
+});
+
+describe("handoff staging disk admission (#1100)", () => {
+  it("refuses before writing the durable archive copy when staging would not fit", () => {
+    const result = probe([
+      "os.environ['AGENT_BRIDGE_DEPLOY_TEST_AVAILABLE_BYTES'] = str(268435456)",
+      "os.environ['AGENT_BRIDGE_DEPLOY_TEST_RELEASE_ROOT'] = str(root / 'releases')",
+      "try:",
+      "    module.accept_handoff(archive, None, None)",
+      "except RuntimeError as error:",
+      "    print(error)",
+      "else:",
+      "    raise SystemExit('handoff unexpectedly accepted')",
+      "handoffs = root / 'handoffs'",
+      "assert not handoffs.exists(), list(handoffs.iterdir()) if handoffs.exists() else []",
+      "assert calls == []",
+    ].join("\n"));
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout).toMatch(/staging disk admission refused/);
+  });
+
+  it("refuses an archive whose size changed after verification", () => {
+    const result = probe([
+      "module.validate_archive(archive)",
+      "archive.write_bytes(b'replaced after verification with more bytes')",
+      "try:",
+      "    module.admit_staging(archive, commit, sha256, root / 'releases', False)",
+      "except RuntimeError as error:",
+      "    print(error)",
+    ].join("\n"));
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout).toContain("release archive changed after verification");
+  });
+});
+
+describe("bounded archive copies (#1100)", () => {
+  it("refuses a source that grew after admission without copying the excess", () => {
+    const result = probe([
+      "real_admit = module.admit_staging",
+      "def admit_then_grow(*args, **kwargs):",
+      "    real_admit(*args, **kwargs)",
+      "    with archive.open('ab') as grow:",
+      "        grow.write(b'x' * (4 * 1024 * 1024))",
+      "module.admit_staging = admit_then_grow",
+      "try:",
+      "    module.accept_handoff(archive, None, None)",
+      "except RuntimeError as error:",
+      "    print(error)",
+      "copied = root / 'handoffs' / (commit + '-' + sha256) / 'release.tar.gz'",
+      "assert not copied.exists()",
+    ].join("\n"));
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout).toContain("release archive changed during handoff");
+  });
+
+  it("fails closed when an old stage helper cannot bound a caller-writable archive in production", () => {
+    const result = probe([
+      "module.validate_archive(archive)",
+      "helper = root / 'old-release-stage.py'",
+      "helper.write_text('def stage(*args):\\n    pass\\n')",
+      "try:",
+      "    module.snapshot_limit_args(helper, archive, sha256, True)",
+      "except RuntimeError as error:",
+      "    print(error)",
+      "print('limit', module.snapshot_limit_args(pathlib.Path(" + JSON.stringify(resolve("scripts/release-stage.py")) + "), archive, sha256, True))",
+    ].join("\n"));
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout).toContain("installed release-stage cannot bound its archive snapshot");
+    expect(result.stdout).toMatch(/limit \['--max-archive-bytes', '\d+'\]/);
   });
 });
