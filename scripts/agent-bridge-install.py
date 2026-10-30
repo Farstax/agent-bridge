@@ -665,6 +665,29 @@ def configure_host(
         safe_write(SYSTEMD_DIR / unit, render_systemd_file(unit, unit_source.read_text(encoding="utf-8"), account.pw_name), 0o644)
         units.append(unit)
         databases.append(db_path)
+        if db_name == "interactive":
+            # Outward ACP continuations share the interactive database, but
+            # need no Telegram/Discord/Slack secrets or new database/runtime.
+            capacity_defaults = {
+                key: value for key, value in settings.items()
+                if key == "DB_PATH" or key in (
+                    "INTERACTIVE_CLI_CHAIN", "BRIDGE_PROVIDER_LOCK",
+                    "CODEX_ACP_COMMAND", "CODEX_ACP_ARGS",
+                    "CLAUDE_ACP_COMMAND", "CLAUDE_ACP_ARGS",
+                    "GROK_ACP_COMMAND", "GROK_ACP_ARGS",
+                    "AGY_ACP_COMMAND", "AGY_ACP_ARGS",
+                    "CURSOR_ACP_COMMAND", "CURSOR_ACP_ARGS",
+                )
+            }
+            safe_write(DEFAULTS_DIR / "agent-bridge-outward-capacity", render_env(capacity_defaults), 0o600)
+            capacity_unit = "agent-bridge-outward-capacity.service"
+            capacity_source = release / "systemd" / capacity_unit
+            if capacity_source.is_symlink() or not capacity_source.is_file():
+                fail(f"release is missing systemd unit: {capacity_source}")
+            safe_write(SYSTEMD_DIR / capacity_unit, render_systemd_file(
+                capacity_unit, capacity_source.read_text(encoding="utf-8"), account.pw_name,
+            ), 0o644)
+            units.append(capacity_unit)
 
     autonomy_database = configured_autonomy_database(env, state_root, selected)
     if autonomy_database is not None:
