@@ -4,9 +4,9 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { openDb } from "../src/db.js";
 import { OutwardAcpSessionRepository } from "../src/repositories/outwardAcpSessionRepository.js";
-import { claimDueRunContinuation, listRunContinuations, requestRunContinuation } from "../src/runContinuation.js";
+import { claimDueRunContinuation, listRunContinuations, linkCapacityContinuationRun, requestRunContinuation } from "../src/runContinuation.js";
 import { stageOutwardAcpAttachments, retainOutwardAcpAttachmentsForWait } from "../src/acpServer/attachments.js";
-import { resumeOutwardCapacityWait } from "../src/acpServer/continuationWorker.js";
+import { outwardCapacityCompletionProven, resumeOutwardCapacityWait } from "../src/acpServer/continuationWorker.js";
 import type { OutwardAcpPromptExecutor } from "../src/acpServer/execution.js";
 
 const roots: string[] = [];
@@ -79,9 +79,15 @@ describe("outward ACP durable capacity worker (#1114)", () => {
       const worker = { execute } as unknown as OutwardAcpPromptExecutor;
       expect(await resumeOutwardCapacityWait(reopened, lookup, worker, claimed!)).toBe(true);
       expect(execute).toHaveBeenCalledOnce();
+      expect(outwardCapacityCompletionProven(reopened, claimed!)).toBe(false);
+      // A fulfilled ACP exchange without a durable successor must not let
+      // the worker retire the original admitted attachment bytes.
+      reopened.insertRun("recovered-successor", { surfaceIdentity: "acp:outward", chatKey: session.conversationId }, "codex");
+      expect(linkCapacityContinuationRun(reopened, wait.id, claimed!.claimToken!, "recovered-successor")).toBe(true);
+      expect(outwardCapacityCompletionProven(reopened, claimed!)).toBe(false);
+      reopened.updateRunCompleted("recovered-successor", "restored answer", "provider-session-2");
+      expect(outwardCapacityCompletionProven(reopened, claimed!)).toBe(true);
       expect(listRunContinuations(reopened, "acp:outward")[0].state).toBe("claimed");
-      // A boolean callback is not evidence of completion. The actual
-      // successor Run must settle before scanRunContinuations can complete.
     } finally { reopened.close(); }
   });
 });
