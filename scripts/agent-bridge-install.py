@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+from contextlib import contextmanager
 import hashlib
 import importlib.util
 import json
@@ -32,6 +33,13 @@ DEFAULT_LOG_DIR = Path("/var/log/agent-bridge/rollouts")
 DEFAULTS_DIR = Path("/etc/default")
 SYSTEMD_DIR = Path("/etc/systemd/system")
 TRUSTED_COMPONENT_PATH = "/usr/sbin:/usr/bin:/sbin:/bin"
+COMPONENT_ENV_ALLOWLIST = (
+    "AGENT_BRIDGE_STT_ROOT",
+    "AGENT_BRIDGE_SHARED_ENV_FILE",
+    "AGENT_BRIDGE_AGY_ACP_ROOT",
+    "AGENT_BRIDGE_AGY_ACP_LINK",
+    "AGENT_BRIDGE_AGY_HARNESS_LINK",
+)
 ROLLOUT_CONFIG = Path("/etc/agent-bridge/rollout.conf")
 CLEANUP_SERVICE = "agent-bridge-tmp-cleanup.service"
 CLEANUP_TIMER = "agent-bridge-tmp-cleanup.timer"
@@ -419,16 +427,6 @@ def validate_host(runtime_user: str, node_bin: Path) -> pwd.struct_passwd:
         fail(f"runtime user does not exist: {runtime_user}")
     if not node_bin.is_absolute() or node_bin.is_symlink() or not node_bin.is_file() or not os.access(node_bin, os.X_OK):
         fail("node binary must be an absolute executable regular non-symlink file")
-    try:
-        version = subprocess.run(
-            ["/usr/sbin/runuser", "--user", runtime_user, "--", str(node_bin), "-p", "process.versions.node"],
-            check=True, capture_output=True, text=True,
-        ).stdout.strip()
-    except (OSError, subprocess.CalledProcessError) as error:
-        fail(f"unable to validate Node.js: {error}")
-    if not node_version_admitted(version):
-        floors = " ".join(".".join(map(str, floor)) for floor in NODE_SECURITY_FLOORS.values())
-        fail(f"Node.js {version} is unsupported or has known vulnerabilities; required minimum per line: {floors}")
     sudo_check = subprocess.run(
         ["/usr/sbin/runuser", "--user", runtime_user, "--", "/usr/bin/sudo", "-k", "-n", "true"],
         check=False, capture_output=True, text=True, timeout=5,
@@ -469,6 +467,39 @@ def validate_runtime_temp_root(path: Path, account: pwd.struct_passwd) -> Path:
 def component_installer_path(node_dir: Path) -> str:
     """Expose the pinned Node copy and trusted system tools only."""
     return f"{node_dir}:{TRUSTED_COMPONENT_PATH}"
+
+
+def component_installer_environment(
+    node_dir: Path,
+    runtime_user: str,
+    source: Mapping[str, str] | None = None,
+) -> dict[str, str]:
+    """Build a minimal environment for root-run host component scripts."""
+    source = os.environ if source is None else source
+    environment = {
+        "HOME": "/root",
+        "LANG": "C",
+        "LC_ALL": "C",
+        "PATH": component_installer_path(node_dir),
+        "AGENT_BRIDGE_RUNTIME_USER": runtime_user,
+    }
+    for key in COMPONENT_ENV_ALLOWLIST:
+        if source.get(key):
+            environment[key] = source[key]
+    return environment
+
+
+@contextmanager
+def component_environment_context(environment: Mapping[str, str]):
+    """Temporarily isolate the release helper's subprocess environment."""
+    previous = os.environ.copy()
+    os.environ.clear()
+    os.environ.update(environment)
+    try:
+        yield
+    finally:
+        os.environ.clear()
+        os.environ.update(previous)
 
 
 def copy_node_binary(source: Path, destination: Path) -> Path:
@@ -777,7 +808,22 @@ def main(argv: Sequence[str] | None = None) -> int:
     bootstrapped_databases: list[Path] = []
     activated_commit = ""
     archive_sha256 = ""
+    node_dir: Path | None = None
     try:
+        # Snapshot and qualify the selected Node before writing config or
+        # staging any release bytes. Both validation and later root component
+        # execution use this same root-owned copy.
+        runtime_tmp_root = validate_runtime_temp_root(Path("/run"), account)
+        node_dir = Path(tempfile.mkdtemp(prefix="agent-bridge-install-node-", dir=runtime_tmp_root))
+        pinned_node = copy_node_binary(node_bin, node_dir / "node")
+        os.chmod(node_dir, 0o755)
+        pinned_version = subprocess.run(
+            ["/usr/sbin/runuser", "--user", args.runtime_user, "--", str(pinned_node), "-p", "process.versions.node"],
+            check=True, capture_output=True, text=True,
+        ).stdout.strip()
+        if not node_version_admitted(pinned_version):
+            fail(f"copied Node.js {pinned_version} is unsupported or has known vulnerabilities")
+        component_environment = component_installer_environment(node_dir, args.runtime_user, os.environ)
         manifest, archive_sha256, staged = stage_and_inspect(args.release, bootstrap_stage, release_root)
         activated_commit = manifest["commit"]
         if not SHA.fullmatch(activated_commit):
@@ -793,41 +839,16 @@ def main(argv: Sequence[str] | None = None) -> int:
         activate = load_module("agent_bridge_release_activate", staged / "scripts/release-activate.py")
         activate.validate_release(staged, activated_commit, strict=True)
         # Activation requires the commit-addressed host-component receipt, as
-        # guarded rollout prepares before containment. Prepare it here too,
-        # with the runtime account the rollout passes to component installers.
-        os.environ["AGENT_BRIDGE_RUNTIME_USER"] = args.runtime_user
-        # Snapshot the selected Node binary outside the caller-controlled tree.
-        # Root component installers must not follow a runtime-user-writable
-        # executable path after host validation.
-        runtime_tmp_root = validate_runtime_temp_root(Path("/run"), account)
-        node_dir = Path(tempfile.mkdtemp(prefix="agent-bridge-install-node-", dir=runtime_tmp_root))
-        original_path = os.environ.get("PATH", "/usr/sbin:/usr/bin:/sbin:/bin")
-        original_runtime_user = os.environ.get("AGENT_BRIDGE_RUNTIME_USER")
-        try:
-            pinned_node = copy_node_binary(node_bin, node_dir / "node")
-            os.chmod(node_dir, 0o755)
-            pinned_version = subprocess.run(
-                ["/usr/sbin/runuser", "--user", args.runtime_user, "--", str(pinned_node), "-p", "process.versions.node"],
-                check=True, capture_output=True, text=True,
-            ).stdout.strip()
-            if not node_version_admitted(pinned_version):
-                fail(f"copied Node.js {pinned_version} is unsupported or has known vulnerabilities")
-            os.environ["AGENT_BRIDGE_RUNTIME_USER"] = args.runtime_user
-            # Component installers get the pinned Node and fixed system tools.
-            os.environ["PATH"] = component_installer_path(node_dir)
+        # guarded rollout prepares before containment. Prepare components with
+        # the runtime account and the same admitted Node copy.
+        with component_environment_context(component_environment):
             print(json.dumps(activate.prepare_release_host_components(release_root, staged, activated_commit), sort_keys=True), flush=True)
-            install_shared_skills(release_root / activated_commit, node_bin, account, os.environ)
-            bootstrapped_databases = list(databases)
-            bootstrap_databases(release_root / activated_commit, node_bin, account, selected, databases)
-            # Commit-mode activation runs the component installers again.
+        install_shared_skills(release_root / activated_commit, pinned_node, account, os.environ)
+        bootstrapped_databases = list(databases)
+        bootstrap_databases(release_root / activated_commit, pinned_node, account, selected, databases)
+        # Commit-mode activation runs the component installers again.
+        with component_environment_context(component_environment):
             print(activate.activate(release_root, current, activated_commit), flush=True)
-        finally:
-            os.environ["PATH"] = original_path
-            if original_runtime_user is None:
-                os.environ.pop("AGENT_BRIDGE_RUNTIME_USER", None)
-            else:
-                os.environ["AGENT_BRIDGE_RUNTIME_USER"] = original_runtime_user
-            shutil.rmtree(node_dir, ignore_errors=True)
 
         systemctl("start", *managed_units)
         accept(units, databases, args.acceptance_timeout, state_root)
@@ -862,6 +883,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             except Exception:
                 pass
         raise
+    finally:
+        if node_dir is not None:
+            shutil.rmtree(node_dir, ignore_errors=True)
 
 
 if __name__ == "__main__":
