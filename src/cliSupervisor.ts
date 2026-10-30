@@ -14,7 +14,6 @@
 
 import { execFileSync, spawn, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { readFileSync } from "node:fs";
 import type { CliOptions } from "./types.js";
 import { type as evtType } from "./events/types.js";
 import type { BridgeEvent } from "./events/types.js";
