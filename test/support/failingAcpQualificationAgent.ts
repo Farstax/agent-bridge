@@ -1,4 +1,4 @@
-import * as acp from "@agentclientprotocol/sdk";
+import * as acp from "@agentclientprotocol/sdk/unstable";
 import { randomUUID } from "node:crypto";
 import { Readable, Writable } from "node:stream";
 

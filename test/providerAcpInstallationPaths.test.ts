@@ -10,7 +10,7 @@ describe("ACP provider installation paths", () => {
       dependencies?: Record<string, string>;
     };
     expect(pkg.dependencies).toMatchObject({
-      "@agentclientprotocol/sdk": expect.any(String),
+      "@agentclientprotocol/sdk": "2.2.0",
       "@agentclientprotocol/codex-acp": expect.any(String),
       "@agentclientprotocol/claude-agent-acp": expect.any(String),
       "@xai-official/grok": expect.any(String),

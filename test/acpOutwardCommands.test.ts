@@ -2,7 +2,8 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:f
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, onTestFinished } from "vitest";
-import * as acp from "@agentclientprotocol/sdk";
+import * as acp from "@agentclientprotocol/sdk/unstable";
+import { connectWithAcpInitialization } from "./support/initializedAcpClient.js";
 import { openDb, type BridgeDb } from "../src/db.js";
 import { effortSettingKey } from "../src/effort.js";
 import { clearAcpSessionConfigSnapshot, replaceAcpSessionConfigSnapshot } from "../src/acp/sessionConfig.js";
@@ -75,9 +76,9 @@ function setup(options: { chain?: BotKind[]; btw?: boolean; gate?: Promise<void>
   const app = createOutwardAcpAgent({ sessions, promptExecutor: exec, workstreams: exec, commands, workspaceRoot: root });
   const run = <T = { command: string; text: string; options?: Array<{ label: string; selected: boolean; token: string }> }>(
     params: Record<string, unknown>,
-  ) => acp.client({ name: "generic" }).connectWith(app, (agent) =>
+  ) => connectWithAcpInitialization(acp.client({ name: "generic" }), app, (agent) =>
     agent.request<T>(WORKSTREAM_METHODS.runCommand, { sessionId: "s1", cwd: root, ...params }));
-  const list = () => acp.client({ name: "generic" }).connectWith(app, (agent) =>
+  const list = () => connectWithAcpInitialization(acp.client({ name: "generic" }), app, (agent) =>
     agent.request<{ commands: Array<{ name: string; available: boolean; reason?: string; route: string }> }>(
       WORKSTREAM_METHODS.commands, { sessionId: "s1", cwd: root }));
   return { root, db, repo, exec, app, run, list, prompts, btwCalls, attachmentPaths, attachmentContents, attachmentRunIds };
@@ -108,7 +109,7 @@ describe("outward ACP commands", () => {
 
   it("advertises command controls only when their owners are wired", async () => {
     const { app } = setup();
-    const initialized = await acp.client({ name: "generic" }).connectWith(app, (agent) =>
+    const initialized = await connectWithAcpInitialization(acp.client({ name: "generic" }), app, (agent) =>
       agent.request(acp.methods.agent.initialize, { protocolVersion: 1, clientCapabilities: {} }));
     expect(initialized.agentCapabilities?._meta).toEqual({ "agent-bridge": { workstreams: 1, commands: 1 } });
   });
@@ -137,7 +138,7 @@ describe("outward ACP commands", () => {
     db.addConvTurn("acp:c1", "user", "existing history", "codex", { surfaceIdentity: OUTWARD_ACP_SURFACE });
     const texts = ["/status", "/reset", "/stop", "/models", "/STOP", "/cli claude", "/btw hi"];
     for (const text of texts) {
-      await acp.client({ name: "generic" }).connectWith(app, (agent) =>
+      await connectWithAcpInitialization(acp.client({ name: "generic" }), app, (agent) =>
         agent.request(acp.methods.agent.session.prompt, { sessionId: "s1", prompt: [{ type: "text", text }] }));
     }
     expect(prompts).toEqual(texts);
@@ -147,11 +148,11 @@ describe("outward ACP commands", () => {
     let release!: () => void;
     const gate = new Promise<void>((resolve) => { release = resolve; });
     const active = setup({ gate });
-    const pending = acp.client({ name: "generic" }).connectWith(active.app, (agent) =>
+    const pending = connectWithAcpInitialization(acp.client({ name: "generic" }), active.app, (agent) =>
       agent.request(acp.methods.agent.session.prompt, { sessionId: "s1", prompt: [{ type: "text", text: "long" }] }));
     for (let i = 0; i < 50 && !active.prompts.length; i++) await new Promise((resolve) => setTimeout(resolve, 2));
     expect(active.exec.status(active.repo.get("s1")!).state).toBe("running");
-    await expect(acp.client({ name: "generic" }).connectWith(active.app, (agent) =>
+    await expect(connectWithAcpInitialization(acp.client({ name: "generic" }), active.app, (agent) =>
       agent.request(acp.methods.agent.session.prompt, { sessionId: "s1", prompt: [{ type: "text", text: "/stop" }] })))
       .rejects.toMatchObject({ code: -32002 });
     expect(active.exec.status(active.repo.get("s1")!).state).toBe("running");
@@ -161,7 +162,7 @@ describe("outward ACP commands", () => {
 
   it("ingests ACP resource and image blocks for the Run and removes task files after completion", async () => {
     const { root, app, attachmentPaths, attachmentContents, attachmentRunIds, prompts } = setup();
-    const result = await acp.client({ name: "generic" }).connectWith(app, (agent) =>
+    const result = await connectWithAcpInitialization(acp.client({ name: "generic" }), app, (agent) =>
       agent.request(acp.methods.agent.session.prompt, {
         sessionId: "s1",
         prompt: [
@@ -186,7 +187,7 @@ describe("outward ACP commands", () => {
     const nested = join(root, "nested-workstream");
     mkdirSync(nested);
     repo.create({ sessionId: "nested", conversationId: "acp:nested", cwd: nested });
-    await acp.client({ name: "generic" }).connectWith(app, (agent) =>
+    await connectWithAcpInitialization(acp.client({ name: "generic" }), app, (agent) =>
       agent.request(acp.methods.agent.session.prompt, {
         sessionId: "nested",
         prompt: [{ type: "resource", resource: { uri: "file:///input/notes.txt", mimeType: "text/plain", text: "nested content" } }],
@@ -200,7 +201,7 @@ describe("outward ACP commands", () => {
     let release!: () => void;
     const gate = new Promise<void>((resolve) => { release = resolve; });
     const { app, run, attachmentPaths } = setup({ gate });
-    const done = acp.client({ name: "generic" }).connectWith(app, (agent) =>
+    const done = connectWithAcpInitialization(acp.client({ name: "generic" }), app, (agent) =>
       agent.request(acp.methods.agent.session.prompt, {
         sessionId: "s1",
         prompt: [{ type: "resource", resource: { uri: "file:///input/notes.md", mimeType: "text/markdown", text: "cancel me" } }],
@@ -218,7 +219,7 @@ describe("outward ACP commands", () => {
 
   it("requires confirmation for /reset and clears history under the lane", async () => {
     const { run, app, db } = setup();
-    await acp.client({ name: "t" }).connectWith(app, (agent) =>
+    await connectWithAcpInitialization(acp.client({ name: "t" }), app, (agent) =>
       agent.request(acp.methods.agent.session.prompt, { sessionId: "s1", prompt: [{ type: "text", text: "hello" }] }));
     expect(db.getConvStatus("acp:c1", OUTWARD_ACP_SURFACE).turnCount).toBe(2);
     await expect(run({ command: "reset" })).rejects.toMatchObject({ code: -32602 });
@@ -258,7 +259,7 @@ describe("outward ACP commands", () => {
     const modelChoice = (await run({ command: "models" })).options![0]!.token;
     const effortChoice = (await run({ command: "effort" })).options!
       .find((option) => !option.selected && option.token.split(":").length === 3)!.token;
-    const pending = acp.client({ name: "generic" }).connectWith(app, (agent) =>
+    const pending = connectWithAcpInitialization(acp.client({ name: "generic" }), app, (agent) =>
       agent.request(acp.methods.agent.session.prompt, {
         sessionId: "s1", prompt: [{ type: "text", text: "long task" }],
       }));
@@ -286,7 +287,7 @@ describe("outward ACP commands", () => {
     const gate = new Promise<void>((resolve) => { release = resolve; });
     const { run, app, exec, repo, db, prompts } = setup({ chain: ["antigravity"], gate });
     const key = "antigravity:narration:acp:outward:acp:c1";
-    const pending = acp.client({ name: "generic" }).connectWith(app, (agent) =>
+    const pending = connectWithAcpInitialization(acp.client({ name: "generic" }), app, (agent) =>
       agent.request(acp.methods.agent.session.prompt, {
         sessionId: "s1", prompt: [{ type: "text", text: "long task" }],
       }));
@@ -346,7 +347,7 @@ describe("outward ACP commands", () => {
     let release!: () => void;
     const gate = new Promise<void>((resolve) => { release = resolve; });
     const { run, app, exec, repo, db } = setup({ gate });
-    const done = acp.client({ name: "t" }).connectWith(app, (agent) =>
+    const done = connectWithAcpInitialization(acp.client({ name: "t" }), app, (agent) =>
       agent.request(acp.methods.agent.session.prompt, { sessionId: "s1", prompt: [{ type: "text", text: "long" }] }));
     await new Promise((resolve) => setTimeout(resolve, 20));
     expect(exec.status(repo.get("s1")!).state).toBe("running");

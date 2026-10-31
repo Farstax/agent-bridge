@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Readable, Writable } from "node:stream";
-import * as acp from "@agentclientprotocol/sdk";
+import * as acp from "@agentclientprotocol/sdk/unstable";
 
 const ACP_AUTH_PROBE_TIMEOUT_MS = 15_000;
 const ACP_AUTH_PROBE_PROMPT = "Reply with exactly OK.";

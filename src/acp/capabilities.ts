@@ -1,4 +1,4 @@
-import { PROTOCOL_VERSION, type ClientCapabilities, type InitializeRequest } from "@agentclientprotocol/sdk";
+import { PROTOCOL_VERSION, type ClientCapabilities, type InitializeRequest } from "@agentclientprotocol/sdk/unstable";
 
 /** Draft ACP subagent-session extension supported by the pinned codex-acp adapter. */
 type SubagentAwareClientCapabilities = ClientCapabilities & {
