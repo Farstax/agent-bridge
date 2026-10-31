@@ -1,4 +1,4 @@
-import { PROTOCOL_VERSION, type AgentCapabilities, type Implementation } from "@agentclientprotocol/sdk";
+import { PROTOCOL_VERSION, type AgentCapabilities, type Implementation } from "@agentclientprotocol/sdk/unstable";
 
 /**
  * Capabilities Agent Bridge truthfully guarantees as an outward ACP agent.

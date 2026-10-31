@@ -5,7 +5,7 @@ import { once } from "node:events";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import type { ContentBlock } from "@agentclientprotocol/sdk";
+import type { ContentBlock } from "@agentclientprotocol/sdk/unstable";
 import { cleanupStaleOutwardAcpAttachments, stageOutwardAcpAttachments } from "../src/acpServer/attachments.js";
 
 const roots: string[] = [];

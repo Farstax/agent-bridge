@@ -1,4 +1,4 @@
-import * as acp from "@agentclientprotocol/sdk";
+import * as acp from "@agentclientprotocol/sdk/unstable";
 import type {
   AgentApp,
   ClientContext,
@@ -12,7 +12,7 @@ import type {
   StopReason,
   Stream,
   Usage,
-} from "@agentclientprotocol/sdk";
+} from "@agentclientprotocol/sdk/unstable";
 import { Readable, Writable } from "node:stream";
 import { bridgeInitializeRequest } from "./capabilities.js";
 import { mapAcpPermissionRequest } from "./permissions.js";

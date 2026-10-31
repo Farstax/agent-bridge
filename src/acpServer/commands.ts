@@ -1,4 +1,4 @@
-import * as acp from "@agentclientprotocol/sdk";
+import * as acp from "@agentclientprotocol/sdk/unstable";
 import { resolveAcpTelegramConfigCallback } from "../acp/telegramConfigCallback.js";
 import { effortSettingKey, isEffortLevel, resolveDefaultEffort } from "../effort.js";
 import { handleCommand, normalizeCommand } from "../commands.js";

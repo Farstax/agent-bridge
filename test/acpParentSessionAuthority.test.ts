@@ -1,4 +1,4 @@
-import * as acp from "@agentclientprotocol/sdk";
+import * as acp from "@agentclientprotocol/sdk/unstable";
 import { describe, expect, it } from "vitest";
 import { runAcpTurn, type AcpRetainedEvent, type AcpTurnResult } from "../src/acp/client.js";
 import { createCodexAcpAnswerPreview } from "../src/providers/codexAcpAnswerPreview.js";

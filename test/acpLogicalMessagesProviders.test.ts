@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { readdirSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { join } from "node:path";
-import type { SessionNotification, SessionUpdate } from "@agentclientprotocol/sdk";
+import type { SessionNotification, SessionUpdate } from "@agentclientprotocol/sdk/unstable";
 import { createLogicalPreviewTextStream, reconstructLogicalMessages, renderLogicalMessages } from "../src/acp/logicalMessages.js";
 import { liveDeliveryText, type AcpObservedUpdate } from "../src/acp/replay.js";
 import type { AcpRetainedEvent } from "../src/acp/client.js";

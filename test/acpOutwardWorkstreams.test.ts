@@ -2,7 +2,8 @@ import { mkdtempSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import * as acp from "@agentclientprotocol/sdk";
+import * as acp from "@agentclientprotocol/sdk/unstable";
+import { connectWithAcpInitialization } from "./support/initializedAcpClient.js";
 import { openDb, type BridgeDb } from "../src/db.js";
 import { type as eventType } from "../src/events/types.js";
 import { getHandoffReason } from "../src/handoffState.js";
@@ -92,7 +93,7 @@ let pendingGates: Promise<void>[] = [];
 let failNext = false;
 
 async function call<T>(app: ReturnType<typeof createOutwardAcpAgent>, method: string, params: unknown): Promise<T> {
-  return acp.client({ name: "desk-test" }).connectWith(app, (agent) => agent.request<T>(method, params));
+  return connectWithAcpInitialization(acp.client({ name: "desk-test" }), app, (agent) => agent.request<T>(method, params));
 }
 
 describe("outward ACP Workstreams (#1101)", () => {
@@ -105,7 +106,7 @@ describe("outward ACP Workstreams (#1101)", () => {
     const attempts: Attempt[] = [];
     const exec = executor(f.db, attempts);
     const app = agent(f, { promptExecutor: exec, workstreams: exec });
-    await expect(acp.client({ name: "generic" }).connectWith(app, (peer) =>
+    await expect(connectWithAcpInitialization(acp.client({ name: "generic" }), app, (peer) =>
       peer.request(acp.methods.agent.session.prompt, { sessionId: "s1", prompt: [{ type: "text", text: "do not replay" }] })))
       .rejects.toMatchObject({ code: -32002 });
     await expect(call(app, WORKSTREAM_METHODS.selectProvider, { sessionId: "s1", cwd: f.root, provider: "claude" }))
@@ -123,7 +124,7 @@ describe("outward ACP Workstreams (#1101)", () => {
     const attempts: Attempt[] = [];
     const exec = executor(f.db, attempts);
     const app = agent(f, { promptExecutor: exec, workstreams: exec });
-    await expect(acp.client({ name: "generic" }).connectWith(app, (peer) =>
+    await expect(connectWithAcpInitialization(acp.client({ name: "generic" }), app, (peer) =>
       peer.request(acp.methods.agent.session.prompt, { sessionId: "s1", prompt: [{ type: "text", text: "do not replay" }] })))
       .rejects.toMatchObject({ code: -32002 });
     expect(attempts).toEqual([]);
@@ -132,12 +133,12 @@ describe("outward ACP Workstreams (#1101)", () => {
   it("advertises Workstream controls only when wired", async () => {
     const f = fixture();
     const wired = agent(f, { workstreams: executor(f.db, []) });
-    const init = await acp.client({ name: "t" }).connectWith(wired, (agent) =>
+    const init = await connectWithAcpInitialization(acp.client({ name: "t" }), wired, (agent) =>
       agent.request(acp.methods.agent.initialize, { protocolVersion: 1, clientCapabilities: {} }));
     expect(init.agentCapabilities?._meta).toEqual({ "agent-bridge": { workstreams: 1 } });
 
     const plain = agent(f);
-    const plainInit = await acp.client({ name: "t" }).connectWith(plain, (agent) =>
+    const plainInit = await connectWithAcpInitialization(acp.client({ name: "t" }), plain, (agent) =>
       agent.request(acp.methods.agent.initialize, { protocolVersion: 1, clientCapabilities: {} }));
     expect(plainInit.agentCapabilities?._meta).toBeUndefined();
     await expect(call(plain, WORKSTREAM_METHODS.list, { cwd: f.root })).rejects.toMatchObject({ code: -32601 });
@@ -146,18 +147,18 @@ describe("outward ACP Workstreams (#1101)", () => {
   it("lists, renames, archives and restores Workstreams bound to stable conversation IDs across restart", async () => {
     const f = fixture();
     const app = agent(f, { workstreams: executor(f.db, []) });
-    const a = await acp.client({ name: "t" }).connectWith(app, (agent) =>
+    const a = await connectWithAcpInitialization(acp.client({ name: "t" }), app, (agent) =>
       agent.request(acp.methods.agent.session.new, { cwd: f.root, mcpServers: [] }));
-    const b = await acp.client({ name: "t" }).connectWith(app, (agent) =>
+    const b = await connectWithAcpInitialization(acp.client({ name: "t" }), app, (agent) =>
       agent.request(acp.methods.agent.session.new, { cwd: f.root, mcpServers: [] }));
     const other = mkdtempSync(join(tmpdir(), "agent-bridge-workstreams-other-"));
     const link = join(f.root, "outside-link");
     symlinkSync(other, link);
     try {
-      await expect(acp.client({ name: "t" }).connectWith(app, (agent) =>
+      await expect(connectWithAcpInitialization(acp.client({ name: "t" }), app, (agent) =>
         agent.request(acp.methods.agent.session.new, { cwd: other, mcpServers: [] })))
         .rejects.toMatchObject({ code: -32602 });
-      await expect(acp.client({ name: "t" }).connectWith(app, (agent) =>
+      await expect(connectWithAcpInitialization(acp.client({ name: "t" }), app, (agent) =>
         agent.request(acp.methods.agent.session.new, { cwd: link, mcpServers: [] })))
         .rejects.toMatchObject({ code: -32602 });
     } finally {
@@ -210,7 +211,7 @@ describe("outward ACP Workstreams (#1101)", () => {
     const attempts: Attempt[] = [];
     const exec = executor(f.db, attempts);
     const app = agent(f, { promptExecutor: exec, workstreams: exec });
-    const prompt = (sessionId: string) => acp.client({ name: "t" }).connectWith(app, (agent) =>
+    const prompt = (sessionId: string) => connectWithAcpInitialization(acp.client({ name: "t" }), app, (agent) =>
       agent.request(acp.methods.agent.session.prompt, { sessionId, prompt: [{ type: "text", text: "hi" }] }));
 
     await prompt("s1");
@@ -234,7 +235,7 @@ describe("outward ACP Workstreams (#1101)", () => {
     const restarted: Attempt[] = [];
     const exec2 = executor(f.db, restarted);
     const app2 = agent(f, { promptExecutor: exec2, workstreams: exec2 });
-    await acp.client({ name: "t" }).connectWith(app2, (agent) =>
+    await connectWithAcpInitialization(acp.client({ name: "t" }), app2, (agent) =>
       agent.request(acp.methods.agent.session.prompt, { sessionId: "s1", prompt: [{ type: "text", text: "again" }] }));
     expect(restarted.at(-1)?.provider).toBe("claude");
   });
@@ -254,7 +255,7 @@ describe("outward ACP Workstreams (#1101)", () => {
     let release!: () => void;
     pendingGates = [new Promise<void>((resolve) => { release = resolve; })];
     const client = acp.client({ name: "t" });
-    const inFlight = client.connectWith(app, async (agent) => {
+    const inFlight = connectWithAcpInitialization(client, app, async (agent) => {
       const pending = agent.request(acp.methods.agent.session.prompt, { sessionId: "s1", prompt: [{ type: "text", text: "long" }] });
       await new Promise((resolve) => setTimeout(resolve, 20));
       const status = await agent.request<{ status: { state: string } }>(WORKSTREAM_METHODS.status, { sessionId: "s1", cwd: f.root });
@@ -288,7 +289,7 @@ describe("outward ACP Workstreams (#1101)", () => {
     });
     const execution = create();
     const app = agent(f, { promptExecutor: execution, workstreams: execution });
-    const init = await acp.client({ name: "t" }).connectWith(app, (agent) =>
+    const init = await connectWithAcpInitialization(acp.client({ name: "t" }), app, (agent) =>
       agent.request(acp.methods.agent.initialize, { protocolVersion: 1, clientCapabilities: {} }));
     expect(init.agentCapabilities?._meta).toMatchObject({ "agent-bridge": { deferredCapacity: 1 } });
     const result = await call<acp.PromptResponse>(app, acp.methods.agent.session.prompt, {
@@ -397,7 +398,7 @@ describe("outward ACP Workstreams (#1101)", () => {
     let codexUp = true;
     const exec = executor(f.db, attempts, { available: (p) => p === "claude" || codexUp });
     const app = agent(f, { promptExecutor: exec, workstreams: exec });
-    const prompt = () => acp.client({ name: "t" }).connectWith(app, (agent) =>
+    const prompt = () => connectWithAcpInitialization(acp.client({ name: "t" }), app, (agent) =>
       agent.request(acp.methods.agent.session.prompt, { sessionId: "s1", prompt: [{ type: "text", text: "hi" }] }));
 
     expect(exec.status(f.repo.get("s1")!)).toMatchObject({ selectedProvider: "codex", nextProvider: "codex" });
@@ -423,12 +424,12 @@ describe("outward ACP Workstreams (#1101)", () => {
     const exec = executor(f.db, []);
     const app = agent(f, { promptExecutor: exec, workstreams: exec });
     failNext = true;
-    await expect(acp.client({ name: "t" }).connectWith(app, (agent) =>
+    await expect(connectWithAcpInitialization(acp.client({ name: "t" }), app, (agent) =>
       agent.request(acp.methods.agent.session.prompt, { sessionId: "s1", prompt: [{ type: "text", text: "x" }] })))
       .rejects.toMatchObject({ code: -32001 });
     expect(exec.status(f.repo.get("s1")!).state).toBe("failed");
 
-    await acp.client({ name: "t" }).connectWith(app, (agent) =>
+    await connectWithAcpInitialization(acp.client({ name: "t" }), app, (agent) =>
       agent.request(acp.methods.agent.session.prompt, { sessionId: "s1", prompt: [{ type: "text", text: "y" }] }));
     expect(exec.status(f.repo.get("s1")!).state).toBe("idle");
     // A provider-recorded "blocked" disposition is the explicit attention signal.
@@ -443,7 +444,7 @@ describe("outward ACP Workstreams (#1101)", () => {
     const exec = executor(f.db, []);
     const app = agent(f, { promptExecutor: exec, workstreams: exec });
     failNext = true;
-    await expect(acp.client({ name: "t" }).connectWith(app, (agent) =>
+    await expect(connectWithAcpInitialization(acp.client({ name: "t" }), app, (agent) =>
       agent.request(acp.methods.agent.session.prompt, { sessionId: "s1", prompt: [{ type: "text", text: "accepted before failure" }] })))
       .rejects.toMatchObject({ code: -32001 });
 
@@ -477,7 +478,7 @@ describe("outward ACP Workstreams (#1101)", () => {
     const updateRunCompleted = f.db.updateRunCompleted.bind(f.db);
     f.db.updateRunCompleted = () => false;
     try {
-      await expect(acp.client({ name: "t" }).connectWith(app, (agent) =>
+      await expect(connectWithAcpInitialization(acp.client({ name: "t" }), app, (agent) =>
         agent.request(acp.methods.agent.session.prompt, { sessionId: "s1", prompt: [{ type: "text", text: "do not mark complete" }] })))
         .rejects.toMatchObject({ code: -32001 });
     } finally {
