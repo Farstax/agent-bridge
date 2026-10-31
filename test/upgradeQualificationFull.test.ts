@@ -51,7 +51,7 @@ exec "${process.execPath}" "${join(process.cwd(), "node_modules/tsx/dist/cli.mjs
 `);
       script(codex, `
 printf '%s\n' "$0 $*" >> "${qualificationLog}"
-if [ "\${1:-}" = --version ]; then echo '@agentclientprotocol/codex-acp 2.2.2'; exit 0; fi
+if [ "\${1:-}" = --version ]; then echo '@agentclientprotocol/codex-acp 2.5.0'; exit 0; fi
 exec "${process.execPath}" "${join(process.cwd(), "node_modules/tsx/dist/cli.mjs")}" "${join(process.cwd(), "test/support/fakeAcpAgent.ts")}"
 `);
       script(agy, `
@@ -151,7 +151,7 @@ exit 97
       };
       expect(evidence.providers).toMatchObject({
         claude: { overall: "pass", providerVersion: "0.95.0" },
-        codex: { overall: "pass", providerVersion: "2.2.2" },
+        codex: { overall: "pass", providerVersion: "2.5.0" },
         agy: { overall: "pass", providerVersion: "1.3.0" },
         cursor: { overall: "pass", providerVersion: "2026.10.22-27dcf5f" },
       });

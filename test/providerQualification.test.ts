@@ -389,16 +389,16 @@ exit 1
     const runtimeIdentity = currentQualificationRuntime("codex");
     const current = passingRecord({
       provider: "codex",
-      providerVersion: "2.2.2",
+      providerVersion: "2.5.0",
       executionRuntime: runtimeIdentity,
     });
-    expect(isQualificationCurrent(current, "codex", "2.2.2")).toBe(true);
-    expect(isQualificationCurrent({ ...current, executionRuntime: "legacy" }, "codex", "2.2.2")).toBe(false);
+    expect(isQualificationCurrent(current, "codex", "2.5.0")).toBe(true);
+    expect(isQualificationCurrent({ ...current, executionRuntime: "legacy" }, "codex", "2.5.0")).toBe(false);
     // A different distribution/version identity for the same version string must not qualify.
-    expect(isQualificationCurrent({ ...current, executionRuntime: `${runtimeIdentity}-changed` }, "codex", "2.2.2")).toBe(false);
+    expect(isQualificationCurrent({ ...current, executionRuntime: `${runtimeIdentity}-changed` }, "codex", "2.5.0")).toBe(false);
     expect(isQualificationCurrent(current, "codex", "1.10.1")).toBe(false);
-    expect(isQualificationCurrent({ ...current, contractVersion: PROVIDER_CONTRACT_VERSION + 1 }, "codex", "2.2.2")).toBe(false);
-    expect(isQualificationCurrent({ ...current, provider: "claude" }, "codex", "2.2.2")).toBe(false);
+    expect(isQualificationCurrent({ ...current, contractVersion: PROVIDER_CONTRACT_VERSION + 1 }, "codex", "2.5.0")).toBe(false);
+    expect(isQualificationCurrent({ ...current, provider: "claude" }, "codex", "2.5.0")).toBe(false);
   });
 
   // Every real ProviderId (codex, claude, antigravity, grok, cursor) is
@@ -452,7 +452,7 @@ exit 7
     const previousCommand = process.env.CODEX_ACP_COMMAND;
     const previousArgs = process.env.CODEX_ACP_ARGS;
     const acp = executable(join(root, "codex-acp"), `
-if [[ "\${1:-}" == "--version" ]]; then echo "@agentclientprotocol/codex-acp 2.2.2"; exit 0; fi
+if [[ "\${1:-}" == "--version" ]]; then echo "@agentclientprotocol/codex-acp 2.5.0"; exit 0; fi
 echo "acp should not be oneshot-parsed" >&2
 exit 7
 `);
@@ -477,8 +477,8 @@ exit 7
         ...process.env,
         CODEX_ACP_COMMAND: acp,
       }).runtimeIdentity);
-      expect(result.providerVersion).toBe("2.2.2");
-      expect(result.checks.find((check) => check.name === "version")?.diagnostic).toMatch(/codex-acp 2\.2\.2/);
+      expect(result.providerVersion).toBe("2.5.0");
+      expect(result.checks.find((check) => check.name === "version")?.diagnostic).toMatch(/codex-acp 2\.5\.0/);
     } finally {
       if (previousCommand === undefined) delete process.env.CODEX_ACP_COMMAND;
       else process.env.CODEX_ACP_COMMAND = previousCommand;
@@ -602,7 +602,7 @@ exit 7
     // delegating the actual ACP session to the fake agent.
     const wrapper = join(root, "codex-acp");
     writeFileSync(wrapper, `#!/usr/bin/env bash
-if [ "\${1:-}" = "--version" ]; then echo "@agentclientprotocol/codex-acp 2.2.2"; exit 0; fi
+if [ "\${1:-}" = "--version" ]; then echo "@agentclientprotocol/codex-acp 2.5.0"; exit 0; fi
 exec "${process.execPath}" "${join(process.cwd(), "node_modules/tsx/dist/cli.mjs")}" "${fakeAgent}"
 `);
     chmodSync(wrapper, 0o755);

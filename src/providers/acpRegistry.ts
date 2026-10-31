@@ -45,14 +45,14 @@ export const ACP_REGISTRY_SCHEMA_VERSION = "1.0.0";
  * source only; ordinary Runs never read it. A version change belongs in a
  * separately qualified Agent Bridge release.
  *
- * Codex deliberately remains on the already-qualified 2.2.2 adapter even
- * though the mutable upstream registry may advertise a newer release.
+ * The immutable ACP distribution selection. Update only through isolated
+ * provider qualification and the release lock.
  */
 const RELEASE_LOCKED_ACP_REGISTRY_ENTRIES: Readonly<Partial<Record<ProviderId, AcpRegistryAgentEntry>>> = {
   codex: {
     id: "codex-acp",
     name: "Codex",
-    version: "2.2.2",
+    version: "2.5.0",
     description: "ACP adapter for OpenAI's coding assistant",
     repository: "https://github.com/agentclientprotocol/codex-acp",
     authors: ["OpenAI", "JetBrains s.r.o", "Zed Industries"],
@@ -60,7 +60,7 @@ const RELEASE_LOCKED_ACP_REGISTRY_ENTRIES: Readonly<Partial<Record<ProviderId, A
     license_url: "https://github.com/agentclientprotocol/codex-acp/blob/main/LICENSE",
     distribution: {
       npx: {
-        package: "@agentclientprotocol/codex-acp@2.2.2",
+        package: "@agentclientprotocol/codex-acp@2.5.0",
       },
     },
   },
