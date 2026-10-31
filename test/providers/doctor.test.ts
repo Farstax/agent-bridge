@@ -5,7 +5,7 @@ const allFound = () => true;
 const noneFound = () => false;
 const voiceReady = () => ({ status: "ready" as const, reasonCode: null });
 const acpInspectVersion = (executable: string): string | null => {
-  if (executable.includes("codex-acp")) return "2.2.2";
+  if (executable.includes("codex-acp")) return "2.5.0";
   if (executable.includes("claude-agent-acp")) return "0.95.0";
   if (executable.includes("agy_acp_server") || executable.includes("/agy")) return "1.3.0";
   if (executable.includes("grok")) return "1.0.50";
@@ -78,7 +78,7 @@ describe("doctor diagnostics", () => {
         AGY_ACP_COMMAND: configuredAgy,
       },
       commandExists: (executable) => executable === codexAcp,
-      inspectVersion: (executable) => executable === codexAcp ? "2.2.2" : acpInspectVersion(executable),
+      inspectVersion: (executable) => executable === codexAcp ? "2.5.0" : acpInspectVersion(executable),
       inspectVoiceRuntime: voiceReady,
     });
 
@@ -212,7 +212,7 @@ describe("doctor diagnostics", () => {
         BRIDGE_CURRENT_RELEASE_DIR: "/opt/agent-bridge/releases/current",
       },
       commandExists: (executable) => executable === adapter,
-      inspectVersion: (executable) => executable === adapter ? "2.2.2" : null,
+      inspectVersion: (executable) => executable === adapter ? "2.5.0" : null,
       inspectVoiceRuntime: voiceReady,
     });
     const codex = report.providers.find((p) => p.id === "codex");
@@ -221,7 +221,7 @@ describe("doctor diagnostics", () => {
       executable: adapter,
       status: "available",
       runtime: "acp",
-      version: "2.2.2",
+      version: "2.5.0",
     }));
     expect(report.ok).toBe(true);
   });
@@ -250,7 +250,7 @@ describe("doctor diagnostics", () => {
         CODEX_ACP_COMMAND: custom,
       },
       commandExists: (executable) => executable === custom,
-      inspectVersion: (executable) => executable === custom ? "2.2.2" : null,
+      inspectVersion: (executable) => executable === custom ? "2.5.0" : null,
       inspectVoiceRuntime: voiceReady,
     });
     expect(report.providers.find((p) => p.id === "codex")).toEqual(expect.objectContaining({

@@ -100,7 +100,7 @@ describe("Codex ACP qualification boundary", () => {
     // version directly before delegating the turn to the failing agent.
     const wrapper = join(root, "codex-acp");
     writeFileSync(wrapper, `#!/usr/bin/env bash
-if [ "\${1:-}" = "--version" ]; then echo "@agentclientprotocol/codex-acp 2.2.2"; exit 0; fi
+if [ "\${1:-}" = "--version" ]; then echo "@agentclientprotocol/codex-acp 2.5.0"; exit 0; fi
 exec "${process.execPath}" "${join(process.cwd(), "node_modules/tsx/dist/cli.mjs")}" "${failingAgent}"
 `);
     chmodSync(wrapper, 0o755);
