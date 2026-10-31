@@ -63,15 +63,53 @@ export class ProviderFallbackChain {
     this.chatActiveIdx.set(chatKey, idx);
   }
 
-  /** Advance to the next available CLI. Returns null if none remains. */
-  advance(chatKey: string): string | null {
-    const currentIdx = this.chatActiveIdx.get(chatKey) ?? 0;
-    for (let nextIdx = currentIdx + 1; nextIdx < this.chain.length; nextIdx += 1) {
-      if (!this.isCliAvailable(this.chain[nextIdx])) continue;
-      this.chatActiveIdx.set(chatKey, nextIdx);
-      return this.chain[nextIdx];
+  /**
+   * Read-only variant of getActiveCli: finds the active CLI from a chat's
+   * current position without ever writing chatActiveIdx. Status/list reads
+   * must use this — mutating here races with a real attempt's own advance()
+   * and can cause it to skip a valid fallback (#1114 P0).
+   */
+  peekActiveCli(chatKey: string): string | null {
+    const idx = Math.min(this.chatActiveIdx.get(chatKey) ?? 0, this.chain.length - 1);
+    for (let candidate = idx; candidate < this.chain.length; candidate += 1) {
+      if (this.isCliAvailable(this.chain[candidate])) return this.chain[candidate];
+    }
+    for (let candidate = 0; candidate < idx; candidate += 1) {
+      if (this.isCliAvailable(this.chain[candidate])) return this.chain[candidate];
     }
     return null;
+  }
+
+  /** Shared provider-selection decision for messaging and outward ACP.
+   * Interactive turns may start from a user preference; therefore their
+   * untried search starts at the configured head. Surface-neutral Turns pass
+   * the actual failed provider as an anchor to preserve forward-only order.
+   * This search is read-only; the caller commits the actual transition. */
+  nextUntriedAvailable(chatKey: string, tried: ReadonlySet<string>, afterProvider?: string): string | null {
+    const anchor = afterProvider === undefined ? -1 : this.chain.indexOf(afterProvider);
+    if (afterProvider !== undefined && anchor === -1) return null;
+    for (let idx = anchor + 1; idx < this.chain.length; idx += 1) {
+      const cli = this.chain[idx];
+      if (!tried.has(cli) && this.isCliAvailable(cli)) {
+        return cli;
+      }
+    }
+    return null;
+  }
+
+  /**
+   * Advance to the next available CLI. Returns null if none remains.
+   * When `fromProvider` is given, advancement is anchored to that provider's
+   * position in the chain — the provider that actually attempted and
+   * failed — rather than to chatActiveIdx, which a concurrent read-only peek
+   * must never move but previously did (#1114 P0).
+   */
+  advance(chatKey: string, fromProvider?: string): string | null {
+    const currentIdx = fromProvider !== undefined ? this.chain.indexOf(fromProvider) : (this.chatActiveIdx.get(chatKey) ?? 0);
+    if (currentIdx === -1) return null;
+    const next = this.nextUntriedAvailable(chatKey, new Set<string>(), this.chain[currentIdx]);
+    if (next) this.chatActiveIdx.set(chatKey, this.chain.indexOf(next));
+    return next;
   }
 
   isChainExhausted(chatKey: string): boolean {

@@ -67,6 +67,26 @@ reconciliation runs only for the outward ACP surface. It proves provider child
 absence, releases an expired stale lock, and marks an interrupted durable Run
 failed before serving new requests.
 
+## Deferred capacity (opt-in, #1114)
+
+Standard ACP v1 clients retain immediate request/response semantics. Desk may
+opt in only when `agentCapabilities._meta["agent-bridge"].deferredCapacity`
+is advertised. It sends `session/prompt._meta["agent-bridge/defer-capacity"] = 1`.
+After durable admission of the failed Run, original input and retained
+attachments, Agent Bridge may return `stopReason: "end_turn"` with metadata
+`{"agent-bridge":{"outcome":"deferred","runId":"..."} }`. This ends the ACP
+exchange, not the task. Desk must verify the same Run ID and `waiting`
+Workstream status, then observe eventual completion through durable history.
+
+The existing continuation runner, supervised independently of Desk, owns
+bounded wake, retry, restart and expiry. A successor Run is linked before any
+execution; retained input is released only after durable completion is proven.
+Waiting blocks concurrent mutation; `_agent-bridge/workstreams/cancel_deferred`
+cancels pending waits under a fence, not active provider processes.
+Ordinary prompts keep ephemeral staging; only opted-in waits retain input.
+This is the capacity-only exception to the otherwise unqueued Workstream
+policy. Installation is owned by workspace release convergence, not Desk launch.
+
 ## Provider selection
 
 `select_provider` accepts only a configured chain member that is currently

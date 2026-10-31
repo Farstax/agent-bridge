@@ -6,6 +6,7 @@ import * as acp from "@agentclientprotocol/sdk";
 import { openDb, type BridgeDb } from "../src/db.js";
 import { type as eventType } from "../src/events/types.js";
 import { getHandoffReason } from "../src/handoffState.js";
+import { listRunContinuations, requestRunContinuation, settleRunContinuation } from "../src/runContinuation.js";
 import { OutwardAcpSessionRepository } from "../src/repositories/outwardAcpSessionRepository.js";
 import { createOutwardAcpAgent, WORKSTREAM_METHODS, type OutwardAcpAgentOptions, type OutwardAcpSessionStore } from "../src/acpServer/app.js";
 import { BridgeOutwardAcpPromptExecutor, OUTWARD_ACP_SURFACE } from "../src/acpServer/execution.js";
@@ -268,6 +269,125 @@ describe("outward ACP Workstreams (#1101)", () => {
     const status = await call<{ status: { state: string; lastRun: { status: string } } }>(
       app, WORKSTREAM_METHODS.status, { sessionId: "s1", cwd: f.root });
     expect(status.status).toMatchObject({ state: "idle", lastRun: { status: "done" } });
+  });
+
+  it("returns an opt-in ACP v1 deferred response only after persisting a real capacity wait", async () => {
+    const f = fixture();
+    const session = f.repo.create({ sessionId: "deferred-1", conversationId: "acp:deferred-1", cwd: f.root });
+    const create = () => new BridgeOutwardAcpPromptExecutor({
+      db: f.db, providerChain: ["codex"] as const, enableDeferredCapacity: true,
+      createEngine: () => ({
+        executeSurfaceNeutralTurn: async (input) => {
+          input.collect(eventType.runStarted({
+            runId: input.runId, bot: "codex", chatId: String(input.chatId), chatKey: input.chatKey,
+            command: "codex-acp", cwd: f.root, model: null,
+          }));
+          throw new Error("MODEL_CAPACITY_EXHAUSTED");
+        },
+      }),
+    });
+    const execution = create();
+    const app = agent(f, { promptExecutor: execution, workstreams: execution });
+    const init = await acp.client({ name: "t" }).connectWith(app, (agent) =>
+      agent.request(acp.methods.agent.initialize, { protocolVersion: 1, clientCapabilities: {} }));
+    expect(init.agentCapabilities?._meta).toMatchObject({ "agent-bridge": { deferredCapacity: 1 } });
+    const result = await call<acp.PromptResponse>(app, acp.methods.agent.session.prompt, {
+      sessionId: session.sessionId, prompt: [{ type: "text", text: "resume this task later" }],
+      _meta: { "agent-bridge/defer-capacity": 1 },
+    });
+    const meta = (result._meta as Record<string, unknown>)["agent-bridge"] as Record<string, unknown>;
+    expect(result.stopReason).toBe("end_turn");
+    expect(meta.outcome).toBe("deferred");
+    expect(typeof meta.runId).toBe("string");
+    expect(execution.status(session)).toMatchObject({ state: "waiting", lastRun: { runId: meta.runId } });
+    expect(f.sessions.history!(session.conversationId)).toEqual([{ role: "user", text: "resume this task later" }]);
+    await expect(call(app, acp.methods.agent.session.prompt, {
+      sessionId: session.sessionId, prompt: [{ type: "text", text: "do not duplicate" }],
+    })).rejects.toMatchObject({ code: -32002 });
+    await expect(call(app, WORKSTREAM_METHODS.selectProvider, {
+      sessionId: session.sessionId, cwd: f.root, provider: "codex",
+    })).rejects.toMatchObject({ code: -32002 });
+    const cancelled = await call<{ status: { state: string } }>(app, WORKSTREAM_METHODS.cancelDeferred, {
+      sessionId: session.sessionId, cwd: f.root,
+    });
+    expect(cancelled.status.state).toBe("cancelled");
+  });
+
+  it("waits for mixed capacity/auth exhaustion, but not for authentication alone", async () => {
+    for (const [chain, shouldWait] of [
+      [["codex", "claude"], true],
+      [["claude"], false],
+    ] as const) {
+      const f = fixture();
+      const session = f.repo.create({
+        sessionId: shouldWait ? "mixed-capacity" : "auth-only",
+        conversationId: shouldWait ? "acp:mixed-capacity" : "acp:auth-only",
+        cwd: f.root,
+      });
+      const attempted: BotKind[] = [];
+      const execution = new BridgeOutwardAcpPromptExecutor({
+        db: f.db, providerChain: chain, enableDeferredCapacity: true,
+        createEngine: (_session, provider) => ({
+          executeSurfaceNeutralTurn: async (input) => {
+            attempted.push(provider);
+            input.collect(eventType.runStarted({
+              runId: input.runId, bot: provider, chatId: String(input.chatId),
+              chatKey: input.chatKey, command: provider, cwd: f.root, model: null,
+            }));
+            throw new Error(provider === "codex" ? "MODEL_CAPACITY_EXHAUSTED" : "login required");
+          },
+        }),
+      });
+      const app = agent(f, { promptExecutor: execution, workstreams: execution });
+      const prompt = () => call<acp.PromptResponse>(app, acp.methods.agent.session.prompt, {
+        sessionId: session.sessionId,
+        prompt: [{ type: "text", text: "resume only if capacity can recover" }],
+        _meta: { "agent-bridge/defer-capacity": 1 },
+      });
+      if (shouldWait) {
+        const result = await prompt();
+        expect(result.stopReason).toBe("end_turn");
+        expect(result._meta).toMatchObject({ "agent-bridge": { outcome: "deferred" } });
+        expect(execution.status(session).state).toBe("waiting");
+        expect(listRunContinuations(f.db, OUTWARD_ACP_SURFACE)[0].provider).toBe("claude");
+        expect(attempted).toEqual(["codex", "claude"]);
+      } else {
+        await expect(prompt()).rejects.toThrow();
+        expect(listRunContinuations(f.db, OUTWARD_ACP_SURFACE)).toEqual([]);
+      }
+    }
+  });
+
+  it("shows an expired deferred Workstream distinctly from an ordinary failed Run", () => {
+    const f = fixture();
+    const session = f.repo.create({ sessionId: "expired-1", conversationId: "acp:expired-1", cwd: f.root });
+    const identity = { surfaceIdentity: OUTWARD_ACP_SURFACE, chatKey: session.conversationId };
+    f.db.insertRun("expired-origin", identity, "codex");
+    f.db.updateRunFailed("expired-origin", "MODEL_CAPACITY_EXHAUSTED");
+    const wait = requestRunContinuation(f.db, {
+      originRunId: "expired-origin", surfaceIdentity: OUTWARD_ACP_SURFACE,
+      chatKey: session.conversationId, provider: "codex",
+      reason: "provider capacity", afterSeconds: 5, capacityWait: true,
+      outward: { sessionId: session.sessionId, prompt: "resume later", attachmentCount: 0 },
+    });
+    const status = new BridgeOutwardAcpPromptExecutor({
+      db: f.db, providerChain: ["codex"], createEngine: () => {
+        throw new Error("status must not invoke a provider");
+      },
+    });
+    expect(status.status(session).state).toBe("waiting");
+    settleRunContinuation(f.db, wait.id, "expired");
+    expect(status.status(session).state).toBe("expired");
+  });
+
+  it("reports an available next provider before the first turn, or null when none are available", () => {
+    const f = fixture();
+    const session = f.repo.create({ sessionId: "s1", conversationId: "acp:c1", cwd: f.root });
+    let available: BotKind[] = ["claude"];
+    const exec = executor(f.db, [], { available: (p) => available.includes(p) });
+    expect(exec.status(session)).toMatchObject({ selectedProvider: "codex", nextProvider: "claude" });
+    available = [];
+    expect(exec.status(session)).toMatchObject({ selectedProvider: "codex", nextProvider: null });
   });
 
   it("reports the provider the next Run actually uses after fallback", async () => {

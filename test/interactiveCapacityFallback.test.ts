@@ -889,7 +889,7 @@ describe("interactive capacity fallback durable admission", () => {
         botConfig: { command: kind, modelPreference: [] },
         allowedUserIds: new Set(["42"]),
         executionMode: "safe",
-        busyMessageMode: "queue",
+        busyMessageMode: "augment",
         pollIntervalMs: 1_000,
         hooks: {
           onProviderFallbackRequested: async (chatKey, reason, context) => {
@@ -1124,9 +1124,9 @@ describe("interactive capacity fallback durable admission", () => {
       expect(db.hasAnyPendingMessageId("telegram:interactive", "100", [originalId])).toBe(false);
       expect(db.pendingMsgCount("telegram:interactive", "100")).toBe(0);
 
-      // Continuation settled as completed (not pending or requeued):
+      // Authentication failure is terminal, not a successful completion:
       const settled = listRunContinuations(db, "telegram:interactive")[0];
-      expect(settled.state).toBe("completed");
+      expect(settled.state).toBe("failed");
 
       // Subsequent scan must not retry or emit additional notices:
       notifications.length = 0;
@@ -1230,7 +1230,7 @@ describe("interactive capacity fallback durable admission", () => {
       // Original task safely retired:
       expect(db.hasAnyPendingMessageId("discord:interactive", "200", [originalId])).toBe(false);
       expect(db.pendingMsgCount("discord:interactive", "200")).toBe(0);
-      expect(listRunContinuations(db, "discord:interactive")[0].state).toBe("completed");
+      expect(listRunContinuations(db, "discord:interactive")[0].state).toBe("failed");
     } finally {
       db.close();
     }
@@ -1306,7 +1306,7 @@ describe("interactive capacity fallback durable admission", () => {
         "codex needs re-authentication. No remaining configured fallback provider is available.",
       ]);
       expect(db.hasAnyPendingMessageId("telegram:interactive", "300", [originalId])).toBe(false);
-      expect(listRunContinuations(db, "telegram:interactive")[0].state).toBe("completed");
+      expect(listRunContinuations(db, "telegram:interactive")[0].state).toBe("failed");
     } finally {
       db.close();
     }

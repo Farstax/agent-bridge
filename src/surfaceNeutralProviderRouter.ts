@@ -23,7 +23,7 @@ export interface SurfaceNeutralProviderRouterOptions {
 
 export interface SurfaceNeutralProviderRouter extends Pick<BridgeEngine, "executeSurfaceNeutralTurn"> {
   /** Provider the next turn of this conversation starts with, after any fallback. */
-  activeProvider(chatKey: string): BotKind;
+  activeProvider(chatKey: string): BotKind | null;
 }
 
 /**
@@ -39,28 +39,23 @@ export function createSurfaceNeutralProviderRouter(
     ...options.providerChain.filter((provider) => provider !== options.initialProvider),
   ];
   const probe = options.isProviderAvailable ?? (() => true);
-  // Availability is probed synchronously per candidate; evaluate each provider
-  // once per routing decision rather than on every chain query.
-  let snapshot = new Map<string, boolean>();
-  const isAvailable = (provider: BotKind): boolean => {
-    const known = snapshot.get(provider);
-    if (known !== undefined) return known;
-    const value = probe(provider);
-    snapshot.set(provider, value);
-    return value;
-  };
   const fallback = new ProviderFallbackChain(
     ordered,
     options.db,
     options.surfaceIdentity,
-    (provider) => isAvailable(provider as BotKind),
+    (provider) => probe(provider as BotKind),
   );
   const initialized = new Set<string>();
 
   return {
-    activeProvider(chatKey: string): BotKind {
-      snapshot = new Map();
-      return initialized.has(chatKey) ? fallback.getActiveCli(chatKey) as BotKind : options.initialProvider;
+    activeProvider(chatKey: string): BotKind | null {
+      // Read-only peek: a status/list poll must never mutate shared per-chat
+      // routing state while a real attempt may be concurrently executing or
+      // about to advance (#1114 P0). This also covers the uninitialised-chat
+      // case correctly: chatActiveIdx defaults to the configured head either
+      // way, so an unavailable head is never advertised as nextProvider
+      // before the first turn.
+      return fallback.peekActiveCli(chatKey) as BotKind | null;
     },
     async executeSurfaceNeutralTurn(input: SurfaceNeutralTurnInput) {
       if (!initialized.has(input.chatKey)) {
@@ -69,11 +64,10 @@ export function createSurfaceNeutralProviderRouter(
       }
 
       for (;;) {
-        snapshot = new Map();
         const provider = fallback.getActiveCli(input.chatKey) as BotKind;
         // The chain returns its head when nothing is routeable; a non-messaging
         // Run must fail clearly instead of invoking an unusable provider.
-        if (!isAvailable(provider)) {
+        if (!probe(provider)) {
           console.error(`[surface-neutral-router] no available provider in chain ${ordered.join(",")} surface=${options.surfaceIdentity ?? "unknown"}`);
           throw new Error("no available provider in the configured chain");
         }
@@ -114,7 +108,6 @@ export function createSurfaceNeutralProviderRouter(
           }
           return result;
         } catch (error) {
-          snapshot = new Map();
           // Same authoritative verdict as interactive routing; this router only
           // advances along the chain it was constructed with.
           // Without the interactive handoff context a non-messaging Run must not
@@ -124,10 +117,15 @@ export function createSurfaceNeutralProviderRouter(
           const decision = decideProviderRecovery(providerIdForBotName(provider), failure);
           const recoverable = decision.reason !== null;
           if (!recoverable) {
+            input.onProviderRecoveryDecision?.(null, false);
             for (const event of attemptEvents) input.collect(event);
             throw error;
           }
-          const next = fallback.advance(input.chatKey);
+          // Anchor to the provider that actually attempted and failed, not to
+          // whatever chatActiveIdx currently holds — a concurrent status peek
+          // must never be able to shift this (#1114 P0).
+          const next = fallback.advance(input.chatKey, provider);
+          input.onProviderRecoveryDecision?.(decision.reason, next === null);
           if (!next) {
             for (const event of attemptEvents) input.collect(event);
             throw error;

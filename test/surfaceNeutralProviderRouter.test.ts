@@ -203,6 +203,14 @@ describe("surface-neutral provider availability (#954)", () => {
     } finally { db.close(); }
   });
 
+  it("never advertises an unavailable head as nextProvider before the first turn (#1114)", () => {
+    const { router } = routerWith(["codex", "claude"], () => new Set(["claude"]));
+    // No turn has executed yet for this chat — codex (the configured head)
+    // is unavailable. A status/list read must not advertise an unroutable
+    // provider as what the next turn will use.
+    expect(router.activeProvider("autonomous:episode-1")).toBe("claude");
+  });
+
   it("does not loop on an exhausted chain", async () => {
     const { db, router, calls } = routerWith(
       ["codex", "claude"],
@@ -211,6 +219,31 @@ describe("surface-neutral provider availability (#954)", () => {
     );
     try {
       await expect(router.executeSurfaceNeutralTurn(input() as any)).rejects.toThrow(/usage limit/);
+      expect(calls).toEqual(["codex", "claude"]);
+    } finally { db.close(); }
+  });
+
+  it("a concurrent read-only status peek does not cause fallback to skip the failed provider's successor (#1114 P0)", async () => {
+    // Reproduces the Desk regression: a status/list poll calls
+    // router.activeProvider() (read-only by contract) while codex is still
+    // executing. If that peek mutates shared per-chat routing state, the
+    // subsequent capacity failure advances from the peek's mutated index
+    // instead of from codex's own attempt, and skips claude entirely.
+    let codexAvailable = true;
+    const chatKey = "autonomous:episode-1";
+    const { db, router, calls } = routerWith(
+      ["codex", "claude"],
+      () => new Set(["codex", "claude"].filter((provider) => provider !== "codex" || codexAvailable)),
+      { codex: new Error("usage limit reached") },
+      (provider) => {
+        if (provider === "codex") {
+          codexAvailable = false;
+          router.activeProvider(chatKey);
+        }
+      },
+    );
+    try {
+      expect((await router.executeSurfaceNeutralTurn(input() as any)).text).toBe("claude answer");
       expect(calls).toEqual(["codex", "claude"]);
     } finally { db.close(); }
   });

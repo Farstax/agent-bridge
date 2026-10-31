@@ -80,6 +80,10 @@ export interface RunContinuation {
   capacityNoticeSent?: true;
   /** Original queue receipt retained through capacity recovery. */
   retainedPendingMessageIds?: number[];
+  /** An ACP-v1 deferred Workstream payload. The existing settings-backed
+   * continuation record owns the original admitted input; no second queue or
+   * transcript database is introduced. */
+  outward?: { sessionId: string; prompt: string; attachmentCount: number };
   /** The task was retired due to capacity expiry and awaits final notification. */
   expiryDeliveryPending?: true;
 }
@@ -100,6 +104,7 @@ export interface RequestRunContinuationInput {
   delivery?: { chatId: string | number; chatType: string; threadId?: string | number };
   capacityWait?: boolean;
   retainedPendingMessageIds?: number[];
+  outward?: { sessionId: string; prompt: string; attachmentCount: number };
 }
 
 function key(id: string): string {
@@ -149,6 +154,14 @@ function parse(value: string): RunContinuation | null {
     if (candidate.claimToken !== undefined && (typeof candidate.claimToken !== "string" || !candidate.claimToken)) return null;
     if (candidate.retainedPendingMessageIds !== undefined && (!Array.isArray(candidate.retainedPendingMessageIds) || candidate.retainedPendingMessageIds.some((id) => !Number.isSafeInteger(id) || id < 1))) return null;
     if (candidate.successorRunId !== undefined && typeof candidate.successorRunId !== "string") return null;
+    if (candidate.outward !== undefined && (
+      candidate.surfaceIdentity !== "acp:outward" || candidate.capacityWait !== true ||
+      typeof candidate.outward.sessionId !== "string" || !candidate.outward.sessionId ||
+      candidate.outward.sessionId.length > 256 ||
+      typeof candidate.outward.prompt !== "string" || candidate.outward.prompt.length > 160_000 ||
+      !Number.isSafeInteger(candidate.outward.attachmentCount) ||
+      candidate.outward.attachmentCount < 0 || candidate.outward.attachmentCount > 8
+    )) return null;
     if (candidate.rolloutProvenance) {
       const p = candidate.rolloutProvenance;
       if (
@@ -162,6 +175,7 @@ function parse(value: string): RunContinuation | null {
         || typeof p.provider !== "string"
       ) return null;
     }
+    if (candidate.outward && candidate.surfaceIdentity === "acp:outward") return candidate;
     if (candidate.delivery) return candidate;
     if (candidate.surfaceIdentity.startsWith("telegram:")) {
       const match = /^(-?\d+)(?::(\d+))?$/.exec(candidate.chatKey);
@@ -203,6 +217,13 @@ export function requestRunContinuation(
       throw new Error(`after-seconds must be an integer between ${MIN_DELAY_SECONDS} and ${maximumDelay}`);
     }
   }
+  if (input.outward && (
+    !input.capacityWait || input.surfaceIdentity !== "acp:outward" ||
+    !input.outward.sessionId || input.outward.sessionId.length > 256 ||
+    input.outward.prompt.length > 160_000 ||
+    !Number.isSafeInteger(input.outward.attachmentCount) || input.outward.attachmentCount < 0 ||
+    input.outward.attachmentCount > 8
+  )) throw new Error("invalid outward ACP continuation payload");
   const originRunId = bounded(input.originRunId, "origin run id", 200);
   const surfaceIdentity = bounded(input.surfaceIdentity, "surface identity", 160);
   const chatKey = bounded(input.chatKey, "chat key", 200);
@@ -254,6 +275,7 @@ export function requestRunContinuation(
       state: "pending",
       ...(input.delivery ? { delivery: input.delivery } : {}),
       ...(input.capacityWait ? { capacityWait: true as const } : {}),
+      ...(input.outward ? { outward: input.outward } : existing?.outward ? { outward: existing.outward } : {}),
       ...(existing?.capacityNoticeSent ? { capacityNoticeSent: true as const } : {}),
       ...(input.capacityWait && (input.retainedPendingMessageIds?.length || existing?.retainedPendingMessageIds?.length)
         ? { retainedPendingMessageIds: input.retainedPendingMessageIds ?? existing!.retainedPendingMessageIds! }
@@ -338,6 +360,22 @@ export interface ClaimRunContinuationOptions {
   claimToken?: string;
 }
 
+function capacitySuccessorFailure(db: BridgeDb, wait: RunContinuation): "failed" | "cancelled" | null {
+  if (!wait.successorRunId || (!wait.outward && (!wait.retainedPendingMessageIds?.length ||
+      db.hasAnyPendingMessageId(wait.surfaceIdentity, wait.chatKey, wait.retainedPendingMessageIds)))) return null;
+  const run = db.getRun(wait.successorRunId);
+  if (!run || run.surface_identity !== wait.surfaceIdentity || run.chat_id !== wait.chatKey) return null;
+  return run.status === "failed" || run.status === "cancelled" ? run.status : null;
+}
+
+/** A receipt disappearing is ambiguous unless its correlated successor actually completed. */
+function capacityCompletionProven(db: BridgeDb, wait: RunContinuation): boolean {
+  if (!wait.successorRunId || (!wait.outward && !wait.retainedPendingMessageIds?.length)) return false;
+  const run = db.getRun(wait.successorRunId);
+  return run?.status === "done" && run.surface_identity === wait.surfaceIdentity && run.chat_id === wait.chatKey
+    && (wait.outward !== undefined || !db.hasAnyPendingMessageId(wait.surfaceIdentity, wait.chatKey, wait.retainedPendingMessageIds!));
+}
+
 export function claimDueRunContinuation(
   db: BridgeDb,
   id: string,
@@ -358,10 +396,10 @@ export function claimDueRunContinuation(
       db.raw.prepare("UPDATE settings SET value = ? WHERE key = ?").run(JSON.stringify(expired), key(id));
       return null;
     }
-    const cancel = (error: string): null => {
+    const cancel = (error: string, terminalState: "cancelled" | "failed" = "cancelled"): null => {
       const cancelled: RunContinuation = {
         ...current,
-        state: "cancelled",
+        state: terminalState,
         completedAt: new Date(nowMs).toISOString(),
         error,
       };
@@ -386,13 +424,28 @@ export function claimDueRunContinuation(
         return null;
       }
       if (isClaimedCapacity) {
+        if (current.outward && current.successorRunId) {
+          const successor = db.getRun(current.successorRunId);
+          if (!successor || successor.status === "running") return null;
+          if (capacityCompletionProven(db, current)) {
+            db.raw.prepare("UPDATE settings SET value = ? WHERE key = ?").run(
+              JSON.stringify({ ...current, state: "completed", completedAt: new Date(nowMs).toISOString() }), key(id));
+            return null;
+          }
+          // A completed response is the only safe evidence of success. A
+          // non-capacity failed successor must not be replayed after restart.
+          if (successor.status === "cancelled") return cancel("outward ACP successor was cancelled");
+          if (successor.status === "failed") return cancel("outward ACP successor failed before durable retry was confirmed; inspect before re-execution", "failed");
+        }
         if (current.retainedPendingMessageIds?.length && !db.hasAnyPendingMessageId(current.surfaceIdentity, current.chatKey, current.retainedPendingMessageIds)) {
-          const settled: RunContinuation = {
-            ...current,
-            state: "completed",
-            completedAt: new Date(nowMs).toISOString(),
-          };
-          db.raw.prepare("UPDATE settings SET value = ? WHERE key = ?").run(JSON.stringify(settled), key(id));
+          const failure = capacitySuccessorFailure(db, current);
+          const state = capacityCompletionProven(db, current) ? "completed" : failure;
+          if (state) {
+            db.raw.prepare("UPDATE settings SET value = ? WHERE key = ?")
+              .run(JSON.stringify({ ...current, state, completedAt: new Date(nowMs).toISOString(),
+                ...(failure ? { error: `successor Run ${failure}` } : {}) }), key(id));
+          }
+          // No receipt and no terminal successor is an ambiguous outcome; never replay it.
           return null;
         }
         const claimantRunId = current.claimRunId;
@@ -601,6 +654,7 @@ export function settleRunContinuation(
     if (!current) return;
     if (current.state === "completed" || current.state === "cancelled") return;
     if (outcome === "expired" && current.state === "expired") return;
+    if (current.capacityWait && outcome === "completed" && !capacityCompletionProven(db, current)) return;
     if (outcome !== "expired"
       && current.state !== "claimed"
       && !(current.capacityWait && outcome === "completed" && current.state === "pending")) return;
@@ -623,8 +677,26 @@ export function linkRunContinuationRun(db: BridgeDb, id: string, runId: string):
   return db.runInTransaction(() => {
     const row = db.raw.prepare("SELECT value FROM settings WHERE key = ?").get(key(id)) as { value: string } | undefined;
     const current = row ? parse(row.value) : null;
-    if (!current || (current.capacityWait && current.state !== "claimed")) return false;
+    if (!current || current.capacityWait) return false;
     if (current.successorRunId === runId) return true;
+    db.raw.prepare("UPDATE settings SET value = ? WHERE key = ?")
+      .run(JSON.stringify({ ...current, successorRunId: runId }), key(id));
+    return true;
+  });
+}
+
+/** Link a capacity wake only while its exact runner claim still owns the task. */
+export function linkCapacityContinuationRun(db: BridgeDb, id: string, claimToken: string, runId: string): boolean {
+  return db.runInTransaction(() => {
+    const row = db.raw.prepare("SELECT value FROM settings WHERE key = ?").get(key(id)) as { value: string } | undefined;
+    const current = row ? parse(row.value) : null;
+    const run = db.getRun(runId);
+    if (!current?.capacityWait || current.state !== "claimed" || current.claimToken !== claimToken ||
+        !run || run.surface_identity !== current.surfaceIdentity || run.chat_id !== current.chatKey) return false;
+    if (current.successorRunId && current.successorRunId !== runId) {
+      const previous = db.getRun(current.successorRunId);
+      if (!previous || previous.status !== "failed") return false;
+    }
     db.raw.prepare("UPDATE settings SET value = ? WHERE key = ?")
       .run(JSON.stringify({ ...current, successorRunId: runId }), key(id));
     return true;
@@ -680,6 +752,33 @@ export function requeueClaimedCapacityWait(
   });
 }
 
+/** The worker has positively classified this *specific* successor as a
+ * pre-submission capacity rejection. Clear only that failed successor link
+ * under its exact claim, permitting a bounded repeat without blind replay. */
+export function requeueProvenOutwardCapacityRejection(
+  db: BridgeDb,
+  id: string,
+  claimantToken: string,
+  nowMs = Date.now(),
+): boolean {
+  return db.runInTransaction(() => {
+    const row = db.raw.prepare("SELECT value FROM settings WHERE key = ?").get(key(id)) as { value: string } | undefined;
+    const current = row ? parse(row.value) : null;
+    if (!current?.outward || current.state !== "claimed" || current.claimToken !== claimantToken
+        || !current.successorRunId || db.hasChatLock(current.chatKey)
+        || Date.parse(current.expiresAt) <= nowMs) return false;
+    const successor = db.getRun(current.successorRunId);
+    if (!successor || successor.status !== "failed"
+        || successor.surface_identity !== current.surfaceIdentity || successor.chat_id !== current.chatKey) return false;
+    const dueAt = new Date(Math.min(Date.parse(current.expiresAt), nowMs + 300_000)).toISOString();
+    db.raw.prepare("UPDATE settings SET value = ? WHERE key = ?").run(JSON.stringify({
+      ...current, state: "pending", dueAt, successorRunId: undefined,
+      claimedAt: undefined, claimRunId: undefined, claimToken: undefined, claimExpiresAt: undefined,
+    }), key(id));
+    return true;
+  });
+}
+
 export async function scanRunContinuations(
   db: BridgeDb,
   surfaceIdentity: string,
@@ -694,11 +793,14 @@ export async function scanRunContinuations(
 // Candidate state is pending or claimed capacity wait
       const ids = candidate.retainedPendingMessageIds ?? [];
       if (!candidate.expiryDeliveryPending) {
-        if (ids.length > 0 && !db.hasAnyPendingMessageId(candidate.surfaceIdentity, candidate.chatKey, ids)) {
-          settleRunContinuation(db, candidate.id, "completed", undefined, nowMs, candidate.claimToken);
+        if ((ids.length > 0 && !db.hasAnyPendingMessageId(candidate.surfaceIdentity, candidate.chatKey, ids)) || (candidate.outward && candidate.successorRunId)) {
+          const failure = capacitySuccessorFailure(db, candidate);
+          if (capacityCompletionProven(db, candidate)) settleRunContinuation(db, candidate.id, "completed", undefined, nowMs, candidate.claimToken);
+          else if (failure) settleRunContinuation(db, candidate.id, failure, `successor Run ${failure}`, nowMs, candidate.claimToken);
+          // A lost receipt without terminal evidence is ambiguous, even at expiry.
           continue;
         }
-        if (db.hasChatLock(candidate.chatKey) || db.isAnyPendingMessageClaimed(candidate.surfaceIdentity, candidate.chatKey, ids)) {
+        if (db.hasChatLock(candidate.chatKey) || (ids.length > 0 && db.isAnyPendingMessageClaimed(candidate.surfaceIdentity, candidate.chatKey, ids))) {
           continue;
         }
       }
@@ -752,7 +854,21 @@ export async function scanRunContinuations(
     try {
       const outcome = await dispatch(claimed);
       if (claimed.capacityWait) {
-        if (outcome === false || outcome === "queued") {
+        const current = listRunContinuations(db, surfaceIdentity).find((item) => item.id === claimed.id);
+        if (!current || current.state !== "claimed" || current.claimToken !== claimed.claimToken) continue;
+        // A worker that has positively classified this attempt as a
+        // pre-submission capacity rejection requests a safe bounded retry.
+        // All other failures require authoritative terminal evidence.
+        if (current.outward && outcome === false) {
+          requeueProvenOutwardCapacityRejection(db, claimed.id, claimed.claimToken!, nowMs);
+          continue;
+        }
+        const failure = capacitySuccessorFailure(db, current);
+        if (failure) {
+          settleRunContinuation(db, current.id, failure, `successor Run ${failure}`, nowMs, claimed.claimToken);
+          continue;
+        }
+        if (!capacityCompletionProven(db, current) || outcome === false || outcome === "queued") {
           requeueClaimedCapacityWait(db, claimed.id, nowMs, claimed.claimToken);
           continue;
         }
@@ -765,6 +881,12 @@ export async function scanRunContinuations(
       }
       settleRunContinuation(db, claimed.id, "completed", undefined, nowMs, claimed.claimToken);
     } catch (error) {
+      if (claimed.outward) {
+        // Never retry a thrown/ambiguous provider outcome just because the
+        // continuation callback failed. Preserve the task for inspection.
+        settleRunContinuation(db, claimed.id, "failed", error instanceof Error ? error.message : "outward ACP resume failed", nowMs, claimed.claimToken);
+        continue;
+      }
       if (claimed.capacityWait) {
         requeueClaimedCapacityWait(db, claimed.id, nowMs, claimed.claimToken);
         continue;

@@ -10,6 +10,7 @@ import {
   peekContinuationLimitNotice,
   recordContinuationLimitNotice,
   linkRunContinuationRun,
+  linkCapacityContinuationRun,
   listRunContinuations,
   requestRunContinuation,
 } from "../src/runContinuation.js";
@@ -104,9 +105,9 @@ describe("consecutive agent-initiated continuation limit", () => {
     // The retried Run is a successor of the capacity wait, not a new agent continuation.
     db.insertRun("run-19-retry", scope, "codex");
     db.raw.prepare("UPDATE bridge_runs SET status = 'failed' WHERE run_id = 'run-19'").run();
-    const claimed = { ...cap, state: "claimed" as const };
+    const claimed = { ...cap, state: "claimed" as const, claimToken: "test-claim" };
     db.raw.prepare("UPDATE settings SET value = ? WHERE key = ?").run(JSON.stringify(claimed), `run-continuation:v1:${cap.id}`);
-    expect(linkRunContinuationRun(db, cap.id, "run-19-retry")).toBe(true);
+    expect(linkCapacityContinuationRun(db, cap.id, "test-claim", "run-19-retry")).toBe(true);
     // Depth 19 + this agent continuation = 20: allowed; one more is refused.
     expect(requestRunContinuation(db, { ...base, originRunId: "run-19-retry" }).state).toBe("pending");
     admitContinuationRun(db, "run-20", "run-19-retry");

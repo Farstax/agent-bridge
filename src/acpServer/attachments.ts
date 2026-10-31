@@ -1,8 +1,10 @@
 import { randomUUID } from "node:crypto";
 import { getRunOwnedProcessState } from "../runOwnedProcesses.js";
 import type { ContentBlock } from "@agentclientprotocol/sdk";
-import { lstat, mkdtemp, readFile, readdir, realpath, rm, stat, writeFile } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, open, readFile, readdir, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
 import { basename, extname, isAbsolute, join, relative, sep } from "node:path";
+import { createHash } from "node:crypto";
+import { constants } from "node:fs";
 
 const MAX_FILES = 8;
 const MAX_FILE_BYTES = 8 * 1024 * 1024;
@@ -13,6 +15,20 @@ const OWNER_MARKER = ".agent-bridge-staging-owner";
 const RUN_MARKER = ".agent-bridge-staging-run";
 const PROCESS_MARKER = ".agent-bridge-staging-pid";
 const OWNER_MARKER_CONTENT = "agent-bridge-outward-attachment-v1\n";
+
+// A durable capacity-wait continuation lives up to MAX_CAPACITY_LIFETIME_MS
+// (7 days, runContinuation.ts) past its creation. The retained-attachment
+// sweep bound must exceed that so it only ever reclaims a directory whose
+// continuation has definitely already settled or expired, never a live one.
+const RETAINED_WAIT_PREFIX = ".agent-bridge-attachments-wait-";
+const RETAINED_TMP_PREFIX = ".agent-bridge-attachments-wait-tmp-";
+const RETAINED_WAIT_OWNER_MARKER_CONTENT = "agent-bridge-outward-attachment-wait-v1\n";
+const STALE_RETAINED_WAIT_AGE_MS = 8 * 24 * 60 * 60 * 1000;
+
+/** Deterministic, filesystem-safe directory name for one wait's retained attachments. */
+function retainedWaitDirName(continuationId: string): string {
+  return `${RETAINED_WAIT_PREFIX}${createHash("sha256").update(continuationId).digest("hex").slice(0, 32)}`;
+}
 
 const MIME_EXTENSIONS: Readonly<Record<string, readonly string[]>> = {
   "text/plain": [".txt", ".log", ".md", ".rst", ".py", ".js", ".jsx", ".ts", ".tsx", ".html", ".htm", ".css", ".sh", ".sql", ".xml", ".yaml", ".yml", ".toml", ".ini", ".conf", ".env", ".go", ".rs", ".java", ".c", ".h", ".cpp", ".hpp", ".rb", ".php", ".cs", ".kt", ".swift", ".vue", ".svelte", ".jsonc"],
@@ -137,6 +153,136 @@ export async function stageOutwardAcpAttachments<T>(
   }
 }
 
+/**
+ * Copy already-staged attachment files into a durable, continuation-keyed
+ * directory before stageOutwardAcpAttachments's own cleanup deletes the
+ * ephemeral staging directory. Call this from inside the staging
+ * `operation` callback, before it returns. Bounded by the same
+ * MAX_FILES/MAX_TOTAL_BYTES already enforced at staging time.
+ */
+const RETAINED_MANIFEST = ".manifest.json";
+type RetainedEntry = { name: string; size: number; sha256: string };
+
+async function readPrivateFile(path: string, maximum: number): Promise<Buffer> {
+  const handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+  try {
+    const info = await handle.stat();
+    if (!info.isFile() || info.size > maximum || (info.mode & 0o777) !== 0o600 ||
+        (typeof process.getuid === "function" && info.uid !== process.getuid())) {
+      throw new Error("invalid retained attachment file");
+    }
+    const bytes = await handle.readFile();
+    if (bytes.length !== info.size || bytes.length > maximum) throw new Error("attachment changed during read");
+    return bytes;
+  } finally { await handle.close(); }
+}
+
+export async function retainOutwardAcpAttachmentsForWait(
+  cwd: string,
+  stagedPaths: readonly string[],
+  continuationId: string,
+): Promise<void> {
+  if (stagedPaths.length > MAX_FILES) throw new Error("attachment file limit exceeded");
+  const workspace = await realpath(cwd);
+  const dir = join(workspace, retainedWaitDirName(continuationId));
+  // Construct a complete, private snapshot before publishing the deterministic
+  // continuation path. An interruption before rename leaves only an expirable
+  // temporary directory; retry is never blocked by a half-written final path.
+  const temporary = await mkdtemp(join(workspace, RETAINED_TMP_PREFIX));
+  try {
+    const entries: RetainedEntry[] = [];
+    let total = 0;
+    for (const path of stagedPaths) {
+      const parent = await realpath(join(path, ".."));
+      if (relative(workspace, parent).startsWith(`..${sep}`) || parent === workspace ||
+          !basename(parent).startsWith(STAGING_PREFIX) || !(await verifiedOwnedDir(parent, OWNER_MARKER_CONTENT))) {
+        throw new Error("attachment source is not owned staging");
+      }
+      const name = basename(path);
+      if (name === OWNER_MARKER || name === RETAINED_MANIFEST || entries.some((entry) => entry.name === name)) {
+        throw new Error("invalid attachment name");
+      }
+      const bytes = await readPrivateFile(path, MAX_FILE_BYTES);
+      total += bytes.length;
+      if (total > MAX_TOTAL_BYTES) throw new Error("attachment total size limit exceeded");
+      await writeFile(join(temporary, name), bytes, { flag: "wx", mode: 0o600 });
+      entries.push({ name, size: bytes.length, sha256: createHash("sha256").update(bytes).digest("hex") });
+    }
+    await writeFile(join(temporary, RETAINED_MANIFEST), JSON.stringify({ continuationId, entries }), { flag: "wx", mode: 0o600 });
+    await writeFile(join(temporary, OWNER_MARKER), RETAINED_WAIT_OWNER_MARKER_CONTENT, { flag: "wx", mode: 0o600 });
+    // No-overwrite check: a concurrent completed retention or an attacker-
+    // planted path must not be reused. The final directory is never empty.
+    try {
+      await lstat(dir);
+      throw new Error("refusing to reuse an unverified path for retained attachments");
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
+    await rename(temporary, dir);
+  } finally {
+    // No-op after successful rename. Also cleans partial temporary snapshots
+    // after a failed write without deleting a previously published retention.
+    await rm(temporary, { recursive: true, force: true });
+  }
+}
+
+export async function readRetainedOutwardAcpAttachments(cwd: string, continuationId: string): Promise<string[]> {
+  const workspace = await realpath(cwd);
+  const dir = join(workspace, retainedWaitDirName(continuationId));
+  if (!(await verifiedOwnedDir(dir, RETAINED_WAIT_OWNER_MARKER_CONTENT))) throw new Error("retained attachments missing or unverified");
+  const manifestBytes = await readPrivateFile(join(dir, RETAINED_MANIFEST), 16 * 1024);
+  const manifest: unknown = JSON.parse(manifestBytes.toString("utf8"));
+  if (!manifest || typeof manifest !== "object" || !("continuationId" in manifest) || manifest.continuationId !== continuationId ||
+      !("entries" in manifest) || !Array.isArray(manifest.entries) || manifest.entries.length > MAX_FILES) {
+    throw new Error("invalid retained attachment manifest");
+  }
+  const paths: string[] = [];
+  let total = 0;
+  const names = new Set<string>();
+  for (const entry of manifest.entries) {
+    if (!entry || typeof entry.name !== "string" || basename(entry.name) !== entry.name || entry.name.startsWith(".") ||
+        names.has(entry.name) || !Number.isSafeInteger(entry.size) || entry.size < 0 || entry.size > MAX_FILE_BYTES ||
+        typeof entry.sha256 !== "string" || !/^[a-f0-9]{64}$/.test(entry.sha256)) throw new Error("invalid retained attachment entry");
+    names.add(entry.name);
+    total += entry.size;
+    if (total > MAX_TOTAL_BYTES) throw new Error("attachment total size limit exceeded");
+    const path = join(dir, entry.name);
+    const bytes = await readPrivateFile(path, MAX_FILE_BYTES);
+    if (bytes.length !== entry.size || createHash("sha256").update(bytes).digest("hex") !== entry.sha256) throw new Error("retained attachment integrity mismatch");
+    paths.push(path);
+  }
+  const expected = new Set([OWNER_MARKER, RETAINED_MANIFEST, ...names]);
+  if ((await readdir(dir)).some((name) => !expected.has(name))) throw new Error("unexpected retained attachment entry");
+  return paths;
+}
+
+/** Idempotent cleanup on settlement (completed/cancelled/expired) or explicit release. */
+export async function releaseRetainedOutwardAcpAttachments(cwd: string, continuationId: string): Promise<void> {
+  const workspace = await realpath(cwd);
+  const dir = join(workspace, retainedWaitDirName(continuationId));
+  if (!(await verifiedOwnedDir(dir, RETAINED_WAIT_OWNER_MARKER_CONTENT))) return;
+  await rm(dir, { recursive: true, force: true });
+}
+
+/** Confirms `dir` is a privately-owned directory this module created, by permission, uid and marker content. */
+async function verifiedOwnedDir(dir: string, expectedMarkerContent: string): Promise<boolean> {
+  let info;
+  try { info = await lstat(dir); } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+    throw error;
+  }
+  if (!info.isDirectory() || (info.mode & 0o777) !== 0o700) return false;
+  const marker = join(dir, OWNER_MARKER);
+  let markerInfo;
+  try { markerInfo = await lstat(marker); } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+    throw error;
+  }
+  if (!markerInfo.isFile() || (markerInfo.mode & 0o777) !== 0o600) return false;
+  if (typeof process.getuid === "function" && (info.uid !== process.getuid() || markerInfo.uid !== process.getuid())) return false;
+  return (await readFile(marker, "utf8")) === expectedMarkerContent;
+}
+
 /** Remove only old, owner-marked staging directories in known Workstream directories. */
 export async function cleanupStaleOutwardAcpAttachments(
   workspaceRoot: string,
@@ -156,14 +302,30 @@ export async function cleanupStaleOutwardAcpAttachments(
     if (workspaceRelative === ".." || workspaceRelative.startsWith(`..${sep}`) || isAbsolute(workspaceRelative)) continue;
     if (!(await stat(workspace)).isDirectory()) continue;
     for (const entry of await readdir(workspace)) {
-      if (!entry.startsWith(STAGING_PREFIX)) continue;
+      // A retained-wait directory also matches STAGING_PREFIX (it extends
+      // the same namespace) but must only ever be swept past its own much
+      // longer, continuation-expiry-safe bound and marker (#1114).
+      const isRetainedWait = entry.startsWith(RETAINED_WAIT_PREFIX);
+      const isRetainedTemporary = entry.startsWith(RETAINED_TMP_PREFIX);
+      if (!isRetainedWait && !entry.startsWith(STAGING_PREFIX)) continue;
       const path = join(workspace, entry);
+      const entryCutoff = isRetainedWait ? now - STALE_RETAINED_WAIT_AGE_MS : cutoff;
+      const expectedMarker = isRetainedWait ? RETAINED_WAIT_OWNER_MARKER_CONTENT : OWNER_MARKER_CONTENT;
       let info;
       try { info = await lstat(path); } catch (error) {
         if ((error as NodeJS.ErrnoException).code === "ENOENT") continue;
         throw error;
       }
-      if (!info.isDirectory() || (info.mode & 0o777) !== 0o700 || info.mtimeMs > cutoff) continue;
+      if (!info.isDirectory() || (info.mode & 0o777) !== 0o700 || info.mtimeMs > entryCutoff) continue;
+      // The temporary snapshot may have been interrupted before its marker
+      // was written. Private UID-owned, 0700, expired tmp directories are
+      // safe to reclaim; never apply this exception to final retained paths.
+      if (isRetainedTemporary) {
+        if (typeof process.getuid === "function" && info.uid !== process.getuid()) continue;
+        await rm(path, { recursive: true, force: true });
+        removed += 1;
+        continue;
+      }
       const marker = join(path, OWNER_MARKER);
       let markerInfo;
       try { markerInfo = await lstat(marker); } catch (error) {
@@ -172,7 +334,12 @@ export async function cleanupStaleOutwardAcpAttachments(
       }
       if (!markerInfo.isFile() || (markerInfo.mode & 0o777) !== 0o600 ||
         (typeof process.getuid === "function" && (info.uid !== process.getuid() || markerInfo.uid !== process.getuid())) ||
-        await readFile(marker, "utf8") !== OWNER_MARKER_CONTENT) continue;
+        await readFile(marker, "utf8") !== expectedMarker) continue;
+      if (isRetainedWait) {
+        await rm(path, { recursive: true, force: true });
+        removed += 1;
+        continue;
+      }
       // Legacy directories lack process evidence and are kept rather than risking
       // deletion of a still-active pre-upgrade staging operation.
       const pidPath = join(path, PROCESS_MARKER);
