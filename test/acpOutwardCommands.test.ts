@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it, onTestFinished } from "vitest";
+import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import * as acp from "@agentclientprotocol/sdk";
 import { openDb, type BridgeDb } from "../src/db.js";
 import { effortSettingKey } from "../src/effort.js";
@@ -84,6 +84,16 @@ function setup(options: { chain?: BotKind[]; btw?: boolean; gate?: Promise<void>
 }
 
 describe("outward ACP commands", () => {
+  it("projects provider-aware command availability from one status snapshot", async () => {
+    const { list, exec } = setup();
+    const status = vi.spyOn(exec, "status");
+
+    const commands = await list();
+
+    expect(commands.commands.length).toBeGreaterThan(0);
+    expect(status).toHaveBeenCalledTimes(1);
+  });
+
   it("publishes a provider-aware catalogue with explicit disabled reasons", async () => {
     const { list, run, exec, repo } = setup();
     const byName = (await list()).commands;
@@ -151,6 +161,7 @@ describe("outward ACP commands", () => {
       agent.request(acp.methods.agent.session.prompt, { sessionId: "s1", prompt: [{ type: "text", text: "long" }] }));
     for (let i = 0; i < 50 && !active.prompts.length; i++) await new Promise((resolve) => setTimeout(resolve, 2));
     expect(active.exec.status(active.repo.get("s1")!).state).toBe("running");
+    expect(active.exec.statusMany([active.repo.get("s1")!])[0]?.state).toBe("running");
     await expect(acp.client({ name: "generic" }).connectWith(active.app, (agent) =>
       agent.request(acp.methods.agent.session.prompt, { sessionId: "s1", prompt: [{ type: "text", text: "/stop" }] })))
       .rejects.toMatchObject({ code: -32002 });

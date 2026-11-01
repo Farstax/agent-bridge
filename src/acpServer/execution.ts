@@ -16,7 +16,7 @@ import { getCachedAvailableCliKinds } from "../interactiveCliAuth.js";
 import { applyManualCliSwitchHandoff, getStoredCliPreference, type CliKind } from "../interactiveBot.js";
 import type { BotKind, BridgeConfig, CliResult, RouteableBotKind } from "../types.js";
 import { retainOutwardAcpAttachmentsForWait, releaseRetainedOutwardAcpAttachments } from "./attachments.js";
-import { hasPendingCapacityWait, listRunContinuations, linkCapacityContinuationRun, requestRunContinuation, cancelPendingRunContinuation } from "../runContinuation.js";
+import { hasPendingCapacityWait, listRunContinuations, linkCapacityContinuationRun, requestRunContinuation, cancelPendingRunContinuation, type RunContinuation } from "../runContinuation.js";
 
 
 import { OUTWARD_ACP_SURFACE, recoverOutwardLanes } from "./recovery.js";
@@ -89,6 +89,8 @@ export interface OutwardWorkstreamStatus {
 /** Bridge-owned Workstream controls offered beside standard ACP. */
 export interface OutwardWorkstreamControl {
   status(session: OutwardAcpSessionRecord): OutwardWorkstreamStatus;
+  /** Read shared durable continuation state once when projecting a Workstream list. */
+  statusMany?(sessions: readonly OutwardAcpSessionRecord[]): OutwardWorkstreamStatus[];
   selectProvider(session: OutwardAcpSessionRecord, provider: string): OutwardWorkstreamStatus;
   cancelDeferred?(session: OutwardAcpSessionRecord): Promise<OutwardWorkstreamStatus>;
 }
@@ -100,6 +102,8 @@ export interface BridgeOutwardAcpPromptExecutorOptions {
   /** Ordered fallback chain; [0] is the initial/head provider for a fresh session. */
   providerChain: readonly BotKind[];
   isProviderAvailable?: (provider: BotKind) => boolean;
+  /** Fresh provider availability for one status projection, avoiding repeated full probes. */
+  getAvailableProviders?: () => ReadonlySet<BotKind>;
   createEngine: (session: OutwardAcpSessionRecord, attemptProvider: BotKind) => OutwardAcpExecutionEngine;
   runId?: () => string;
   /** Enabled only with an independently supervised workspace continuation owner. */
@@ -237,11 +241,45 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
   }
 
   status(session: OutwardAcpSessionRecord): OutwardWorkstreamStatus {
+    const continuations = listRunContinuations(this.options.db, OUTWARD_ACP_SURFACE)
+      .filter((item) => item.chatKey === session.conversationId && item.outward?.sessionId === session.sessionId);
+    return this.statusWithContinuations(session, continuations, this.availableProviderSnapshot());
+  }
+
+  statusMany(sessions: readonly OutwardAcpSessionRecord[]): OutwardWorkstreamStatus[] {
+    if (sessions.length === 0) return [];
+    const availableProviders = this.availableProviderSnapshot();
+    const byWorkstream = new Map<string, RunContinuation[]>();
+    for (const item of listRunContinuations(this.options.db, OUTWARD_ACP_SURFACE)) {
+      const sessionId = item.outward?.sessionId;
+      if (!sessionId) continue;
+      const key = `${item.chatKey}\0${sessionId}`;
+      const group = byWorkstream.get(key);
+      if (group) group.push(item);
+      else byWorkstream.set(key, [item]);
+    }
+    return sessions.map((session) => this.statusWithContinuations(
+      session,
+      byWorkstream.get(`${session.conversationId}\0${session.sessionId}`) ?? [],
+      availableProviders,
+    ));
+  }
+
+  private availableProviderSnapshot(): ReadonlySet<BotKind> | null {
+    return this.options.getAvailableProviders?.() ?? null;
+  }
+
+  private statusWithContinuations(
+    session: OutwardAcpSessionRecord,
+    continuations: readonly RunContinuation[],
+    availableProviders: ReadonlySet<BotKind> | null,
+  ): OutwardWorkstreamStatus {
     const { db, providerChain, isProviderAvailable } = this.options;
+    const providerIsAvailable = (provider: BotKind): boolean => availableProviders
+      ? availableProviders.has(provider)
+      : isProviderAvailable?.(provider) ?? true;
     const latest = db.getLatestRunForConversation(this.identity(session));
-    const allWaits = listRunContinuations(db, OUTWARD_ACP_SURFACE)
-      .filter((item) => item.chatKey === session.conversationId && item.outward?.sessionId === session.sessionId)
-      .sort((a, b) => a.requestedAt.localeCompare(b.requestedAt));
+    const allWaits = [...continuations].sort((a, b) => a.requestedAt.localeCompare(b.requestedAt));
     const lastWait = allWaits.at(-1);
     const wait = allWaits.find((item) => item.state === "pending" || item.state === "claimed");
     // A waiting deferred Run owns the Workstream even though its original
@@ -263,8 +301,8 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
       selectedProvider,
       nextProvider: cached?.provider === selectedProvider ? cached.router.activeProvider(session.conversationId)
         : [selectedProvider, ...providerChain.filter((provider) => provider !== selectedProvider)]
-          .find((provider) => isProviderAvailable?.(provider) ?? true) ?? null,
-      providers: providerChain.map((id) => ({ id, available: isProviderAvailable?.(id) ?? true })),
+          .find(providerIsAvailable) ?? null,
+      providers: providerChain.map((id) => ({ id, available: providerIsAvailable(id) })),
       lastRun: run ? {
         runId: run.run_id,
         provider: run.bot,
@@ -725,6 +763,7 @@ export function createProductionOutwardAcpPromptExecutor(
   return new BridgeOutwardAcpPromptExecutor({
     db,
     providerChain,
+    getAvailableProviders: () => getCachedAvailableCliKinds({ env }) as ReadonlySet<BotKind>,
     isProviderAvailable: (provider) => getCachedAvailableCliKinds({ env }).has(provider as CliKind),
     enableDeferredCapacity: env.BRIDGE_OUTWARD_DEFERRED_CAPACITY_ENABLED === "1",
     btw: (session, provider, prompt) => buildEngine(session, provider).executeSurfaceNeutralBtw(prompt, session.conversationId),

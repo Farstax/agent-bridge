@@ -142,16 +142,13 @@ export class AcpCommands {
     return this.options.control.status(session).selectedProvider;
   }
 
-  private providerAvailable(session: OutwardAcpSessionRecord, provider: BotKind): boolean {
-    return this.options.control.status(session).providers.find((candidate) => candidate.id === provider)?.available ?? false;
-  }
-
   catalogue(session: OutwardAcpSessionRecord): AcpCommandEntry[] {
-    const provider = this.provider(session);
+    const status = this.options.control.status(session);
+    const provider = status.selectedProvider;
     return DEFINITIONS.map(({ unavailable, ...entry }) => {
       let reason = unavailable?.(provider, this.options, session) ?? null;
       const requiresProvider = ["models", "effort", "btw", "usage", "narration"].includes(entry.name);
-      if (!reason && requiresProvider && !this.providerAvailable(session, provider)) {
+      if (!reason && requiresProvider && !(status.providers.find((candidate) => candidate.id === provider)?.available ?? false)) {
         reason = `${provider} is not installed or authenticated`;
       }
       return reason ? { ...entry, available: false, reason } : { ...entry, available: true };
