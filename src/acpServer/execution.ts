@@ -5,7 +5,7 @@ import { loadBotsConfig, resolveExecutionCapacityConfig, resolveExecutionMode } 
 import { openExecutionCapacityCoordinator } from "../executionCapacity.js";
 import type { BridgeDb, DiscardedPendingMessage } from "../db.js";
 import type { ExecutionLaneHandle } from "../db.js";
-import { BridgeEngine, type PendingMessage, type SurfaceNeutralTurnInput } from "../engine.js";
+import { BridgeEngine, MAX_QUEUE_DEPTH, type PendingMessage, type SurfaceNeutralTurnInput } from "../engine.js";
 import { EventStore } from "../events/store.js";
 import { type as eventType, type BridgeEvent, type RunCompletedEvent } from "../events/types.js";
 import { executionLaneCoordinator } from "../executionLaneCoordinator.js";
@@ -27,8 +27,6 @@ export { OUTWARD_ACP_SURFACE } from "./recovery.js";
 const OUTWARD_ACP_EXECUTION_ERROR = -32001;
 const OUTWARD_ACP_BUSY_ERROR = -32002;
 const CANCELLATION_SWEEP_MS = 10;
-/** Same bound the messaging engines apply to a lane's durable queue. */
-const OUTWARD_QUEUE_MAX_DEPTH = 5;
 const REMOTE_STOP_POLL_MS = 200;
 const REMOTE_STOP_WAIT_MS = 5_000;
 const QUEUE_CAPACITY_RETRIES = 5;
@@ -1135,7 +1133,7 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
         chatType: "acp",
         attachments: attachments.length > 0 ? [`${RETAINED_ATTACHMENT_MARKER}${retainedId}`] : [],
         scheduledOccurrenceKey: key,
-      }, OUTWARD_QUEUE_MAX_DEPTH, queueReceiptKey(key), queueRunLinkKey(key), queueReservationKey(key), reservationToken ?? "", stopFenceKey(session.conversationId));
+      }, MAX_QUEUE_DEPTH, queueReceiptKey(key), queueRunLinkKey(key), queueReservationKey(key), reservationToken ?? "", stopFenceKey(session.conversationId));
     } catch (error) {
       await releaseRetainedOutwardAcpAttachments(session.cwd, retainedId).catch(() => undefined);
       throw error;

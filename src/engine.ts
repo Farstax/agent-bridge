@@ -181,7 +181,7 @@ export interface SurfaceNeutralTurnInput {
   onProviderRecoveryDecision?: (reason: ProviderFallbackReason | null, exhausted: boolean) => void;
 }
 
-const MAX_QUEUE_DEPTH = 5;
+export const MAX_QUEUE_DEPTH = 5;
 const EXECUTION_CAPACITY_NOTICE = "All agents are currently busy. I've queued your request and will start automatically when capacity is available.";
 
 class ProviderExecutionCapacityError extends Error {
