@@ -105,6 +105,29 @@ describe("outward ACP busy-message admission over real stdio", () => {
     expect(executions().map((e) => e.prompt)).toEqual(["hold:one", "second"]);
   }, 60000);
 
+  it("atomically admits one of two concurrent copies of the same request ID and attachment", async () => {
+    const a = agent(); await a.initialize();
+    const sid = await session(a);
+    const first = prompt(a, sid, "hold:one");
+    await waitFor(() => executions().length === 1);
+    const b = agent(); const c = agent();
+    await Promise.all([b.initialize(), c.initialize()]);
+    const meta = { ...OPT_IN, "agent-bridge/request-id": "raced-request" };
+    const attachment = (text: string) => ({ type: "resource", resource: { uri: "file:///note.txt", mimeType: "text/plain", text } });
+    const [left, right] = await Promise.all([
+      prompt(b, sid, "same request", meta, [attachment("left body")]),
+      prompt(c, sid, "same request", meta, [attachment("right body")]),
+    ]);
+    expect(left.result._meta["agent-bridge"].queueId).toBe(right.result._meta["agent-bridge"].queueId);
+    expect((await status(b, sid)).queued).toBe(1);
+    await Promise.all([b.close(), c.close()]);
+    release("one"); await first;
+    await waitFor(() => executions().length === 2);
+    expect(executions().filter((entry) => entry.prompt.startsWith("same request"))).toHaveLength(1);
+    expect(executions()[1].attachments).toHaveLength(1);
+    expect(["left body", "right body"]).toContain(executions()[1].attachments[0]);
+  }, 60000);
+
   it("rejects admission when the durable queue is full", async () => {
     const a = agent(); await a.initialize();
     const sid = await session(a);

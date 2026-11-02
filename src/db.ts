@@ -496,6 +496,49 @@ export class BridgeDb {
     return new Map(rows.map((row) => [row.chatKey, row.n]));
   }
 
+  /**
+   * Atomically accept one outward busy message per correlation key. The row,
+   * terminal receipt, and Run link share one SQLite transaction boundary, so
+   * simultaneous ACP processes cannot both admit the same request ID.
+   */
+  admitQueuedMessageOnce(
+    surface: string,
+    chatKey: string,
+    msg: { prompt: string; chatId: number | string; chatType: string; attachments?: string[]; scheduledOccurrenceKey: string },
+    maxDepth: number,
+    receiptSettingKey: string,
+    runLinkSettingKey: string,
+  ):
+    | { kind: "queued"; id: number; position: number }
+    | { kind: "existing"; id: number; position: number }
+    | { kind: "running"; runId: string }
+    | { kind: "receipt"; value: string }
+    | { kind: "full" } {
+    assertExecutionScope(surface, chatKey);
+    return this.runInTransaction(() => {
+      const existing = this.raw.prepare(
+        "SELECT id FROM pending_messages WHERE surface = ? AND scheduled_occurrence_key = ? ORDER BY id LIMIT 1",
+      ).get(surface, msg.scheduledOccurrenceKey) as { id: number } | undefined;
+      if (existing) {
+        const position = Number((this.raw.prepare(
+          "SELECT COUNT(*) AS n FROM pending_messages WHERE surface = ? AND chat_key = ? AND id <= ?",
+        ).get(surface, chatKey, existing.id) as { n: number }).n);
+        return { kind: "existing" as const, id: existing.id, position };
+      }
+      const runId = this.getSetting(runLinkSettingKey);
+      if (runId) {
+        const run = this.getRun(runId);
+        if (run?.status === "running") return { kind: "running" as const, runId };
+      }
+      const receipt = this.getSetting(receiptSettingKey);
+      if (receipt) return { kind: "receipt" as const, value: receipt };
+      const pending = this.pendingMsgCount(surface, chatKey);
+      if (pending >= maxDepth) return { kind: "full" as const };
+      const id = this.enqueueMsg(surface, chatKey, msg);
+      return { kind: "queued" as const, id, position: pending + 1 };
+    });
+  }
+
   admitEventReceipt(input: Parameters<BridgeDb["createEventReceipt"]>[0]): { receipt: EventReceipt; created: boolean } {
     return this.eventReceipts.admitReceipt(input);
   }

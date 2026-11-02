@@ -1,5 +1,5 @@
 import * as acp from "@agentclientprotocol/sdk/unstable";
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { abortCliProcessAndWait, toUserMessage } from "../cli.js";
 import { loadBotsConfig, resolveExecutionMode } from "../config.js";
 import type { BridgeDb } from "../db.js";
@@ -818,32 +818,44 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
       });
     }
     const attachments = input.attachments ?? [];
-    const retainedId = queueRetentionId(key);
+    // Each contender owns a private snapshot. The database transaction below
+    // decides which snapshot belongs to the single accepted queue row.
+    const retainedId = `acp-queue-${randomUUID()}`;
     if (attachments.length > 0) {
       // Own a private durable copy before acknowledging acceptance; the
       // request's ephemeral staging directory is removed when it returns.
       await releaseRetainedOutwardAcpAttachments(session.cwd, retainedId);
       await retainOutwardAcpAttachmentsForWait(session.cwd, attachments, retainedId);
     }
-    let admission: ReturnType<BridgeDb["admitMessage"]>;
+    let admission: ReturnType<BridgeDb["admitQueuedMessageOnce"]>;
     try {
-      admission = db.admitMessage(OUTWARD_ACP_SURFACE, session.conversationId, {
+      admission = db.admitQueuedMessageOnce(OUTWARD_ACP_SURFACE, session.conversationId, {
         prompt: input.prompt,
         chatId: session.sessionId,
         chatType: "acp",
         attachments: attachments.length > 0 ? [`${RETAINED_ATTACHMENT_MARKER}${retainedId}`] : [],
         scheduledOccurrenceKey: key,
-      }, OUTWARD_QUEUE_MAX_DEPTH, true);
+      }, OUTWARD_QUEUE_MAX_DEPTH, queueReceiptKey(key), queueRunLinkKey(key));
     } catch (error) {
       await releaseRetainedOutwardAcpAttachments(session.cwd, retainedId).catch(() => undefined);
       throw error;
     }
-    if (admission.kind === "full") {
+    if (admission.kind !== "queued") {
       await releaseRetainedOutwardAcpAttachments(session.cwd, retainedId).catch(() => undefined);
-      throw new acp.RequestError(OUTWARD_ACP_BUSY_ERROR, "outward ACP queue is full", { sessionId: session.sessionId });
+      if (admission.kind === "full") {
+        throw new acp.RequestError(OUTWARD_ACP_BUSY_ERROR, "outward ACP queue is full", { sessionId: session.sessionId });
+      }
+      if (admission.kind === "existing") {
+        return this.queueReceipt("queued", {
+          queueId: admission.id, mode, position: admission.position, requestId: input.requestId,
+        });
+      }
+      if (admission.kind === "running") {
+        return this.queueReceipt("running", { runId: admission.runId, requestId: input.requestId });
+      }
+      return this.queueReceipt("settled", { requestId: input.requestId, ...JSON.parse(admission.value) });
     }
-    const queueId = db.getPendingMessageIdByCorrelationKey(OUTWARD_ACP_SURFACE, key);
-    if (queueId === null) throw new Error("queued outward message was not persisted");
+    const queueId = admission.id;
     let steered = false;
     if (mode === "interrupt") await this.cancel(session);
     else if (mode === "augment") steered = await this.trySteerQueued(session, queueId);
@@ -1048,10 +1060,6 @@ function requestKey(session: OutwardAcpSessionRecord, requestId: string): string
 function remoteStopKey(runId: string): string { return `outward-cancel:${runId}`; }
 function queueRunLinkKey(key: string): string { return `outward-queue-run:${key}`; }
 function queueReceiptKey(key: string): string { return `outward-queue-receipt:${key}`; }
-function queueRetentionId(key: string): string {
-  return `acp-queue-${createHash("sha256").update(key).digest("hex").slice(0, 32)}`;
-}
-
 
 const NO_DELIVERY_PLATFORM: MessagingPlatform = {
   capabilities: SAFE_SURFACE_CAPABILITIES,
