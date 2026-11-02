@@ -37,12 +37,12 @@ import {
   dispatchClaimedInteractiveWithFallback,
   resumeCapacityHeldQueue,
   clearInteractiveFallbackState,
-  applyManualCliSwitchHandoff,
+  switchManualCli,
   type CliKind,
 } from "./interactiveBot.js";
 import type { BridgeConfig, BotKind } from "./types.js";
 import { adaptDiscordMessage, type InteractiveTurnInput } from "./interactiveIngress.js";
-import { busyMessageModeSettingKey, resolveLaneBusyMessageMode, type BusyMessageMode } from "./busyMessageMode.js";
+import { isBusyMessageModeSelection, resolveLaneBusyMessageMode, setLaneBusyMessageMode, type BusyMessageMode } from "./busyMessageMode.js";
 import { resolveDiscordStartInteraction } from "./discordStart.js";
 import { parseCliChain, interactiveChainKinds } from "./providers/selection.js";
 import { deriveConversationOwnerKey } from "./conversationOwnerKey.js";
@@ -412,18 +412,15 @@ async function handleInteraction(d: any): Promise<void> {
     const channelId = String(d.channel_id ?? "");
     if (customId.startsWith("queue_mode:")) {
       const value = customId.slice("queue_mode:".length);
-      if (!["augment", "interrupt", "queue", "reset"].includes(value)) return;
-      const laneKey = channelId;
-      db.setSetting(busyMessageModeSettingKey("discord:interactive", laneKey), value === "reset" ? null : value);
-      const effective = resolveLaneBusyMessageMode(db, "discord:interactive", laneKey, busyMessageMode);
+      if (!isBusyMessageModeSelection(value)) return;
+      const effective = setLaneBusyMessageMode(db, "discord:interactive", channelId, value, busyMessageMode);
       await client.answerCallbackQuery({ interaction_id: d.id, interaction_token: d.token, type: 7,
         data: { content: queueModeText(effective), components: buildQueueModeComponents(effective) } });
       return;
     }
     const newCli = handleCliSwitchCallback(customId);
     if (!newCli) return;
-    applyManualCliSwitchHandoff(db, { surfaceIdentity: "discord:interactive", chatKey: channelId }, newCli);
-    fallbackChain.setActiveCli(channelId, newCli);
+    switchManualCli(db, { surfaceIdentity: "discord:interactive", chatKey: channelId }, newCli, fallbackChain);
 
     await client.answerCallbackQuery({
       interaction_id: d.id,
@@ -456,8 +453,7 @@ async function handleInteraction(d: any): Promise<void> {
       if (toOption) {
         const newCli = handleCliSwitchCallback(`cli:${toOption}`);
         if (newCli) {
-          applyManualCliSwitchHandoff(db, { surfaceIdentity: "discord:interactive", chatKey: channelId }, newCli);
-          fallbackChain.setActiveCli(channelId, newCli);
+          switchManualCli(db, { surfaceIdentity: "discord:interactive", chatKey: channelId }, newCli, fallbackChain);
         }
       }
       const pref = getUserCliPreference(db, { surfaceIdentity: "discord:interactive", chatKey: channelId });

@@ -56,6 +56,31 @@ export function isEffortLevel(value: string | null | undefined): value is Effort
   return isBridgeEffortLevel(value);
 }
 
+/**
+ * Canonical native-effort mutation shared by every adapter. "reset" restores
+ * the provider default. Returns the effective level, or null when `value` is
+ * not a supported Bridge effort level (nothing is written).
+ */
+export function applyEffortSelection(
+  db: { setSetting(key: string, value: string | null): void },
+  kind: RouteableBotKind,
+  value: string,
+): EffortLevel | null {
+  const next = value === "reset" ? resolveDefaultEffort(kind) : value;
+  if (!isEffortLevel(next)) return null;
+  storeEffortPreference(db, kind, value === "reset" ? null : next);
+  return next;
+}
+
+/** The one writer of the persisted effort preference; `null` restores the provider default. */
+export function storeEffortPreference(
+  db: { setSetting(key: string, value: string | null): void },
+  kind: RouteableBotKind,
+  value: string | null,
+): void {
+  db.setSetting(effortSettingKey(kind), value);
+}
+
 export function effortSettingKey(kind: RouteableBotKind): string {
   return `effort:${kind}`;
 }

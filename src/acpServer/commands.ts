@@ -1,6 +1,7 @@
 import * as acp from "@agentclientprotocol/sdk/unstable";
 import { resolveAcpTelegramConfigCallback } from "../acp/telegramConfigCallback.js";
-import { effortSettingKey, isEffortLevel, resolveDefaultEffort } from "../effort.js";
+import { applyEffortSelection, storeEffortPreference } from "../effort.js";
+import { applyModelSelection } from "../bridge.js";
 import { handleCommand, normalizeCommand } from "../commands.js";
 import { buildBusyMessageModeKeyboard, isBusyMessageModeSelection, resolveLaneBusyMessageMode, setLaneBusyMessageMode } from "../busyMessageMode.js";
 import type { BridgeDb } from "../db.js";
@@ -312,20 +313,19 @@ function applySettingSelection(db: BridgeDb, provider: RouteableBotKind, name: "
       throw acp.RequestError.invalidParams({ field: "select" }, "option is no longer offered; list the command again");
     }
     const next = acpSelection.useProviderDefault ? null : acpSelection.value!;
-    db.setSetting(acpSelection.category === "thought_level" ? effortSettingKey(provider) : provider, next);
+    if (acpSelection.category === "thought_level") storeEffortPreference(db, provider, next);
+    else applyModelSelection(db, provider, next);
     return;
   }
   const [action, kind, ...rest] = token.split(":");
   const value = rest.join(":");
   if (kind !== provider) throw acp.RequestError.invalidParams({ field: "select" }, "option belongs to another provider");
   if (name === "effort" && action === "effort") {
-    const next = value === "reset" ? resolveDefaultEffort(provider) : value;
-    if (!isEffortLevel(next)) throw acp.RequestError.invalidParams({ field: "select" }, "unsupported effort");
-    db.setSetting(effortSettingKey(provider), value === "reset" ? null : next);
+    if (!applyEffortSelection(db, provider, value)) throw acp.RequestError.invalidParams({ field: "select" }, "unsupported effort");
     return;
   }
   if (name === "models" && action === "model") {
-    db.setSetting(provider, value === "reset" ? null : value);
+    applyModelSelection(db, provider, value);
     return;
   }
   throw acp.RequestError.invalidParams({ field: "select" }, "option does not match the command");

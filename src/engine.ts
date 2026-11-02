@@ -51,10 +51,10 @@ import { downloadSurfaceAttachment } from "./fileDownload.js";
 import { cleanOutputDir, prepareOutputDir, uploadOutputFiles } from "./fileOutput.js";
 import { createPollErrorState, planPollError, notePollSuccess } from "./polling.js";
 import { sendSurfaceMessage, sendMessageWithProgress, PreviewCleanupError } from "./messageDelivery.js";
-import { buildModelKeyboard, buildModelsText, getCliWorkingDir } from "./bridge.js";
+import { applyModelSelection, buildModelKeyboard, buildModelsText, getCliWorkingDir } from "./bridge.js";
 import { handleCommand, normalizeCommand, buildTelegramCommands, isAntigravityNarrationVisible } from "./commands.js";
-import { buildBusyMessageModeKeyboard, busyMessageModeSettingKey, resolveLaneBusyMessageMode, type BusyMessageMode } from "./busyMessageMode.js";
-import { buildEffortKeyboard, buildEffortText, effortSettingKey, resolveDefaultEffort, resolveEffort, isEffortLevel, type EffortLevel } from "./effort.js";
+import { buildBusyMessageModeKeyboard, isBusyMessageModeSelection, resolveLaneBusyMessageMode, setLaneBusyMessageMode, type BusyMessageMode } from "./busyMessageMode.js";
+import { applyEffortSelection, buildEffortKeyboard, buildEffortText, resolveDefaultEffort, resolveEffort, storeEffortPreference, type EffortLevel } from "./effort.js";
 import { resolveAcpTelegramConfigCallback } from "./acp/telegramConfigCallback.js";
 import { getCodexUsageText } from "./codexUsage.js";
 import { clearHandoffRequired, isProviderFallbackHandoffRequired, markHandoffRequired } from "./handoffState.js";
@@ -2549,7 +2549,7 @@ export class BridgeEngine {
 
       if (acpSelection.category === "thought_level") {
         const next = acpSelection.useProviderDefault ? null : acpSelection.value!;
-        this.db.setSetting(effortSettingKey(this.kind), next);
+        storeEffortPreference(this.db, this.kind, next);
         const displayEffort = next ?? resolveDefaultEffort(this.kind);
         await this.client.answerCallbackQuery({ callback_query_id: callbackQuery.id });
         await this.client.editMessageText({
@@ -2566,7 +2566,7 @@ export class BridgeEngine {
       }
 
       const next = acpSelection.useProviderDefault ? null : acpSelection.value!;
-      this.db.setSetting(this.kind, next);
+      applyModelSelection(this.db, this.kind, next);
       await this.client.answerCallbackQuery({ callback_query_id: callbackQuery.id });
       await this.client.editMessageText({
         chat_id: chatId,
@@ -2593,10 +2593,9 @@ export class BridgeEngine {
       const messageId = callbackQuery.message?.message_id;
       const chatType = callbackQuery.message?.chat?.type ?? "private";
       const threadId = callbackQuery.message?.message_thread_id;
-      if (!chatId || !messageId || !["augment", "interrupt", "queue", "reset"].includes(value)) return;
+      if (!chatId || !messageId || !isBusyMessageModeSelection(value)) return;
       const chatKey = providedChatKey ?? topicChatKey(chatId, chatType, threadId);
-      this.db.setSetting(busyMessageModeSettingKey(this.surfaceIdentity, chatKey), value === "reset" ? null : value);
-      const effective = this._busyMessageMode(chatKey);
+      const effective = setLaneBusyMessageMode(this.db, this.surfaceIdentity, chatKey, value, this.opts.busyMessageMode ?? "augment");
       await this.client.answerCallbackQuery({ callback_query_id: callbackQuery.id, text: `Busy-message mode: ${effective}` });
       await this.client.editMessageText({
         chat_id: chatId,
@@ -2626,12 +2625,11 @@ export class BridgeEngine {
     }
 
     if (action === "effort") {
-      const next = value === "reset" ? resolveDefaultEffort(this.kind) : value;
-      if (!isEffortLevel(next)) {
+      const next = applyEffortSelection(this.db, this.kind, value);
+      if (!next) {
         await this.client.answerCallbackQuery({ callback_query_id: callbackQuery.id, text: "Unsupported effort" });
         return;
       }
-      this.db.setSetting(effortSettingKey(this.kind), value === "reset" ? null : next);
       await this.client.answerCallbackQuery({ callback_query_id: callbackQuery.id });
       await this.client.editMessageText({
         chat_id: chatId,
@@ -2644,7 +2642,7 @@ export class BridgeEngine {
     }
 
     if (value === "reset") {
-      this.db.setSetting(this.kind, null);
+      applyModelSelection(this.db, this.kind, null);
       await this.client.answerCallbackQuery({
         callback_query_id: callbackQuery.id,
         text: `${this.kind} reset to default`,
@@ -2658,7 +2656,7 @@ export class BridgeEngine {
       return;
     }
 
-    this.db.setSetting(this.kind, value);
+    applyModelSelection(this.db, this.kind, value);
     await this.client.answerCallbackQuery({ callback_query_id: callbackQuery.id });
     await this.client.editMessageText({
       chat_id: chatId,
