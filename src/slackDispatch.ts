@@ -10,7 +10,7 @@
 import type { BridgeDb, EventReceipt } from "./db.js";
 import type { ProviderFallbackChain } from "./providerFallback.js";
 import {
-  applyManualCliSwitchHandoff,
+  switchManualCli,
   buildCliStatusText,
   getUserCliPreference,
   handleCliSwitchCallback,
@@ -193,8 +193,7 @@ export function createSlackCliCommandHandler(deps: {
         await deps.notify(channel, turn.threadId, `Unknown or unavailable CLI "${requested.slice(0, 40)}". ${buildCliStatusText(getUserCliPreference(deps.db, identity), available)}`);
         return true;
       }
-      applyManualCliSwitchHandoff(deps.db, identity, target);
-      deps.fallbackChain.setActiveCli(turn.chatKey, target);
+      switchManualCli(deps.db, identity, target, deps.fallbackChain);
     }
     await deps.notify(channel, turn.threadId, buildCliStatusText(getUserCliPreference(deps.db, identity), available));
     return true;

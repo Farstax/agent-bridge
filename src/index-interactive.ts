@@ -37,7 +37,7 @@ import {
   handleUnavailableCliUpdate,
   dispatchClaimedInteractiveWithFallback,
   resolveAvailableCliPreference,
-  applyManualCliSwitchHandoff,
+  switchManualCli,
   handleInteractiveCliCommand,
   runUnifiedTelegramIngress,
   resumeCapacityHeldQueue,
@@ -699,8 +699,7 @@ for (;;) {
             const messageId = cbq.message?.message_id;
             const chatKey = resolveUpdateChatKey(typedUpdate);
             if (chatKey) {
-              applyManualCliSwitchHandoff(db, { surfaceIdentity: runtimePolicy.surfaceIdentity, chatKey }, newCli);
-              fallbackChain.setActiveCli(chatKey, newCli);
+              switchManualCli(db, { surfaceIdentity: runtimePolicy.surfaceIdentity, chatKey }, newCli, fallbackChain);
             }
             await client.answerCallbackQuery({ callback_query_id: cbq.id, text: `Switched to ${newCli}` });
             if (chatId && messageId) {

@@ -422,6 +422,21 @@ export function applyManualCliSwitchHandoff(db: BridgeDb, identity: Conversation
   })();
 }
 
+/**
+ * A manual provider switch always pairs the durable handoff with the
+ * in-memory fallback chain's active provider; adapters call this one entry
+ * instead of repeating the pair.
+ */
+export function switchManualCli(
+  db: BridgeDb,
+  identity: ConversationIdentity,
+  newCli: CliKind,
+  fallbackChain: { setActiveCli(chatKey: string, cli: string): void },
+): void {
+  applyManualCliSwitchHandoff(db, identity, newCli);
+  fallbackChain.setActiveCli(identity.chatKey, newCli);
+}
+
 interface InteractiveFallbackExecution {
   identity: ConversationIdentity;
   chatKey: string;

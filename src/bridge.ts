@@ -69,6 +69,15 @@ function isAcpConfigKind(kind: string): boolean {
   return isAcpBackedBot(kind);
 }
 
+/** The one writer of the persisted model preference (keyed by provider); `null` or "reset" restores the default. */
+export function applyModelSelection(
+  db: { setSetting(key: string, value: string | null): void },
+  kind: string,
+  value: string | null,
+): void {
+  db.setSetting(kind, value === null || value === "reset" ? null : value);
+}
+
 export function buildModelKeyboard(
   kind: string,
   modelPreference: string[],
