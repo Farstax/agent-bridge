@@ -83,6 +83,15 @@ export interface OpenDbOptions {
   /** Expected provenance role for this service's database. */
   databaseRole?: string;
   /** Leave expiry cleanup to existing maintenance; reads still reject stale sessions. */
+  /**
+   * Full `PRAGMA foreign_key_check` before production use (default true).
+   * Only transient per-connection openers of an already-managed database may
+   * skip it: guarded rollout verifies integrity and foreign keys for every
+   * managed database, long-lived services verify at their own startup, and
+   * every runtime connection enforces foreign keys, so no runtime write can
+   * introduce a violation between those boundaries.
+   */
+  verifyForeignKeyIntegrity?: boolean;
 }
 
 export class ExecutionLockLostError extends Error {
@@ -236,7 +245,7 @@ export function openProductionDb(dbPath: string, options: OpenDbOptions = {}): B
     throw new MigrationRequiredError(schemaVersion);
   }
   try {
-    assertDatabaseForeignKeyIntegrity(raw);
+    if (options.verifyForeignKeyIntegrity !== false) assertDatabaseForeignKeyIntegrity(raw);
     assertProductionInstallation(raw, dbPath, options);
   } catch (error) {
     raw.close();

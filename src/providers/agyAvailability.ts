@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { accessSync, constants, existsSync, readFileSync, realpathSync } from "node:fs";
+import { accessSync, constants, existsSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 
@@ -28,6 +28,25 @@ function executable(path: string): boolean {
   }
 }
 
+// Availability is evaluated on every Workstream status projection; hashing
+// the harness each time blocked the event loop. Reuse a digest only while the
+// file's identity (device, inode, size, mtime and ctime) is unchanged, so any
+// replacement or in-place write is re-hashed before it can be trusted. File
+// timestamps are coarse, so a digest is not reused for a file changed within
+// the last few seconds (a same-tick rewrite would otherwise look unchanged).
+const HARNESS_DIGEST_SETTLE_NS = 3_000_000_000n;
+let cachedHarnessDigest: { target: string; identity: string; digest: string } | null = null;
+
+function harnessDigest(target: string): string {
+  const stat = statSync(target, { bigint: true });
+  const identity = `${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeNs}:${stat.ctimeNs}`;
+  if (cachedHarnessDigest?.target === target && cachedHarnessDigest.identity === identity) return cachedHarnessDigest.digest;
+  const digest = createHash("sha256").update(readFileSync(target)).digest("hex");
+  const settled = BigInt(Date.now()) * 1_000_000n - (stat.mtimeNs > stat.ctimeNs ? stat.mtimeNs : stat.ctimeNs) > HARNESS_DIGEST_SETTLE_NS;
+  cachedHarnessDigest = settled ? { target, identity, digest } : null;
+  return digest;
+}
+
 function managedHarnessValid(path: string): boolean {
   try {
     const target = realpathSync(path);
@@ -38,8 +57,7 @@ function managedHarnessValid(path: string): boolean {
     };
     if (manifest.schemaVersion !== 2 || manifest.harnessName !== "localharness_external") return false;
     if (!manifest.harnessSha256?.match(/^[0-9a-f]{64}$/)) return false;
-    const digest = createHash("sha256").update(readFileSync(target)).digest("hex");
-    return digest === manifest.harnessSha256;
+    return harnessDigest(target) === manifest.harnessSha256;
   } catch {
     return false;
   }
