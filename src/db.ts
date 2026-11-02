@@ -521,7 +521,7 @@ export class BridgeDb {
         "SELECT 1 FROM execution_locks WHERE surface = ? AND chat_key = ? LIMIT 1",
       ).get(surface, chatKey);
       if (reservation && lock) return null;
-      if (reservation) this.setSetting(reservationSettingKey, null);
+      if (reservation) this.raw.prepare("DELETE FROM settings WHERE key = ?").run(reservationSettingKey);
       const lane = this.locks.acquire(surface, chatKey, false);
       if (!lane) return null;
       this.setSetting(reservationSettingKey, token);
@@ -577,7 +577,7 @@ export class BridgeDb {
       const pending = this.pendingMsgCount(surface, chatKey);
       if (pending >= maxDepth) return { kind: "full" as const };
       const id = this.enqueueMsg(surface, chatKey, msg);
-      if (reservation === reservationToken) this.setSetting(reservationSettingKey, null);
+      if (reservation === reservationToken) this.raw.prepare("DELETE FROM settings WHERE key = ?").run(reservationSettingKey);
       return { kind: "queued" as const, id, position: pending + 1 };
     });
   }

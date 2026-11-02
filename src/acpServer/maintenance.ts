@@ -26,9 +26,16 @@ try {
   const workspaces = new Set([workspaceRoot, ...new OutwardAcpSessionRepository(db.raw).listWorkspaces()]);
   // Read every queue reference once, after which unreferenced old snapshots are
   // provably orphaned; a row inserted later cannot own a snapshot this old.
-  const referencedQueuedDirs = referencedQueuedAttachmentDirs(
-    (db.raw.prepare("SELECT attachments_json AS json FROM pending_messages WHERE surface = ?")
-      .all(OUTWARD_ACP_SURFACE) as Array<{ json: string }>).map((row) => row.json));
+  let referencedQueuedDirs: Set<string> | null = null;
+  try {
+    referencedQueuedDirs = referencedQueuedAttachmentDirs(
+      (db.raw.prepare("SELECT attachments_json AS json FROM pending_messages WHERE surface = ?")
+        .all(OUTWARD_ACP_SURFACE) as Array<{ json: string }>).map((row) => row.json));
+  } catch (error) {
+    // An unreadable queue reference means ownership is unprovable: keep every
+    // queued snapshot, but let the unrelated staging sweeps still run.
+    console.error("[acp:maintenance] queued attachment references unreadable; keeping all queued snapshots", error);
+  }
   for (const workspace of workspaces) {
     try {
       await cleanupStaleOutwardAcpAttachments(workspace, [], Date.now(), referencedQueuedDirs);

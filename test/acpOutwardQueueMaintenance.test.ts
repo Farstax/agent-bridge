@@ -90,15 +90,24 @@ describe("worker recovery gating", () => {
     for (let tick = 0; tick < 50; tick += 1) expect(gate.shouldReconcile("")).toBe(false);
   });
 
+  it("treats a held lane lock with no running Run as work for recovery", () => {
+    const db = openDb(":memory:");
+    expect(db.acquireLock(OUTWARD_ACP_SURFACE, "acp:orphan-lock", false)).not.toBeNull();
+    expect(db.listRunningRuns(OUTWARD_ACP_SURFACE)).toHaveLength(0);
+    const evidence = outwardRecoveryEvidence(db);
+    expect(evidence).not.toBe("");
+    expect(new OutwardRecoveryGate().shouldReconcile(evidence)).toBe(true);
+  });
+
   it("reconciles on new evidence at once, backs off while it is unchanged and resets when it clears", () => {
     const db = openDb(":memory:");
     db.admitMessage(OUTWARD_ACP_SURFACE, "acp:c1", { prompt: "p", chatId: "s", chatType: "acp", scheduledOccurrenceKey: "k" }, 5, true);
-    expect(outwardRecoveryEvidence(db)).toBe("|1");
+    expect(outwardRecoveryEvidence(db)).toBe("||1");
     db.insertRun("r1", { surfaceIdentity: OUTWARD_ACP_SURFACE, chatKey: "acp:c2" }, "codex");
-    expect(outwardRecoveryEvidence(db)).toBe("r1|1");
+    expect(outwardRecoveryEvidence(db)).toBe("r1||1");
 
     const gate = new OutwardRecoveryGate();
-    const ticks = Array.from({ length: 60 }, () => gate.shouldReconcile("r1|1"));
+    const ticks = Array.from({ length: 60 }, () => gate.shouldReconcile("r1||1"));
     expect(ticks[0]).toBe(true);
     // First retries come quickly, then at most once per twelve ticks (about a minute).
     const runs = ticks.flatMap((did, index) => (did ? [index] : []));
@@ -106,8 +115,8 @@ describe("worker recovery gating", () => {
     expect(Math.max(...runs.slice(1).map((value, index) => value - runs[index]))).toBeLessThanOrEqual(12);
     expect(runs.length).toBeLessThan(10);
     // New evidence is never delayed by an earlier backoff; clearing it resets.
-    expect(gate.shouldReconcile("r2|1")).toBe(true);
+    expect(gate.shouldReconcile("r2||1")).toBe(true);
     expect(gate.shouldReconcile("")).toBe(false);
-    expect(gate.shouldReconcile("r2|1")).toBe(true);
+    expect(gate.shouldReconcile("r2||1")).toBe(true);
   });
 });

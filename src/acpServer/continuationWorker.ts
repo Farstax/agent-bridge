@@ -64,11 +64,18 @@ export function outwardCapacityCompletionProven(db: BridgeDb, wait: RunContinuat
     successor.surface_identity === OUTWARD_ACP_SURFACE);
 }
 
-/** Running outward Runs and queued lanes; empty means there is nothing to reconcile or drain. */
+/**
+ * Running outward Runs, held outward lane locks and queued lanes; empty means
+ * there is nothing to reconcile or drain. A lock without a Run (a crash between
+ * acquiring it and starting the Run, or between finishing and releasing it)
+ * is evidence too, because recovery is what releases it.
+ */
 export function outwardRecoveryEvidence(db: BridgeDb): string {
   const running = db.listRunningRuns(OUTWARD_ACP_SURFACE).map((run) => run.run_id).sort().join(",");
+  const locks = (db.raw.prepare("SELECT chat_key || '@' || acquisition_id AS id FROM execution_locks WHERE surface = ? ORDER BY chat_key")
+    .all(OUTWARD_ACP_SURFACE) as Array<{ id: string }>).map((row) => row.id).join(",");
   const queued = db.pendingMessageCounts(OUTWARD_ACP_SURFACE).size;
-  return running || queued > 0 ? `${running}|${queued}` : "";
+  return running || locks || queued > 0 ? `${running}|${locks}|${queued}` : "";
 }
 
 /**
@@ -140,7 +147,7 @@ async function main(): Promise<void> {
   const gate = new OutwardRecoveryGate();
   let ticking = false;
   const drainTimer = setInterval(() => {
-    if (ticking) return;
+    if (ticking) { console.warn("[acp:outward:continuations] previous recovery/drain tick is still running"); return; }
     ticking = true;
     void (async () => {
       // Cheap durable evidence decides whether a full Run/lock/process
