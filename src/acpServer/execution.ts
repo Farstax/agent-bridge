@@ -16,7 +16,7 @@ import { createSurfaceNeutralProviderRouter, type SurfaceNeutralProviderRouter }
 import { getCachedAvailableCliKinds } from "../interactiveCliAuth.js";
 import { applyManualCliSwitchHandoff, getStoredCliPreference, type CliKind } from "../interactiveBot.js";
 import type { BotKind, BridgeConfig, CliResult, RouteableBotKind } from "../types.js";
-import { readRetainedOutwardAcpAttachments, retainOutwardAcpAttachmentsForWait, releaseRetainedOutwardAcpAttachments } from "./attachments.js";
+import { QUEUED_ATTACHMENT_MARKER, readRetainedOutwardAcpAttachments, retainOutwardAcpAttachmentsForWait, releaseRetainedOutwardAcpAttachments } from "./attachments.js";
 import { resolveLaneBusyMessageMode } from "../busyMessageMode.js";
 import { hasPendingCapacityWait, listRunContinuations, linkCapacityContinuationRun, requestRunContinuation, cancelPendingRunContinuation, type RunContinuation } from "../runContinuation.js";
 
@@ -32,7 +32,7 @@ const REMOTE_STOP_POLL_MS = 200;
 const REMOTE_STOP_WAIT_MS = 5_000;
 const QUEUE_CAPACITY_RETRIES = 5;
 const QUEUE_RECEIPT_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
-const RETAINED_ATTACHMENT_MARKER = "acp-retained:";
+const RETAINED_ATTACHMENT_MARKER = QUEUED_ATTACHMENT_MARKER;
 
 /** Internal-only: bounded requeue permitted after a verified capacity rejection. */
 export class OutwardCapacityRetry extends Error {
@@ -79,9 +79,17 @@ type QueuedExecution = {
   settled?: boolean;
 };
 
+/**
+ * `confirmed`: no Run of the Workstream is running (it was cancelled by this
+ * request or had already ended), proven from the durable Run record.
+ * `pending`: Stop was requested but the owning process has not reported the
+ * Run as ended. This is never success; the Run may still be executing.
+ */
+export type OutwardStopResult = "confirmed" | "pending";
+
 export interface OutwardAcpPromptExecutor {
   execute(input: OutwardAcpPromptExecutionInput): Promise<acp.PromptResponse>;
-  cancel(session: OutwardAcpSessionRecord): Promise<void>;
+  cancel(session: OutwardAcpSessionRecord): Promise<OutwardStopResult>;
   readonly supportsDeferredCapacity?: boolean;
   readonly supportsBusyMessages?: boolean;
 }
@@ -137,6 +145,8 @@ export interface BridgeOutwardAcpPromptExecutorOptions {
   enableDeferredCapacity?: boolean;
   /** Resolves a queued message's Workstream when a supervised owner drains the durable queue. */
   lookupSession?: (sessionId: string) => OutwardAcpSessionRecord | null;
+  /** How long a cross-process Stop waits for the owner to report the Run ended (test override). */
+  remoteStopWaitMs?: number;
   /** Fresh read-only side question for /btw; absent when not wired. */
   btw?: (session: OutwardAcpSessionRecord, provider: BotKind, prompt: string) => Promise<string>;
 }
@@ -431,11 +441,11 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
     return this.options.btw;
   }
 
-  async cancel(session: OutwardAcpSessionRecord): Promise<void> {
+  async cancel(session: OutwardAcpSessionRecord): Promise<OutwardStopResult> {
     const record = this.active.get(session.conversationId);
     if (!record) return this.requestRemoteStop(session);
     record.cancelRequested = true;
-    if (record.cancelPromise) return record.cancelPromise;
+    if (record.cancelPromise) { await record.cancelPromise; return "confirmed"; }
 
     const lane = executionLane(session.conversationId);
     const coordinator = executionLaneCoordinator(this.options.db, OUTWARD_ACP_SURFACE);
@@ -462,6 +472,8 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
     } finally {
       if (record.cancelPromise === operation) record.cancelPromise = null;
     }
+    // The loop above only ends once the owning outer Run has settled.
+    return "confirmed";
   }
 
   /** Cancel all active requests and wait until their outer Run persistence settles. */
@@ -520,7 +532,7 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
       return await this.runOnLane(input, lane, undefined, requestToken ?? undefined);
     } finally {
       if (requestToken && reservationKey && db.getSetting(reservationKey) === requestToken) {
-        db.setSetting(reservationKey, null);
+        clearSetting(db, reservationKey);
       }
     }
   }
@@ -550,7 +562,7 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
     const run = db.getRun(linkedRun);
     if (run?.status === "running") return this.queueReceipt("running", { requestId, runId: linkedRun });
     this.writeQueueReceipt(key, { status: run?.status ?? "failed", runId: linkedRun });
-    db.setSetting(queueRunLinkKey(key), null);
+    clearSetting(db, queueRunLinkKey(key));
     return this.queueReceipt("settled", { requestId, status: run?.status ?? "failed", runId: linkedRun });
   }
 
@@ -586,7 +598,7 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
         // point can never replay a prompt whose execution may have started.
         if (idempotencyKey) {
           db.setSetting(queueRunLinkKey(idempotencyKey), runId);
-          if (reservationToken) db.setSetting(queueReservationKey(idempotencyKey), null);
+          if (reservationToken) clearSetting(db, queueReservationKey(idempotencyKey));
         }
         if (input.capacityResume) {
           // Persist the exact continuation claim -> successor link before any
@@ -778,8 +790,8 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
                 throw new Error("queued row claim was lost before capacity handoff");
               }
               this.writeQueueReceipt(queued.key, { outcome: "deferred", status: "waiting", runId, continuationId });
-              db.setSetting(queueRunLinkKey(queued.key), null);
-              db.setSetting(`outward-queue-attempts:${queued.key}`, null);
+              clearSetting(db, queueRunLinkKey(queued.key));
+              clearSetting(db, `outward-queue-attempts:${queued.key}`);
               queued.settled = true;
             });
           } else {
@@ -802,7 +814,7 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
       if (signalAbort) input.signal.removeEventListener("abort", signalAbort);
       if (stopPoll) {
         clearInterval(stopPoll);
-        try { db.setSetting(remoteStopKey(runId), null); } catch { /* expiry sweep removes it */ }
+        try { clearSetting(db, remoteStopKey(runId)); } catch { /* expiry sweep removes it */ }
       }
       if (active && this.active.get(input.session.conversationId) === active) {
         this.active.delete(input.session.conversationId);
@@ -983,7 +995,7 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
     if (!run || run.status === "running") return;
     db.runInTransaction(() => {
       this.writeQueueReceipt(key, { status: run.status, runId });
-      db.setSetting(queueRunLinkKey(key), null);
+      clearSetting(db, queueRunLinkKey(key));
     });
   }
 
@@ -1003,7 +1015,7 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
       if (attempts < QUEUE_CAPACITY_RETRIES) {
         db.runInTransaction(() => {
           db.setSetting(attemptsKey, String(attempts));
-          db.setSetting(queueRunLinkKey(queued.key), null);
+          clearSetting(db, queueRunLinkKey(queued.key));
           db.releasePendingClaim(lane, queued.id);
         });
         queued.requeued = true;
@@ -1015,8 +1027,8 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
     db.runInTransaction(() => {
       if (!db.completePendingMsg(lane, queued.id)) throw new Error("queued row claim was lost before settlement");
       this.writeQueueReceipt(queued.key, { status: run.status, runId });
-      db.setSetting(queueRunLinkKey(queued.key), null);
-      db.setSetting(`outward-queue-attempts:${queued.key}`, null);
+      clearSetting(db, queueRunLinkKey(queued.key));
+      clearSetting(db, `outward-queue-attempts:${queued.key}`);
     });
     if (queued.retainedId) await releaseRetainedOutwardAcpAttachments(session.cwd, queued.retainedId);
   }
@@ -1056,7 +1068,7 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
             db.runInTransaction(() => {
               db.completePendingMsg(lane, row.id);
               this.writeQueueReceipt(key, { status: "failed", reason, ...(linkedRunId ? { runId: linkedRunId } : {}) });
-              db.setSetting(queueRunLinkKey(key), null);
+              clearSetting(db, queueRunLinkKey(key));
             });
             if (retainedId) await releaseRetainedOutwardAcpAttachments(session.cwd, retainedId).catch(() => undefined);
           };
@@ -1104,20 +1116,29 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
    * exact Run, which its owner observes and contains. Locks are never released
    * here; a dead owner is handled by the existing proven-containment recovery.
    */
-  private async requestRemoteStop(session: OutwardAcpSessionRecord): Promise<void> {
+  private async requestRemoteStop(session: OutwardAcpSessionRecord): Promise<OutwardStopResult> {
     const { db } = this.options;
     const running = db.listRunningRuns(OUTWARD_ACP_SURFACE).filter((run) => run.chat_id === session.conversationId);
-    if (running.length === 0) return;
+    if (running.length === 0) return "confirmed";
     for (const run of running) db.setSetting(remoteStopKey(run.run_id), new Date().toISOString());
     // Requests for Runs whose owner died never get consumed; bound their lifetime.
-    db.raw.prepare("DELETE FROM settings WHERE key LIKE 'outward-cancel:%' AND value < ?")
+    db.raw.prepare("DELETE FROM settings WHERE key LIKE 'outward-cancel:%' AND (value IS NULL OR value < ?)")
       .run(new Date(Date.now() - 60 * 60 * 1000).toISOString());
-    const deadline = Date.now() + REMOTE_STOP_WAIT_MS;
+    const deadline = Date.now() + (this.options.remoteStopWaitMs ?? REMOTE_STOP_WAIT_MS);
     while (Date.now() < deadline) {
-      if (running.every((run) => db.getRun(run.run_id)?.status !== "running")) return;
+      if (running.every((run) => db.getRun(run.run_id)?.status !== "running")) return "confirmed";
       await new Promise((resolve) => setTimeout(resolve, 50));
     }
+    // An unresponsive or vanished owner leaves the Run durably `running`. That
+    // is unknown, not stopped: locks are not released and nothing is replayed;
+    // only the owner or proven-containment recovery may end the Run.
+    return "pending";
   }
+}
+
+/** Delete a durable key. setSetting(key, null) would persist a NULL row per Run, forever. */
+function clearSetting(db: BridgeDb, key: string): void {
+  db.raw.prepare("DELETE FROM settings WHERE key = ?").run(key);
 }
 
 function requestKey(session: OutwardAcpSessionRecord, requestId: string): string {

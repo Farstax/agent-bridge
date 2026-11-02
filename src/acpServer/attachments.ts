@@ -25,6 +25,30 @@ const RETAINED_TMP_PREFIX = ".agent-bridge-attachments-wait-tmp-";
 const RETAINED_QUEUE_PREFIX = ".agent-bridge-queued-attachments-";
 const RETAINED_WAIT_OWNER_MARKER_CONTENT = "agent-bridge-outward-attachment-wait-v1\n";
 const STALE_RETAINED_WAIT_AGE_MS = 8 * 24 * 60 * 60 * 1000;
+/**
+ * An unreferenced queued snapshot is only a crash orphan once the admission that
+ * created it can no longer be in flight. Admission copies files and inserts the
+ * queue row within one request, so an hour is generous; a snapshot that is
+ * referenced by a queue row is never aged out, however old.
+ */
+const QUEUE_ORPHAN_GRACE_MS = 60 * 60 * 1000;
+export const QUEUED_ATTACHMENT_MARKER = "acp-retained:";
+
+/** Directory names of the queued snapshots that durable queue rows still reference. */
+export function referencedQueuedAttachmentDirs(attachmentsJson: Iterable<string | null | undefined>): Set<string> {
+  const names = new Set<string>();
+  for (const json of attachmentsJson) {
+    let entries: unknown;
+    try { entries = JSON.parse(json || "[]"); } catch { throw new Error("queued attachment reference is unreadable"); }
+    if (!Array.isArray(entries)) throw new Error("queued attachment reference is unreadable");
+    for (const entry of entries) {
+      if (typeof entry === "string" && entry.startsWith(QUEUED_ATTACHMENT_MARKER)) {
+        names.add(retainedDirName(entry.slice(QUEUED_ATTACHMENT_MARKER.length)));
+      }
+    }
+  }
+  return names;
+}
 
 /** Deterministic, filesystem-safe directory name for one wait's retained attachments. */
 function retainedWaitDirName(continuationId: string): string {
@@ -295,6 +319,11 @@ export async function cleanupStaleOutwardAcpAttachments(
   workspaceRoot: string,
   additionalWorkspaces: readonly string[] = [],
   now = Date.now(),
+  /**
+   * Queued snapshots still referenced by durable queue rows. Queued snapshots are
+   * reclaimed only when this complete set is supplied; without it they are kept.
+   */
+  referencedQueuedDirs: ReadonlySet<string> | null = null,
 ): Promise<number> {
   const root = await realpath(workspaceRoot);
   const cutoff = now - STALE_ATTACHMENT_AGE_MS;
@@ -309,6 +338,24 @@ export async function cleanupStaleOutwardAcpAttachments(
     if (workspaceRelative === ".." || workspaceRelative.startsWith(`..${sep}`) || isAbsolute(workspaceRelative)) continue;
     if (!(await stat(workspace)).isDirectory()) continue;
     for (const entry of await readdir(workspace)) {
+      if (entry.startsWith(RETAINED_QUEUE_PREFIX)) {
+        // Valid queued work has no expiry. Only an old, owner-verified snapshot
+        // with no durable queue reference is a crash orphan; anything else
+        // (referenced, recent, foreign or unverifiable) is kept.
+        if (!referencedQueuedDirs || referencedQueuedDirs.has(entry)) continue;
+        const queuedPath = join(workspace, entry);
+        try {
+          const queuedInfo = await lstat(queuedPath);
+          if (!queuedInfo.isDirectory() || queuedInfo.mtimeMs > now - QUEUE_ORPHAN_GRACE_MS) continue;
+          if (!(await verifiedOwnedDir(queuedPath, RETAINED_WAIT_OWNER_MARKER_CONTENT))) continue;
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code === "ENOENT") continue;
+          throw error;
+        }
+        await rm(queuedPath, { recursive: true, force: true });
+        removed += 1;
+        continue;
+      }
       // A retained-wait directory also matches STAGING_PREFIX (it extends
       // the same namespace) but must only ever be swept past its own much
       // longer, continuation-expiry-safe bound and marker (#1114).

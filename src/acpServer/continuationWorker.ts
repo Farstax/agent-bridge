@@ -64,6 +64,35 @@ export function outwardCapacityCompletionProven(db: BridgeDb, wait: RunContinuat
     successor.surface_identity === OUTWARD_ACP_SURFACE);
 }
 
+/** Running outward Runs and queued lanes; empty means there is nothing to reconcile or drain. */
+export function outwardRecoveryEvidence(db: BridgeDb): string {
+  const running = db.listRunningRuns(OUTWARD_ACP_SURFACE).map((run) => run.run_id).sort().join(",");
+  const queued = db.pendingMessageCounts(OUTWARD_ACP_SURFACE).size;
+  return running || queued > 0 ? `${running}|${queued}` : "";
+}
+
+/**
+ * Bounds how often the worker repeats a full reconciliation (a process-table
+ * scan for any lane it cannot yet prove absent). New evidence reconciles at
+ * once; unchanged evidence backs off from one tick to about a minute, so a
+ * stuck stale owner is still re-examined but never every five seconds.
+ */
+export class OutwardRecoveryGate {
+  private last = "";
+  private skipped = 0;
+  private wait = 0;
+  constructor(private readonly maxSkippedTicks = 11) {}
+
+  shouldReconcile(evidence: string): boolean {
+    if (evidence === "") { this.last = ""; this.skipped = 0; this.wait = 0; return false; }
+    if (evidence !== this.last) { this.last = evidence; this.skipped = 0; this.wait = 0; return true; }
+    if (this.skipped < this.wait) { this.skipped += 1; return false; }
+    this.skipped = 0;
+    this.wait = Math.min(this.wait === 0 ? 1 : this.wait * 2, this.maxSkippedTicks);
+    return true;
+  }
+}
+
 async function main(): Promise<void> {
   const dbPath = process.env.DB_PATH;
   if (!dbPath || !dbPath.startsWith("/") || !dbPath.endsWith(".sqlite")) {
@@ -108,10 +137,20 @@ async function main(): Promise<void> {
   runner.start();
   // Accepted busy-message work must progress when no ACP client is connected.
   // The lane lock and row claim keep this safe against any live ACP process.
+  const gate = new OutwardRecoveryGate();
+  let ticking = false;
   const drainTimer = setInterval(() => {
-    void recoverOutwardLanes(db)
-      .then(() => executor.drainAllQueued())
-      .catch((error) => console.error("[acp:outward:continuations] queue drain failed", error));
+    if (ticking) return;
+    ticking = true;
+    void (async () => {
+      // Cheap durable evidence decides whether a full Run/lock/process
+      // reconciliation can find anything; the drain itself is one indexed read.
+      const evidence = outwardRecoveryEvidence(db);
+      if (gate.shouldReconcile(evidence)) await recoverOutwardLanes(db);
+      await executor.drainAllQueued();
+    })()
+      .catch((error) => console.error("[acp:outward:continuations] queue drain failed", error))
+      .finally(() => { ticking = false; });
   }, 5_000);
   drainTimer.unref();
   const shutdown = async () => {

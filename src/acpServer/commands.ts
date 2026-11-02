@@ -8,7 +8,7 @@ import type { BridgeDb } from "../db.js";
 import { supportsToolFreeMode } from "../providers/registry.js";
 import type { OutwardAcpSessionRecord } from "../repositories/outwardAcpSessionRepository.js";
 import type { BotKind, BridgeConfig, RouteableBotKind } from "../types.js";
-import { OUTWARD_ACP_SURFACE, type OutwardWorkstreamControl } from "./execution.js";
+import { OUTWARD_ACP_SURFACE, type OutwardStopResult, type OutwardWorkstreamControl } from "./execution.js";
 
 /**
  * Optional ACP commands use existing Bridge owners. Commands with a standard
@@ -47,10 +47,12 @@ export interface AcpCommandResult {
   command: string;
   text: string;
   options?: AcpCommandOption[];
+  /** `/stop` only: `pending` means Stop was requested but the Run is not yet confirmed ended. */
+  stop?: OutwardStopResult;
 }
 
 export interface AcpCommandControl extends OutwardWorkstreamControl {
-  cancel(session: OutwardAcpSessionRecord): Promise<void>;
+  cancel(session: OutwardAcpSessionRecord): Promise<OutwardStopResult>;
   /** Run `operation` holding the Workstream lane; throws busy when a Run holds it. */
   withIdleLane<T>(session: OutwardAcpSessionRecord, operation: () => T): T;
   btw?(session: OutwardAcpSessionRecord, provider: BotKind, prompt: string): Promise<string>;
@@ -194,15 +196,24 @@ export class AcpCommands {
         const status = control.status(session);
         return { command: name, text: `State: ${status.state}. Provider: ${status.nextProvider}.` };
       }
-      case "stop":
-        await control.cancel(session);
-        return { command: name, text: "Stop requested. Any running execution was cancelled." };
+      case "stop": {
+        const stop = await control.cancel(session);
+        return {
+          command: name,
+          stop,
+          text: stop === "confirmed"
+            ? "Stop confirmed. No execution is running."
+            : "Stop requested but not yet confirmed: the running execution has not ended. Check the Workstream status before assuming it stopped.",
+        };
+      }
       case "reset": {
         if (request.confirm !== true) {
           throw acp.RequestError.invalidParams({ field: "confirm" }, "/reset clears history and pending work; resend with confirm: true");
         }
         // Same order as Telegram: abort the active Run, then reset under the lane.
-        await control.cancel(session);
+        if (await control.cancel(session) !== "confirmed") {
+          throw new acp.RequestError(-32002, "/reset cannot proceed until the running execution confirms Stop", { sessionId: session.sessionId });
+        }
         const result = control.withIdleLane(session, () => legacy("/reset"));
         return { command: name, text: result && "text" in result ? result.text : "Session reset." };
       }
