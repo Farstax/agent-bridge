@@ -33,17 +33,52 @@ If the current owning Run is itself Claude, do not launch Claude re-authenticati
 DISPLAY= <resolved-claude-bin> auth login
 ```
 
-Prints an OAuth URL, then may prompt for a pasted code. Because this must run in the background while you keep chatting, run it detached with output captured to a log file and stdin wired through a named pipe you control:
+Prints an OAuth URL, then may prompt for a pasted code. The login must survive the shell and Run that started it. A shell background job alone may be terminated when the Run ends. On the Linux host, detach it with `setsid`, capture output in a private log, and keep stdin open through a named pipe:
 
 ```bash
-mkdir -p "$RUNTIME_DIR" "$HOME/.agent-bridge/locks"
-mkfifo "$RUNTIME_DIR/claude-auth.pipe" 2>/dev/null || true
+umask 077
+RUNTIME_DIR="$HOME/.agent-bridge/runtime/claude-auth"
+CLAUDE_BIN="$(command -v claude)"
 FLOCK_BIN="$(command -v flock)"
+SETSID_BIN="$(command -v setsid)" || { echo "setsid is required to keep Claude login alive across Runs" >&2; exit 1; }
+TIMEOUT_BIN="$(command -v timeout)" || { echo "timeout is required to bound Claude login" >&2; exit 1; }
+mkdir -p "$RUNTIME_DIR" "$HOME/.agent-bridge/locks"
+AUTH_PIPE="$RUNTIME_DIR/claude-auth.pipe"
+AUTH_LOG="$RUNTIME_DIR/claude-auth.log"
+AUTH_PID="$RUNTIME_DIR/claude-auth.pid"
+AUTH_SESSION_PID="$RUNTIME_DIR/claude-auth.session.pid"
+if test -s "$AUTH_PID" && test -s "$AUTH_SESSION_PID"; then
+  OLD_PID="$(cat "$AUTH_PID")"
+  OLD_SESSION_PID="$(cat "$AUTH_SESSION_PID")"
+  if kill -0 "$OLD_PID" 2>/dev/null && kill -0 "$OLD_SESSION_PID" 2>/dev/null && ps -p "$OLD_PID" -o args= 2>/dev/null | grep -Fq "$CLAUDE_BIN auth login"; then
+    echo "A Claude login is already running; do not start another one" >&2
+    exit 1
+  fi
+fi
+chmod 700 "$RUNTIME_DIR"
+test ! -e "$AUTH_PIPE" || test -p "$AUTH_PIPE" || { echo "Auth pipe path is occupied" >&2; exit 1; }
+if ! test -p "$AUTH_PIPE"; then mkfifo -m 600 "$AUTH_PIPE"; fi
 CLAUDE_CREDENTIAL_LOCK="$HOME/.agent-bridge/locks/claude-credentials.lock"
-( exec 3<>"$RUNTIME_DIR/claude-auth.pipe"; DISPLAY= "$FLOCK_BIN" --exclusive --no-fork "$CLAUDE_CREDENTIAL_LOCK" "$CLAUDE_BIN" auth login <&3 >"$RUNTIME_DIR/claude-auth.log" 2>&1 & )
+"$SETSID_BIN" -f bash -c '
+  pipe="$1"; flock_bin="$2"; timeout_bin="$3"; lock_file="$4"; claude_bin="$5"; log_file="$6"; pid_file="$7"; session_pid_file="$8"
+  printf "%s\n" "$$" > "$session_pid_file"
+  exec 3<>"$pipe"
+  export DISPLAY=
+  "$timeout_bin" --signal=TERM --kill-after=5s 900 "$flock_bin" --exclusive --no-fork "$lock_file" "$claude_bin" auth login <&3 >"$log_file" 2>&1 &
+  login_pid=$!
+  printf "%s\n" "$login_pid" > "$pid_file"
+  wait "$login_pid"
+  result=$?
+  if test "$result" -eq 124; then rm -f -- "$log_file" "$pipe" "$pid_file" "$session_pid_file"; fi
+  exit "$result"
+' claude-auth "$AUTH_PIPE" "$FLOCK_BIN" "$TIMEOUT_BIN" "$CLAUDE_CREDENTIAL_LOCK" "$CLAUDE_BIN" "$AUTH_LOG" "$AUTH_PID" "$AUTH_SESSION_PID"
 ```
 
-Poll the log briefly for the URL line, then reply to the user with it as a Markdown link plus: "After approving, reply here with the code shown." When their next message arrives, write it to the pipe (`printf '%s\n' "$CODE" > "$RUNTIME_DIR/claude-auth.pipe"`) and confirm the credential file now exists before telling them it worked.
+The login command runs under the exclusive credential lock. `timeout` terminates the attempt after 15 minutes, including time spent waiting for the lock, and the detached wrapper removes its log, pipe, and PID files on timeout. Poll the log briefly for the URL line. Before sharing the URL, use a separate shell invocation to confirm both recorded PIDs are alive, `claude-auth.pid` still runs the resolved `claude auth login` command, and the log contains the URL. With `setsid -f`, the session PID is also its session and process-group ID. If `setsid` or `timeout` is unavailable, do not fall back to a plain `&` job; use a supported persistent process manager or stop and explain the limitation.
+
+Reply with the URL as a Markdown link plus: "After approving, reply here with the code shown." Treat the URL and its state as one attempt. When the next message arrives, verify that both recorded PIDs are alive and the login command is still running. If it has exited or the 15-minute window elapsed, do not write the code to a new process or reuse it; expire and clean up any remaining attempt files, then request a fresh login and code.
+
+For a live attempt, write the code to the existing pipe (`printf '%s\n' "$CODE" > "$AUTH_PIPE"`) and confirm that `~/.claude/.credentials.json` exists, is non-empty, and has a newer modification time before reporting success. Keep the exclusive credential lock held for the full login. The log contains the temporary OAuth URL, so keep it private and remove the log, pipe, and PID files when the attempt finishes or expires.
 
 ### Codex
 
