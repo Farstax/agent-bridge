@@ -22,12 +22,19 @@ const OWNER_MARKER_CONTENT = "agent-bridge-outward-attachment-v1\n";
 // continuation has definitely already settled or expired, never a live one.
 const RETAINED_WAIT_PREFIX = ".agent-bridge-attachments-wait-";
 const RETAINED_TMP_PREFIX = ".agent-bridge-attachments-wait-tmp-";
+const RETAINED_QUEUE_PREFIX = ".agent-bridge-queued-attachments-";
 const RETAINED_WAIT_OWNER_MARKER_CONTENT = "agent-bridge-outward-attachment-wait-v1\n";
 const STALE_RETAINED_WAIT_AGE_MS = 8 * 24 * 60 * 60 * 1000;
 
 /** Deterministic, filesystem-safe directory name for one wait's retained attachments. */
 function retainedWaitDirName(continuationId: string): string {
   return `${RETAINED_WAIT_PREFIX}${createHash("sha256").update(continuationId).digest("hex").slice(0, 32)}`;
+}
+
+/** Queued messages have no time expiry, so their retained files use a separate unswept path. */
+function retainedDirName(id: string): string {
+  if (!id.startsWith("acp-queue-")) return retainedWaitDirName(id);
+  return `${RETAINED_QUEUE_PREFIX}${createHash("sha256").update(id).digest("hex").slice(0, 32)}`;
 }
 
 const MIME_EXTENSIONS: Readonly<Record<string, readonly string[]>> = {
@@ -184,7 +191,7 @@ export async function retainOutwardAcpAttachmentsForWait(
 ): Promise<void> {
   if (stagedPaths.length > MAX_FILES) throw new Error("attachment file limit exceeded");
   const workspace = await realpath(cwd);
-  const dir = join(workspace, retainedWaitDirName(continuationId));
+  const dir = join(workspace, retainedDirName(continuationId));
   // Construct a complete, private snapshot before publishing the deterministic
   // continuation path. An interruption before rename leaves only an expirable
   // temporary directory; retry is never blocked by a half-written final path.
@@ -228,7 +235,7 @@ export async function retainOutwardAcpAttachmentsForWait(
 
 export async function readRetainedOutwardAcpAttachments(cwd: string, continuationId: string): Promise<string[]> {
   const workspace = await realpath(cwd);
-  const dir = join(workspace, retainedWaitDirName(continuationId));
+  const dir = join(workspace, retainedDirName(continuationId));
   if (!(await verifiedOwnedDir(dir, RETAINED_WAIT_OWNER_MARKER_CONTENT))) throw new Error("retained attachments missing or unverified");
   const manifestBytes = await readPrivateFile(join(dir, RETAINED_MANIFEST), 16 * 1024);
   const manifest: unknown = JSON.parse(manifestBytes.toString("utf8"));
@@ -259,7 +266,7 @@ export async function readRetainedOutwardAcpAttachments(cwd: string, continuatio
 /** Idempotent cleanup on settlement (completed/cancelled/expired) or explicit release. */
 export async function releaseRetainedOutwardAcpAttachments(cwd: string, continuationId: string): Promise<void> {
   const workspace = await realpath(cwd);
-  const dir = join(workspace, retainedWaitDirName(continuationId));
+  const dir = join(workspace, retainedDirName(continuationId));
   if (!(await verifiedOwnedDir(dir, RETAINED_WAIT_OWNER_MARKER_CONTENT))) return;
   await rm(dir, { recursive: true, force: true });
 }

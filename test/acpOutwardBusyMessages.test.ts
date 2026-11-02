@@ -1,9 +1,10 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { openDb } from "../src/db.js";
+import { cleanupStaleOutwardAcpAttachments } from "../src/acpServer/attachments.js";
 import { StdioRpc, waitFor } from "./support/stdioRpc.js";
 
 // Issue #1130 slice 1: outward ACP shares Bridge's durable admission, queue,
@@ -214,13 +215,17 @@ describe("outward ACP busy-message admission over real stdio", () => {
     const receipt = await prompt(b, sid, "with file", OPT_IN, [file]);
     expect(receipt.result._meta["agent-bridge"].outcome).toBe("queued");
     await b.close(); // the submitting connection ends before execution
-    const retained = readdirSync(root).filter((name) => name.startsWith(".agent-bridge-attachments-wait-") && !name.includes("-tmp-"));
+    const retained = readdirSync(root).filter((name) => name.startsWith(".agent-bridge-queued-attachments-"));
     expect(retained.length).toBeGreaterThan(0);
+    const retainedPath = join(root, retained[0]);
+    utimesSync(retainedPath, new Date(0), new Date(0));
+    await cleanupStaleOutwardAcpAttachments(root, [], Date.now() + 10 * 24 * 60 * 60 * 1000);
+    expect(existsSync(retainedPath)).toBe(true);
 
     release("one"); await first;
     await waitFor(() => executions().length === 2);
     expect(executions()[1].attachments).toEqual(["queued attachment body"]);
-    await waitFor(() => readdirSync(root).filter((name) => name.startsWith(".agent-bridge-attachments-wait-") && !name.includes("-tmp-")).length === 0);
+    await waitFor(() => !existsSync(retainedPath));
   }, 60000);
 
   it("does not replay a prompt whose execution may have started after the owner dies", async () => {
