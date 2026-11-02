@@ -15,6 +15,8 @@ import { BridgeOutwardAcpPromptExecutor, OUTWARD_ACP_SURFACE, outwardCommandConf
 import { outwardServiceId, recoverOutwardLanes } from "../../src/acpServer/recovery.js";
 import { executionLaneCoordinator } from "../../src/executionLaneCoordinator.js";
 import { type as eventType } from "../../src/events/types.js";
+import { BridgeEngine, type PendingMessage, type QueuedMessageOutcome } from "../../src/engine.js";
+import { SAFE_SURFACE_CAPABILITIES, type MessagingPlatform } from "../../src/platform.js";
 
 console.log = (...args: unknown[]) => console.error(...args);
 const [dbPath, workspaceRoot, controlDir] = process.argv.slice(2);
@@ -22,9 +24,23 @@ const db = openDb(dbPath, { serviceId: outwardServiceId(), databaseRole: "intera
 await recoverOutwardLanes(db);
 const sessions = new OutwardAcpSessionRepository(db.raw);
 
-const executor = new BridgeOutwardAcpPromptExecutor({
+let executor!: BridgeOutwardAcpPromptExecutor;
+const noDelivery: MessagingPlatform = {
+  capabilities: SAFE_SURFACE_CAPABILITIES,
+  async sendMessage() { return {}; }, async editMessageText() { return {}; }, async sendChatAction() { return {}; },
+  async answerCallbackQuery() { return {}; }, async setMyCommands() { return {}; }, async sendDocument() {}, async sendPhoto() {},
+};
+const queueCore = new BridgeEngine({
+  kind: "codex", surfaceIdentity: OUTWARD_ACP_SURFACE, botConfig: { command: "", modelPreference: [] },
+  allowedUserIds: new Set(), executionMode: "safe", pollIntervalMs: 1000,
+  hooks: { onQueuedMessage: (message: PendingMessage): Promise<QueuedMessageOutcome> => executor.executeQueuedMessage(sessions.get(message.chatId as string)!, message) },
+}, db, noDelivery);
+
+executor = new BridgeOutwardAcpPromptExecutor({
   db,
   providerChain: ["codex"] as const,
+  lookupSession: (id) => sessions.get(id),
+  discardPendingMessages: (session, before, after) => queueCore.discardPendingMessages(session.conversationId, before, after),
   createEngine: () => ({
     executeSurfaceNeutralTurn: async (input) => {
       const lane = JSON.stringify([OUTWARD_ACP_SURFACE, input.chatKey]);
@@ -46,6 +62,7 @@ const executor = new BridgeOutwardAcpPromptExecutor({
       }));
       return { text: `done:${input.prompt}`, sessionId: "fake", stopReason: "end_turn" };
     },
+    recoverPendingQueue: (chatKey) => queueCore.recoverPendingQueue(chatKey),
   }),
 });
 

@@ -133,18 +133,25 @@ requeues the row (bounded retries); other terminal Runs settle it. Queued
 progress needs a live ACP process or the worker; accepted work is never lost,
 but it does not run until one exists.
 
+`BridgeEngine.recoverPendingQueue()` owns the queue claim, ordered drain and
+row retirement for every surface, including ACP. ACP supplies the claimed
+message execution callback and updates its protocol receipt; it does not own a
+second queue-drain loop. ACP keeps private attachment snapshots until the
+callback or capacity handoff has settled the row.
+
 **Stop** from another process records a durable request for the exact Run id,
 which the owning process observes and contains with its normal fenced
 cancellation. Locks are never released by the requester; a dead owner is
 handled by the existing proven-containment recovery.
 
 Stop distinguishes **requested** from **confirmed**. `/stop` returns
-`stop: "confirmed"` only when the durable Run record shows nothing running (the
-Run was cancelled, or had already ended). If the owner has not reported the Run
-ended within the bounded wait (hung provider, unresponsive or vanished owner),
-it returns `stop: "pending"`: the Run may still be executing, no lock was
-released and nothing was replayed. A client must show pending as unconfirmed and
-re-check status; `/reset` refuses to proceed while Stop is unconfirmed. The
+`stop: "confirmed"` only when the Run is terminal, the lane owner has settled
+and released its lock, and no queued message or capacity wait can execute. If
+the owner has not confirmed within the bounded wait (hung provider, unresponsive
+or vanished owner), it returns `stop: "pending"`: the Run may still be
+executing, no lock was released and nothing was replayed. A client must show
+pending as unconfirmed and re-check status; `/reset` refuses to proceed while
+Stop is unconfirmed. The
 `session/cancel` notification has no reply, so a client that needs the result
 uses `/stop`.
 

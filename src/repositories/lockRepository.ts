@@ -98,6 +98,10 @@ export class LockRepository {
     return !!this.db.prepare(`SELECT 1 FROM execution_locks WHERE chat_key = ? LIMIT 1`).get(chatKey);
   }
 
+  hasLaneLock(surface: string, chatKey: string): boolean {
+    return Boolean(this.db.prepare(`SELECT 1 FROM execution_locks WHERE surface = ? AND chat_key = ? LIMIT 1`).get(surface, chatKey));
+  }
+
   listLocks(): ExecutionLockRecord[] {
     return this.db.prepare(`
       SELECT surface, chat_key, service_id, run_id, acquisition_id, acquired_at, lease_expires_at

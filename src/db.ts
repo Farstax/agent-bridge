@@ -68,6 +68,13 @@ function assertExecutionScope(surface: string, chatKey: string): void {
   if (!chatKey?.trim()) throw new Error("chatKey is required");
 }
 
+export interface DiscardedPendingMessage {
+  id: number;
+  state: "queued" | "claimed";
+  attachments: string[];
+  scheduledOccurrenceKey: string | null;
+}
+
 export interface OpenDbOptions {
   /** Stable across configuration changes and restarts. */
   serviceId?: string;
@@ -352,6 +359,10 @@ export class BridgeDb {
 
   hasChatLock(chatKey: string): boolean {
     return this.locks.hasChatLock(chatKey);
+  }
+
+  hasExecutionLaneLock(surface: string, chatKey: string): boolean {
+    return this.locks.hasLaneLock(surface, chatKey);
   }
 
   hasRunLock(runId: string): boolean {
@@ -910,9 +921,7 @@ export class BridgeDb {
    * it commits, none of those messages can be claimed or executed, and a claimed
    * row's owner finds its claim gone before it creates a Run.
    */
-  discardPendingMsgs(surface: string, chatKey: string): Array<{
-    id: number; state: "queued" | "claimed"; attachments: string[]; scheduledOccurrenceKey: string | null;
-  }> {
+  discardPendingMsgs(surface: string, chatKey: string): DiscardedPendingMessage[] {
     assertExecutionScope(surface, chatKey);
     return this.runInTransaction(() => {
       const rows = (this.raw.prepare(`SELECT id, state, attachments_json AS attachmentsJson, scheduled_occurrence_key AS scheduledOccurrenceKey

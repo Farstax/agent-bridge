@@ -153,9 +153,9 @@ describe("outward ACP busy-message admission over real stdio", () => {
     const first = prompt(a, sid, "hold:one", meta).then((value) => { early ??= value; return value; });
     const second = prompt(b, sid, "hold:two", meta).then((value) => { early ??= value; return value; });
     await waitFor(() => early !== undefined);
+    expect(early).toMatchObject({ result: { _meta: { "agent-bridge": { outcome: "running" } } } });
     await waitFor(() => executions().length === 1);
     expect(executions()).toHaveLength(1);
-    expect(early).toMatchObject({ result: { _meta: { "agent-bridge": { outcome: "running" } } } });
     expect((await status(b, sid)).queued).toBe(0);
     release("one"); release("two");
     await Promise.all([first, second]);
