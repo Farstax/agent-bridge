@@ -202,6 +202,58 @@ describe("Issue #135 Phase 4C.2: openProductionDb()", () => {
   });
 });
 
+describe("Issue #1385: transient ACP opener foreign-key verification boundary", () => {
+  function seedViolation(dbPath: string): void {
+    openDb(dbPath).close();
+    const raw = new Database(dbPath);
+    raw.pragma("foreign_keys = OFF");
+    raw.prepare(`INSERT INTO bridge_events (id, run_id, seq, type, timestamp, payload_json)
+      VALUES ('orphan', 'missing-run', 1, 'test', '2026-11-02T00:00:00Z', '{}')`).run();
+    raw.close();
+  }
+
+  it("still rejects foreign-key violations by default", () => {
+    const dir = tempDir("fk-default");
+    try {
+      const dbPath = join(dir, "bridge.sqlite");
+      seedViolation(dbPath);
+      expect(() => openProductionDb(dbPath, { serviceId: "test:production" }))
+        .toThrow("database foreign key integrity check failed");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("skips only the scan when opted out and keeps enforcing foreign keys on writes", () => {
+    const dir = tempDir("fk-skip");
+    try {
+      const dbPath = join(dir, "bridge.sqlite");
+      seedViolation(dbPath);
+      const db = openProductionDb(dbPath, { serviceId: "test:acp", verifyForeignKeyIntegrity: false });
+      try {
+        expect(db.raw.pragma("foreign_keys", { simple: true })).toBe(1);
+        expect(() => db.raw.prepare(`INSERT INTO bridge_events (id, run_id, seq, type, timestamp, payload_json)
+          VALUES ('orphan-2', 'missing-run', 1, 'test', '2026-11-02T00:00:00Z', '{}')`).run())
+          .toThrow(/FOREIGN KEY constraint failed/);
+      } finally {
+        db.close();
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("is opted out only by the per-client ACP stdio opener", () => {
+    const optOut = /verifyForeignKeyIntegrity:\s*false/;
+    expect(readFileSync("src/acpServer/stdio.ts", "utf8")).toMatch(optOut);
+    const offenders = readdirSync("src", { recursive: true, withFileTypes: true })
+      .filter((entry) => entry.isFile() && entry.name.endsWith(".ts"))
+      .map((entry) => join(entry.parentPath, entry.name))
+      .filter((file) => file !== join("src", "acpServer", "stdio.ts") && optOut.test(readFileSync(file, "utf8")));
+    expect(offenders).toEqual([]);
+  });
+});
+
 describe("Issue #135 Phase 4C.2: production entrypoints use openProductionDb()", () => {
   it("each of the five service entrypoints calls openProductionDb, not openDb", () => {
     for (const file of [

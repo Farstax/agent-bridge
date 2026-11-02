@@ -1,7 +1,6 @@
-import { execFileSync } from "node:child_process";
-import { existsSync } from "node:fs";
+import { accessSync, constants, existsSync, statSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { delimiter, isAbsolute, join, resolve } from "node:path";
 import type { CliKind } from "./interactiveBot.js";
 import { loadInteractiveEnvFile } from "./interactiveEnv.js";
 import {
@@ -94,13 +93,26 @@ export function resolveInteractiveCliAuthPaths(
   };
 }
 
-export function commandExistsOnPath(command: string): boolean {
+function isExecutableFile(path: string): boolean {
   try {
-    execFileSync("which", [command], { stdio: "ignore" });
+    if (!statSync(path).isFile()) return false;
+    accessSync(path, constants.X_OK);
     return true;
   } catch {
     return false;
   }
+}
+
+/**
+ * `which`-equivalent PATH lookup done in-process. Availability runs on every
+ * Workstream status projection, so a subprocess per provider blocked the
+ * event loop; the lookup stays fully fresh because nothing is cached. Empty
+ * PATH entries are ignored rather than treated as the current directory.
+ */
+export function commandExistsOnPath(command: string, path = process.env.PATH ?? ""): boolean {
+  if (!command) return false;
+  if (command.includes("/")) return isExecutableFile(isAbsolute(command) ? command : resolve(command));
+  return path.split(delimiter).some((dir) => dir !== "" && isExecutableFile(join(dir, command)));
 }
 
 export function getAvailableCliKinds(options: AvailableCliOptions = {}): Set<CliKind> {

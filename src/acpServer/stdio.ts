@@ -32,6 +32,11 @@ const db = openProductionDb(dbPath, {
   requireInstallationIdentity:
     process.env.NODE_ENV === "production" && Boolean(process.env.AGENT_BRIDGE_INSTALLATION_ID?.trim()),
   databaseRole: "interactive",
+  // Each ACP client spawns this process, and the full foreign-key scan grows
+  // with history (≈13 s on a 1.2 GB database). Rollout and the long-lived
+  // service startup own that verification; this connection still enforces
+  // foreign keys on every write.
+  verifyForeignKeyIntegrity: false,
 });
 
 // Reconcile only when process ownership and provider containment are proven.
