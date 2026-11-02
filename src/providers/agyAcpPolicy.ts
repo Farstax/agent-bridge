@@ -35,8 +35,8 @@ export const agyAcpPolicy: AcpProviderPolicy = {
   providerId: "agy",
   registryAgentId: "antigravity-acp",
   toolFree: true,
-  // Issue #748: do not enable steering from advertisement. antigravity-acp@1.3.0
-  // is not independently qualified for a host-owned idle contract.
+  // Issue #748: do not enable steering from advertisement. The locked ACP
+  // runtime is not independently qualified for a host-owned idle contract.
   steeringSupported: false,
   presentation: {
     provisionalAnswers: true,

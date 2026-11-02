@@ -41,12 +41,12 @@ describe("Agy ACP provider", () => {
   it("locks the official Registry distribution and selects it for execution", () => {
     expect(getLockedAcpRegistryEntry("agy")).toEqual(expect.objectContaining({
       id: "antigravity-acp",
-      version: "1.3.0",
+      version: "1.4.5",
       distribution: {
         binary: expect.objectContaining({
           "linux-x86_64": {
-            archive: "https://dl.google.com/agy-extensions/releases/linux/agy-acp-server-1.3.0-linux-x86_64.zip",
-            sha256: "9fb60956af0a9d76220a4db91ca9ac88e2a2372ad68f985ab5fceace6b825b96",
+            archive: "https://dl.google.com/agy-extensions/releases/linux/agy-acp-server-1.4.5-linux-x86_64.zip",
+            sha256: "923923a0d7dc8073f66cc6f78647a3107e3a7ee2b7e1a24df8b3927b5188013b",
             cmd: "./agy_acp_server.par",
             args: ["--uid="],
           },
@@ -60,7 +60,7 @@ describe("Agy ACP provider", () => {
       executable: "/opt/agy/agy_acp_server.par",
       args: ["--uid="],
       versionArgs: ["--version"],
-      runtimeIdentity: expect.stringMatching(/^acp:antigravity-acp@1\.3\.0:[a-f0-9]{64}$/),
+      runtimeIdentity: expect.stringMatching(/^acp:antigravity-acp@1\.4\.5:[a-f0-9]{64}$/),
       toolFree: true,
       provisionalAnswers: true,
     }));
@@ -91,20 +91,20 @@ describe("Agy ACP provider", () => {
       expect(command).toBe("agy_acp_server.par");
       expect(args).toEqual(["--version"]);
       options = received as { timeout?: number };
-      return "agy_acp_server.par 1.3.0";
-    }) as never)).toContain("1.3.0");
+      return "agy_acp_server.par 1.4.5";
+    }) as never)).toContain("1.4.5");
     expect(options?.timeout).toBe(AGY_ACP_VERSION_TIMEOUT_MS);
     expect(AGY_ACP_VERSION_TIMEOUT_MS).toBeGreaterThan(10_000);
   });
 
   it("refuses a stale, malformed, or missing Agy executable before submission", () => {
-    expect(() => assertAgyAcpVersion("agy_acp_server.par", "1.3.0", () => "agy_acp_server.par 1.2.1"))
-      .toThrow(/expects 1\.3\.0, observed 1\.2\.1/);
-    expect(() => assertAgyAcpVersion("agy_acp_server.par", "1.3.0", () => "unknown"))
+    expect(() => assertAgyAcpVersion("agy_acp_server.par", "1.4.5", () => "agy_acp_server.par 1.2.1"))
+      .toThrow(/expects 1\.4\.5, observed 1\.2\.1/);
+    expect(() => assertAgyAcpVersion("agy_acp_server.par", "1.4.5", () => "unknown"))
       .toThrow(/observed unknown/);
-    expect(() => assertAgyAcpVersion("agy_acp_server.par", "1.3.0", () => { throw new Error("not installed"); }))
+    expect(() => assertAgyAcpVersion("agy_acp_server.par", "1.4.5", () => { throw new Error("not installed"); }))
       .toThrow(/could not be version-verified: not installed/);
-    expect(() => assertAgyAcpVersion("agy_acp_server.par", "1.3.0", () => "agy_acp_server.par 1.3.0"))
+    expect(() => assertAgyAcpVersion("agy_acp_server.par", "1.4.5", () => "agy_acp_server.par 1.4.5"))
       .not.toThrow();
   });
 
@@ -163,8 +163,8 @@ describe("Agy ACP provider", () => {
       chmodSync(installedAgy, 0o755);
       const runtime = resolveProviderRuntime("agy", { AGY_ACP_COMMAND: installedAgy });
       expect(() => agyAcpPolicy.validateRuntime?.(runtime, { ANTIGRAVITY_HARNESS_PATH: harness }))
-        .toThrow(/expects 1\.3\.0, observed 1\.2\.1/);
-      writeFileSync(installedAgy, "#!/bin/sh\necho 'agy_acp_server.par 1.3.0'\n", "utf8");
+        .toThrow(/expects 1\.4\.5, observed 1\.2\.1/);
+      writeFileSync(installedAgy, "#!/bin/sh\necho 'agy_acp_server.par 1.4.5'\n", "utf8");
       expect(() => agyAcpPolicy.validateRuntime?.(runtime, { ANTIGRAVITY_HARNESS_PATH: harness }))
         .not.toThrow();
       expect(resolveAgyHarnessPath({ ANTIGRAVITY_HARNESS_PATH: harness })).toBe(harness);

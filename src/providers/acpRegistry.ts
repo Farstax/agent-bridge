@@ -67,21 +67,21 @@ const RELEASE_LOCKED_ACP_REGISTRY_ENTRIES: Readonly<Partial<Record<ProviderId, A
   claude: {
     id: "claude-acp",
     name: "Claude Agent",
-    version: "0.95.0",
+    version: "0.99.1",
     description: "ACP adapter for the Claude Agent SDK",
     repository: "https://github.com/agentclientprotocol/claude-agent-acp",
     license: "Apache-2.0",
-    license_url: "https://github.com/agentclientprotocol/claude-agent-acp/blob/v0.95.0/LICENSE",
+    license_url: "https://github.com/agentclientprotocol/claude-agent-acp/blob/v0.99.1/LICENSE",
     distribution: {
       npx: {
-        package: "@agentclientprotocol/claude-agent-acp@0.95.0",
+        package: "@agentclientprotocol/claude-agent-acp@0.99.1",
       },
     },
   },
   grok: {
     id: "grok-build",
     name: "Grok Build",
-    version: "1.0.50",
+    version: "1.0.70",
     description: "xAI's coding agent and CLI",
     website: "https://x.ai/cli",
     authors: ["xAI"],
@@ -89,7 +89,7 @@ const RELEASE_LOCKED_ACP_REGISTRY_ENTRIES: Readonly<Partial<Record<ProviderId, A
     license_url: "https://x.ai/legal/terms-of-service",
     distribution: {
       npx: {
-        package: "@xai-official/grok@1.0.50",
+        package: "@xai-official/grok@1.0.70",
         args: ["agent", "stdio"],
       },
     },
@@ -97,7 +97,7 @@ const RELEASE_LOCKED_ACP_REGISTRY_ENTRIES: Readonly<Partial<Record<ProviderId, A
   agy: {
     id: "antigravity-acp",
     name: "Google Antigravity",
-    version: "1.3.0",
+    version: "1.4.5",
     description: "Google’s AI coding agent",
     website: "https://antigravity.google/docs/ide/extensions",
     authors: ["Google LLC"],
@@ -106,8 +106,8 @@ const RELEASE_LOCKED_ACP_REGISTRY_ENTRIES: Readonly<Partial<Record<ProviderId, A
     distribution: {
       binary: {
         "linux-x86_64": {
-          archive: "https://dl.google.com/agy-extensions/releases/linux/agy-acp-server-1.3.0-linux-x86_64.zip",
-          sha256: "9fb60956af0a9d76220a4db91ca9ac88e2a2372ad68f985ab5fceace6b825b96",
+          archive: "https://dl.google.com/agy-extensions/releases/linux/agy-acp-server-1.4.5-linux-x86_64.zip",
+          sha256: "923923a0d7dc8073f66cc6f78647a3107e3a7ee2b7e1a24df8b3927b5188013b",
           cmd: "./agy_acp_server.par",
           args: ["--uid="],
         },
