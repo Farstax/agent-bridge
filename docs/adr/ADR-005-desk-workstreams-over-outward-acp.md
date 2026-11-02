@@ -138,9 +138,23 @@ which the owning process observes and contains with its normal fenced
 cancellation. Locks are never released by the requester; a dead owner is
 handled by the existing proven-containment recovery.
 
+Stop distinguishes **requested** from **confirmed**. `/stop` returns
+`stop: "confirmed"` only when the durable Run record shows nothing running (the
+Run was cancelled, or had already ended). If the owner has not reported the Run
+ended within the bounded wait (hung provider, unresponsive or vanished owner),
+it returns `stop: "pending"`: the Run may still be executing, no lock was
+released and nothing was replayed. A client must show pending as unconfirmed and
+re-check status; `/reset` refuses to proceed while Stop is unconfirmed. The
+`session/cancel` notification has no reply, so a client that needs the result
+uses `/stop`.
+
 **Attachments** accepted into the queue are copied into the existing private,
 bounded, owner-marked retention before acceptance is acknowledged, survive the
-submitting connection, and are released only after the row settles.
+submitting connection, and are released only after the row settles. A queued
+snapshot has no age expiry while a queue row references it. The existing
+maintenance job reclaims one only when it is also older than an hour, owner-verified
+and referenced by no queue row (a crash between retention and the row insert);
+otherwise it is kept.
 
 ## Provider selection
 

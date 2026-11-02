@@ -286,7 +286,7 @@ describe("outward ACP prompt execution", () => {
           capturedPrompt = input.prompt;
           return { stopReason: "end_turn" };
         },
-        async cancel(): Promise<void> {},
+        async cancel(): Promise<"confirmed"> { return "confirmed"; },
       };
       const client = acp.client({ name: "outward-test-client" });
       const app = createOutwardAcpAgent({ sessions, promptExecutor, workspaceRoot: root });
