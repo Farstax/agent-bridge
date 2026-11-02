@@ -36,16 +36,25 @@ describe("outward ACP crash recovery", () => {
   });
 
   it("finishes a safely released lane when recovery was interrupted before the Run transition", async () => {
-    const db = openDb(":memory:", { serviceId: `acp:outward/${process.pid}/0`, runId: "old-owner" });
+    const owner = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" });
+    await once(owner, "spawn");
+    const ticks = readProcessStartTicks(owner.pid)!;
+    expect(ticks).toBeTruthy();
+    const db = openDb(":memory:", { serviceId: `acp:outward/${owner.pid}/${ticks}`, runId: "old-owner" });
     try {
       const identity = { surfaceIdentity: OUTWARD_ACP_SURFACE, chatKey: "acp:interrupted" };
       db.insertRun("interrupted-provider", identity, "codex");
       expect(db.acquireLock(identity.surfaceIdentity, identity.chatKey)).not.toBeNull();
       db.raw.prepare("UPDATE execution_locks SET lease_expires_at = ?").run(new Date(0).toISOString());
       expect(db.reconcileStaleExecutionLocks({ reason: "outward_acp_service_restart", containmentState: () => "proven", lockState: () => "stale" })).toHaveLength(1);
+      owner.kill("SIGKILL");
+      await once(owner, "exit");
       await recoverOutwardLanes(db);
       expect(db.getRun("interrupted-provider").status).toBe("failed");
-    } finally { db.close(); }
+    } finally {
+      if (owner.exitCode === null && owner.signalCode === null) { owner.kill("SIGKILL"); await once(owner, "exit"); }
+      db.close();
+    }
   });
 
   it("keeps unknown legacy ownership fenced", async () => {
