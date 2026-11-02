@@ -37,11 +37,12 @@ describe("outward ACP crash recovery", () => {
 
   it("finishes a safely released lane when recovery was interrupted before the Run transition", async () => {
     const owner = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" });
-    await once(owner, "spawn");
-    const ticks = readProcessStartTicks(owner.pid)!;
-    expect(ticks).toBeTruthy();
-    const db = openDb(":memory:", { serviceId: `acp:outward/${owner.pid}/${ticks}`, runId: "old-owner" });
+    let db: ReturnType<typeof openDb> | undefined;
     try {
+      await once(owner, "spawn");
+      const ticks = readProcessStartTicks(owner.pid)!;
+      expect(ticks).toBeTruthy();
+      db = openDb(":memory:", { serviceId: `acp:outward/${owner.pid}/${ticks}`, runId: "old-owner" });
       const identity = { surfaceIdentity: OUTWARD_ACP_SURFACE, chatKey: "acp:interrupted" };
       expect(db.acquireLock(identity.surfaceIdentity, identity.chatKey)).not.toBeNull();
       db.insertRun("interrupted-provider", identity, "codex");
@@ -53,7 +54,7 @@ describe("outward ACP crash recovery", () => {
       expect(db.getRun("interrupted-provider").status).toBe("failed");
     } finally {
       if (owner.exitCode === null && owner.signalCode === null) { owner.kill("SIGKILL"); await once(owner, "exit"); }
-      db.close();
+      db?.close();
     }
   });
 
