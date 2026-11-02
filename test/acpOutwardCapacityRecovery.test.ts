@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync, mkdirSync, symlinkSync } from "node:fs";
+import { mkdtempSync, rmSync, mkdirSync, symlinkSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -7,7 +7,9 @@ import { OutwardAcpSessionRepository } from "../src/repositories/outwardAcpSessi
 import { claimDueRunContinuation, listRunContinuations, linkCapacityContinuationRun, requestRunContinuation } from "../src/runContinuation.js";
 import { stageOutwardAcpAttachments, retainOutwardAcpAttachmentsForWait } from "../src/acpServer/attachments.js";
 import { outwardCapacityCompletionProven, resumeOutwardCapacityWait } from "../src/acpServer/continuationWorker.js";
-import type { OutwardAcpPromptExecutor } from "../src/acpServer/execution.js";
+import { BridgeOutwardAcpPromptExecutor, OUTWARD_ACP_SURFACE, type OutwardAcpPromptExecutor } from "../src/acpServer/execution.js";
+import { executionLaneCoordinator } from "../src/executionLaneCoordinator.js";
+import { type as eventType } from "../src/events/types.js";
 
 const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
@@ -90,4 +92,58 @@ describe("outward ACP durable capacity worker (#1114)", () => {
       expect(listRunContinuations(reopened, "acp:outward")[0].state).toBe("claimed");
     } finally { reopened.close(); }
   });
+
+  it("Stop cancels a claimed capacity successor, updates its receipt and releases retained attachments", async () => {
+    const root = mkdtempSync(join(tmpdir(), "bridge-acp-capacity-stop-"));
+    roots.push(root);
+    const path = join(root, "state.sqlite");
+    const db = openDb(path, { databaseRole: "interactive", serviceId: "acp:outward:capacity-owner" });
+    const observer = openDb(path, { databaseRole: "interactive", serviceId: "acp:outward:capacity-stopper" });
+    const session = new OutwardAcpSessionRepository(db.raw).create({ sessionId: "capacity-stop", conversationId: "acp:capacity-stop", cwd: root });
+    const requestId = "capacity-stop-receipt";
+    db.insertRun("capacity-stop-origin", { surfaceIdentity: OUTWARD_ACP_SURFACE, chatKey: session.conversationId }, "codex");
+    db.updateRunFailed("capacity-stop-origin", "MODEL_CAPACITY_EXHAUSTED");
+    const wait = requestRunContinuation(db, {
+      originRunId: "capacity-stop-origin", continuationId: "capacity-stop-wait", surfaceIdentity: OUTWARD_ACP_SURFACE,
+      chatKey: session.conversationId, provider: "codex", capacityWait: true, afterSeconds: 5, reason: "capacity",
+      outward: { sessionId: session.sessionId, prompt: "accepted before capacity", attachmentCount: 1, receiptKey: `acp-request:${session.sessionId}:${requestId}` },
+    });
+    await stageOutwardAcpAttachments(root, [
+      { type: "resource", resource: { uri: "file:///capacity.txt", mimeType: "text/plain", text: "retained capacity input" } },
+    ], async (files) => { await retainOutwardAcpAttachmentsForWait(root, files, wait.id); });
+    const claimed = claimDueRunContinuation(db, wait.id, Date.now() + 6_000, { runId: "capacity-worker" })!;
+    const lane = JSON.stringify([OUTWARD_ACP_SURFACE, session.conversationId]);
+    const make = (target: typeof db) => new BridgeOutwardAcpPromptExecutor({
+      db: target, providerChain: ["codex"] as const, remoteStopWaitMs: 5_000,
+      createEngine: () => ({ executeSurfaceNeutralTurn: async (input) => {
+        input.collect(eventType.runStarted({ runId: input.runId, bot: "codex", chatId: String(input.chatId), chatKey: input.chatKey, command: "fake", cwd: root, model: null }));
+        const coordinator = executionLaneCoordinator(target, OUTWARD_ACP_SURFACE);
+        while (!coordinator.isAborted(lane)) await new Promise((resolve) => setTimeout(resolve, 10));
+        return { text: "", sessionId: "provider", stopReason: "cancelled" as const };
+      } }),
+    });
+    const owner = make(db);
+    const stopper = make(observer);
+    try {
+      const execution = owner.execute({
+        session, prompt: claimed.outward!.prompt, capacityResume: { id: claimed.id, claimToken: claimed.claimToken! },
+        signal: new AbortController().signal, onUpdate: () => undefined,
+      });
+      for (let attempt = 0; attempt < 300 && !db.listRunningRuns(OUTWARD_ACP_SURFACE).some((run) => run.chat_id === session.conversationId); attempt += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+      expect(db.listRunningRuns(OUTWARD_ACP_SURFACE).some((run) => run.chat_id === session.conversationId)).toBe(true);
+
+      expect(await stopper.cancel(session)).toBe("confirmed");
+      expect((await execution).stopReason).toBe("cancelled");
+      expect(listRunContinuations(db, OUTWARD_ACP_SURFACE).find((item) => item.id === wait.id)?.state).toBe("cancelled");
+      expect(readdirSync(root).some((name) => name.startsWith(".agent-bridge-attachments-wait-"))).toBe(false);
+      const receipt = JSON.parse(db.getSetting(`outward-queue-receipt:acp-request:${session.sessionId}:${requestId}`)!);
+      expect(receipt).toMatchObject({ outcome: "settled", status: "cancelled", continuationId: wait.id });
+      const replay = await stopper.execute({ session, prompt: claimed.outward!.prompt, requestId, busyMessages: true, signal: new AbortController().signal, onUpdate: () => undefined });
+      expect((replay._meta as any)["agent-bridge"]).toMatchObject({ outcome: "settled", status: "cancelled" });
+    } finally {
+      await owner.shutdown(); await stopper.shutdown(); db.close(); observer.close();
+    }
+  }, 15000);
 });

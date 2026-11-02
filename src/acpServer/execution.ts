@@ -417,10 +417,19 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
               || successor.chat_id !== current.chatKey) return false;
           if (successor.status === "done") {
             settleRunContinuation(db, wait.id, "completed");
+            if (current.outward?.receiptKey) {
+              this.writeQueueReceipt(current.outward.receiptKey, {
+                outcome: "settled", status: "done", runId: successor.run_id, continuationId: wait.id,
+              });
+            }
             return listRunContinuations(db, OUTWARD_ACP_SURFACE).some((item) => item.id === wait.id && item.state === "completed");
           }
         }
-        return cancelPendingRunContinuation(db, wait.id, "cancelled_by_owner");
+        const cancelled = cancelPendingRunContinuation(db, wait.id, "cancelled_by_owner");
+        if (cancelled && current.outward?.receiptKey) {
+          this.writeQueueReceipt(current.outward.receiptKey, { outcome: "settled", status: "cancelled", reason: "stopped", continuationId: wait.id });
+        }
+        return cancelled;
       }));
       if (!settled) {
         throw new acp.RequestError(OUTWARD_ACP_BUSY_ERROR, "deferred capacity task was already claimed");
@@ -487,7 +496,7 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
       if (id) await releaseRetainedOutwardAcpAttachments(session.cwd, id).catch(() => undefined);
     }
     const run = await this.cancelRun(session);
-    const waitPending = await this.cancelCapacityWait(session);
+    const waitPending = await this.cancelCapacityWait(session, run === "confirmed");
     if (run === "confirmed") {
       // The claimed row's Run has ended, so its snapshot has no reader left.
       for (const row of discarded.filter((candidate) => candidate.state === "claimed")) {
@@ -516,14 +525,15 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
     for (const { key } of rows) clearSettledStopFence(this.options.db, key.slice(prefix.length));
   }
 
-  /** A deferred capacity wait is accepted work too: cancel a pending one; a claimed one is executing. */
-  private async cancelCapacityWait(session: OutwardAcpSessionRecord): Promise<boolean> {
+  /** Cancel a capacity wait once any claimed successor Run has durably settled. */
+  private async cancelCapacityWait(session: OutwardAcpSessionRecord, runSettled: boolean): Promise<boolean> {
     const wait = listRunContinuations(this.options.db, OUTWARD_ACP_SURFACE).find((item) =>
       item.capacityWait === true && item.chatKey === session.conversationId && item.outward?.sessionId === session.sessionId
       && (item.state === "pending" || item.state === "claimed"));
     if (!wait) return false;
-    if (wait.state !== "pending") return true;
-    try { await this.cancelDeferred(session); return false; } catch { return true; }
+    if (wait.state === "claimed" && !runSettled) return true;
+    try { await this.cancelDeferred(session); } catch { /* re-read durable state below */ }
+    return hasPendingCapacityWait(this.options.db, OUTWARD_ACP_SURFACE, session.conversationId);
   }
 
   /** Cancel only the active Run, wherever its owner process is; the queue is untouched. */
@@ -881,7 +891,12 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
             reason: "configured providers at capacity or requiring authentication",
             afterSeconds: 300,
             capacityWait: true,
-            outward: { sessionId: input.session.sessionId, prompt: input.prompt, attachmentCount: input.attachments?.length ?? 0 },
+            outward: {
+              sessionId: input.session.sessionId,
+              prompt: input.prompt,
+              attachmentCount: input.attachments?.length ?? 0,
+              ...(queued?.key ? { receiptKey: queued.key } : input.requestId ? { receiptKey: requestKey(input.session, input.requestId) } : {}),
+            },
           });
           if (queued) {
             // Commit the existing capacity wait and queue-row retirement together.
@@ -1099,7 +1114,13 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
     const run = db.getRun(runId);
     if (!run || run.status === "running") return;
     db.runInTransaction(() => {
-      this.writeQueueReceipt(key, { status: run.status, runId });
+      const capacityWait = listRunContinuations(db, OUTWARD_ACP_SURFACE).find((wait) =>
+        wait.capacityWait === true && wait.originRunId === runId && (wait.state === "pending" || wait.state === "claimed"));
+      if (capacityWait) {
+        this.writeQueueReceipt(key, { outcome: "deferred", status: "waiting", runId, continuationId: capacityWait.id });
+      } else {
+        this.writeQueueReceipt(key, { status: run.status, runId });
+      }
       clearSetting(db, queueRunLinkKey(key));
     });
   }
