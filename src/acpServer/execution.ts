@@ -275,7 +275,7 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
     const continuations = listRunContinuations(this.options.db, OUTWARD_ACP_SURFACE)
       .filter((item) => item.chatKey === session.conversationId && item.outward?.sessionId === session.sessionId);
     return this.statusWithContinuations(session, continuations, this.availableProviderSnapshot(),
-      this.options.db.pendingMsgCount(OUTWARD_ACP_SURFACE, session.conversationId));
+      this.options.db.pendingMsgQueuedCount(OUTWARD_ACP_SURFACE, session.conversationId));
   }
 
   statusMany(sessions: readonly OutwardAcpSessionRecord[]): OutwardWorkstreamStatus[] {
@@ -497,7 +497,8 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
       : db.acquireLock(OUTWARD_ACP_SURFACE, conversationId, false);
     try {
       let lane = acquire();
-      if (!lane) {
+      if (!lane && !this.hasRunningRun(conversationId) &&
+          !(reservationKey && db.getSetting(reservationKey))) {
         await recoverOutwardLanes(db);
         lane = acquire();
       }
@@ -531,9 +532,16 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
     if (settled) return this.queueReceipt("settled", { requestId, ...JSON.parse(settled) });
     const queuedId = db.getPendingMessageIdByCorrelationKey(OUTWARD_ACP_SURFACE, key);
     if (queuedId !== null) {
+      const position = db.pendingMessagePosition(OUTWARD_ACP_SURFACE, session.conversationId, queuedId);
+      if (position === 0) {
+        const runId = db.getSetting(queueRunLinkKey(key));
+        const run = runId ? db.getRun(runId) : null;
+        if (run?.status === "running") return this.queueReceipt("running", { requestId, runId });
+        return this.queueReceipt("running", { requestId, ...(runId ? { runId } : {}) });
+      }
       return this.queueReceipt("queued", {
         queueId: queuedId, mode: this.busyMode(session), requestId,
-        position: db.pendingMessagePosition(OUTWARD_ACP_SURFACE, session.conversationId, queuedId),
+        position,
       });
     }
     const linkedRun = db.getSetting(queueRunLinkKey(key));
@@ -830,9 +838,14 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
     if (settled) return this.queueReceipt("settled", { requestId: input.requestId, ...JSON.parse(settled) });
     const existing = db.getPendingMessageIdByCorrelationKey(OUTWARD_ACP_SURFACE, key);
     if (existing !== null) {
+      const position = db.pendingMessagePosition(OUTWARD_ACP_SURFACE, session.conversationId, existing);
+      if (position === 0) {
+        const runId = db.getSetting(queueRunLinkKey(key));
+        return this.queueReceipt("running", { requestId: input.requestId, ...(runId ? { runId } : {}) });
+      }
       return this.queueReceipt("queued", {
         queueId: existing, mode,
-        position: db.pendingMessagePosition(OUTWARD_ACP_SURFACE, session.conversationId, existing),
+        position,
         requestId: input.requestId,
       });
     }
@@ -882,10 +895,17 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
     if (steered) return this.queueReceipt("steered", { queueId, mode, requestId: input.requestId });
     // The queue row may already be running or settled by the time we answer;
     // the receipt still reports acceptance, and status/history report progress.
-    const stillQueued = db.getPendingMessageIdByCorrelationKey(OUTWARD_ACP_SURFACE, key) !== null;
+    const position = db.pendingMessagePosition(OUTWARD_ACP_SURFACE, session.conversationId, queueId);
+    if (position === 0) {
+      const runId = db.getSetting(queueRunLinkKey(key));
+      const run = runId ? db.getRun(runId) : null;
+      if (run?.status === "running") return this.queueReceipt("running", { queueId, mode, requestId: input.requestId, runId });
+      const settled = db.getSetting(queueReceiptKey(key));
+      if (settled) return this.queueReceipt("settled", { requestId: input.requestId, ...JSON.parse(settled) });
+      return this.queueReceipt("running", { queueId, mode, requestId: input.requestId });
+    }
     return this.queueReceipt("queued", {
-      queueId, mode,
-      position: stillQueued ? db.pendingMessagePosition(OUTWARD_ACP_SURFACE, session.conversationId, queueId) : 0,
+      queueId, mode, position,
       requestId: input.requestId,
     });
   }

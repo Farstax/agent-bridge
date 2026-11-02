@@ -285,6 +285,10 @@ export class BridgeDb {
     return this.raw.transaction(operation)();
   }
 
+  private runInImmediateTransaction<T>(operation: () => T): T {
+    return this.raw.transaction(operation).immediate();
+  }
+
   runWithLockFence<T>(handle: ExecutionLaneHandle, operation: () => T): T {
     assertExecutionScope(handle.surface, handle.chatKey);
     return this.runInTransaction(() => {
@@ -484,14 +488,14 @@ export class BridgeDb {
   /** One-based position of a queued row within its lane (rows ahead of it plus itself). */
   pendingMessagePosition(surface: string, chatKey: string, id: number): number {
     return Number((this.raw.prepare(
-      "SELECT COUNT(*) AS n FROM pending_messages WHERE surface = ? AND chat_key = ? AND id <= ?",
+      "SELECT COUNT(*) AS n FROM pending_messages WHERE surface = ? AND chat_key = ? AND state = 'queued' AND id <= ?",
     ).get(surface, chatKey, id) as { n: number }).n);
   }
 
   /** Queued row counts for every lane of a surface, in one indexed read. */
   pendingMessageCounts(surface: string): Map<string, number> {
     const rows = this.raw.prepare(
-      "SELECT chat_key AS chatKey, COUNT(*) AS n FROM pending_messages WHERE surface = ? GROUP BY chat_key",
+      "SELECT chat_key AS chatKey, COUNT(*) AS n FROM pending_messages WHERE surface = ? AND state = 'queued' GROUP BY chat_key",
     ).all(surface) as Array<{ chatKey: string; n: number }>;
     return new Map(rows.map((row) => [row.chatKey, row.n]));
   }
@@ -507,7 +511,7 @@ export class BridgeDb {
     token: string,
   ): ExecutionLaneHandle | null {
     assertExecutionScope(surface, chatKey);
-    return this.runInTransaction(() => {
+    return this.runInImmediateTransaction(() => {
       const pending = this.raw.prepare(
         "SELECT 1 FROM pending_messages WHERE surface = ? AND scheduled_occurrence_key = ? LIMIT 1",
       ).get(surface, requestKey);
@@ -546,14 +550,19 @@ export class BridgeDb {
     | { kind: "receipt"; value: string }
     | { kind: "full" } {
     assertExecutionScope(surface, chatKey);
-    return this.runInTransaction(() => {
+    return this.runInImmediateTransaction(() => {
       const existing = this.raw.prepare(
         "SELECT id FROM pending_messages WHERE surface = ? AND scheduled_occurrence_key = ? ORDER BY id LIMIT 1",
       ).get(surface, msg.scheduledOccurrenceKey) as { id: number } | undefined;
       if (existing) {
         const position = Number((this.raw.prepare(
-          "SELECT COUNT(*) AS n FROM pending_messages WHERE surface = ? AND chat_key = ? AND id <= ?",
+          "SELECT COUNT(*) AS n FROM pending_messages WHERE surface = ? AND chat_key = ? AND state = 'queued' AND id <= ?",
         ).get(surface, chatKey, existing.id) as { n: number }).n);
+        if (position === 0) {
+          const runId = this.getSetting(runLinkSettingKey);
+          const run = runId ? this.getRun(runId) : null;
+          return { kind: "running" as const, ...(run?.status === "running" && runId ? { runId } : {}) };
+        }
         return { kind: "existing" as const, id: existing.id, position };
       }
       const runId = this.getSetting(runLinkSettingKey);
@@ -848,6 +857,14 @@ export class BridgeDb {
     const row = this.raw
       .prepare(`SELECT COUNT(*) AS n FROM pending_messages WHERE surface = ? AND chat_key = ?`)
       .get(surface, chatKey) as { n: number };
+    return row.n;
+  }
+
+  pendingMsgQueuedCount(surface: string, chatKey: string): number {
+    assertExecutionScope(surface, chatKey);
+    const row = this.raw.prepare(
+      "SELECT COUNT(*) AS n FROM pending_messages WHERE surface = ? AND chat_key = ? AND state = 'queued'",
+    ).get(surface, chatKey) as { n: number };
     return row.n;
   }
 

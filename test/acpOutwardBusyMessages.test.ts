@@ -70,7 +70,7 @@ describe("outward ACP busy-message admission over real stdio", () => {
     await waitFor(() => executions().length === 1);
 
     const b = agent(); await b.initialize();
-    const receipt = await prompt(b, sid, "second", OPT_IN);
+    const receipt = await prompt(b, sid, "hold:two", OPT_IN);
     expect(receipt.result._meta["agent-bridge"]).toMatchObject({ outcome: "queued", mode: "queue", position: 1 });
     expect(typeof receipt.result._meta["agent-bridge"].queueId).toBe("number");
     const third = await prompt(b, sid, "third", OPT_IN);
@@ -80,8 +80,11 @@ describe("outward ACP busy-message admission over real stdio", () => {
 
     release("one");
     await first;
+    await waitFor(() => executions().length === 2);
+    expect((await status(b, sid)).queued).toBe(1);
+    release("two");
     await waitFor(() => executions().length === 3);
-    expect(executions().map((e) => e.prompt)).toEqual(["hold:one", "second", "third"]);
+    expect(executions().map((e) => e.prompt)).toEqual(["hold:one", "hold:two", "third"]);
     await waitFor(async () => (await status(b, sid)).queued === 0);
     expect(new Set(executions().map((e) => e.prompt)).size).toBe(3);
   }, 60000);
@@ -118,6 +121,9 @@ describe("outward ACP busy-message admission over real stdio", () => {
       prompt(b, sid, "same request", meta, [attachment("left body")]),
       prompt(c, sid, "same request", meta, [attachment("right body")]),
     ]);
+    expect([left.error, right.error]).toEqual([undefined, undefined]);
+    expect(left).toMatchObject({ result: { _meta: { "agent-bridge": { outcome: "queued" } } } });
+    expect(right).toMatchObject({ result: { _meta: { "agent-bridge": { outcome: "queued" } } } });
     expect(left.result._meta["agent-bridge"].queueId).toBe(right.result._meta["agent-bridge"].queueId);
     expect((await status(b, sid)).queued).toBe(1);
     await Promise.all([b.close(), c.close()]);
@@ -168,7 +174,7 @@ describe("outward ACP busy-message admission over real stdio", () => {
     const set = await b.request("_agent-bridge/commands/run", { sessionId: sid, cwd: root, command: "queue_mode", select: "queue_mode:interrupt" });
     expect(set.result.text).toContain("Busy-message mode: interrupt");
     const receipt = await prompt(b, sid, "urgent", OPT_IN);
-    expect(receipt.result._meta["agent-bridge"].outcome).toBe("queued");
+    expect(["queued", "running", "settled"]).toContain(receipt.result._meta["agent-bridge"].outcome);
     expect((await first).result.stopReason).toBe("cancelled");
     await waitFor(() => executions().some((e) => e.prompt === "urgent"));
     expect(executions().filter((e) => e.prompt === "hold:one")).toHaveLength(1);
