@@ -7,7 +7,7 @@ import { createInterface, type Interface } from "node:readline";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { afterAll, describe, expect, it } from "vitest";
-import * as acp from "@agentclientprotocol/sdk";
+import * as acp from "@agentclientprotocol/sdk/unstable";
 import Database from "better-sqlite3";
 import { openDb } from "../src/db.js";
 import { OUTWARD_ACP_SURFACE } from "../src/acpServer/execution.js";

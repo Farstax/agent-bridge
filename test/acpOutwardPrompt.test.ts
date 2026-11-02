@@ -2,7 +2,8 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import * as acp from "@agentclientprotocol/sdk";
+import * as acp from "@agentclientprotocol/sdk/unstable";
+import { connectWithAcpInitialization } from "./support/initializedAcpClient.js";
 import { openDb } from "../src/db.js";
 import { type as eventType } from "../src/events/types.js";
 import { OutwardAcpSessionRepository } from "../src/repositories/outwardAcpSessionRepository.js";
@@ -149,7 +150,8 @@ describe("outward ACP prompt execution", () => {
           updates.push(ctx.params);
         });
 
-      const response = await client.connectWith(
+      const response = await connectWithAcpInitialization(
+        client,
         createOutwardAcpAgent({ sessions, promptExecutor, workspaceRoot: root }),
         async (agent) => {
           await agent.request(acp.methods.agent.initialize, {
@@ -251,7 +253,8 @@ describe("outward ACP prompt execution", () => {
       const client = acp.client({ name: "outward-test-client" })
         .onNotification(acp.methods.client.session.update, (ctx) => updates.push(ctx.params));
 
-      const response = await client.connectWith(
+      const response = await connectWithAcpInitialization(
+        client,
         createOutwardAcpAgent({ sessions, promptExecutor, workspaceRoot: root }),
         (agent) => agent.request(acp.methods.agent.session.prompt, {
           sessionId: session.sessionId,
@@ -288,12 +291,12 @@ describe("outward ACP prompt execution", () => {
       const client = acp.client({ name: "outward-test-client" });
       const app = createOutwardAcpAgent({ sessions, promptExecutor, workspaceRoot: root });
 
-      await expect(client.connectWith(app, (agent) => agent.request(acp.methods.agent.session.prompt, {
+      await expect(connectWithAcpInitialization(client, app, (agent) => agent.request(acp.methods.agent.session.prompt, {
         sessionId: "missing",
         prompt: [{ type: "text", text: "hi" }],
       }))).rejects.toMatchObject({ code: -32602 });
 
-      const resource = await client.connectWith(app, (agent) => agent.request(acp.methods.agent.session.prompt, {
+      const resource = await connectWithAcpInitialization(client, app, (agent) => agent.request(acp.methods.agent.session.prompt, {
         sessionId: "known",
         prompt: [
           { type: "text", text: "Read this resource." },
@@ -312,7 +315,7 @@ describe("outward ACP prompt execution", () => {
       expect(capturedPrompt).toContain("file:///workspace/notes.md");
       expect(capturedPrompt).toContain("workspace notes");
 
-      const image = await client.connectWith(app, (agent) => agent.request(acp.methods.agent.session.prompt, {
+      const image = await connectWithAcpInitialization(client, app, (agent) => agent.request(acp.methods.agent.session.prompt, {
         sessionId: "known",
         prompt: [{ type: "image", data: "AA==", mimeType: "image/png" }],
       }));

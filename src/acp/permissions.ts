@@ -2,7 +2,7 @@ import type {
   PermissionOption,
   RequestPermissionRequest,
   RequestPermissionResponse,
-} from "@agentclientprotocol/sdk";
+} from "@agentclientprotocol/sdk/unstable";
 
 export interface AcpPermissionContext {
   readonly executionMode: "safe" | "trusted";

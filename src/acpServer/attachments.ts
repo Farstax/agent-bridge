@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { getRunOwnedProcessState } from "../runOwnedProcesses.js";
-import type { ContentBlock } from "@agentclientprotocol/sdk";
+import type { ContentBlock } from "@agentclientprotocol/sdk/unstable";
 import { lstat, mkdir, mkdtemp, open, readFile, readdir, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
 import { basename, extname, isAbsolute, join, relative, sep } from "node:path";
 import { createHash } from "node:crypto";

@@ -1,5 +1,5 @@
-import * as acp from "@agentclientprotocol/sdk";
-import { AgentApp } from "@agentclientprotocol/sdk";
+import * as acp from "@agentclientprotocol/sdk/unstable";
+import { AgentApp } from "@agentclientprotocol/sdk/unstable";
 import { randomUUID } from "node:crypto";
 import { realpathSync, statSync } from "node:fs";
 import { basename, isAbsolute, relative, sep } from "node:path";

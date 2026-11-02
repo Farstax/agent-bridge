@@ -5,7 +5,7 @@
  * NEIGHBORS: src/acp/logicalMessages.ts, src/acp/replay.ts, scripts/qualify-logical-messages.ts
  */
 
-import type { SessionUpdate } from "@agentclientprotocol/sdk";
+import type { SessionUpdate } from "@agentclientprotocol/sdk/unstable";
 import type { AcpSessionMode, AcpTurnResult } from "./client.js";
 import {
   createLogicalPreviewTextStream,

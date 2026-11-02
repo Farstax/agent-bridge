@@ -1,4 +1,4 @@
-import * as acp from "@agentclientprotocol/sdk";
+import * as acp from "@agentclientprotocol/sdk/unstable";
 import { lstatSync, mkdirSync, mkdtempSync, readlinkSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -38,9 +38,9 @@ describe("Grok ACP provider", () => {
   it("locks the official Registry distribution and selects it for execution", () => {
     expect(getLockedAcpRegistryEntry("grok")).toEqual(expect.objectContaining({
       id: "grok-build",
-      version: "1.0.50",
+      version: "1.0.70",
       distribution: {
-        npx: { package: "@xai-official/grok@1.0.50", args: ["agent", "stdio"] },
+        npx: { package: "@xai-official/grok@1.0.70", args: ["agent", "stdio"] },
       },
     }));
     expect(getAcpProviderPolicy("grok")).toBe(grokAcpPolicy);
@@ -50,7 +50,7 @@ describe("Grok ACP provider", () => {
       executable: "/opt/agent-bridge/node_modules/.bin/grok",
       args: ["agent", "stdio"],
       versionArgs: ["--version"],
-      runtimeIdentity: expect.stringMatching(/^acp:grok-build@1\.0\.50:[a-f0-9]{64}$/),
+      runtimeIdentity: expect.stringMatching(/^acp:grok-build@1\.0\.70:[a-f0-9]{64}$/),
       toolFree: false,
       provisionalAnswers: true,
     }));

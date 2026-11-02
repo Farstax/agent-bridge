@@ -1,4 +1,4 @@
-import * as acp from "@agentclientprotocol/sdk";
+import * as acp from "@agentclientprotocol/sdk/unstable";
 import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
@@ -63,9 +63,9 @@ describe("declarative ACP provider runtime", () => {
   it("locks the Claude candidate adapter distribution to the qualified release", () => {
     expect(getLockedAcpRegistryEntry("claude")).toEqual(expect.objectContaining({
       id: "claude-acp",
-      version: "0.95.0",
+      version: "0.99.1",
       distribution: {
-        npx: { package: "@agentclientprotocol/claude-agent-acp@0.95.0" },
+        npx: { package: "@agentclientprotocol/claude-agent-acp@0.99.1" },
       },
     }));
   });
@@ -73,9 +73,9 @@ describe("declarative ACP provider runtime", () => {
   it("locks the Grok candidate adapter distribution to the qualified release", () => {
     expect(getLockedAcpRegistryEntry("grok")).toEqual(expect.objectContaining({
       id: "grok-build",
-      version: "1.0.50",
+      version: "1.0.70",
       distribution: {
-        npx: { package: "@xai-official/grok@1.0.50", args: ["agent", "stdio"] },
+        npx: { package: "@xai-official/grok@1.0.70", args: ["agent", "stdio"] },
       },
     }));
   });

@@ -151,7 +151,7 @@ describe("provider qualification contract", () => {
     const previousCommand = process.env.AGY_ACP_COMMAND;
     const previousArgs = process.env.AGY_ACP_ARGS;
     const acp = executable(join(root, "agy_acp_server.par"), `
-if [[ "\${1:-}" == "--version" ]]; then echo "agy_acp_server 1.3.0"; exit 0; fi
+if [[ "\${1:-}" == "--version" ]]; then echo "agy_acp_server 1.4.5"; exit 0; fi
 echo "acp should not be oneshot-parsed" >&2
 exit 7
 `);
@@ -177,8 +177,8 @@ exit 7
         AGY_ACP_COMMAND: acp,
         AGY_ACP_ARGS: "--uid=",
       }).runtimeIdentity);
-      expect(result.providerVersion).toBe("1.3.0");
-      expect(result.checks.find((check) => check.name === "version")?.diagnostic).toMatch(/agy_acp_server 1\.3\.0/);
+      expect(result.providerVersion).toBe("1.4.5");
+      expect(result.checks.find((check) => check.name === "version")?.diagnostic).toMatch(/agy_acp_server 1\.4\.5/);
     } finally {
       if (previousCommand === undefined) delete process.env.AGY_ACP_COMMAND;
       else process.env.AGY_ACP_COMMAND = previousCommand;
@@ -189,7 +189,7 @@ exit 7
 
   describe("candidate binding (issue 997)", () => {
     const agyScript = `
-if [[ "\${1:-}" == "--version" ]]; then echo "agy_acp_server 1.3.0"; exit 0; fi
+if [[ "\${1:-}" == "--version" ]]; then echo "agy_acp_server 1.4.5"; exit 0; fi
 exit 7
 `;
 
@@ -232,7 +232,7 @@ exit 7
       const deployed = executable(join(root, "deployed_agy_acp_server.par"), agyScript);
       const staged = executable(join(root, "staged_agy_acp_server.par"), `${agyScript}\n# staged candidate\n`);
       const record = await qualifyAgy(staged, staged, true);
-      expect(record.providerVersion).toBe("1.3.0");
+      expect(record.providerVersion).toBe("1.4.5");
       expect(record.candidate).toMatchObject({ executable: realpathSync(staged), staged: true });
       expect(record.candidate?.sha256).toBe(createHash("sha256").update(readFileSync(staged)).digest("hex"));
       expect(record.candidate?.sha256).not.toBe(createHash("sha256").update(readFileSync(deployed)).digest("hex"));
@@ -294,11 +294,11 @@ exit 7
           timeoutMs: 5_000,
           env: { ...process.env, AGY_ACP_COMMAND: acp, AGY_ACP_ARGS: "--uid=" },
         });
-        expect(isQualificationCurrent(initial, "agy", "1.3.0", process.env)).toBe(true);
+        expect(isQualificationCurrent(initial, "agy", "1.4.5", process.env)).toBe(true);
 
         // Mutate the executable bytes while keeping the reported version identical
         writeFileSync(acp, `${agyScript}\n# modified binary bytes\n`, { encoding: "utf8", mode: 0o755 });
-        expect(isQualificationCurrent(initial, "agy", "1.3.0", process.env)).toBe(false);
+        expect(isQualificationCurrent(initial, "agy", "1.4.5", process.env)).toBe(false);
 
         // qualifyProviderIfNeeded must not reuse the stale record when bytes changed
         const recheck = await qualifyProviderIfNeeded({
@@ -350,11 +350,11 @@ exit 7
       const runtimeIdentity = currentQualificationRuntime("agy");
       const record = passingRecord({
         provider: "agy",
-        providerVersion: "1.3.0",
+        providerVersion: "1.4.5",
         executionRuntime: runtimeIdentity,
         candidate: { executable: "/usr/bin/agy", sha256: "abc", staged: true },
       });
-      expect(isQualificationCurrent(record, "agy", "1.3.0")).toBe(false);
+      expect(isQualificationCurrent(record, "agy", "1.4.5")).toBe(false);
     });
   });
 
@@ -492,7 +492,7 @@ exit 7
     const previousCommand = process.env.GROK_ACP_COMMAND;
     const previousArgs = process.env.GROK_ACP_ARGS;
     const acp = executable(join(root, "grok"), `
-if [[ "\${1:-}" == "--version" ]]; then echo "grok 1.0.50"; exit 0; fi
+if [[ "\${1:-}" == "--version" ]]; then echo "grok 1.0.70"; exit 0; fi
 echo "acp should not be oneshot-parsed" >&2
 exit 7
 `);
@@ -518,8 +518,8 @@ exit 7
         GROK_ACP_COMMAND: acp,
         GROK_ACP_ARGS: "agent stdio",
       }).runtimeIdentity);
-      expect(result.providerVersion).toBe("1.0.50");
-      expect(result.checks.find((check) => check.name === "version")?.diagnostic).toMatch(/grok 1\.0\.50/);
+      expect(result.providerVersion).toBe("1.0.70");
+      expect(result.checks.find((check) => check.name === "version")?.diagnostic).toMatch(/grok 1\.0\.70/);
     } finally {
       if (previousCommand === undefined) delete process.env.GROK_ACP_COMMAND;
       else process.env.GROK_ACP_COMMAND = previousCommand;
@@ -533,7 +533,7 @@ exit 7
     const previousCommand = process.env.CLAUDE_ACP_COMMAND;
     const previousArgs = process.env.CLAUDE_ACP_ARGS;
     const acp = executable(join(root, "claude-agent-acp"), `
-if [[ "\${1:-}" == "--version" ]]; then echo "@agentclientprotocol/claude-agent-acp 0.95.0"; exit 0; fi
+if [[ "\${1:-}" == "--version" ]]; then echo "@agentclientprotocol/claude-agent-acp 0.99.1"; exit 0; fi
 echo "acp should not be oneshot-parsed" >&2
 exit 7
 `);
@@ -558,8 +558,8 @@ exit 7
         ...process.env,
         CLAUDE_ACP_COMMAND: acp,
       }).runtimeIdentity);
-      expect(result.providerVersion).toBe("0.95.0");
-      expect(result.checks.find((check) => check.name === "version")?.diagnostic).toMatch(/claude-agent-acp 0\.95\.0/);
+      expect(result.providerVersion).toBe("0.99.1");
+      expect(result.checks.find((check) => check.name === "version")?.diagnostic).toMatch(/claude-agent-acp 0\.99\.1/);
     } finally {
       if (previousCommand === undefined) delete process.env.CLAUDE_ACP_COMMAND;
       else process.env.CLAUDE_ACP_COMMAND = previousCommand;
@@ -642,10 +642,10 @@ exec "${process.execPath}" "${join(process.cwd(), "node_modules/tsx/dist/cli.mjs
     const evidencePath = join(root, "qualification.json");
     writeQualificationRecord(passingRecord({
       provider: "grok",
-      providerVersion: "1.0.50",
+      providerVersion: "1.0.70",
       executionRuntime: currentQualificationRuntime("grok"),
     }), evidencePath);
-    const agent = acpAgentExecutable(root, "pass", "1.0.50");
+    const agent = acpAgentExecutable(root, "pass", "1.0.70");
     const previousCommand = process.env.GROK_ACP_COMMAND;
     const previousArgs = process.env.GROK_ACP_ARGS;
     Object.assign(process.env, { GROK_ACP_COMMAND: agent.path, GROK_ACP_ARGS: "agent stdio" }, agent.env);
@@ -653,7 +653,7 @@ exec "${process.execPath}" "${join(process.cwd(), "node_modules/tsx/dist/cli.mjs
       const { qualifyProviderIfNeeded } = await import("../src/providers/qualification.js");
       const result = await qualifyProviderIfNeeded({
         providerId: "grok",
-        installedVersion: "1.0.50",
+        installedVersion: "1.0.70",
         evidencePath,
         bridgeCommit: "f".repeat(40),
         cwd: root,
@@ -663,7 +663,7 @@ exec "${process.execPath}" "${join(process.cwd(), "node_modules/tsx/dist/cli.mjs
       });
 
       expect(result.ran).toBe(true);
-      expect(result.record.providerVersion).toBe("1.0.50");
+      expect(result.record.providerVersion).toBe("1.0.70");
       expect(result.record.executionRuntime).toBe(currentQualificationRuntime("grok", process.env));
       expect(readQualificationEvidence(evidencePath).providers.grok?.executionRuntime)
         .toBe(currentQualificationRuntime("grok", process.env));
@@ -678,14 +678,14 @@ exec "${process.execPath}" "${join(process.cwd(), "node_modules/tsx/dist/cli.mjs
   it("reuses cached evidence only when the active executable version agrees", async () => {
     const root = mkdtempSync(join(tmpdir(), "provider-qualification-runtime-cache-"));
     const evidencePath = join(root, "qualification.json");
-    const agent = acpAgentExecutable(root, "pass", "1.0.50");
+    const agent = acpAgentExecutable(root, "pass", "1.0.70");
     const previousCommand = process.env.GROK_ACP_COMMAND;
     const previousArgs = process.env.GROK_ACP_ARGS;
     Object.assign(process.env, { GROK_ACP_COMMAND: agent.path, GROK_ACP_ARGS: "agent stdio" }, agent.env);
     try {
       const cached = passingRecord({
         provider: "grok",
-        providerVersion: "1.0.50",
+        providerVersion: "1.0.70",
         executionRuntime: currentQualificationRuntime("grok", process.env),
       });
       writeQualificationRecord(cached, evidencePath);
@@ -693,7 +693,7 @@ exec "${process.execPath}" "${join(process.cwd(), "node_modules/tsx/dist/cli.mjs
       const { qualifyProviderIfNeeded } = await import("../src/providers/qualification.js");
       const result = await qualifyProviderIfNeeded({
         providerId: "grok",
-        installedVersion: "1.0.50",
+        installedVersion: "1.0.70",
         evidencePath,
         bridgeCommit: "f".repeat(40),
         cwd: root,
@@ -720,13 +720,13 @@ exec "${process.execPath}" "${join(process.cwd(), "node_modules/tsx/dist/cli.mjs
     // "current" for it, so the matching-version case must use the real lock.
     const nativeRecord = (overrides: Partial<ProviderQualificationRecord> = {}) => passingRecord({
       provider: "grok",
-      providerVersion: "1.0.50",
+      providerVersion: "1.0.70",
       executionRuntime: currentQualificationRuntime("grok"),
       ...overrides,
     });
     writeQualificationRecord(nativeRecord(), evidencePath);
 
-    expect(qualificationHealthCheck("grok", "1.0.50", evidencePath)).toMatchObject({
+    expect(qualificationHealthCheck("grok", "1.0.70", evidencePath)).toMatchObject({
       status: "green",
       message: expect.stringContaining("qualified"),
     });
@@ -739,7 +739,7 @@ exec "${process.execPath}" "${join(process.cwd(), "node_modules/tsx/dist/cli.mjs
         { name: "session_resume", status: "not_applicable" },
       ],
     }), evidencePath);
-    expect(qualificationHealthCheck("grok", "1.0.50", evidencePath)).toMatchObject({
+    expect(qualificationHealthCheck("grok", "1.0.70", evidencePath)).toMatchObject({
       status: "red",
       message: expect.stringMatching(/degraded.*fresh_prompt/i),
     });
@@ -752,7 +752,7 @@ exec "${process.execPath}" "${join(process.cwd(), "node_modules/tsx/dist/cli.mjs
 
   it("accepts native Grok result/session evidence without semantic marker prose", async () => {
     const root = mkdtempSync(join(tmpdir(), "provider-qualification-native-grok-"));
-    const agent = acpAgentExecutable(root, "pass", "1.0.50");
+    const agent = acpAgentExecutable(root, "pass", "1.0.70");
     const previousCommand = process.env.GROK_ACP_COMMAND;
     const previousArgs = process.env.GROK_ACP_ARGS;
     Object.assign(process.env, { GROK_ACP_COMMAND: agent.path, GROK_ACP_ARGS: "agent stdio" }, agent.env);
@@ -806,7 +806,7 @@ exec "${process.execPath}" "${join(process.cwd(), "node_modules/tsx/dist/cli.mjs
 
   it("fails closed when a required native session identity is missing", async () => {
     const root = mkdtempSync(join(tmpdir(), "provider-qualification-native-missing-session-"));
-    const agent = acpAgentExecutable(root, "missing_session", "1.0.50");
+    const agent = acpAgentExecutable(root, "missing_session", "1.0.70");
     const previousCommand = process.env.GROK_ACP_COMMAND;
     const previousArgs = process.env.GROK_ACP_ARGS;
     Object.assign(process.env, { GROK_ACP_COMMAND: agent.path, GROK_ACP_ARGS: "agent stdio" }, agent.env);
@@ -899,7 +899,7 @@ exec "${process.execPath}" "${join(process.cwd(), "node_modules/tsx/dist/cli.mjs
 
   it("fails repository grounding when the native answer omits the repository instruction marker", async () => {
     const root = mkdtempSync(join(tmpdir(), "provider-grounding-omission-"));
-    const agent = acpAgentExecutable(root, "grounding_omit_instruction", "1.0.50");
+    const agent = acpAgentExecutable(root, "grounding_omit_instruction", "1.0.70");
     const previousCommand = process.env.GROK_ACP_COMMAND;
     const previousArgs = process.env.GROK_ACP_ARGS;
     Object.assign(process.env, { GROK_ACP_COMMAND: agent.path, GROK_ACP_ARGS: "agent stdio" }, agent.env);
@@ -928,7 +928,7 @@ exec "${process.execPath}" "${join(process.cwd(), "node_modules/tsx/dist/cli.mjs
 
   it("fails repository grounding when the native answer returns the wrong source fact", async () => {
     const root = mkdtempSync(join(tmpdir(), "provider-grounding-wrong-source-"));
-    const agent = acpAgentExecutable(root, "grounding_omit_source", "1.0.50");
+    const agent = acpAgentExecutable(root, "grounding_omit_source", "1.0.70");
     const previousCommand = process.env.GROK_ACP_COMMAND;
     const previousArgs = process.env.GROK_ACP_ARGS;
     Object.assign(process.env, { GROK_ACP_COMMAND: agent.path, GROK_ACP_ARGS: "agent stdio" }, agent.env);
@@ -957,7 +957,7 @@ exec "${process.execPath}" "${join(process.cwd(), "node_modules/tsx/dist/cli.mjs
 
   it("keeps provider capacity exhaustion distinct from a deterministic grounding failure", async () => {
     const root = mkdtempSync(join(tmpdir(), "provider-grounding-capacity-"));
-    const agent = acpAgentExecutable(root, "capacity", "1.0.50");
+    const agent = acpAgentExecutable(root, "capacity", "1.0.70");
     const previousCommand = process.env.GROK_ACP_COMMAND;
     const previousArgs = process.env.GROK_ACP_ARGS;
     Object.assign(process.env, { GROK_ACP_COMMAND: agent.path, GROK_ACP_ARGS: "agent stdio" }, agent.env);

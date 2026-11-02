@@ -1,4 +1,4 @@
-import type { SessionUpdate } from "@agentclientprotocol/sdk";
+import type { SessionUpdate } from "@agentclientprotocol/sdk/unstable";
 
 /**
  * Provider-neutral reconstruction of ACP assistant text into logical messages.

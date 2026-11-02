@@ -1,5 +1,5 @@
 import { join } from "node:path";
-import type { ContentBlock, SessionUpdate } from "@agentclientprotocol/sdk";
+import type { ContentBlock, SessionUpdate } from "@agentclientprotocol/sdk/unstable";
 import type { AcpTurnResult } from "../acp/client.js";
 import { acpSessionConfigIntents } from "../acp/sessionConfig.js";
 import type { AcpObservedUpdate } from "../acp/replay.js";

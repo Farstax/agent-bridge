@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { agentSupportsSteering } from "../src/acp/index.js";
-import type { InitializeResponse } from "@agentclientprotocol/sdk";
+import type { InitializeResponse } from "@agentclientprotocol/sdk/unstable";
 
 function initWithMeta(meta: Record<string, unknown> | null | undefined): InitializeResponse {
   return {

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { SessionUpdate } from "@agentclientprotocol/sdk";
+import type { SessionUpdate } from "@agentclientprotocol/sdk/unstable";
 import type { AcpTurnResult } from "../src/acp/client.js";
 import type { AcpObservedUpdate } from "../src/acp/replay.js";
 import {

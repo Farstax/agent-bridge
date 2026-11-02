@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import * as acp from "@agentclientprotocol/sdk";
+import * as acp from "@agentclientprotocol/sdk/unstable";
 import { Readable, Writable } from "node:stream";
 import { realpathSync } from "node:fs";
 import { openProductionDb } from "../db.js";

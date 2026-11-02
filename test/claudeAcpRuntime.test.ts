@@ -1,4 +1,4 @@
-import * as acp from "@agentclientprotocol/sdk";
+import * as acp from "@agentclientprotocol/sdk/unstable";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -32,9 +32,9 @@ describe("Claude ACP provider", () => {
   it("locks the official Registry distribution and selects it for execution", () => {
     expect(getLockedAcpRegistryEntry("claude")).toEqual(expect.objectContaining({
       id: "claude-acp",
-      version: "0.95.0",
+      version: "0.99.1",
       distribution: {
-        npx: { package: "@agentclientprotocol/claude-agent-acp@0.95.0" },
+        npx: { package: "@agentclientprotocol/claude-agent-acp@0.99.1" },
       },
     }));
     expect(getAcpProviderPolicy("claude")).toBe(claudeAcpPolicy);
@@ -44,7 +44,7 @@ describe("Claude ACP provider", () => {
       executable: "/opt/agent-bridge/node_modules/.bin/claude-agent-acp",
       args: [],
       versionArgs: ["--version"],
-      runtimeIdentity: expect.stringMatching(/^acp:claude-acp@0\.95\.0:[a-f0-9]{64}$/),
+      runtimeIdentity: expect.stringMatching(/^acp:claude-acp@0\.99\.1:[a-f0-9]{64}$/),
       toolFree: true,
       provisionalAnswers: true,
     }));

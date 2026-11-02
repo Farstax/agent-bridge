@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import * as acp from "@agentclientprotocol/sdk";
+import * as acp from "@agentclientprotocol/sdk/unstable";
 import { PassThrough } from "node:stream";
 import { AcpSessionMap, liveDeliveryText, nodeStdioStream, runAcpTurn } from "../src/acp/index.js";
 import { createFakeAcpAgent } from "./support/fakeAcpAgent.js";

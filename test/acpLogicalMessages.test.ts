@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { SessionNotification, SessionUpdate } from "@agentclientprotocol/sdk";
+import type { SessionNotification, SessionUpdate } from "@agentclientprotocol/sdk/unstable";
 import {
   ACP_MESSAGE_SEPARATOR,
   createLogicalPreviewTextStream,

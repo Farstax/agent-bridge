@@ -1,6 +1,6 @@
 import { mkdirSync, openSync, closeSync, writeSync } from "node:fs";
 import { resolve } from "node:path";
-import type { StopReason } from "@agentclientprotocol/sdk";
+import type { StopReason } from "@agentclientprotocol/sdk/unstable";
 import { redactProviderApiKeySecrets } from "../providers/apiKeyAuth.js";
 
 /**

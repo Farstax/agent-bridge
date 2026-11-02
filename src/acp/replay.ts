@@ -1,4 +1,4 @@
-import type { SessionNotification } from "@agentclientprotocol/sdk";
+import type { SessionNotification } from "@agentclientprotocol/sdk/unstable";
 import { reconstructLogicalMessages, renderLogicalMessages } from "./logicalMessages.js";
 
 export type AcpUpdateChannel = "replay" | "live";

@@ -4,7 +4,7 @@ import { basename, extname } from "node:path";
 import { pathToFileURL } from "node:url";
 import { createHash } from "node:crypto";
 import { homedir } from "node:os";
-import type { ContentBlock, Usage } from "@agentclientprotocol/sdk";
+import type { ContentBlock, Usage } from "@agentclientprotocol/sdk/unstable";
 import { nodeStdioStream, runAcpTurn } from "../acp/index.js";
 import { createLogicalPreviewTextStream } from "../acp/logicalMessages.js";
 import type { AcpRetainedEvent, AcpSessionConfigRequest, AcpTurnResult } from "../acp/client.js";
