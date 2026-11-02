@@ -486,26 +486,41 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
       const replay = this.replayRequest(input.session, input.requestId);
       if (replay) return replay;
     }
-    let lane = db.acquireLock(OUTWARD_ACP_SURFACE, conversationId, false);
-    if (!lane) {
-      await recoverOutwardLanes(db);
-      lane = db.acquireLock(OUTWARD_ACP_SURFACE, conversationId, false);
+    const requestToken = optedIn && input.requestId ? randomUUID() : null;
+    const reservationKey = input.requestId ? queueReservationKey(requestKey(input.session, input.requestId)) : null;
+    const acquire = () => requestToken && input.requestId && reservationKey
+      ? db.acquireLaneForIdempotentRequest(
+        OUTWARD_ACP_SURFACE, conversationId, requestKey(input.session, input.requestId),
+        reservationKey, queueReceiptKey(requestKey(input.session, input.requestId)),
+        queueRunLinkKey(requestKey(input.session, input.requestId)), requestToken,
+      )
+      : db.acquireLock(OUTWARD_ACP_SURFACE, conversationId, false);
+    try {
+      let lane = acquire();
+      if (!lane) {
+        await recoverOutwardLanes(db);
+        lane = acquire();
+      }
+      if (lane && (this.hasRunningRun(conversationId) ||
+          // Accepted earlier messages keep their order ahead of a new submission.
+          (optedIn && db.pendingMsgCount(OUTWARD_ACP_SURFACE, conversationId) > 0))) {
+        db.unlock(lane);
+        lane = null;
+      }
+      if (!lane) {
+        if (optedIn) return this.queueBehindActive(input, requestToken ?? undefined);
+        throw new acp.RequestError(
+          OUTWARD_ACP_BUSY_ERROR,
+          "outward ACP session is busy",
+          { sessionId: input.session.sessionId },
+        );
+      }
+      return await this.runOnLane(input, lane, undefined, requestToken ?? undefined);
+    } finally {
+      if (requestToken && reservationKey && db.getSetting(reservationKey) === requestToken) {
+        db.setSetting(reservationKey, null);
+      }
     }
-    if (lane && (this.hasRunningRun(conversationId) ||
-        // Accepted earlier messages keep their order ahead of a new submission.
-        (optedIn && db.pendingMsgCount(OUTWARD_ACP_SURFACE, conversationId) > 0))) {
-      db.unlock(lane);
-      lane = null;
-    }
-    if (!lane) {
-      if (optedIn) return this.queueBehindActive(input);
-      throw new acp.RequestError(
-        OUTWARD_ACP_BUSY_ERROR,
-        "outward ACP session is busy",
-        { sessionId: input.session.sessionId },
-      );
-    }
-    return this.runOnLane(input, lane);
   }
 
   /** Answer a repeated client request from durable state; never admit it twice. */
@@ -539,6 +554,7 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
     input: OutwardAcpPromptExecutionInput,
     lane: ExecutionLaneHandle,
     queued?: QueuedExecution,
+    reservationToken?: string,
   ): Promise<acp.PromptResponse> {
     const { db } = this.options;
     const idempotencyKey = queued?.key
@@ -559,7 +575,10 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
         db.insertRun(runId, identity, provider);
         // Persist the Run -> queued row link with the Run, so a crash after this
         // point can never replay a prompt whose execution may have started.
-        if (idempotencyKey) db.setSetting(queueRunLinkKey(idempotencyKey), runId);
+        if (idempotencyKey) {
+          db.setSetting(queueRunLinkKey(idempotencyKey), runId);
+          if (reservationToken) db.setSetting(queueReservationKey(idempotencyKey), null);
+        }
         if (input.capacityResume) {
           // Persist the exact continuation claim -> successor link before any
           // provider can execute, so a crash cannot lead to blind replay.
@@ -802,7 +821,7 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
    * admission primitive. Acceptance is not completion: the receipt names the
    * queue row, and execution is observable through Workstream status.
    */
-  private async queueBehindActive(input: OutwardAcpPromptExecutionInput): Promise<acp.PromptResponse> {
+  private async queueBehindActive(input: OutwardAcpPromptExecutionInput, reservationToken?: string): Promise<acp.PromptResponse> {
     const { db } = this.options;
     const { session } = input;
     const mode = this.busyMode(session);
@@ -835,7 +854,7 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
         chatType: "acp",
         attachments: attachments.length > 0 ? [`${RETAINED_ATTACHMENT_MARKER}${retainedId}`] : [],
         scheduledOccurrenceKey: key,
-      }, OUTWARD_QUEUE_MAX_DEPTH, queueReceiptKey(key), queueRunLinkKey(key));
+      }, OUTWARD_QUEUE_MAX_DEPTH, queueReceiptKey(key), queueRunLinkKey(key), queueReservationKey(key), reservationToken ?? "");
     } catch (error) {
       await releaseRetainedOutwardAcpAttachments(session.cwd, retainedId).catch(() => undefined);
       throw error;
@@ -1060,6 +1079,7 @@ function requestKey(session: OutwardAcpSessionRecord, requestId: string): string
 function remoteStopKey(runId: string): string { return `outward-cancel:${runId}`; }
 function queueRunLinkKey(key: string): string { return `outward-queue-run:${key}`; }
 function queueReceiptKey(key: string): string { return `outward-queue-receipt:${key}`; }
+function queueReservationKey(key: string): string { return `outward-queue-reservation:${key}`; }
 
 const NO_DELIVERY_PLATFORM: MessagingPlatform = {
   capabilities: SAFE_SURFACE_CAPABILITIES,

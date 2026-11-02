@@ -128,6 +128,23 @@ describe("outward ACP busy-message admission over real stdio", () => {
     expect(["left body", "right body"]).toContain(executions()[1].attachments[0]);
   }, 60000);
 
+  it("does not queue a duplicate request that races the first direct Run", async () => {
+    const a = agent(); const b = agent();
+    await Promise.all([a.initialize(), b.initialize()]);
+    const sid = await session(a);
+    const meta = { ...OPT_IN, "agent-bridge/request-id": "direct-race" };
+    let early: Awaited<ReturnType<typeof prompt>> | undefined;
+    const first = prompt(a, sid, "hold:one", meta).then((value) => { early ??= value; return value; });
+    const second = prompt(b, sid, "hold:two", meta).then((value) => { early ??= value; return value; });
+    await waitFor(() => early !== undefined);
+    expect(executions()).toHaveLength(1);
+    expect(early).toMatchObject({ result: { _meta: { "agent-bridge": { outcome: "running" } } } });
+    expect((await status(b, sid)).queued).toBe(0);
+    release("one"); release("two");
+    await Promise.all([first, second]);
+    expect(executions()).toHaveLength(1);
+  }, 60000);
+
   it("rejects admission when the durable queue is full", async () => {
     const a = agent(); await a.initialize();
     const sid = await session(a);

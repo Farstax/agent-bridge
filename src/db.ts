@@ -496,6 +496,35 @@ export class BridgeDb {
     return new Map(rows.map((row) => [row.chatKey, row.n]));
   }
 
+  /** Acquire the idle lane and reserve an idempotent ACP request in one transaction. */
+  acquireLaneForIdempotentRequest(
+    surface: string,
+    chatKey: string,
+    requestKey: string,
+    reservationSettingKey: string,
+    receiptSettingKey: string,
+    runLinkSettingKey: string,
+    token: string,
+  ): ExecutionLaneHandle | null {
+    assertExecutionScope(surface, chatKey);
+    return this.runInTransaction(() => {
+      const pending = this.raw.prepare(
+        "SELECT 1 FROM pending_messages WHERE surface = ? AND scheduled_occurrence_key = ? LIMIT 1",
+      ).get(surface, requestKey);
+      if (pending || this.getSetting(receiptSettingKey) || this.getSetting(runLinkSettingKey)) return null;
+      const reservation = this.getSetting(reservationSettingKey);
+      const lock = this.raw.prepare(
+        "SELECT 1 FROM execution_locks WHERE surface = ? AND chat_key = ? LIMIT 1",
+      ).get(surface, chatKey);
+      if (reservation && lock) return null;
+      if (reservation) this.setSetting(reservationSettingKey, null);
+      const lane = this.locks.acquire(surface, chatKey, false);
+      if (!lane) return null;
+      this.setSetting(reservationSettingKey, token);
+      return lane;
+    });
+  }
+
   /**
    * Atomically accept one outward busy message per correlation key. The row,
    * terminal receipt, and Run link share one SQLite transaction boundary, so
@@ -508,10 +537,12 @@ export class BridgeDb {
     maxDepth: number,
     receiptSettingKey: string,
     runLinkSettingKey: string,
+    reservationSettingKey: string,
+    reservationToken: string,
   ):
     | { kind: "queued"; id: number; position: number }
     | { kind: "existing"; id: number; position: number }
-    | { kind: "running"; runId: string }
+    | { kind: "running"; runId?: string }
     | { kind: "receipt"; value: string }
     | { kind: "full" } {
     assertExecutionScope(surface, chatKey);
@@ -532,9 +563,12 @@ export class BridgeDb {
       }
       const receipt = this.getSetting(receiptSettingKey);
       if (receipt) return { kind: "receipt" as const, value: receipt };
+      const reservation = this.getSetting(reservationSettingKey);
+      if (reservation && reservation !== reservationToken) return { kind: "running" as const };
       const pending = this.pendingMsgCount(surface, chatKey);
       if (pending >= maxDepth) return { kind: "full" as const };
       const id = this.enqueueMsg(surface, chatKey, msg);
+      if (reservation === reservationToken) this.setSetting(reservationSettingKey, null);
       return { kind: "queued" as const, id, position: pending + 1 };
     });
   }
