@@ -1,4 +1,5 @@
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -26,7 +27,7 @@ const executions = (): Array<{ prompt: string; attachments: string[]; pid: numbe
     : [];
 const release = (name: string) => writeFileSync(join(control, `release-${name}`), "");
 const prompt = (client: StdioRpc, sessionId: string, text: string, meta: Record<string, unknown> = {}, extra: unknown[] = []) =>
-  client.request("session/prompt", { sessionId, prompt: [{ type: "text", text }, ...extra], _meta: meta });
+  client.request("session/prompt", { sessionId, prompt: [{ type: "text", text }, ...extra], _meta: meta["agent-bridge/busy-messages"] === 1 && !meta["agent-bridge/request-id"] ? { ...meta, "agent-bridge/request-id": randomUUID() } : meta });
 const status = async (client: StdioRpc, sessionId: string) =>
   (await client.request("_agent-bridge/workstreams/status", { sessionId, cwd: root })).result.status;
 async function session(client: StdioRpc): Promise<string> {
@@ -62,6 +63,14 @@ describe("outward ACP busy-message admission over real stdio", () => {
     expect((await first).result.stopReason).toBe("end_turn");
     expect(executions().map((e) => e.prompt)).toEqual(["hold:one"]);
   }, 60000);
+
+  it("requires a stable request ID when a client opts into busy-message admission", async () => {
+    const client = agent(); await client.initialize();
+    const sid = await session(client);
+    const result = await client.request("session/prompt", { sessionId: sid, prompt: [{ type: "text", text: "no stable identity" }], _meta: OPT_IN });
+    expect(result.error.code).toBe(-32602);
+    expect(result.error.message).toContain("requires a stable request ID");
+  });
 
   it("queues from a second process, preserves order and runs each message exactly once", async () => {
     const a = agent(); await a.initialize();

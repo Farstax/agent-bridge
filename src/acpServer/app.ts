@@ -309,6 +309,12 @@ export function createOutwardAcpAgent(options: OutwardAcpAgentOptions = {}): Age
     }
     const authorizedCwd = authorizeWorkspacePath(session.cwd, workspaceRoot);
     const prompt = promptText(ctx.params.prompt);
+    const requestId = boundedRequestId(ctx.params._meta?.["agent-bridge/request-id"]);
+    const busyMessages = supportsWorkstreams && promptExecutor.supportsBusyMessages === true
+      && ctx.params._meta?.["agent-bridge/busy-messages"] === 1;
+    if (busyMessages && !requestId) {
+      throw acp.RequestError.invalidParams({ field: "_meta.agent-bridge/request-id" }, "busy-message opt-in requires a stable request ID");
+    }
     try {
       return await stageOutwardAcpAttachments(authorizedCwd, ctx.params.prompt, (attachments, runId) => promptExecutor.execute({
         session,
@@ -319,9 +325,8 @@ export function createOutwardAcpAgent(options: OutwardAcpAgentOptions = {}): Age
         ...(runId ? { runId } : {}),
         signal: ctx.signal,
         deferCapacity: ctx.params._meta?.["agent-bridge/defer-capacity"] === 1,
-        busyMessages: supportsWorkstreams && promptExecutor.supportsBusyMessages === true
-          && ctx.params._meta?.["agent-bridge/busy-messages"] === 1,
-        requestId: boundedRequestId(ctx.params._meta?.["agent-bridge/request-id"]),
+        busyMessages,
+        requestId,
         onUpdate: (update) => ctx.client.notify(acp.methods.client.session.update, {
           sessionId: session.sessionId,
           update,
