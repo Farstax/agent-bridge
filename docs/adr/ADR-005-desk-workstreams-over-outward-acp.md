@@ -156,6 +156,24 @@ maintenance job reclaims one only when it is also older than an hour, owner-veri
 and referenced by no queue row (a crash between retention and the row insert);
 otherwise it is kept.
 
+**Stop and cancellation are different operations.** A user-facing `stop`
+atomically fences new admission, removes queued and claimed rows for the
+Workstream, and records cancelled receipts for idempotent retries. It then
+cancels the active Run through its owner. Unstarted attachment snapshots can
+be released after row removal; a claimed snapshot stays until the owner has
+settled its Run. If the owner does not confirm within the wait bound, Stop
+remains pending and admission stays fenced until owner or proven-containment
+recovery settles the Run and the existing outward worker clears the fence.
+Repeated Stop is safe. Standard ACP `session/cancel` cancels only its active
+request and leaves previously accepted queue work intact. Interrupt mode also
+cancels only the active Run and preserves the replacement message.
+
+Outward provider execution participates in the configured shared execution
+capacity coordinator through `BridgeEngine`. The supervised outward worker
+continues to own capacity-wait recovery. Ordinary unattended continuations
+are not exposed to outward ACP: the existing ACP worker has no delivery and
+recovery contract for ordinary continuations.
+
 ## Provider selection
 
 `select_provider` accepts only a configured chain member that is currently

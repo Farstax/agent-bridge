@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { describe, expect, it } from "vitest";
 import { CURRENT_SCHEMA_VERSION, MigrationRequiredError, UnsupportedSchemaVersionError } from "../src/db/schema.js";
 import { DatabaseMissingError, openDb, openProductionDb } from "../src/db.js";
+import { openExecutionCapacityCoordinator } from "../src/executionCapacity.js";
 
 // Issue #135 Phase 4C.2: openProductionDb() is the strict, production-only
 // opener. Unlike openDb(), it never creates a missing file and only accepts
@@ -243,13 +244,40 @@ describe("Issue #1385: transient ACP opener foreign-key verification boundary", 
     }
   });
 
-  it("is opted out only by the per-client ACP stdio opener", () => {
+  it("keeps a transient ACP capacity-coordinator open lightweight and write constraints enabled", () => {
+    const dir = tempDir("fk-capacity");
+    try {
+      const primaryPath = join(dir, "primary.sqlite");
+      const coordinatorPath = join(dir, "coordinator.sqlite");
+      const primary = openDb(primaryPath, { databaseRole: "interactive" });
+      seedViolation(coordinatorPath);
+      const coordinator = openExecutionCapacityCoordinator(
+        { maxConcurrentExecutions: 1, coordinatorDbPath: coordinatorPath },
+        primaryPath,
+        primary,
+        { serviceId: "test:acp", databaseRole: "interactive", verifyForeignKeyIntegrity: false },
+      );
+      expect(coordinator).not.toBeNull();
+      expect(coordinator!.raw.pragma("foreign_keys", { simple: true })).toBe(1);
+      expect(() => coordinator!.raw.prepare(`INSERT INTO bridge_events (id, run_id, seq, type, timestamp, payload_json)
+        VALUES ('orphan-2', 'missing-run', 2, 'test', '2026-11-02T00:00:00Z', '{}')`).run())
+        .toThrow(/FOREIGN KEY constraint failed/);
+      coordinator!.close();
+      primary.close();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("opts only transient ACP database connections out of the full integrity scan", () => {
     const optOut = /verifyForeignKeyIntegrity:\s*false/;
-    expect(readFileSync("src/acpServer/stdio.ts", "utf8")).toMatch(optOut);
+    const allowed = new Set([join("src", "acpServer", "stdio.ts"), join("src", "acpServer", "execution.ts")]);
+    expect(readFileSync(join("src", "acpServer", "stdio.ts"), "utf8")).toMatch(optOut);
+    expect(readFileSync(join("src", "acpServer", "execution.ts"), "utf8")).toMatch(optOut);
     const offenders = readdirSync("src", { recursive: true, withFileTypes: true })
       .filter((entry) => entry.isFile() && entry.name.endsWith(".ts"))
       .map((entry) => join(entry.parentPath, entry.name))
-      .filter((file) => file !== join("src", "acpServer", "stdio.ts") && optOut.test(readFileSync(file, "utf8")));
+      .filter((file) => !allowed.has(file) && optOut.test(readFileSync(file, "utf8")));
     expect(offenders).toEqual([]);
   });
 });

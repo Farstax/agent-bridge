@@ -20,7 +20,7 @@ For questions about how this repository works or other implementation-specific b
 
 ### Shared execution ownership
 
-Communication adapters translate and deliver. Bridge Core admits, executes, coordinates and recovers. Telegram, Discord, Slack and outward ACP share one durable admission/queue (`db.admitMessage`, `pending_messages`), busy-message policy (`src/busyMessageMode.ts`), lane fencing and provider recovery; an adapter owns only its transport, authentication, interaction format and delivery, and must not grow a private queue or busy policy. Outward ACP busy-message handling is an opt-in extension (ADR-005); legacy ACP v1 clients keep fail-fast busy.
+Communication adapters translate and deliver. Bridge Core admits, executes, coordinates and recovers. Telegram, Discord, Slack and outward ACP share one durable queue (`pending_messages`), busy-message policy (`src/busyMessageMode.ts`), lane fencing, provider routing and configured execution-capacity coordinator. Adapters own transport authentication, protocol receipts, interaction format and delivery; they do not create a second queue or decide a different busy policy. A user-facing Stop clears accepted pending work and cancels the active Run. ACP `session/cancel` cancels the active request only, and interrupt mode preserves its replacement message. Outward ACP busy-message handling is an opt-in extension (ADR-005); legacy ACP v1 clients keep fail-fast busy. The supervised outward worker owns capacity waits; ordinary unattended continuations are not advertised there until an authorised delivery and recovery path exists.
 
 ### Provider-owned completion
 

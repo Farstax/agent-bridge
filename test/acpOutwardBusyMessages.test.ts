@@ -190,19 +190,105 @@ describe("outward ACP busy-message admission over real stdio", () => {
     expect(executions().filter((e) => e.prompt === "hold:one")).toHaveLength(1);
   }, 60000);
 
+  it("Stop during an interrupt cancels the replacement Run and queued follow-up", async () => {
+    const a = agent(); await a.initialize();
+    const sid = await session(a);
+    const first = prompt(a, sid, "hold:first");
+    await waitFor(() => executions().length === 1);
+    const b = agent(); await b.initialize();
+    await b.request("_agent-bridge/commands/run", { sessionId: sid, cwd: root, command: "queue_mode", select: "queue_mode:interrupt" });
+    const replacement = prompt(b, sid, "hold:replacement", OPT_IN);
+    await waitFor(() => executions().length === 2);
+    expect((await first).result.stopReason).toBe("cancelled");
+    expect((await status(b, sid)).state).toBe("running");
+
+    await b.request("_agent-bridge/commands/run", { sessionId: sid, cwd: root, command: "queue_mode", select: "queue_mode:queue" });
+    const c = agent(); await c.initialize();
+    const requestId = "stop-during-interrupt-followup";
+    expect((await prompt(c, sid, "queued after interrupt", { ...OPT_IN, "agent-bridge/request-id": requestId })).result._meta["agent-bridge"].outcome).toBe("queued");
+    const stopped = await c.request("_agent-bridge/commands/run", { sessionId: sid, cwd: root, command: "stop" });
+    expect(stopped.result.stop).toBe("confirmed");
+    await replacement;
+    expect((await status(c, sid)).state).toBe("cancelled");
+    const retry = await prompt(c, sid, "queued after interrupt", { ...OPT_IN, "agent-bridge/request-id": requestId });
+    expect(retry.result._meta["agent-bridge"]).toMatchObject({ outcome: "settled", status: "cancelled" });
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect(executions().map((run) => run.prompt)).toEqual(["hold:first", "hold:replacement"]);
+  }, 60000);
+
   it("Stop from a second process genuinely cancels the owning process's Run", async () => {
     const a = agent(); await a.initialize();
     const sid = await session(a);
     const first = prompt(a, sid, "hold:one");
     await waitFor(() => executions().length === 1);
     const b = agent(); await b.initialize();
+    expect((await prompt(b, sid, "accepted before cancel", OPT_IN)).result._meta["agent-bridge"].outcome).toBe("queued");
     b.notify("session/cancel", { sessionId: sid });
     expect((await first).result.stopReason).toBe("cancelled");
-    await waitFor(async () => (await status(b, sid)).state === "cancelled");
-    // A late Stop with nothing running is a harmless no-op.
+    // Standard ACP request cancellation targets the active request only; an
+    // explicitly accepted busy-message remains valid work and must run.
+    await waitFor(() => executions().length === 2);
+    expect(executions().map((run) => run.prompt)).toEqual(["hold:one", "accepted before cancel"]);
+    // A later user-facing Stop with nothing running is a harmless no-op.
     const stop = await b.request("_agent-bridge/commands/run", { sessionId: sid, cwd: root, command: "stop" });
     expect(stop.result.command).toBe("stop");
-    expect(executions()).toHaveLength(1);
+    expect(executions()).toHaveLength(2);
+  }, 60000);
+
+  it("confirmed Stop discards queued prompts and attachments across ACP processes", async () => {
+    const a = agent(); await a.initialize();
+    const sid = await session(a);
+    const first = prompt(a, sid, "hold:stop-target");
+    await waitFor(() => executions().length === 1);
+
+    const b = agent(); await b.initialize();
+    const requestId = "queued-before-stop";
+    const file = { type: "resource", resource: { uri: "file:///stop.txt", mimeType: "text/plain", text: "must be discarded" } };
+    expect((await prompt(b, sid, "discarded queue item", { ...OPT_IN, "agent-bridge/request-id": requestId }, [file])).result._meta["agent-bridge"].outcome).toBe("queued");
+    expect(readdirSync(root).some((name) => name.startsWith(".agent-bridge-queued-attachments-"))).toBe(true);
+
+    const c = agent(); await c.initialize();
+    const stopped = await c.request("_agent-bridge/commands/run", { sessionId: sid, cwd: root, command: "stop" });
+    expect(stopped.result.stop).toBe("confirmed");
+    expect((await first).result.stopReason).toBe("cancelled");
+    expect((await status(c, sid)).queued).toBe(0);
+    expect(readdirSync(root).some((name) => name.startsWith(".agent-bridge-queued-attachments-"))).toBe(false);
+
+    const retry = await prompt(c, sid, "discarded queue item", { ...OPT_IN, "agent-bridge/request-id": requestId }, [file]);
+    expect(retry.result._meta["agent-bridge"]).toMatchObject({ outcome: "settled", status: "cancelled" });
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect(executions().map((run) => run.prompt)).toEqual(["hold:stop-target"]);
+
+    expect((await prompt(c, sid, "after confirmed stop")).result.stopReason).toBe("end_turn");
+    expect(executions().map((run) => run.prompt)).toEqual(["hold:stop-target", "after confirmed stop"]);
+  }, 60000);
+
+  it("keeps a claimed attachment until its active Run is cancelled, then releases it", async () => {
+    const a = agent(); await a.initialize();
+    const sid = await session(a);
+    const first = prompt(a, sid, "hold:first");
+    await waitFor(() => executions().length === 1);
+
+    const b = agent(); await b.initialize();
+    const requestId = "claimed-attachment-stop";
+    const file = { type: "resource", resource: { uri: "file:///claimed.txt", mimeType: "text/plain", text: "active attachment" } };
+    expect((await prompt(b, sid, "hold:second", { ...OPT_IN, "agent-bridge/request-id": requestId }, [file])).result._meta["agent-bridge"].outcome).toBe("queued");
+    release("first");
+    expect((await first).result.stopReason).toBe("end_turn");
+    await waitFor(() => executions().length === 2);
+    const retained = readdirSync(root).filter((name) => name.startsWith(".agent-bridge-queued-attachments-"));
+    expect(retained).toHaveLength(1);
+
+    const c = agent(); await c.initialize();
+    const stopped = await c.request("_agent-bridge/commands/run", { sessionId: sid, cwd: root, command: "stop" });
+    expect(stopped.result.stop).toBe("confirmed");
+    expect((await status(c, sid)).queued).toBe(0);
+    await waitFor(() => readdirSync(root).every((name) => !name.startsWith(".agent-bridge-queued-attachments-")));
+    const retry = await prompt(c, sid, "hold:second", { ...OPT_IN, "agent-bridge/request-id": requestId }, [file]);
+    expect(retry.result._meta["agent-bridge"]).toMatchObject({ outcome: "settled", status: "cancelled" });
+    expect(executions().map((run) => run.prompt)).toHaveLength(2);
+    expect(executions()[1]?.prompt).toContain("hold:second");
+    expect(executions()[1]?.prompt).toContain("[Attached file: 01-claimed.txt]");
   }, 60000);
 
   it("retains queued attachments across the submitting connection and releases them after execution", async () => {

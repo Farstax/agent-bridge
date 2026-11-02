@@ -133,3 +133,38 @@ describe("outward ACP Stop confirmation", () => {
     } finally { f.cleanup(); }
   });
 });
+
+describe("outward ACP Stop queue ownership", () => {
+  it("fences new admission while cancellation is pending", async () => {
+    const f = fixture(120);
+    try {
+      const owner = f.make(f.db, false);
+      const first = f.prompt(owner);
+      await wait(() => running(f).length === 1);
+      const stopper = f.make(f.observer, true);
+      expect(await stopper.cancel(f.session)).toBe("pending");
+      await expect(stopper.execute({ session: f.session, prompt: "after stop", signal: new AbortController().signal, onUpdate: () => undefined }))
+        .rejects.toMatchObject({ code: -32002 });
+      f.release();
+      await first;
+    } finally { f.cleanup(); }
+  });
+
+  it("keeps orphaned Runs fenced until restart recovery proves containment", async () => {
+    const f = fixture(120);
+    try {
+      const dead = openDb(join(f.root, "bridge.sqlite"), { databaseRole: "interactive", serviceId: "acp:outward/4194300/1", lockLeaseMs: 1 });
+      dead.acquireLock(OUTWARD_ACP_SURFACE, f.session.conversationId, false);
+      dead.insertRun("orphan-run", { surfaceIdentity: OUTWARD_ACP_SURFACE, chatKey: f.session.conversationId }, "codex");
+      dead.admitMessage(OUTWARD_ACP_SURFACE, f.session.conversationId, { prompt: "accepted", chatId: "s1", chatType: "acp", scheduledOccurrenceKey: "acp-queue:dead" }, 5, true);
+      dead.close();
+      const stopper = f.make(f.observer, true);
+      expect(await stopper.cancel(f.session)).toBe("pending");
+      expect(f.db.dequeueMsgs(OUTWARD_ACP_SURFACE, f.session.conversationId)).toHaveLength(0);
+      await recoverOutwardLanes(f.db);
+      expect(f.db.getRun("orphan-run")?.status).toBe("failed");
+      stopper.reconcileStopFences();
+      expect(await stopper.cancel(f.session)).toBe("confirmed");
+    } finally { f.cleanup(); }
+  });
+});

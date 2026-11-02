@@ -152,6 +152,8 @@ export interface BridgeEngineOptions {
   workspaceContext?: string | null;
   fullConfig?: BridgeConfig;
   hooks?: BridgeEngineHooks;
+  /** Disable ordinary continuation requests when this surface has no authorised unattended owner. */
+  allowRunContinuations?: boolean;
   /** Positive only when all participating surfaces share executionCapacityDb. */
   maxConcurrentExecutions?: number;
   executionCapacityDb?: BridgeDb;
@@ -1276,10 +1278,9 @@ export class BridgeEngine {
   }
 
   private _discardPendingMessages(chatKey: string): void {
-    const pending = this.db.dequeueMsgs(this.surfaceIdentity, chatKey);
+    const pending = this.db.discardPendingMsgs(this.surfaceIdentity, chatKey);
     for (const queued of pending) {
       this._deleteQueuedAttachments(queued.attachments);
-      this.db.deletePendingMsg(queued.id);
       if (queued.scheduledOccurrenceKey) {
         if (queued.scheduledOccurrenceKey.startsWith(RUN_CONTINUATION_PREFIX)) {
           const continuationId = queued.scheduledOccurrenceKey.slice(RUN_CONTINUATION_PREFIX.length);
@@ -1862,7 +1863,7 @@ export class BridgeEngine {
     const commandPath = join(process.cwd(), "bin", "agent-bridge-context");
     const waitCommandPath = join(process.cwd(), "bin", "agent-bridge-wait");
     const outcomeCommandPath = join(process.cwd(), "bin", "agent-bridge-outcome");
-    const canContinue = Boolean(dbPath && runId && this.kind !== "autonomous");
+    const canContinue = Boolean(dbPath && runId && this.kind !== "autonomous" && this.opts.allowRunContinuations !== false);
     const canOutcome = canContinue && outcomeEligible;
     const canScratch = Boolean(dbPath && runId && laneHandle);
     const scratchCommandPath = join(process.cwd(), "bin", "agent-bridge-scratch");

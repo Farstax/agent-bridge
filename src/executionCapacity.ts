@@ -20,6 +20,7 @@ export function openExecutionCapacityCoordinator(
     serviceId: `${options.serviceId ?? "bridge"}:execution-capacity`,
     installationId: options.installationId,
     requireInstallationIdentity: options.requireInstallationIdentity,
+    verifyForeignKeyIntegrity: options.verifyForeignKeyIntegrity,
     // This is a proven managed coordinator, not this service's own state DB.
     // openProductionDb still validates its schema and installation provenance.
   });

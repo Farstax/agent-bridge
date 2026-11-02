@@ -285,7 +285,8 @@ export class BridgeDb {
     return this.raw.transaction(operation)();
   }
 
-  private runInImmediateTransaction<T>(operation: () => T): T {
+  /** Serialize a short read/modify/write transaction before observing shared execution state. */
+  runInImmediateTransaction<T>(operation: () => T): T {
     return this.raw.transaction(operation).immediate();
   }
 
@@ -543,11 +544,13 @@ export class BridgeDb {
     runLinkSettingKey: string,
     reservationSettingKey: string,
     reservationToken: string,
+    blockedSettingKey?: string,
   ):
     | { kind: "queued"; id: number; position: number }
     | { kind: "existing"; id: number; position: number }
     | { kind: "running"; runId?: string }
     | { kind: "receipt"; value: string }
+    | { kind: "blocked" }
     | { kind: "full" } {
     assertExecutionScope(surface, chatKey);
     return this.runInImmediateTransaction(() => {
@@ -572,6 +575,7 @@ export class BridgeDb {
       }
       const receipt = this.getSetting(receiptSettingKey);
       if (receipt) return { kind: "receipt" as const, value: receipt };
+      if (blockedSettingKey && this.getSetting(blockedSettingKey)) return { kind: "blocked" as const };
       const reservation = this.getSetting(reservationSettingKey);
       if (reservation && reservation !== reservationToken) return { kind: "running" as const };
       const pending = this.pendingMsgCount(surface, chatKey);
@@ -898,6 +902,33 @@ export class BridgeDb {
                        attachments_json AS attachmentsJson, scheduled_occurrence_key AS scheduledOccurrenceKey
                 FROM pending_messages WHERE surface = ? AND chat_key = ? ORDER BY id ASC`)
       .all(surface, chatKey) as any[]).map(({ attachmentsJson, ...row }) => ({ ...row, attachments: JSON.parse(attachmentsJson || "[]") }));
+  }
+
+  /**
+   * Atomically remove every pending message of a lane, queued or claimed, and
+   * return what was removed. This is the one primitive behind a user Stop: after
+   * it commits, none of those messages can be claimed or executed, and a claimed
+   * row's owner finds its claim gone before it creates a Run.
+   */
+  discardPendingMsgs(surface: string, chatKey: string): Array<{
+    id: number; state: "queued" | "claimed"; attachments: string[]; scheduledOccurrenceKey: string | null;
+  }> {
+    assertExecutionScope(surface, chatKey);
+    return this.runInTransaction(() => {
+      const rows = (this.raw.prepare(`SELECT id, state, attachments_json AS attachmentsJson, scheduled_occurrence_key AS scheduledOccurrenceKey
+        FROM pending_messages WHERE surface = ? AND chat_key = ? ORDER BY id ASC`).all(surface, chatKey) as any[])
+        .map(({ attachmentsJson, ...row }) => ({ ...row, attachments: JSON.parse(attachmentsJson || "[]") }));
+      this.raw.prepare(`DELETE FROM pending_messages WHERE surface = ? AND chat_key = ?`).run(surface, chatKey);
+      return rows;
+    });
+  }
+
+  /** True while `handle` still owns the claim on pending row `id`. */
+  ownsPendingClaim(handle: ExecutionLaneHandle, id: number): boolean {
+    return Boolean(this.raw.prepare(`
+      SELECT 1 FROM pending_messages
+      WHERE id = ? AND surface = ? AND chat_key = ? AND state = 'claimed' AND claim_run_id = ? AND claim_acquisition_id = ?
+    `).get(id, handle.surface, handle.chatKey, handle.runId, handle.acquisitionId));
   }
 
   deletePendingMsg(id: number): void {
