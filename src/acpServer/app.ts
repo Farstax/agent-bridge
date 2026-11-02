@@ -202,10 +202,12 @@ export function createOutwardAcpAgent(options: OutwardAcpAgentOptions = {}): Age
       .onRequest(WORKSTREAM_METHODS.list, objectParams, (ctx) => {
         const cwd = authorizeWorkspacePath(stringParam(ctx.params, "cwd", 4096), workspaceRoot);
         const includeArchived = optionalBoolean(ctx.params, "includeArchived") ?? false;
+        const listed = sessions.list!(cwd, { includeArchived });
+        const statuses = control.statusMany?.(listed) ?? listed.map((session) => control.status(session));
         return {
-          workstreams: sessions.list!(cwd, { includeArchived }).map((session) => ({
+          workstreams: listed.map((session, index) => ({
             ...workstreamView(session),
-            status: control.status(session),
+            status: statuses[index],
           })),
         };
       })

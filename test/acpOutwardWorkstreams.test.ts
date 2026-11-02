@@ -1,7 +1,7 @@
 import { mkdtempSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import * as acp from "@agentclientprotocol/sdk/unstable";
 import { connectWithAcpInitialization } from "./support/initializedAcpClient.js";
 import { openDb, type BridgeDb } from "../src/db.js";
@@ -51,13 +51,17 @@ afterEach(() => {
 
 type Attempt = { provider: BotKind; release?: Promise<void>; fail?: boolean };
 
-function executor(db: BridgeDb, attempts: Attempt[], options: { available?: (p: BotKind) => boolean } = {}) {
+function executor(db: BridgeDb, attempts: Attempt[], options: {
+  available?: (p: BotKind) => boolean;
+  availableProviders?: () => ReadonlySet<BotKind>;
+} = {}) {
   let n = 0;
   const prefix = `run-${++executors}`;
   return new BridgeOutwardAcpPromptExecutor({
     db,
     providerChain: ["codex", "claude"] as const,
     isProviderAvailable: options.available,
+    getAvailableProviders: options.availableProviders,
     runId: () => `${prefix}-${++n}`,
     createEngine: (_session, attemptProvider) => ({
       executeSurfaceNeutralTurn: async (input) => {
@@ -97,6 +101,72 @@ async function call<T>(app: ReturnType<typeof createOutwardAcpAgent>, method: st
 }
 
 describe("outward ACP Workstreams (#1101)", () => {
+  it("reads durable continuation state once for a Workstream list", async () => {
+    const f = fixture();
+    for (let index = 0; index < 60; index += 1) {
+      f.repo.create({ sessionId: `list-${index}`, conversationId: `acp:list-${index}`, cwd: f.root });
+    }
+    const requestedAt = new Date().toISOString();
+    const insertContinuation = f.db.raw.prepare("INSERT INTO settings (key, value) VALUES (?, ?)");
+    for (let index = 0; index < 5_000; index += 1) {
+      const continuation = {
+        version: 1, id: `synthetic-${index}`, originRunId: `run-${index}`,
+        surfaceIdentity: "telegram:codex", chatKey: String(index + 1), provider: "codex",
+        reason: "synthetic performance fixture", requestedAt, dueAt: requestedAt, expiresAt: requestedAt,
+        state: "completed",
+      };
+      insertContinuation.run(`run-continuation:v1:${continuation.id}`, JSON.stringify(continuation));
+    }
+    const exec = executor(f.db, []);
+    const app = agent(f, { promptExecutor: exec, workstreams: exec });
+    const prepare = vi.spyOn(f.db.raw, "prepare");
+
+    const listed = await call<{ workstreams: unknown[] }>(app, WORKSTREAM_METHODS.list, { cwd: f.root });
+
+    expect(listed.workstreams).toHaveLength(60);
+    expect(prepare.mock.calls.filter(([sql]) => sql === "SELECT value FROM settings WHERE key LIKE ? ORDER BY key ASC")).toHaveLength(1);
+    prepare.mockRestore();
+  });
+
+  it("takes one fresh provider-availability snapshot for a Workstream list", () => {
+    const f = fixture();
+    const first = f.repo.create({ sessionId: "availability-1", conversationId: "acp:availability-1", cwd: f.root });
+    const second = f.repo.create({ sessionId: "availability-2", conversationId: "acp:availability-2", cwd: f.root });
+    const getAvailableProviders = vi.fn()
+      .mockReturnValueOnce(new Set<BotKind>(["codex"]))
+      .mockReturnValueOnce(new Set<BotKind>(["claude"]));
+    const isProviderAvailable = vi.fn(() => { throw new Error("per-provider probe should not run with a snapshot"); });
+    const exec = new BridgeOutwardAcpPromptExecutor({
+      db: f.db,
+      providerChain: ["codex", "claude"],
+      getAvailableProviders,
+      isProviderAvailable,
+      createEngine: () => ({ executeSurfaceNeutralTurn: async () => ({ text: "unused", sessionId: "unused", stopReason: "end_turn" }) }),
+    });
+
+    const statuses = exec.statusMany([first, second]);
+
+    expect(getAvailableProviders).toHaveBeenCalledTimes(1);
+    expect(isProviderAvailable).not.toHaveBeenCalled();
+    expect(statuses).toHaveLength(2);
+    expect(statuses[0]?.providers).toEqual([{ id: "codex", available: true }, { id: "claude", available: false }]);
+    expect(exec.status(first).providers).toEqual([{ id: "codex", available: false }, { id: "claude", available: true }]);
+    expect(getAvailableProviders).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not probe providers or scan continuations for an empty Workstream list", () => {
+    const f = fixture();
+    const getAvailableProviders = vi.fn(() => new Set<BotKind>());
+    const exec = executor(f.db, [], { availableProviders: getAvailableProviders });
+    const prepare = vi.spyOn(f.db.raw, "prepare");
+
+    expect(exec.statusMany([])).toEqual([]);
+
+    expect(getAvailableProviders).not.toHaveBeenCalled();
+    expect(prepare.mock.calls.filter(([sql]) => sql === "SELECT value FROM settings WHERE key LIKE ? ORDER BY key ASC")).toHaveLength(0);
+    prepare.mockRestore();
+  });
+
   it("does not steal an expired lane that has not passed crash reconciliation", async () => {
     const f = fixture();
     f.repo.create({ sessionId: "s1", conversationId: "acp:c1", cwd: f.root });
@@ -301,6 +371,7 @@ describe("outward ACP Workstreams (#1101)", () => {
     expect(meta.outcome).toBe("deferred");
     expect(typeof meta.runId).toBe("string");
     expect(execution.status(session)).toMatchObject({ state: "waiting", lastRun: { runId: meta.runId } });
+    expect(execution.statusMany([session])[0]).toEqual(execution.status(session));
     expect(f.sessions.history!(session.conversationId)).toEqual([{ role: "user", text: "resume this task later" }]);
     await expect(call(app, acp.methods.agent.session.prompt, {
       sessionId: session.sessionId, prompt: [{ type: "text", text: "do not duplicate" }],
