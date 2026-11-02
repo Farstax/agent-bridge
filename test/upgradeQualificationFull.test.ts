@@ -46,7 +46,7 @@ exit 97
 
       script(claude, `
 printf '%s\n' "$0 $*" >> "${qualificationLog}"
-if [ "\${1:-}" = --version ]; then echo '@agentclientprotocol/claude-agent-acp 0.95.0'; exit 0; fi
+if [ "\${1:-}" = --version ]; then echo '@agentclientprotocol/claude-agent-acp 0.99.1'; exit 0; fi
 exec "${process.execPath}" "${join(process.cwd(), "node_modules/tsx/dist/cli.mjs")}" "${join(process.cwd(), "test/support/fakeAcpAgent.ts")}"
 `);
       script(codex, `
@@ -56,7 +56,7 @@ exec "${process.execPath}" "${join(process.cwd(), "node_modules/tsx/dist/cli.mjs
 `);
       script(agy, `
 printf '%s\\n' "$0 $*" >> "${qualificationLog}"
-if [ "\${1:-}" = --version ]; then echo 'agy_acp_server.par 1.3.0'; exit 0; fi
+if [ "\${1:-}" = --version ]; then echo 'agy_acp_server.par 1.4.5'; exit 0; fi
 exec "${process.execPath}" "${join(process.cwd(), "node_modules/tsx/dist/cli.mjs")}" "${join(process.cwd(), "test/support/fakeAcpAgent.ts")}"
 `);
       script(agyHarness, "exit 0\n");
@@ -68,7 +68,7 @@ exec "${process.execPath}" "${join(process.cwd(), "node_modules/tsx/dist/cli.mjs
       }) + "\n", "utf8");
       script(grok, `
 printf '%s\\n' "$0 $*" >> "${qualificationLog}"
-if [ "\${1:-}" = --version ]; then echo 'grok 1.0.50'; exit 0; fi
+if [ "\${1:-}" = --version ]; then echo 'grok 1.0.70'; exit 0; fi
 exec "${process.execPath}" "${join(process.cwd(), "node_modules/tsx/dist/cli.mjs")}" "${join(process.cwd(), "test/support/fakeAcpAgent.ts")}"
 `);
       script(cursor, `
@@ -150,9 +150,9 @@ exit 97
         providers?: Record<string, { overall?: string; providerVersion?: string }>;
       };
       expect(evidence.providers).toMatchObject({
-        claude: { overall: "pass", providerVersion: "0.95.0" },
+        claude: { overall: "pass", providerVersion: "0.99.1" },
         codex: { overall: "pass", providerVersion: "2.5.0" },
-        agy: { overall: "pass", providerVersion: "1.3.0" },
+        agy: { overall: "pass", providerVersion: "1.4.5" },
         cursor: { overall: "pass", providerVersion: "2026.10.22-27dcf5f" },
       });
     } finally {
