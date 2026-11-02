@@ -285,6 +285,10 @@ export class BridgeDb {
     return this.raw.transaction(operation)();
   }
 
+  private runInImmediateTransaction<T>(operation: () => T): T {
+    return this.raw.transaction(operation).immediate();
+  }
+
   runWithLockFence<T>(handle: ExecutionLaneHandle, operation: () => T): T {
     assertExecutionScope(handle.surface, handle.chatKey);
     return this.runInTransaction(() => {
@@ -471,6 +475,111 @@ export class BridgeDb {
     return Boolean(this.raw.prepare(
       "SELECT 1 FROM pending_messages WHERE surface = ? AND scheduled_occurrence_key = ? LIMIT 1",
     ).get(surface, key));
+  }
+
+  /** Durable queue row id correlated to `key` on `surface`, for idempotent re-submission. */
+  getPendingMessageIdByCorrelationKey(surface: string, key: string): number | null {
+    const row = this.raw.prepare(
+      "SELECT id FROM pending_messages WHERE surface = ? AND scheduled_occurrence_key = ? ORDER BY id LIMIT 1",
+    ).get(surface, key) as { id: number } | undefined;
+    return row?.id ?? null;
+  }
+
+  /** One-based position of a queued row within its lane (rows ahead of it plus itself). */
+  pendingMessagePosition(surface: string, chatKey: string, id: number): number {
+    return Number((this.raw.prepare(
+      "SELECT COUNT(*) AS n FROM pending_messages WHERE surface = ? AND chat_key = ? AND state = 'queued' AND id <= ?",
+    ).get(surface, chatKey, id) as { n: number }).n);
+  }
+
+  /** Queued row counts for every lane of a surface, in one indexed read. */
+  pendingMessageCounts(surface: string): Map<string, number> {
+    const rows = this.raw.prepare(
+      "SELECT chat_key AS chatKey, COUNT(*) AS n FROM pending_messages WHERE surface = ? AND state = 'queued' GROUP BY chat_key",
+    ).all(surface) as Array<{ chatKey: string; n: number }>;
+    return new Map(rows.map((row) => [row.chatKey, row.n]));
+  }
+
+  /** Acquire the idle lane and reserve an idempotent ACP request in one transaction. */
+  acquireLaneForIdempotentRequest(
+    surface: string,
+    chatKey: string,
+    requestKey: string,
+    reservationSettingKey: string,
+    receiptSettingKey: string,
+    runLinkSettingKey: string,
+    token: string,
+  ): ExecutionLaneHandle | null {
+    assertExecutionScope(surface, chatKey);
+    return this.runInImmediateTransaction(() => {
+      const pending = this.raw.prepare(
+        "SELECT 1 FROM pending_messages WHERE surface = ? AND scheduled_occurrence_key = ? LIMIT 1",
+      ).get(surface, requestKey);
+      if (pending || this.getSetting(receiptSettingKey) || this.getSetting(runLinkSettingKey)) return null;
+      const reservation = this.getSetting(reservationSettingKey);
+      const lock = this.raw.prepare(
+        "SELECT 1 FROM execution_locks WHERE surface = ? AND chat_key = ? LIMIT 1",
+      ).get(surface, chatKey);
+      if (reservation && lock) return null;
+      if (reservation) this.setSetting(reservationSettingKey, null);
+      const lane = this.locks.acquire(surface, chatKey, false);
+      if (!lane) return null;
+      this.setSetting(reservationSettingKey, token);
+      return lane;
+    });
+  }
+
+  /**
+   * Atomically accept one outward busy message per correlation key. The row,
+   * terminal receipt, and Run link share one SQLite transaction boundary, so
+   * simultaneous ACP processes cannot both admit the same request ID.
+   */
+  admitQueuedMessageOnce(
+    surface: string,
+    chatKey: string,
+    msg: { prompt: string; chatId: number | string; chatType: string; attachments?: string[]; scheduledOccurrenceKey: string },
+    maxDepth: number,
+    receiptSettingKey: string,
+    runLinkSettingKey: string,
+    reservationSettingKey: string,
+    reservationToken: string,
+  ):
+    | { kind: "queued"; id: number; position: number }
+    | { kind: "existing"; id: number; position: number }
+    | { kind: "running"; runId?: string }
+    | { kind: "receipt"; value: string }
+    | { kind: "full" } {
+    assertExecutionScope(surface, chatKey);
+    return this.runInImmediateTransaction(() => {
+      const existing = this.raw.prepare(
+        "SELECT id FROM pending_messages WHERE surface = ? AND scheduled_occurrence_key = ? ORDER BY id LIMIT 1",
+      ).get(surface, msg.scheduledOccurrenceKey) as { id: number } | undefined;
+      if (existing) {
+        const position = Number((this.raw.prepare(
+          "SELECT COUNT(*) AS n FROM pending_messages WHERE surface = ? AND chat_key = ? AND state = 'queued' AND id <= ?",
+        ).get(surface, chatKey, existing.id) as { n: number }).n);
+        if (position === 0) {
+          const runId = this.getSetting(runLinkSettingKey);
+          const run = runId ? this.getRun(runId) : null;
+          return { kind: "running" as const, ...(run?.status === "running" && runId ? { runId } : {}) };
+        }
+        return { kind: "existing" as const, id: existing.id, position };
+      }
+      const runId = this.getSetting(runLinkSettingKey);
+      if (runId) {
+        const run = this.getRun(runId);
+        if (run?.status === "running") return { kind: "running" as const, runId };
+      }
+      const receipt = this.getSetting(receiptSettingKey);
+      if (receipt) return { kind: "receipt" as const, value: receipt };
+      const reservation = this.getSetting(reservationSettingKey);
+      if (reservation && reservation !== reservationToken) return { kind: "running" as const };
+      const pending = this.pendingMsgCount(surface, chatKey);
+      if (pending >= maxDepth) return { kind: "full" as const };
+      const id = this.enqueueMsg(surface, chatKey, msg);
+      if (reservation === reservationToken) this.setSetting(reservationSettingKey, null);
+      return { kind: "queued" as const, id, position: pending + 1 };
+    });
   }
 
   admitEventReceipt(input: Parameters<BridgeDb["createEventReceipt"]>[0]): { receipt: EventReceipt; created: boolean } {
@@ -748,6 +857,14 @@ export class BridgeDb {
     const row = this.raw
       .prepare(`SELECT COUNT(*) AS n FROM pending_messages WHERE surface = ? AND chat_key = ?`)
       .get(surface, chatKey) as { n: number };
+    return row.n;
+  }
+
+  pendingMsgQueuedCount(surface: string, chatKey: string): number {
+    assertExecutionScope(surface, chatKey);
+    const row = this.raw.prepare(
+      "SELECT COUNT(*) AS n FROM pending_messages WHERE surface = ? AND chat_key = ? AND state = 'queued'",
+    ).get(surface, chatKey) as { n: number };
     return row.n;
   }
 

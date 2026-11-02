@@ -105,7 +105,7 @@ describe("outward ACP commands", () => {
     const get = (name: string) => byName.find((c) => c.name === name)!;
     expect(get("usage")).toMatchObject({ available: true });
     expect(get("narration")).toMatchObject({ available: false, reason: "only available on Antigravity" });
-    expect(get("queue_mode").available).toBe(false);
+    expect(get("queue_mode")).toMatchObject({ available: true, selectable: true });
     expect(get("sensors").available).toBe(false);
     expect(get("autonomy").available).toBe(false);
     expect(get("stop").route).toBe("session/cancel");
@@ -121,7 +121,7 @@ describe("outward ACP commands", () => {
     const { app } = setup();
     const initialized = await connectWithAcpInitialization(acp.client({ name: "generic" }), app, (agent) =>
       agent.request(acp.methods.agent.initialize, { protocolVersion: 1, clientCapabilities: {} }));
-    expect(initialized.agentCapabilities?._meta).toEqual({ "agent-bridge": { workstreams: 1, commands: 1 } });
+    expect(initialized.agentCapabilities?._meta).toEqual({ "agent-bridge": { workstreams: 1, commands: 1, busyMessages: 1 } });
   });
 
   it("keeps recovery and provider-switch commands available when the selected provider is unavailable", async () => {

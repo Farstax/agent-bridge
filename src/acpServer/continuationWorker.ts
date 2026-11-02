@@ -81,7 +81,7 @@ async function main(): Promise<void> {
   try { await prepareInteractiveCliAuth(process.env); }
   catch (error) { console.error("[acp:outward:continuations] API-key verification failed", error); }
   const repository = new OutwardAcpSessionRepository(db.raw);
-  const executor = createProductionOutwardAcpPromptExecutor(db, dbPath, process.env);
+  const executor = createProductionOutwardAcpPromptExecutor(db, dbPath, process.env, (id) => repository.get(id));
   const runner = new RunContinuationRunner(db, OUTWARD_ACP_SURFACE, async (wait) => {
     try {
       const outcome = await resumeOutwardCapacityWait(db, (id) => repository.get(id), executor, wait);
@@ -106,7 +106,16 @@ async function main(): Promise<void> {
     },
   });
   runner.start();
+  // Accepted busy-message work must progress when no ACP client is connected.
+  // The lane lock and row claim keep this safe against any live ACP process.
+  const drainTimer = setInterval(() => {
+    void recoverOutwardLanes(db)
+      .then(() => executor.drainAllQueued())
+      .catch((error) => console.error("[acp:outward:continuations] queue drain failed", error));
+  }, 5_000);
+  drainTimer.unref();
   const shutdown = async () => {
+    clearInterval(drainTimer);
     runner.stop();
     await executor.shutdown();
     db.close();

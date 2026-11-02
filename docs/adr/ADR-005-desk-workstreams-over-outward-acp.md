@@ -60,8 +60,9 @@ and is not treated as an attachment.
 
 `status.state` comes only from the latest durable Run of the conversation:
 `running`, `failed`, `cancelled`, `attention` (provider recorded a `blocked`
-outcome) or `idle`. The outward agent rejects a second concurrent prompt as
-busy, so it has no queued state. Bridge never infers attention from message
+outcome) or `idle`. `status.queued` is the count of durably accepted messages
+that have not started (see Busy messages). A non-opted-in client's second
+concurrent prompt is still rejected as busy. Bridge never infers attention from message
 text or timing. At outward-service startup, existing guarded lock and Run
 reconciliation runs only for the outward ACP surface. It proves provider child
 absence, releases an expired stale lock, and marks an interrupted durable Run
@@ -84,8 +85,62 @@ execution; retained input is released only after durable completion is proven.
 Waiting blocks concurrent mutation; `_agent-bridge/workstreams/cancel_deferred`
 cancels pending waits under a fence, not active provider processes.
 Ordinary prompts keep ephemeral staging; only opted-in waits retain input.
-This is the capacity-only exception to the otherwise unqueued Workstream
-policy. Installation is owned by workspace release convergence, not Desk launch.
+Busy-message queueing (above) is separate: capacity deferral keeps its own
+continuation record. Installation is owned by workspace release convergence, not Desk launch.
+
+## Busy messages (opt-in, #1130)
+
+Communication adapters translate and deliver. Bridge Core admits, executes,
+coordinates and recovers. Outward ACP therefore uses the same durable
+admission, queue, lane fencing, provider fallback and recovery as Telegram,
+Discord and Slack; it has no queue of its own.
+
+**Contract.** Standard ACP v1 clients keep fail-fast busy (`-32002`). A client
+may submit during an active Run only when
+`agentCapabilities._meta["agent-bridge"].busyMessages` is advertised and the
+prompt carries `_meta["agent-bridge/busy-messages"] = 1`. Optional
+`_meta["agent-bridge/request-id"]` (`[A-Za-z0-9._:-]{1,128}`) makes a
+submission idempotent.
+
+An accepted response is **not** a completed provider response. It returns
+`stopReason: "end_turn"` with
+`_meta["agent-bridge"] = { outcome, queueId, mode, position, requestId }` where
+`outcome` is:
+
+- `queued`: durably stored in the shared `pending_messages` queue (bounded depth
+  5); it will run in order as its own Run. `position` is one-based.
+- `steered`: injected into the live provider turn (augment only).
+- `running` / `settled`: a repeated `request-id` answered from durable state;
+  `settled` carries the terminal `status` and `runId`. A request is never
+  admitted twice.
+
+Progress is read from `status.queued` and the existing Workstream status and
+history; Desk must not guess or silently retry an uncertain admission, and
+should resend with the same `request-id` instead.
+
+**Modes** are the shared per-lane busy-message setting (`/queue_mode`, default
+`queue` for outward). `queue` stores the message. `interrupt` stores it, then
+stops the active Run, wherever its owner process is, and the stored message
+runs next. `augment` steers a live turn only when the owner is this process and
+the provider qualified for steering; otherwise it falls back to `queue`.
+
+**Ownership and recovery.** Any ACP process, or the supervised workspace
+worker, may run queued work: the lane lock and a per-row claim give exactly one
+owner. A Run is linked to its queue row in the transaction that creates the
+Run. A restart that finds a row whose Run may already have started settles it
+as failed (`interrupted`) and never replays it. A verified capacity rejection
+requeues the row (bounded retries); other terminal Runs settle it. Queued
+progress needs a live ACP process or the worker; accepted work is never lost,
+but it does not run until one exists.
+
+**Stop** from another process records a durable request for the exact Run id,
+which the owning process observes and contains with its normal fenced
+cancellation. Locks are never released by the requester; a dead owner is
+handled by the existing proven-containment recovery.
+
+**Attachments** accepted into the queue are copied into the existing private,
+bounded, owner-marked retention before acceptance is acknowledged, survive the
+submitting connection, and are released only after the row settles.
 
 ## Provider selection
 

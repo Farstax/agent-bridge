@@ -25,3 +25,19 @@ export function buildBusyMessageModeKeyboard(active: BusyMessageMode): { inline_
     ],
   };
 }
+
+export function isBusyMessageModeSelection(value: string): value is BusyMessageMode | "reset" {
+  return value === "augment" || value === "interrupt" || value === "queue" || value === "reset";
+}
+
+/** Canonical busy-mode mutation shared by every adapter; "reset" restores the configured default. */
+export function setLaneBusyMessageMode(
+  db: BridgeDb,
+  surface: string,
+  chatKey: string,
+  value: BusyMessageMode | "reset",
+  fallback: BusyMessageMode,
+): BusyMessageMode {
+  db.setSetting(busyMessageModeSettingKey(surface, chatKey), value === "reset" ? null : value);
+  return resolveLaneBusyMessageMode(db, surface, chatKey, fallback);
+}
