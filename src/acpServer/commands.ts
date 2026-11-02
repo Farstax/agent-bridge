@@ -2,6 +2,7 @@ import * as acp from "@agentclientprotocol/sdk/unstable";
 import { resolveAcpTelegramConfigCallback } from "../acp/telegramConfigCallback.js";
 import { effortSettingKey, isEffortLevel, resolveDefaultEffort } from "../effort.js";
 import { handleCommand, normalizeCommand } from "../commands.js";
+import { buildBusyMessageModeKeyboard, isBusyMessageModeSelection, resolveLaneBusyMessageMode, setLaneBusyMessageMode } from "../busyMessageMode.js";
 import type { BridgeDb } from "../db.js";
 import { supportsToolFreeMode } from "../providers/registry.js";
 import type { OutwardAcpSessionRecord } from "../repositories/outwardAcpSessionRepository.js";
@@ -52,6 +53,7 @@ export interface AcpCommandControl extends OutwardWorkstreamControl {
   /** Run `operation` holding the Workstream lane; throws busy when a Run holds it. */
   withIdleLane<T>(session: OutwardAcpSessionRecord, operation: () => T): T;
   btw?(session: OutwardAcpSessionRecord, provider: BotKind, prompt: string): Promise<string>;
+  readonly supportsBusyMessages?: boolean;
 }
 
 export interface AcpCommandOptions {
@@ -86,7 +88,10 @@ const DEFINITIONS: readonly Definition[] = [
     name: "queue_mode",
     description: "Set busy-message handling",
     route: "run",
-    unavailable: () => "outward ACP rejects a concurrent prompt as busy; there is no queue to configure",
+    selectable: true,
+    unavailable: (_provider, options) => options.control.supportsBusyMessages
+      ? null
+      : "this outward agent does not offer busy-message handling",
   },
   { name: "cli", description: "Switch provider", route: "_agent-bridge/workstreams/select_provider", selectable: true },
   { name: "switch", description: "Switch provider", route: "_agent-bridge/workstreams/select_provider", selectable: true },
@@ -208,6 +213,8 @@ export class AcpCommands {
         }
         return { command: name, text: `Provider: ${control.status(session).selectedProvider}.`, options: this.providerOptions(session) };
       }
+      case "queue_mode":
+        return this.selectBusyMode(session, request.select);
       case "models":
       case "effort":
         return this.selectSetting(session, name, provider, request.select);
@@ -235,6 +242,28 @@ export class AcpCommands {
         return { command: name, text: result.text };
       }
     }
+  }
+
+  /**
+   * Busy-message mode is the shared lane setting every adapter reads. It only
+   * governs clients that opt into busy-message admission; legacy ACP v1 clients
+   * still fail fast. It is a plain setting, valid while the lane is busy.
+   */
+  private selectBusyMode(session: OutwardAcpSessionRecord, select: string | undefined): AcpCommandResult {
+    const { db } = this.options;
+    if (select !== undefined) {
+      const value = select.replace(/^queue_mode:/, "");
+      if (!isBusyMessageModeSelection(value)) {
+        throw acp.RequestError.invalidParams({ field: "select" }, "unsupported busy-message mode");
+      }
+      setLaneBusyMessageMode(db, OUTWARD_ACP_SURFACE, session.conversationId, value, "queue");
+    }
+    const active = resolveLaneBusyMessageMode(db, OUTWARD_ACP_SURFACE, session.conversationId, "queue");
+    return {
+      command: "queue_mode",
+      text: `Busy-message mode: ${active}. This applies to messages from clients that opted into busy-message handling.`,
+      options: keyboardOptions(buildBusyMessageModeKeyboard(active)),
+    };
   }
 
   private providerOptions(session: OutwardAcpSessionRecord): AcpCommandOption[] {

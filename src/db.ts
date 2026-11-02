@@ -473,6 +473,29 @@ export class BridgeDb {
     ).get(surface, key));
   }
 
+  /** Durable queue row id correlated to `key` on `surface`, for idempotent re-submission. */
+  getPendingMessageIdByCorrelationKey(surface: string, key: string): number | null {
+    const row = this.raw.prepare(
+      "SELECT id FROM pending_messages WHERE surface = ? AND scheduled_occurrence_key = ? ORDER BY id LIMIT 1",
+    ).get(surface, key) as { id: number } | undefined;
+    return row?.id ?? null;
+  }
+
+  /** One-based position of a queued row within its lane (rows ahead of it plus itself). */
+  pendingMessagePosition(surface: string, chatKey: string, id: number): number {
+    return Number((this.raw.prepare(
+      "SELECT COUNT(*) AS n FROM pending_messages WHERE surface = ? AND chat_key = ? AND id <= ?",
+    ).get(surface, chatKey, id) as { n: number }).n);
+  }
+
+  /** Queued row counts for every lane of a surface, in one indexed read. */
+  pendingMessageCounts(surface: string): Map<string, number> {
+    const rows = this.raw.prepare(
+      "SELECT chat_key AS chatKey, COUNT(*) AS n FROM pending_messages WHERE surface = ? GROUP BY chat_key",
+    ).all(surface) as Array<{ chatKey: string; n: number }>;
+    return new Map(rows.map((row) => [row.chatKey, row.n]));
+  }
+
   admitEventReceipt(input: Parameters<BridgeDb["createEventReceipt"]>[0]): { receipt: EventReceipt; created: boolean } {
     return this.eventReceipts.admitReceipt(input);
   }

@@ -1,8 +1,9 @@
 import * as acp from "@agentclientprotocol/sdk/unstable";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { abortCliProcessAndWait, toUserMessage } from "../cli.js";
 import { loadBotsConfig, resolveExecutionMode } from "../config.js";
 import type { BridgeDb } from "../db.js";
+import type { ExecutionLaneHandle } from "../db.js";
 import { BridgeEngine, type SurfaceNeutralTurnInput } from "../engine.js";
 import { EventStore } from "../events/store.js";
 import { type as eventType, type BridgeEvent, type RunCompletedEvent } from "../events/types.js";
@@ -15,7 +16,8 @@ import { createSurfaceNeutralProviderRouter, type SurfaceNeutralProviderRouter }
 import { getCachedAvailableCliKinds } from "../interactiveCliAuth.js";
 import { applyManualCliSwitchHandoff, getStoredCliPreference, type CliKind } from "../interactiveBot.js";
 import type { BotKind, BridgeConfig, CliResult, RouteableBotKind } from "../types.js";
-import { retainOutwardAcpAttachmentsForWait, releaseRetainedOutwardAcpAttachments } from "./attachments.js";
+import { readRetainedOutwardAcpAttachments, retainOutwardAcpAttachmentsForWait, releaseRetainedOutwardAcpAttachments } from "./attachments.js";
+import { resolveLaneBusyMessageMode } from "../busyMessageMode.js";
 import { hasPendingCapacityWait, listRunContinuations, linkCapacityContinuationRun, requestRunContinuation, cancelPendingRunContinuation, type RunContinuation } from "../runContinuation.js";
 
 
@@ -24,6 +26,13 @@ export { OUTWARD_ACP_SURFACE } from "./recovery.js";
 const OUTWARD_ACP_EXECUTION_ERROR = -32001;
 const OUTWARD_ACP_BUSY_ERROR = -32002;
 const CANCELLATION_SWEEP_MS = 10;
+/** Same bound the messaging engines apply to a lane's durable queue. */
+const OUTWARD_QUEUE_MAX_DEPTH = 5;
+const REMOTE_STOP_POLL_MS = 200;
+const REMOTE_STOP_WAIT_MS = 5_000;
+const QUEUE_CAPACITY_RETRIES = 5;
+const QUEUE_RECEIPT_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
+const RETAINED_ATTACHMENT_MARKER = "acp-retained:";
 
 /** Internal-only: bounded requeue permitted after a verified capacity rejection. */
 export class OutwardCapacityRetry extends Error {
@@ -38,6 +47,8 @@ type ActiveOutwardExecution = {
   cancelRequested: boolean;
   cancelPromise: Promise<void> | null;
   settled: boolean;
+  readonly lane: ExecutionLaneHandle;
+  readonly provider: RouteableBotKind;
   readonly done: Promise<void>;
   readonly finishDone: () => void;
 };
@@ -53,12 +64,25 @@ export interface OutwardAcpPromptExecutionInput {
   deferCapacity?: boolean;
   /** Trusted, claimed continuation only; not supplied by an ACP client. */
   capacityResume?: { id: string; claimToken: string };
+  /** ACP v1 caller opted into busy-message admission; otherwise a busy Workstream fails fast. */
+  busyMessages?: boolean;
+  /** Client idempotency token; a repeated submission never creates a second queue row or Run. */
+  requestId?: string;
 }
+
+/** A durably queued message claimed by the lane owner for execution. */
+type QueuedExecution = {
+  id: number;
+  key: string;
+  retainedId: string | null;
+  requeued: boolean;
+};
 
 export interface OutwardAcpPromptExecutor {
   execute(input: OutwardAcpPromptExecutionInput): Promise<acp.PromptResponse>;
   cancel(session: OutwardAcpSessionRecord): Promise<void>;
   readonly supportsDeferredCapacity?: boolean;
+  readonly supportsBusyMessages?: boolean;
 }
 
 /** Truthful Workstream state, derived only from durable Run records (#1101). */
@@ -66,6 +90,8 @@ export type OutwardWorkstreamState = "running" | "waiting" | "attention" | "fail
 
 export interface OutwardWorkstreamStatus {
   state: OutwardWorkstreamState;
+  /** Durably accepted messages that have not started executing (busy-message queue). */
+  queued: number;
   /** Durable per-Workstream selection (the chain head when none was chosen). */
   selectedProvider: BotKind;
   /**
@@ -108,6 +134,8 @@ export interface BridgeOutwardAcpPromptExecutorOptions {
   runId?: () => string;
   /** Enabled only with an independently supervised workspace continuation owner. */
   enableDeferredCapacity?: boolean;
+  /** Resolves a queued message's Workstream when a supervised owner drains the durable queue. */
+  lookupSession?: (sessionId: string) => OutwardAcpSessionRecord | null;
   /** Fresh read-only side question for /btw; absent when not wired. */
   btw?: (session: OutwardAcpSessionRecord, provider: BotKind, prompt: string) => Promise<string>;
 }
@@ -213,6 +241,9 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
   constructor(private readonly options: BridgeOutwardAcpPromptExecutorOptions) {}
 
   get supportsDeferredCapacity(): boolean { return this.options.enableDeferredCapacity === true; }
+  readonly supportsBusyMessages = true;
+  private closing = false;
+  private readonly draining = new Set<string>();
 
   private identity(session: OutwardAcpSessionRecord) {
     return { surfaceIdentity: OUTWARD_ACP_SURFACE, chatKey: session.conversationId };
@@ -243,12 +274,14 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
   status(session: OutwardAcpSessionRecord): OutwardWorkstreamStatus {
     const continuations = listRunContinuations(this.options.db, OUTWARD_ACP_SURFACE)
       .filter((item) => item.chatKey === session.conversationId && item.outward?.sessionId === session.sessionId);
-    return this.statusWithContinuations(session, continuations, this.availableProviderSnapshot());
+    return this.statusWithContinuations(session, continuations, this.availableProviderSnapshot(),
+      this.options.db.pendingMsgCount(OUTWARD_ACP_SURFACE, session.conversationId));
   }
 
   statusMany(sessions: readonly OutwardAcpSessionRecord[]): OutwardWorkstreamStatus[] {
     if (sessions.length === 0) return [];
     const availableProviders = this.availableProviderSnapshot();
+    const queuedCounts = this.options.db.pendingMessageCounts(OUTWARD_ACP_SURFACE);
     const byWorkstream = new Map<string, RunContinuation[]>();
     for (const item of listRunContinuations(this.options.db, OUTWARD_ACP_SURFACE)) {
       const sessionId = item.outward?.sessionId;
@@ -262,6 +295,7 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
       session,
       byWorkstream.get(`${session.conversationId}\0${session.sessionId}`) ?? [],
       availableProviders,
+      queuedCounts.get(session.conversationId) ?? 0,
     ));
   }
 
@@ -273,6 +307,7 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
     session: OutwardAcpSessionRecord,
     continuations: readonly RunContinuation[],
     availableProviders: ReadonlySet<BotKind> | null,
+    queued: number,
   ): OutwardWorkstreamStatus {
     const { db, providerChain, isProviderAvailable } = this.options;
     const providerIsAvailable = (provider: BotKind): boolean => availableProviders
@@ -298,6 +333,7 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
     const cached = this.routers.get(session.conversationId);
     return {
       state,
+      queued,
       selectedProvider,
       nextProvider: cached?.provider === selectedProvider ? cached.router.activeProvider(session.conversationId)
         : [selectedProvider, ...providerChain.filter((provider) => provider !== selectedProvider)]
@@ -396,7 +432,7 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
 
   async cancel(session: OutwardAcpSessionRecord): Promise<void> {
     const record = this.active.get(session.conversationId);
-    if (!record) return;
+    if (!record) return this.requestRemoteStop(session);
     record.cancelRequested = true;
     if (record.cancelPromise) return record.cancelPromise;
 
@@ -429,6 +465,7 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
 
   /** Cancel all active requests and wait until their outer Run persistence settles. */
   async shutdown(): Promise<void> {
+    this.closing = true;
     const records = [...this.active.values()];
     await Promise.all(records.map(async (record) => {
       await this.cancel(record.session);
@@ -441,35 +478,88 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
     if (hasPendingCapacityWait(db, OUTWARD_ACP_SURFACE, input.session.conversationId, input.capacityResume?.id)) {
       throw new acp.RequestError(OUTWARD_ACP_BUSY_ERROR, "outward ACP Workstream is awaiting provider capacity");
     }
-    let lane = db.acquireLock(OUTWARD_ACP_SURFACE, input.session.conversationId, false);
+    // Only a client that opted into the advertised busy-message extension may
+    // submit during an active Run; every other client keeps ACP v1 fail-fast.
+    const optedIn = input.busyMessages === true && !input.capacityResume;
+    const conversationId = input.session.conversationId;
+    if (optedIn && input.requestId) {
+      const replay = this.replayRequest(input.session, input.requestId);
+      if (replay) return replay;
+    }
+    let lane = db.acquireLock(OUTWARD_ACP_SURFACE, conversationId, false);
     if (!lane) {
       await recoverOutwardLanes(db);
-      lane = db.acquireLock(OUTWARD_ACP_SURFACE, input.session.conversationId, false);
+      lane = db.acquireLock(OUTWARD_ACP_SURFACE, conversationId, false);
+    }
+    if (lane && (this.hasRunningRun(conversationId) ||
+        // Accepted earlier messages keep their order ahead of a new submission.
+        (optedIn && db.pendingMsgCount(OUTWARD_ACP_SURFACE, conversationId) > 0))) {
+      db.unlock(lane);
+      lane = null;
     }
     if (!lane) {
+      if (optedIn) return this.queueBehindActive(input);
       throw new acp.RequestError(
         OUTWARD_ACP_BUSY_ERROR,
         "outward ACP session is busy",
         { sessionId: input.session.sessionId },
       );
     }
+    return this.runOnLane(input, lane);
+  }
 
-    if (db.listRunningRuns(OUTWARD_ACP_SURFACE).some((run) => run.chat_id === input.session.conversationId)) {
-      db.unlock(lane);
-      throw new acp.RequestError(OUTWARD_ACP_BUSY_ERROR, "outward ACP session is busy", { sessionId: input.session.sessionId });
+  /** Answer a repeated client request from durable state; never admit it twice. */
+  private replayRequest(session: OutwardAcpSessionRecord, requestId: string): acp.PromptResponse | null {
+    const { db } = this.options;
+    const key = requestKey(session, requestId);
+    const settled = db.getSetting(queueReceiptKey(key));
+    if (settled) return this.queueReceipt("settled", { requestId, ...JSON.parse(settled) });
+    const queuedId = db.getPendingMessageIdByCorrelationKey(OUTWARD_ACP_SURFACE, key);
+    if (queuedId !== null) {
+      return this.queueReceipt("queued", {
+        queueId: queuedId, mode: this.busyMode(session), requestId,
+        position: db.pendingMessagePosition(OUTWARD_ACP_SURFACE, session.conversationId, queuedId),
+      });
     }
+    const linkedRun = db.getSetting(queueRunLinkKey(key));
+    if (!linkedRun) return null;
+    const run = db.getRun(linkedRun);
+    if (run?.status === "running") return this.queueReceipt("running", { requestId, runId: linkedRun });
+    this.writeQueueReceipt(key, { status: run?.status ?? "failed", runId: linkedRun });
+    db.setSetting(queueRunLinkKey(key), null);
+    return this.queueReceipt("settled", { requestId, status: run?.status ?? "failed", runId: linkedRun });
+  }
+
+  private hasRunningRun(conversationId: string): boolean {
+    return this.options.db.listRunningRuns(OUTWARD_ACP_SURFACE).some((run) => run.chat_id === conversationId);
+  }
+
+  /** Execute one prompt under an already-acquired lane; always releases the lane. */
+  private async runOnLane(
+    input: OutwardAcpPromptExecutionInput,
+    lane: ExecutionLaneHandle,
+    queued?: QueuedExecution,
+  ): Promise<acp.PromptResponse> {
+    const { db } = this.options;
+    const idempotencyKey = queued?.key
+      ?? (input.busyMessages === true && input.requestId ? requestKey(input.session, input.requestId) : null);
     const provider = this.selectedProvider(input.session);
     const runId = input.runId ?? this.options.runId?.() ?? randomUUID();
     let eventStore: EventStore | null = null;
     let active: ActiveOutwardExecution | null = null;
     let signalAbort: (() => void) | null = null;
+    let stopPoll: NodeJS.Timeout | null = null;
     let activeProvider: RouteableBotKind = provider;
     let encounteredCapacity = false;
+    let queueCapacityRequeue = false;
     let recoveryChainExhausted = false;
     try {
       const identity = { surfaceIdentity: OUTWARD_ACP_SURFACE, chatKey: input.session.conversationId };
       db.runInTransaction(() => {
         db.insertRun(runId, identity, provider);
+        // Persist the Run -> queued row link with the Run, so a crash after this
+        // point can never replay a prompt whose execution may have started.
+        if (idempotencyKey) db.setSetting(queueRunLinkKey(idempotencyKey), runId);
         if (input.capacityResume) {
           // Persist the exact continuation claim -> successor link before any
           // provider can execute, so a crash cannot lead to blind replay.
@@ -492,6 +582,8 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
         cancelRequested: input.signal.aborted,
         cancelPromise: null,
         settled: false,
+        lane,
+        provider,
         done,
         finishDone,
       };
@@ -502,6 +594,16 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
         });
       };
       if (!input.signal.aborted) input.signal.addEventListener("abort", signalAbort, { once: true });
+      // A Stop from another ACP process cannot reach this process's memory; it
+      // leaves a durable request keyed by this exact Run, observed here.
+      stopPoll = setInterval(() => {
+        try {
+          if (db.getSetting(remoteStopKey(runId))) {
+            void this.cancel(input.session).catch(() => console.warn("[acp:outward] remote stop cleanup failed"));
+          }
+        } catch { /* a transient read failure is retried on the next tick */ }
+      }, REMOTE_STOP_POLL_MS);
+      stopPoll.unref();
 
       if (active.cancelRequested) {
         eventStore.collect(cancelledEvent(runId, provider, input.session, "user"));
@@ -618,6 +720,7 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
       // that explicitly opted in, and only when the independently supervised
       // workspace worker is enabled, may receive a durable waiting outcome.
       const capacityWaitEligible = recoveryChainExhausted && encounteredCapacity;
+      if (queued && capacityWaitEligible && !active?.cancelRequested) queueCapacityRequeue = true;
       if (input.capacityResume && capacityWaitEligible && !active?.cancelRequested) {
         // The continuation runner, not this request, owns the retry schedule.
         throw new OutwardCapacityRetry();
@@ -653,8 +756,19 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
       );
     } finally {
       if (signalAbort) input.signal.removeEventListener("abort", signalAbort);
+      if (stopPoll) {
+        clearInterval(stopPoll);
+        try { db.setSetting(remoteStopKey(runId), null); } catch { /* expiry sweep removes it */ }
+      }
       if (active && this.active.get(input.session.conversationId) === active) {
         this.active.delete(input.session.conversationId);
+      }
+      try {
+        // Settle the durable queue row while this process still owns the lane.
+        if (queued) await this.settleQueued(lane, input.session, queued, runId, queueCapacityRequeue);
+        else if (idempotencyKey) this.settleDirect(idempotencyKey, runId);
+      } catch (error) {
+        console.error("[acp:outward] queued message settlement failed", error);
       }
       try {
         db.unlock(lane);
@@ -663,10 +777,281 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
           active.settled = true;
           active.finishDone();
         }
+        // Run the next accepted message once the lane is free; a closing
+        // process leaves it durable for the supervised owner or next client.
+        if (!this.closing && !queued?.requeued) this.scheduleDrain(input.session);
       }
     }
   }
+
+  // ── Busy-message admission (#1130) ──────────────────────────────────────
+
+  private busyMode(session: OutwardAcpSessionRecord) {
+    return resolveLaneBusyMessageMode(this.options.db, OUTWARD_ACP_SURFACE, session.conversationId, "queue");
+  }
+
+  private queueReceipt(
+    outcome: "queued" | "steered" | "settled" | "running",
+    detail: Record<string, unknown>,
+  ): acp.PromptResponse {
+    return { stopReason: "end_turn", _meta: { "agent-bridge": { outcome, ...detail } } };
+  }
+
+  /**
+   * Durably accept a message for a busy Workstream through the shared Bridge
+   * admission primitive. Acceptance is not completion: the receipt names the
+   * queue row, and execution is observable through Workstream status.
+   */
+  private async queueBehindActive(input: OutwardAcpPromptExecutionInput): Promise<acp.PromptResponse> {
+    const { db } = this.options;
+    const { session } = input;
+    const mode = this.busyMode(session);
+    const key = input.requestId ? requestKey(session, input.requestId) : `acp-queue:${randomUUID()}`;
+    const settled = db.getSetting(queueReceiptKey(key));
+    if (settled) return this.queueReceipt("settled", { requestId: input.requestId, ...JSON.parse(settled) });
+    const existing = db.getPendingMessageIdByCorrelationKey(OUTWARD_ACP_SURFACE, key);
+    if (existing !== null) {
+      return this.queueReceipt("queued", {
+        queueId: existing, mode,
+        position: db.pendingMessagePosition(OUTWARD_ACP_SURFACE, session.conversationId, existing),
+        requestId: input.requestId,
+      });
+    }
+    const attachments = input.attachments ?? [];
+    const retainedId = queueRetentionId(key);
+    if (attachments.length > 0) {
+      // Own a private durable copy before acknowledging acceptance; the
+      // request's ephemeral staging directory is removed when it returns.
+      await releaseRetainedOutwardAcpAttachments(session.cwd, retainedId);
+      await retainOutwardAcpAttachmentsForWait(session.cwd, attachments, retainedId);
+    }
+    let admission: ReturnType<BridgeDb["admitMessage"]>;
+    try {
+      admission = db.admitMessage(OUTWARD_ACP_SURFACE, session.conversationId, {
+        prompt: input.prompt,
+        chatId: session.sessionId,
+        chatType: "acp",
+        attachments: attachments.length > 0 ? [`${RETAINED_ATTACHMENT_MARKER}${retainedId}`] : [],
+        scheduledOccurrenceKey: key,
+      }, OUTWARD_QUEUE_MAX_DEPTH, true);
+    } catch (error) {
+      await releaseRetainedOutwardAcpAttachments(session.cwd, retainedId).catch(() => undefined);
+      throw error;
+    }
+    if (admission.kind === "full") {
+      await releaseRetainedOutwardAcpAttachments(session.cwd, retainedId).catch(() => undefined);
+      throw new acp.RequestError(OUTWARD_ACP_BUSY_ERROR, "outward ACP queue is full", { sessionId: session.sessionId });
+    }
+    const queueId = db.getPendingMessageIdByCorrelationKey(OUTWARD_ACP_SURFACE, key);
+    if (queueId === null) throw new Error("queued outward message was not persisted");
+    let steered = false;
+    if (mode === "interrupt") await this.cancel(session);
+    else if (mode === "augment") steered = await this.trySteerQueued(session, queueId);
+    this.scheduleDrain(session);
+    if (steered) return this.queueReceipt("steered", { queueId, mode, requestId: input.requestId });
+    // The queue row may already be running or settled by the time we answer;
+    // the receipt still reports acceptance, and status/history report progress.
+    const stillQueued = db.getPendingMessageIdByCorrelationKey(OUTWARD_ACP_SURFACE, key) !== null;
+    return this.queueReceipt("queued", {
+      queueId, mode,
+      position: stillQueued ? db.pendingMessagePosition(OUTWARD_ACP_SURFACE, session.conversationId, queueId) : 0,
+      requestId: input.requestId,
+    });
+  }
+
+  /**
+   * Augment: inject into the live provider turn only when this process owns it
+   * and the provider qualified for steering. Otherwise the message stays
+   * durably queued (the documented safe fallback).
+   */
+  private async trySteerQueued(session: OutwardAcpSessionRecord, queueId: number): Promise<boolean> {
+    const { db } = this.options;
+    const record = this.active.get(session.conversationId);
+    const steer = executionLaneCoordinator(db, OUTWARD_ACP_SURFACE).getSteerHandle(executionLane(session.conversationId));
+    if (!record || !steer) return false;
+    const claimed = db.claimPendingMsgs(record.lane, [queueId]);
+    const row = claimed[0];
+    if (!row) return false;
+    if (row.attachments.length > 0 || !row.scheduledOccurrenceKey) {
+      db.releasePendingClaim(record.lane, row.id);
+      return false;
+    }
+    let outcome: { outcome: string } | null = null;
+    try { outcome = await steer(row.prompt); } catch { outcome = null; }
+    if (outcome?.outcome !== "injected") {
+      db.releasePendingClaim(record.lane, row.id);
+      return false;
+    }
+    // Delivered to the live turn: the row must never become claimable again.
+    db.runInTransaction(() => {
+      db.addConvTurn(session.conversationId, "user", row.prompt, record.provider, { surfaceIdentity: OUTWARD_ACP_SURFACE });
+      db.deletePendingMsg(row.id);
+      this.writeQueueReceipt(row.scheduledOccurrenceKey!, { status: "steered", runId: record.lane.runId });
+    });
+    return true;
+  }
+
+  private writeQueueReceipt(key: string, receipt: Record<string, unknown>): void {
+    const { db } = this.options;
+    const now = Date.now();
+    db.setSetting(queueReceiptKey(key), JSON.stringify({ ...receipt, at: new Date(now).toISOString() }));
+    db.raw.prepare(`DELETE FROM settings WHERE key LIKE 'outward-queue-receipt:%'
+      AND json_valid(value) AND json_extract(value, '$.at') < ?`).run(new Date(now - QUEUE_RECEIPT_RETENTION_MS).toISOString());
+  }
+
+  /** Complete or requeue the claimed row from inside the lane owner, before the lane is released. */
+  private settleDirect(key: string, runId: string): void {
+    const { db } = this.options;
+    const run = db.getRun(runId);
+    if (!run || run.status === "running") return;
+    db.runInTransaction(() => {
+      this.writeQueueReceipt(key, { status: run.status, runId });
+      db.setSetting(queueRunLinkKey(key), null);
+    });
+  }
+
+  private async settleQueued(
+    lane: ExecutionLaneHandle,
+    session: OutwardAcpSessionRecord,
+    queued: QueuedExecution,
+    runId: string,
+    capacityRequeue: boolean,
+  ): Promise<void> {
+    const { db } = this.options;
+    if (capacityRequeue) {
+      // A verified capacity rejection means the provider did not execute the
+      // prompt, so retrying the same durable row is safe -- within a bound.
+      const attemptsKey = `outward-queue-attempts:${queued.key}`;
+      const attempts = Number(db.getSetting(attemptsKey) ?? "0") + 1;
+      if (attempts < QUEUE_CAPACITY_RETRIES) {
+        db.runInTransaction(() => {
+          db.setSetting(attemptsKey, String(attempts));
+          db.setSetting(queueRunLinkKey(queued.key), null);
+          db.releasePendingClaim(lane, queued.id);
+        });
+        queued.requeued = true;
+        return;
+      }
+    }
+    const run = db.getRun(runId);
+    if (!run || run.status === "running") return; // link stays: the next claim fails closed
+    db.runInTransaction(() => {
+      if (!db.completePendingMsg(lane, queued.id)) throw new Error("queued row claim was lost before settlement");
+      this.writeQueueReceipt(queued.key, { status: run.status, runId });
+      db.setSetting(queueRunLinkKey(queued.key), null);
+      db.setSetting(`outward-queue-attempts:${queued.key}`, null);
+    });
+    if (queued.retainedId) await releaseRetainedOutwardAcpAttachments(session.cwd, queued.retainedId);
+  }
+
+  private scheduleDrain(session: OutwardAcpSessionRecord): void {
+    if (this.closing || this.options.db.pendingMsgCount(OUTWARD_ACP_SURFACE, session.conversationId) === 0) return;
+    setImmediate(() => {
+      void this.drainQueued(session).catch((error) => console.error("[acp:outward] queue drain failed", error));
+    });
+  }
+
+  /**
+   * Run accepted messages in order while this process can own the lane. Any
+   * ACP process or the supervised workspace owner may call this; the lane
+   * lock and per-row claim make exactly one of them execute each message.
+   */
+  async drainQueued(session: OutwardAcpSessionRecord): Promise<void> {
+    const { db } = this.options;
+    const conversationId = session.conversationId;
+    if (this.draining.has(conversationId)) return;
+    this.draining.add(conversationId);
+    try {
+      while (!this.closing) {
+        if (hasPendingCapacityWait(db, OUTWARD_ACP_SURFACE, conversationId)) return;
+        const lane = db.acquireLock(OUTWARD_ACP_SURFACE, conversationId, false);
+        if (!lane) return;
+        let release = true;
+        try {
+          if (this.hasRunningRun(conversationId)) return;
+          const row = db.claimNextPendingMsg(lane);
+          if (!row) { if (!db.unlockIfQueueEmpty(lane)) continue; release = false; return; }
+          const key = row.scheduledOccurrenceKey;
+          const marker = row.attachments.find((entry) => entry.startsWith(RETAINED_ATTACHMENT_MARKER));
+          const retainedId = marker ? marker.slice(RETAINED_ATTACHMENT_MARKER.length) : null;
+          if (!key) { db.completePendingMsg(lane, row.id); continue; }
+          const fail = async (reason: string, linkedRunId?: string): Promise<void> => {
+            db.runInTransaction(() => {
+              db.completePendingMsg(lane, row.id);
+              this.writeQueueReceipt(key, { status: "failed", reason, ...(linkedRunId ? { runId: linkedRunId } : {}) });
+              db.setSetting(queueRunLinkKey(key), null);
+            });
+            if (retainedId) await releaseRetainedOutwardAcpAttachments(session.cwd, retainedId).catch(() => undefined);
+          };
+          const priorRun = db.getSetting(queueRunLinkKey(key));
+          if (priorRun) { await fail("interrupted", priorRun); continue; } // never replay an uncertain prompt
+          let attachments: string[] = [];
+          if (retainedId) {
+            try { attachments = await readRetainedOutwardAcpAttachments(session.cwd, retainedId); }
+            catch { await fail("attachments_unavailable"); continue; }
+          }
+          release = false;
+          await this.runOnLane({
+            session, prompt: row.prompt, attachments,
+            signal: new AbortController().signal,
+            onUpdate: () => undefined,
+          }, lane, { id: row.id, key, retainedId, requeued: false });
+          // runOnLane released the lane and scheduled the next drain.
+          return;
+        } finally {
+          if (release && db.ownsLock(lane)) db.unlock(lane);
+        }
+      }
+    } finally {
+      this.draining.delete(conversationId);
+    }
+  }
+
+  /** Supervised-owner entry: give every Workstream with accepted work a chance to run. */
+  async drainAllQueued(): Promise<void> {
+    const { db, lookupSession } = this.options;
+    if (!lookupSession) return;
+    const rows = db.raw.prepare("SELECT DISTINCT chat_id AS chatId FROM pending_messages WHERE surface = ?")
+      .all(OUTWARD_ACP_SURFACE) as Array<{ chatId: string }>;
+    for (const { chatId } of rows) {
+      const session = lookupSession(String(chatId));
+      if (session) await this.drainQueued(session);
+    }
+  }
+
+  // ── Cross-process Stop ──────────────────────────────────────────────────
+
+  /**
+   * Stop a Run owned by another ACP process: record a durable request for that
+   * exact Run, which its owner observes and contains. Locks are never released
+   * here; a dead owner is handled by the existing proven-containment recovery.
+   */
+  private async requestRemoteStop(session: OutwardAcpSessionRecord): Promise<void> {
+    const { db } = this.options;
+    const running = db.listRunningRuns(OUTWARD_ACP_SURFACE).filter((run) => run.chat_id === session.conversationId);
+    if (running.length === 0) return;
+    for (const run of running) db.setSetting(remoteStopKey(run.run_id), new Date().toISOString());
+    // Requests for Runs whose owner died never get consumed; bound their lifetime.
+    db.raw.prepare("DELETE FROM settings WHERE key LIKE 'outward-cancel:%' AND value < ?")
+      .run(new Date(Date.now() - 60 * 60 * 1000).toISOString());
+    const deadline = Date.now() + REMOTE_STOP_WAIT_MS;
+    while (Date.now() < deadline) {
+      if (running.every((run) => db.getRun(run.run_id)?.status !== "running")) return;
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+  }
 }
+
+function requestKey(session: OutwardAcpSessionRecord, requestId: string): string {
+  return `acp-request:${session.sessionId}:${requestId}`;
+}
+function remoteStopKey(runId: string): string { return `outward-cancel:${runId}`; }
+function queueRunLinkKey(key: string): string { return `outward-queue-run:${key}`; }
+function queueReceiptKey(key: string): string { return `outward-queue-receipt:${key}`; }
+function queueRetentionId(key: string): string {
+  return `acp-queue-${createHash("sha256").update(key).digest("hex").slice(0, 32)}`;
+}
+
 
 const NO_DELIVERY_PLATFORM: MessagingPlatform = {
   capabilities: SAFE_SURFACE_CAPABILITIES,
@@ -733,6 +1118,7 @@ export function createProductionOutwardAcpPromptExecutor(
   db: BridgeDb,
   dbPath: string,
   env: NodeJS.ProcessEnv = process.env,
+  lookupSession?: (sessionId: string) => OutwardAcpSessionRecord | null,
 ): BridgeOutwardAcpPromptExecutor {
   const providerChain = configuredProviderChain(env);
   const bots = loadBotsConfig(env);
@@ -766,6 +1152,7 @@ export function createProductionOutwardAcpPromptExecutor(
     getAvailableProviders: () => getCachedAvailableCliKinds({ env }) as ReadonlySet<BotKind>,
     isProviderAvailable: (provider) => getCachedAvailableCliKinds({ env }).has(provider as CliKind),
     enableDeferredCapacity: env.BRIDGE_OUTWARD_DEFERRED_CAPACITY_ENABLED === "1",
+    lookupSession,
     btw: (session, provider, prompt) => buildEngine(session, provider).executeSurfaceNeutralBtw(prompt, session.conversationId),
     createEngine: (session, attemptProvider) => {
       const engine = buildEngine(session, attemptProvider);

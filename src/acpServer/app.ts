@@ -150,6 +150,11 @@ function replayUpdate(sessionId: string, turn: OutwardAcpHistoryTurn): acp.Sessi
   };
 }
 
+/** Client-chosen idempotency token for a queued submission; anything else is ignored. */
+function boundedRequestId(value: unknown): string | undefined {
+  return typeof value === "string" && /^[A-Za-z0-9._:-]{1,128}$/.test(value) ? value : undefined;
+}
+
 function promptText(prompt: readonly acp.ContentBlock[]): string {
   const parts = prompt.flatMap((block) => {
     if (block.type === "text") return [block.text];
@@ -181,6 +186,7 @@ export function createOutwardAcpAgent(options: OutwardAcpAgentOptions = {}): Age
       workstreams: supportsWorkstreams,
       commands: supportsWorkstreams && Boolean(options.commands),
       deferredCapacity: supportsWorkstreams && options.promptExecutor?.supportsDeferredCapacity === true,
+      busyMessages: supportsWorkstreams && options.promptExecutor?.supportsBusyMessages === true,
     }),
     agentInfo: { ...BRIDGE_ACP_AGENT_INFO },
   }));
@@ -313,6 +319,9 @@ export function createOutwardAcpAgent(options: OutwardAcpAgentOptions = {}): Age
         ...(runId ? { runId } : {}),
         signal: ctx.signal,
         deferCapacity: ctx.params._meta?.["agent-bridge/defer-capacity"] === 1,
+        busyMessages: supportsWorkstreams && promptExecutor.supportsBusyMessages === true
+          && ctx.params._meta?.["agent-bridge/busy-messages"] === 1,
+        requestId: boundedRequestId(ctx.params._meta?.["agent-bridge/request-id"]),
         onUpdate: (update) => ctx.client.notify(acp.methods.client.session.update, {
           sessionId: session.sessionId,
           update,
