@@ -43,8 +43,8 @@ describe("outward ACP crash recovery", () => {
     const db = openDb(":memory:", { serviceId: `acp:outward/${owner.pid}/${ticks}`, runId: "old-owner" });
     try {
       const identity = { surfaceIdentity: OUTWARD_ACP_SURFACE, chatKey: "acp:interrupted" };
-      db.insertRun("interrupted-provider", identity, "codex");
       expect(db.acquireLock(identity.surfaceIdentity, identity.chatKey)).not.toBeNull();
+      db.insertRun("interrupted-provider", identity, "codex");
       db.raw.prepare("UPDATE execution_locks SET lease_expires_at = ?").run(new Date(0).toISOString());
       expect(db.reconcileStaleExecutionLocks({ reason: "outward_acp_service_restart", containmentState: () => "proven", lockState: () => "stale" })).toHaveLength(1);
       owner.kill("SIGKILL");
