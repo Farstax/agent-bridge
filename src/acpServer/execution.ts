@@ -1026,12 +1026,14 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
     }
     const run = db.getRun(runId);
     if (!run || run.status === "running") return "settled"; // preserve the run link and claimed row; never replay uncertain work
-    db.runInTransaction(() => {
+    const settled = db.runInImmediateTransaction(() => {
+      if (!db.ownsPendingClaim(queued.laneHandle, queued.id)) return false;
       this.writeQueueReceipt(queued.key, { status: run.status, runId });
       clearSetting(db, queueRunLinkKey(queued.key));
       clearSetting(db, `outward-queue-attempts:${queued.key}`);
+      return true;
     });
-    return "committed";
+    return settled ? "committed" : "settled"; // Stop retired the claim and owns its receipt.
   }
 
   /** Execute a claimed durable message; BridgeEngine owns its lane and queue lifecycle. */

@@ -208,6 +208,29 @@ describe("outward ACP durable queue ownership", () => {
     } finally { f.cleanup(); }
   });
 
+  it("preserves Stop's receipt when a completed Run settles its retired queue claim", async () => {
+    const f = fixture();
+    try {
+      const key = "acp-request:s1:completed-stopped-race";
+      const rowId = f.db.enqueueMsg(OUTWARD_ACP_SURFACE, f.session.conversationId, {
+        prompt: "completed while Stop wins", chatId: f.session.sessionId, chatType: "acp", scheduledOccurrenceKey: key,
+      });
+      const lane = f.db.acquireLock(OUTWARD_ACP_SURFACE, f.session.conversationId)!;
+      expect(f.db.claimNextPendingMsg(lane)?.id).toBe(rowId);
+      f.db.insertRun("completed-before-stop-settlement", { surfaceIdentity: OUTWARD_ACP_SURFACE, chatKey: f.session.conversationId }, "codex");
+      f.db.updateRunCompleted("completed-before-stop-settlement", "done", null);
+      const executor = f.executor as unknown as { settleQueuedThroughCore: (session: typeof f.session, queued: unknown, runId: string, capacityRequeue: boolean) => Promise<string> };
+      f.db.runInImmediateTransaction(() => {
+        f.db.deletePendingMsg(rowId);
+        f.db.setSetting(`outward-queue-receipt:${key}`, JSON.stringify({ outcome: "settled", status: "cancelled", reason: "stopped" }));
+      });
+      expect(await executor.settleQueuedThroughCore(f.session, {
+        id: rowId, laneHandle: lane, key, retainedId: null, requeued: false, coreManaged: true,
+      }, "completed-before-stop-settlement", false)).toBe("settled");
+      expect(JSON.parse(f.db.getSetting(`outward-queue-receipt:${key}`)!)).toMatchObject({ outcome: "settled", status: "cancelled", reason: "stopped" });
+    } finally { f.cleanup(); }
+  });
+
   it("hands a queued capacity rejection to the durable wait and replaces its receipt on Stop", async () => {
     const f = fixture();
     try {
