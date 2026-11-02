@@ -1,4 +1,4 @@
-import { mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { mkdtempSync, realpathSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -9,6 +9,9 @@ import { setLaneBusyMessageMode } from "../src/busyMessageMode.js";
 import { listRunContinuations } from "../src/runContinuation.js";
 import { OutwardAcpSessionRepository } from "../src/repositories/outwardAcpSessionRepository.js";
 import { BridgeOutwardAcpPromptExecutor, OUTWARD_ACP_SURFACE } from "../src/acpServer/execution.js";
+import { BridgeEngine, type PendingMessage, type QueuedMessageOutcome } from "../src/engine.js";
+import { SAFE_SURFACE_CAPABILITIES, type MessagingPlatform } from "../src/platform.js";
+import { QUEUED_ATTACHMENT_MARKER, retainOutwardAcpAttachmentsForWait, stageOutwardAcpAttachments } from "../src/acpServer/attachments.js";
 
 // Issue #1130: durable queue drained by a supervised owner, and augment steering.
 
@@ -19,10 +22,13 @@ function fixture() {
   const session = sessions.create({ sessionId: "s1", conversationId: "acp:c1", cwd: root });
   const ran: string[] = [];
   let gate: Promise<void> = Promise.resolve();
-  const executor = new BridgeOutwardAcpPromptExecutor({
+  let executor!: BridgeOutwardAcpPromptExecutor;
+  const core = coreQueueOwner(db, (message) => executor.executeQueuedMessage(session, message));
+  executor = new BridgeOutwardAcpPromptExecutor({
     db,
     providerChain: ["codex"] as const,
     lookupSession: (id) => sessions.get(id),
+    discardPendingMessages: (owner, before, after) => core.discardPendingMessages(owner.conversationId, before, after),
     createEngine: () => ({
       executeSurfaceNeutralTurn: async (input) => {
         ran.push(input.prompt);
@@ -31,6 +37,7 @@ function fixture() {
         input.collect(eventType.runCompleted({ runId: input.runId, bot: "codex", chatId: String(input.chatId), chatKey: input.chatKey, text: "ok", sessionId: "p" }));
         return { text: "ok", sessionId: "p", stopReason: "end_turn" };
       },
+      recoverPendingQueue: (chatKey) => core.recoverPendingQueue(chatKey),
     }),
   });
   return { root, db, session, executor, ran, hold: (promise: Promise<void>) => { gate = promise; },
@@ -39,6 +46,19 @@ function fixture() {
 const base = (session: ReturnType<typeof fixture>["session"], prompt: string, extra = {}) => ({
   session, prompt, signal: new AbortController().signal, onUpdate: () => undefined, ...extra,
 });
+
+const NO_DELIVERY: MessagingPlatform = {
+  capabilities: SAFE_SURFACE_CAPABILITIES,
+  async sendMessage() { return {}; }, async editMessageText() { return {}; }, async sendChatAction() { return {}; },
+  async answerCallbackQuery() { return {}; }, async setMyCommands() { return {}; }, async sendDocument() {}, async sendPhoto() {},
+};
+
+function coreQueueOwner(db: ReturnType<typeof openDb>, handler: (message: PendingMessage) => Promise<QueuedMessageOutcome>) {
+  return new BridgeEngine({
+    kind: "codex", surfaceIdentity: OUTWARD_ACP_SURFACE, botConfig: { command: "", modelPreference: [] },
+    allowedUserIds: new Set(), executionMode: "safe", pollIntervalMs: 1000, hooks: { onQueuedMessage: handler },
+  }, db, NO_DELIVERY);
+}
 
 describe("outward ACP durable queue ownership", () => {
   it("a supervised owner drains accepted work with no connected client", async () => {
@@ -71,6 +91,69 @@ describe("outward ACP durable queue ownership", () => {
     } finally { f.cleanup(); }
   });
 
+  it("retires a durable completed receipt without replaying after a queue-owner crash", async () => {
+    const f = fixture();
+    try {
+      const key = "acp-queue:already-settled";
+      f.db.admitMessage(OUTWARD_ACP_SURFACE, f.session.conversationId, {
+        prompt: "must not run twice", chatId: f.session.sessionId, chatType: "acp", scheduledOccurrenceKey: key,
+      }, 5, true);
+      f.db.setSetting(`outward-queue-receipt:${key}`, JSON.stringify({ status: "done" }));
+      await f.executor.drainAllQueued();
+      expect(f.ran).toEqual([]);
+      expect(f.db.pendingMsgCount(OUTWARD_ACP_SURFACE, f.session.conversationId)).toBe(0);
+    } finally { f.cleanup(); }
+  });
+
+  it("preserves queued attachments through a verified capacity retry and replays as queued", async () => {
+    const f = fixture();
+    try {
+      const key = "acp-request:s1:capacity-attachment";
+      const retainedId = "acp-queue-capacity-retry";
+      await stageOutwardAcpAttachments(f.root, [
+        { type: "resource", resource: { uri: "file:///note.txt", mimeType: "text/plain", text: "keep me" } },
+      ], (paths) => retainOutwardAcpAttachmentsForWait(f.root, paths, retainedId));
+      f.db.admitMessage(OUTWARD_ACP_SURFACE, f.session.conversationId, {
+        prompt: "retry with attachment", chatId: f.session.sessionId, chatType: "acp",
+        attachments: [`${QUEUED_ATTACHMENT_MARKER}${retainedId}`], scheduledOccurrenceKey: key,
+      }, 5, true);
+      let executor!: BridgeOutwardAcpPromptExecutor;
+      const core = coreQueueOwner(f.db, (message) => executor.executeQueuedMessage(f.session, message));
+      let attempts = 0;
+      const seen: string[] = [];
+      executor = new BridgeOutwardAcpPromptExecutor({
+        db: f.db, providerChain: ["codex"] as const,
+        createEngine: () => ({
+          executeSurfaceNeutralTurn: async (input) => {
+            attempts += 1;
+            seen.push(...(input.attachments ?? []).map((path) => readFileSync(path, "utf8")));
+            input.collect(eventType.runStarted({ runId: input.runId, bot: "codex", chatId: String(input.chatId), chatKey: input.chatKey, command: "fake", cwd: f.root, model: null }));
+            if (attempts === 1) {
+              input.onProviderRecoveryDecision?.("capacity", true);
+              throw new Error("MODEL_CAPACITY_EXHAUSTED");
+            }
+            input.collect(eventType.runCompleted({ runId: input.runId, bot: "codex", chatId: String(input.chatId), chatKey: input.chatKey, text: "ok", sessionId: "fake" }));
+            return { text: "ok", sessionId: "fake", stopReason: "end_turn" };
+          },
+          recoverPendingQueue: (chatKey) => core.recoverPendingQueue(chatKey),
+        }),
+      });
+      await executor.drainQueued(f.session);
+      expect(JSON.parse(f.db.getSetting(`outward-queue-receipt:${key}`)!)).toMatchObject({ outcome: "queued", status: "queued" });
+      const replay = await executor.execute(base(f.session, "retry with attachment", { busyMessages: true, requestId: "capacity-attachment" }));
+      expect((replay._meta as any)["agent-bridge"]).toMatchObject({ outcome: "queued", status: "queued" });
+      expect(readdirSync(f.root).some((name) => name.startsWith(".agent-bridge-queued-attachments-"))).toBe(true);
+      for (let index = 0; index < 60 && (attempts < 2 || f.db.pendingMsgCount(OUTWARD_ACP_SURFACE, f.session.conversationId) > 0); index += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 25));
+      }
+      expect(attempts).toBe(2);
+      expect(seen).toEqual(["keep me", "keep me"]);
+      expect(f.db.pendingMsgCount(OUTWARD_ACP_SURFACE, f.session.conversationId)).toBe(0);
+      expect(JSON.parse(f.db.getSetting(`outward-queue-receipt:${key}`)!)).toMatchObject({ status: "done" });
+      expect(readdirSync(f.root).some((name) => name.startsWith(".agent-bridge-queued-attachments-"))).toBe(false);
+    } finally { f.cleanup(); }
+  });
+
   it("hands a queued capacity rejection to the durable wait and replaces its receipt on Stop", async () => {
     const f = fixture();
     try {
@@ -79,7 +162,9 @@ describe("outward ACP durable queue ownership", () => {
         prompt: "resume after capacity", chatId: f.session.sessionId, chatType: "acp", scheduledOccurrenceKey: queuedKey,
       }, 5, true);
       let attempts = 0;
-      const executor = new BridgeOutwardAcpPromptExecutor({
+      let executor!: BridgeOutwardAcpPromptExecutor;
+      const core = coreQueueOwner(f.db, (message) => executor.executeQueuedMessage(f.session, message));
+      executor = new BridgeOutwardAcpPromptExecutor({
         db: f.db,
         providerChain: ["codex"] as const,
         enableDeferredCapacity: true,
@@ -89,6 +174,7 @@ describe("outward ACP durable queue ownership", () => {
             input.collect(eventType.runStarted({ runId: input.runId, bot: "codex", chatId: String(input.chatId), chatKey: input.chatKey, command: "fake", cwd: f.root, model: null }));
             throw new Error("MODEL_CAPACITY_EXHAUSTED");
           },
+          recoverPendingQueue: (chatKey) => core.recoverPendingQueue(chatKey),
         }),
       });
       await executor.drainQueued(f.session);

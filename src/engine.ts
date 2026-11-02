@@ -64,7 +64,7 @@ import type { BridgeEvent } from "./events/types.js";
 import { type as eventType } from "./events/types.js";
 import { EventStore } from "./events/store.js";
 import type { BridgeConfig, BotKind, RouteableBotKind, TelegramUpdate, TelegramMessage, TelegramCallbackQuery, CliResult, CliOptions } from "./types.js";
-import { BTW_PENDING_OCCURRENCE_KEY, ExecutionLockLostError, type BridgeDb, type ExecutionLaneHandle } from "./db.js";
+import { BTW_PENDING_OCCURRENCE_KEY, ExecutionLockLostError, type BridgeDb, type DiscardedPendingMessage, type ExecutionLaneHandle } from "./db.js";
 import type { ExecutionCapacityClaim } from "./repositories/executionCapacityRepository.js";
 import { DEFAULT_CONTEXT_MAX_CHARS } from "./db.js";
 import { linkScheduledOccurrenceRun, markScheduledOccurrenceFailed, SCHEDULED_OCCURRENCE_PREFIX } from "./scheduledRunCorrelation.js";
@@ -102,7 +102,7 @@ export interface BridgeEngineHooks {
   onAuthRequired?: (chatKey: string) => void | Promise<void>;
   onProviderFallbackRequested?: (chatKey: string, reason: ProviderFallbackReason, context?: { runId: string; provider?: string; chatId: number | string; chatType: string; threadId?: number | string; retryAfterSeconds?: number; hasUnknownCapacityTiming?: true }) => void | Promise<void>;
   onAfterExecute?: (prompt: string, resultText: string, ctx: HookContext) => void | Promise<void>;
-  onQueuedMessage?: (message: PendingMessage) => Promise<ExecutionOutcome>;
+  onQueuedMessage?: (message: PendingMessage) => Promise<QueuedMessageOutcome>;
 }
 
 export interface PendingMessage {
@@ -117,6 +117,7 @@ export interface PendingMessage {
 
 /** `deferred` retains the claimed admission for an existing durable continuation. */
 export type ExecutionOutcome = "committed" | "queued" | "deferred" | "failed" | "fenced";
+export type QueuedMessageOutcome = ExecutionOutcome | "settled";
 export type { ProviderFallbackReason } from "./providers/recoveryVerdict.js";
 
 type StagedCliResult = CliResult & {
@@ -224,7 +225,7 @@ export class BridgeEngine {
   private readonly db: BridgeDb;
   private readonly hooks: BridgeEngineHooks;
   private readonly exec: ExecFns;
-  private queuedMessageHandler?: (message: PendingMessage) => Promise<ExecutionOutcome>;
+  private queuedMessageHandler?: (message: PendingMessage) => Promise<QueuedMessageOutcome>;
   private readonly queueRecoveryTimers = new Map<string, NodeJS.Timeout>();
   private readonly laneCoordinator: ExecutionLaneCoordinator;
   private readonly seenInteractiveMessageKeys = new Set<string>();
@@ -341,6 +342,7 @@ export class BridgeEngine {
   }
 
   async recoverPendingQueue(chatKey: string, activeContinuationId?: string, capacityClaimToken?: string): Promise<boolean> {
+    if (!this.db.raw.open) return false;
     if (this.db.pendingMsgCount(this.surfaceIdentity, chatKey) === 0) return false;
     if (hasPendingCapacityWait(this.db, this.surfaceIdentity, chatKey, activeContinuationId)) return true;
     const handle = this.db.acquireLock(this.surfaceIdentity, chatKey);
@@ -1278,23 +1280,38 @@ export class BridgeEngine {
   }
 
   private _discardPendingMessages(chatKey: string): void {
-    const pending = this.db.discardPendingMsgs(this.surfaceIdentity, chatKey);
-    for (const queued of pending) {
-      this._deleteQueuedAttachments(queued.attachments);
-      if (queued.scheduledOccurrenceKey) {
-        if (queued.scheduledOccurrenceKey.startsWith(RUN_CONTINUATION_PREFIX)) {
-          const continuationId = queued.scheduledOccurrenceKey.slice(RUN_CONTINUATION_PREFIX.length);
-          settleRunContinuation(this.db, continuationId, "cancelled", "continuation cancelled while queued");
-        } else if (queued.scheduledOccurrenceKey.startsWith(EVENT_RECEIPT_CORRELATION_PREFIX)) {
-          const receiptId = Number(queued.scheduledOccurrenceKey.slice(EVENT_RECEIPT_CORRELATION_PREFIX.length));
-          if (Number.isSafeInteger(receiptId)) {
-            this.db.finishEventReceipt(receiptId, { status: "cancelled", error_class: "cancelled_while_queued" });
+    this.discardPendingMessages(chatKey);
+  }
+
+  /** Core-owned atomic queue retirement used by every surface's Stop path. */
+  discardPendingMessages(
+    chatKey: string,
+    beforeDiscard?: () => void,
+    afterDiscard?: (pending: DiscardedPendingMessage[]) => void,
+  ): DiscardedPendingMessage[] {
+    const pending = this.db.runInImmediateTransaction(() => {
+      beforeDiscard?.();
+      const rows = this.db.discardPendingMsgs(this.surfaceIdentity, chatKey);
+      for (const queued of rows) {
+        if (queued.scheduledOccurrenceKey) {
+          if (queued.scheduledOccurrenceKey.startsWith(RUN_CONTINUATION_PREFIX)) {
+            const continuationId = queued.scheduledOccurrenceKey.slice(RUN_CONTINUATION_PREFIX.length);
+            settleRunContinuation(this.db, continuationId, "cancelled", "continuation cancelled while queued");
+          } else if (queued.scheduledOccurrenceKey.startsWith(EVENT_RECEIPT_CORRELATION_PREFIX)) {
+            const receiptId = Number(queued.scheduledOccurrenceKey.slice(EVENT_RECEIPT_CORRELATION_PREFIX.length));
+            if (Number.isSafeInteger(receiptId)) {
+              this.db.finishEventReceipt(receiptId, { status: "cancelled", error_class: "cancelled_while_queued" });
+            }
+          } else if (queued.scheduledOccurrenceKey.startsWith(SCHEDULED_OCCURRENCE_PREFIX)) {
+            markScheduledOccurrenceFailed(this.db, queued.scheduledOccurrenceKey, "cancelled_while_queued");
           }
-        } else if (queued.scheduledOccurrenceKey.startsWith(SCHEDULED_OCCURRENCE_PREFIX)) {
-          markScheduledOccurrenceFailed(this.db, queued.scheduledOccurrenceKey, "cancelled_while_queued");
         }
       }
-    }
+      afterDiscard?.(rows);
+      return rows;
+    });
+    for (const queued of pending) this._deleteQueuedAttachments(queued.attachments);
+    return pending;
   }
 
   /**
@@ -1643,6 +1660,10 @@ export class BridgeEngine {
         const outcome = this.queuedMessageHandler
           ? await this.queuedMessageHandler(message)
           : await this.executeClaimedMessage(message);
+        if (outcome === "settled") {
+          if (this.db.ownsLock(handle)) this.db.unlock(handle);
+          return;
+        }
         if (outcome === "fenced") {
           for (const id of next.pendingIds ?? [next.id]) this.db.releasePendingClaim(handle, id);
           return;
@@ -1650,6 +1671,9 @@ export class BridgeEngine {
         if (outcome === "deferred") {
           for (const id of next.pendingIds ?? [next.id]) this.db.releasePendingClaim(handle, id);
           this.db.unlock(handle);
+          if (!hasPendingCapacityWait(this.db, this.surfaceIdentity, chatKey)) {
+            this._scheduleQueueRecovery(chatKey, recoveryAttempt + 1);
+          }
           return;
         }
         if (outcome !== "committed") {
@@ -1659,7 +1683,10 @@ export class BridgeEngine {
           this._scheduleQueueRecovery(chatKey, recoveryAttempt + 1);
           return;
         }
-        if (!(next.pendingIds ? this.db.completePendingMsgs(handle, next.pendingIds) : this.db.completePendingMsg(handle, next.id))) return;
+        if (!(next.pendingIds ? this.db.completePendingMsgs(handle, next.pendingIds) : this.db.completePendingMsg(handle, next.id))) {
+          if (this.db.ownsLock(handle)) this.db.unlock(handle);
+          return;
+        }
         this._deleteQueuedAttachments(next.attachments);
         if (activeContinuationId) {
           if (this.db.ownsLock(handle)) this.db.unlock(handle);

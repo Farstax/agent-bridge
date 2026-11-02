@@ -51,9 +51,12 @@ policy, provider selection and fallback, Run ownership, execution-capacity
 claims, cancellation fencing and recovery. Telegram, Discord and Slack enter
 through the shared interactive dispatcher and `BridgeEngine`. Outward ACP uses
 the same queue, lane locks, provider router and `BridgeEngine` provider
-execution, while its adapter retains ACP sessions, capability negotiation,
-streaming, request receipts and wire responses. Those receipts distinguish
-accepted queue work from a completed Run; they are not a second queue.
+execution. `BridgeEngine.recoverPendingQueue()` owns ACP queue claims, drain
+ordering and row retirement. The ACP adapter executes a claimed item through
+the shared provider router and records its protocol receipt. It retains ACP
+sessions, capability negotiation, streaming and wire responses. Those receipts
+distinguish accepted queue work from a completed Run; they are not a second
+queue.
 
 User-facing Stop cancels the active Run and clears accepted pending work. The
 ACP `session/cancel` notification only cancels the active request, and
