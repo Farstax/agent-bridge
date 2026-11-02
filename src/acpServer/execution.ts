@@ -76,6 +76,7 @@ type QueuedExecution = {
   key: string;
   retainedId: string | null;
   requeued: boolean;
+  settled?: boolean;
 };
 
 export interface OutwardAcpPromptExecutor {
@@ -475,9 +476,6 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
 
   async execute(input: OutwardAcpPromptExecutionInput): Promise<acp.PromptResponse> {
     const { db } = this.options;
-    if (hasPendingCapacityWait(db, OUTWARD_ACP_SURFACE, input.session.conversationId, input.capacityResume?.id)) {
-      throw new acp.RequestError(OUTWARD_ACP_BUSY_ERROR, "outward ACP Workstream is awaiting provider capacity");
-    }
     // Only a client that opted into the advertised busy-message extension may
     // submit during an active Run; every other client keeps ACP v1 fail-fast.
     const optedIn = input.busyMessages === true && !input.capacityResume;
@@ -485,6 +483,9 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
     if (optedIn && input.requestId) {
       const replay = this.replayRequest(input.session, input.requestId);
       if (replay) return replay;
+    }
+    if (hasPendingCapacityWait(db, OUTWARD_ACP_SURFACE, input.session.conversationId, input.capacityResume?.id)) {
+      throw new acp.RequestError(OUTWARD_ACP_BUSY_ERROR, "outward ACP Workstream is awaiting provider capacity");
     }
     const requestToken = optedIn && input.requestId ? randomUUID() : null;
     const reservationKey = input.requestId ? queueReservationKey(requestKey(input.session, input.requestId)) : null;
@@ -529,7 +530,7 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
     const { db } = this.options;
     const key = requestKey(session, requestId);
     const settled = db.getSetting(queueReceiptKey(key));
-    if (settled) return this.queueReceipt("settled", { requestId, ...JSON.parse(settled) });
+    if (settled) return this.storedQueueReceipt(settled, requestId);
     const queuedId = db.getPendingMessageIdByCorrelationKey(OUTWARD_ACP_SURFACE, key);
     if (queuedId !== null) {
       const position = db.pendingMessagePosition(OUTWARD_ACP_SURFACE, session.conversationId, queuedId);
@@ -757,7 +758,7 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
         const continuationId = `acp-capacity-wait:${runId}`;
         await retainOutwardAcpAttachmentsForWait(input.session.cwd, input.attachments ?? [], continuationId);
         try {
-          requestRunContinuation(db, {
+          const persistWait = () => requestRunContinuation(db, {
             continuationId,
             originRunId: runId,
             surfaceIdentity: OUTWARD_ACP_SURFACE,
@@ -768,6 +769,22 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
             capacityWait: true,
             outward: { sessionId: input.session.sessionId, prompt: input.prompt, attachmentCount: input.attachments?.length ?? 0 },
           });
+          if (queued) {
+            // Commit the existing capacity wait and queue-row retirement together.
+            // Recovery can then never run both records for the same accepted turn.
+            db.runInTransaction(() => {
+              persistWait();
+              if (!db.completePendingMsg(active!.lane, queued.id)) {
+                throw new Error("queued row claim was lost before capacity handoff");
+              }
+              this.writeQueueReceipt(queued.key, { outcome: "deferred", status: "waiting", runId, continuationId });
+              db.setSetting(queueRunLinkKey(queued.key), null);
+              db.setSetting(`outward-queue-attempts:${queued.key}`, null);
+              queued.settled = true;
+            });
+          } else {
+            persistWait();
+          }
         } catch (persistError) {
           // Leave a short-lived orphan for the bounded owner-marker cleanup;
           // never signal deferred admission if its durable record was not made.
@@ -792,7 +809,9 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
       }
       try {
         // Settle the durable queue row while this process still owns the lane.
-        if (queued) await this.settleQueued(lane, input.session, queued, runId, queueCapacityRequeue);
+        if (queued?.settled) {
+          if (queued.retainedId) await releaseRetainedOutwardAcpAttachments(input.session.cwd, queued.retainedId);
+        } else if (queued) await this.settleQueued(lane, input.session, queued, runId, queueCapacityRequeue);
         else if (idempotencyKey) this.settleDirect(idempotencyKey, runId);
       } catch (error) {
         console.error("[acp:outward] queued message settlement failed", error);
@@ -818,7 +837,7 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
   }
 
   private queueReceipt(
-    outcome: "queued" | "steered" | "settled" | "running",
+    outcome: "queued" | "steered" | "settled" | "running" | "deferred",
     detail: Record<string, unknown>,
   ): acp.PromptResponse {
     return { stopReason: "end_turn", _meta: { "agent-bridge": { outcome, ...detail } } };
@@ -835,7 +854,7 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
     const mode = this.busyMode(session);
     const key = input.requestId ? requestKey(session, input.requestId) : `acp-queue:${randomUUID()}`;
     const settled = db.getSetting(queueReceiptKey(key));
-    if (settled) return this.queueReceipt("settled", { requestId: input.requestId, ...JSON.parse(settled) });
+    if (settled) return this.storedQueueReceipt(settled, input.requestId);
     const existing = db.getPendingMessageIdByCorrelationKey(OUTWARD_ACP_SURFACE, key);
     if (existing !== null) {
       const position = db.pendingMessagePosition(OUTWARD_ACP_SURFACE, session.conversationId, existing);
@@ -885,7 +904,7 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
       if (admission.kind === "running") {
         return this.queueReceipt("running", { runId: admission.runId, requestId: input.requestId });
       }
-      return this.queueReceipt("settled", { requestId: input.requestId, ...JSON.parse(admission.value) });
+      return this.storedQueueReceipt(admission.value, input.requestId);
     }
     const queueId = admission.id;
     let steered = false;
@@ -901,7 +920,7 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
       const run = runId ? db.getRun(runId) : null;
       if (run?.status === "running") return this.queueReceipt("running", { queueId, mode, requestId: input.requestId, runId });
       const settled = db.getSetting(queueReceiptKey(key));
-      if (settled) return this.queueReceipt("settled", { requestId: input.requestId, ...JSON.parse(settled) });
+      if (settled) return this.storedQueueReceipt(settled, input.requestId);
       return this.queueReceipt("running", { queueId, mode, requestId: input.requestId });
     }
     return this.queueReceipt("queued", {
@@ -948,6 +967,13 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
     db.setSetting(queueReceiptKey(key), JSON.stringify({ ...receipt, at: new Date(now).toISOString() }));
     db.raw.prepare(`DELETE FROM settings WHERE key LIKE 'outward-queue-receipt:%'
       AND json_valid(value) AND json_extract(value, '$.at') < ?`).run(new Date(now - QUEUE_RECEIPT_RETENTION_MS).toISOString());
+  }
+
+  private storedQueueReceipt(value: string, requestId?: string): acp.PromptResponse {
+    const receipt = JSON.parse(value) as Record<string, unknown>;
+    return this.queueReceipt(receipt.outcome === "deferred" ? "deferred" : "settled", {
+      ...(requestId ? { requestId } : {}), ...receipt,
+    });
   }
 
   /** Complete or requeue the claimed row from inside the lane owner, before the lane is released. */
@@ -1044,6 +1070,7 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
           release = false;
           await this.runOnLane({
             session, prompt: row.prompt, attachments,
+            deferCapacity: this.supportsDeferredCapacity,
             signal: new AbortController().signal,
             onUpdate: () => undefined,
           }, lane, { id: row.id, key, retainedId, requeued: false });

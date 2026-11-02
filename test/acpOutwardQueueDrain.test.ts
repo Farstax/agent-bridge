@@ -6,6 +6,7 @@ import { openDb } from "../src/db.js";
 import { executionLaneCoordinator } from "../src/executionLaneCoordinator.js";
 import { type as eventType } from "../src/events/types.js";
 import { setLaneBusyMessageMode } from "../src/busyMessageMode.js";
+import { listRunContinuations } from "../src/runContinuation.js";
 import { OutwardAcpSessionRepository } from "../src/repositories/outwardAcpSessionRepository.js";
 import { BridgeOutwardAcpPromptExecutor, OUTWARD_ACP_SURFACE } from "../src/acpServer/execution.js";
 
@@ -67,6 +68,40 @@ describe("outward ACP durable queue ownership", () => {
       await f.executor.drainAllQueued();
       expect(f.ran).toEqual([]);
       expect(JSON.parse(f.db.getSetting("outward-queue-receipt:acp-queue:k2")!)).toMatchObject({ status: "failed", reason: "interrupted" });
+    } finally { f.cleanup(); }
+  });
+
+  it("hands a queued capacity rejection to the existing durable wait without retaining two copies", async () => {
+    const f = fixture();
+    try {
+      const queuedKey = "acp-request:s1:capacity-turn";
+      f.db.admitMessage(OUTWARD_ACP_SURFACE, f.session.conversationId, {
+        prompt: "resume after capacity", chatId: f.session.sessionId, chatType: "acp", scheduledOccurrenceKey: queuedKey,
+      }, 5, true);
+      let attempts = 0;
+      const executor = new BridgeOutwardAcpPromptExecutor({
+        db: f.db,
+        providerChain: ["codex"] as const,
+        enableDeferredCapacity: true,
+        createEngine: () => ({
+          executeSurfaceNeutralTurn: async (input) => {
+            attempts += 1;
+            input.collect(eventType.runStarted({ runId: input.runId, bot: "codex", chatId: String(input.chatId), chatKey: input.chatKey, command: "fake", cwd: f.root, model: null }));
+            throw new Error("MODEL_CAPACITY_EXHAUSTED");
+          },
+        }),
+      });
+      await executor.drainQueued(f.session);
+      expect(attempts).toBe(1);
+      expect(f.db.pendingMsgCount(OUTWARD_ACP_SURFACE, f.session.conversationId)).toBe(0);
+      expect(listRunContinuations(f.db, OUTWARD_ACP_SURFACE)).toMatchObject([
+        { state: "pending", capacityWait: true, outward: { sessionId: f.session.sessionId, prompt: "resume after capacity" } },
+      ]);
+      expect(executor.status(f.session).state).toBe("waiting");
+      expect(JSON.parse(f.db.getSetting(`outward-queue-receipt:${queuedKey}`)!)).toMatchObject({ outcome: "deferred", status: "waiting" });
+      const replay = await executor.execute(base(f.session, "resume after capacity", { busyMessages: true, requestId: "capacity-turn", deferCapacity: true }));
+      expect((replay._meta as any)["agent-bridge"].outcome).toBe("deferred");
+      expect(attempts).toBe(1);
     } finally { f.cleanup(); }
   });
 
