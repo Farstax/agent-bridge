@@ -1,7 +1,8 @@
 import * as acp from "@agentclientprotocol/sdk/unstable";
 import { randomUUID } from "node:crypto";
 import { abortCliProcessAndWait, toUserMessage } from "../cli.js";
-import { loadBotsConfig, resolveExecutionMode } from "../config.js";
+import { loadBotsConfig, resolveExecutionCapacityConfig, resolveExecutionMode } from "../config.js";
+import { openExecutionCapacityCoordinator } from "../executionCapacity.js";
 import type { BridgeDb } from "../db.js";
 import type { ExecutionLaneHandle } from "../db.js";
 import { BridgeEngine, type SurfaceNeutralTurnInput } from "../engine.js";
@@ -18,10 +19,10 @@ import { applyManualCliSwitchHandoff, getStoredCliPreference, type CliKind } fro
 import type { BotKind, BridgeConfig, CliResult, RouteableBotKind } from "../types.js";
 import { QUEUED_ATTACHMENT_MARKER, readRetainedOutwardAcpAttachments, retainOutwardAcpAttachmentsForWait, releaseRetainedOutwardAcpAttachments } from "./attachments.js";
 import { resolveLaneBusyMessageMode } from "../busyMessageMode.js";
-import { hasPendingCapacityWait, listRunContinuations, linkCapacityContinuationRun, requestRunContinuation, cancelPendingRunContinuation, type RunContinuation } from "../runContinuation.js";
+import { hasPendingCapacityWait, listRunContinuations, linkCapacityContinuationRun, requestRunContinuation, cancelPendingRunContinuation, settleRunContinuation, type RunContinuation } from "../runContinuation.js";
 
 
-import { OUTWARD_ACP_SURFACE, recoverOutwardLanes } from "./recovery.js";
+import { OUTWARD_ACP_SURFACE, outwardServiceId, recoverOutwardLanes } from "./recovery.js";
 export { OUTWARD_ACP_SURFACE } from "./recovery.js";
 const OUTWARD_ACP_EXECUTION_ERROR = -32001;
 const OUTWARD_ACP_BUSY_ERROR = -32002;
@@ -89,6 +90,9 @@ export type OutwardStopResult = "confirmed" | "pending";
 
 export interface OutwardAcpPromptExecutor {
   execute(input: OutwardAcpPromptExecutionInput): Promise<acp.PromptResponse>;
+  /** Standard ACP request cancellation: cancel the active request without clearing accepted queued work. */
+  cancelActive(session: OutwardAcpSessionRecord): Promise<OutwardStopResult>;
+  /** User-facing Bridge Stop: cancel the active Run and all accepted queued work. */
   cancel(session: OutwardAcpSessionRecord): Promise<OutwardStopResult>;
   readonly supportsDeferredCapacity?: boolean;
   readonly supportsBusyMessages?: boolean;
@@ -388,28 +392,46 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
     return this.status(session);
   }
 
-  /** Cancel a durably waiting task, never an already-claimed active provider.
-   * The ACP v1 session/cancel notification only cancels a live request.
+  /** Cancel a durable capacity wait under its execution-lane fence.
+   * A claimed wait without an active lane has not crossed the provider boundary
+   * and is still safely cancellable. ACP v1 `session/cancel` is request-scoped
+   * and leaves accepted queued work intact; user-facing Stop owns queue cancellation.
    */
   async cancelDeferred(session: OutwardAcpSessionRecord): Promise<OutwardWorkstreamStatus> {
     const { db } = this.options;
     const wait = listRunContinuations(db, OUTWARD_ACP_SURFACE).find((item) =>
-      item.chatKey === session.conversationId && item.outward?.sessionId === session.sessionId
+      item.capacityWait === true && item.chatKey === session.conversationId && item.outward?.sessionId === session.sessionId
       && (item.state === "pending" || item.state === "claimed"));
     if (!wait) throw new acp.RequestError(OUTWARD_ACP_BUSY_ERROR, "no pending deferred Workstream task");
-    if (wait.state !== "pending") {
-      throw new acp.RequestError(OUTWARD_ACP_BUSY_ERROR, "the deferred provider is already executing; cancellation requires active process containment");
-    }
     const lane = db.acquireLock(OUTWARD_ACP_SURFACE, session.conversationId);
     if (!lane) throw new acp.RequestError(OUTWARD_ACP_BUSY_ERROR, "deferred Workstream is busy");
     try {
-      const cancelled = db.runWithLockFence(lane, () => db.runInTransaction(() => {
+      const settled = db.runWithLockFence(lane, () => db.runInTransaction(() => {
         // Read the same durable row under the transaction that changes it;
         // the worker's compare-and-swap claim may have won before this point.
         const current = listRunContinuations(db, OUTWARD_ACP_SURFACE).find((item) => item.id === wait.id);
-        return current?.state === "pending" && cancelPendingRunContinuation(db, wait.id, "cancelled_by_owner");
+        if (!current || (current.state !== "pending" && current.state !== "claimed")) return false;
+        if (current.successorRunId) {
+          const successor = db.getRun(current.successorRunId);
+          if (!successor || successor.status === "running" || successor.surface_identity !== OUTWARD_ACP_SURFACE
+              || successor.chat_id !== current.chatKey) return false;
+          if (successor.status === "done") {
+            settleRunContinuation(db, wait.id, "completed");
+            if (current.outward?.receiptKey) {
+              this.writeQueueReceipt(current.outward.receiptKey, {
+                outcome: "settled", status: "done", runId: successor.run_id, continuationId: wait.id,
+              });
+            }
+            return listRunContinuations(db, OUTWARD_ACP_SURFACE).some((item) => item.id === wait.id && item.state === "completed");
+          }
+        }
+        const cancelled = cancelPendingRunContinuation(db, wait.id, "cancelled_by_owner");
+        if (cancelled && current.outward?.receiptKey) {
+          this.writeQueueReceipt(current.outward.receiptKey, { outcome: "settled", status: "cancelled", reason: "stopped", continuationId: wait.id });
+        }
+        return cancelled;
       }));
-      if (!cancelled) {
+      if (!settled) {
         throw new acp.RequestError(OUTWARD_ACP_BUSY_ERROR, "deferred capacity task was already claimed");
       }
     } finally { db.unlock(lane); }
@@ -441,7 +463,81 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
     return this.options.btw;
   }
 
+  /**
+   * User-initiated Stop: discard all accepted-but-unstarted work for the
+   * Workstream, then cancel the active Run. Interrupt mode, request aborts and
+   * shutdown use `cancelRun` instead, which never touches the queue.
+   */
   async cancel(session: OutwardAcpSessionRecord): Promise<OutwardStopResult> {
+    const { db } = this.options;
+    const discarded = db.runInImmediateTransaction(() => {
+      // Fence admission in the same transaction as queue removal. A prompt
+      // racing Stop is either admitted first and removed here, or observes the
+      // fence and is rejected; it cannot slip into the queue after Stop.
+      db.setSetting(stopFenceKey(session.conversationId), new Date().toISOString());
+      const rows = db.discardPendingMsgs(OUTWARD_ACP_SURFACE, session.conversationId);
+      for (const row of rows) {
+        if (!row.scheduledOccurrenceKey) continue;
+        // A retried client request must see "cancelled", never re-admit the work.
+        this.writeQueueReceipt(row.scheduledOccurrenceKey, { status: "cancelled", reason: "stopped" });
+        clearSetting(db, queueRunLinkKey(row.scheduledOccurrenceKey));
+        clearSetting(db, queueReservationKey(row.scheduledOccurrenceKey));
+        clearSetting(db, `outward-queue-attempts:${row.scheduledOccurrenceKey}`);
+      }
+      return rows;
+    });
+    const retainedOf = (row: (typeof discarded)[number]): string | null => {
+      const marker = row.attachments.find((entry) => entry.startsWith(RETAINED_ATTACHMENT_MARKER));
+      return marker ? marker.slice(RETAINED_ATTACHMENT_MARKER.length) : null;
+    };
+    // Unstarted rows have no reader; release their private snapshots now.
+    for (const row of discarded.filter((candidate) => candidate.state === "queued")) {
+      const id = retainedOf(row);
+      if (id) await releaseRetainedOutwardAcpAttachments(session.cwd, id).catch(() => undefined);
+    }
+    const run = await this.cancelRun(session);
+    const waitPending = await this.cancelCapacityWait(session, run === "confirmed");
+    if (run === "confirmed") {
+      // The claimed row's Run has ended, so its snapshot has no reader left.
+      for (const row of discarded.filter((candidate) => candidate.state === "claimed")) {
+        const id = retainedOf(row);
+        if (id) await releaseRetainedOutwardAcpAttachments(session.cwd, id).catch(() => undefined);
+      }
+    }
+    if (run === "confirmed" && !waitPending && this.clearSettledStopFence(session)) return "confirmed";
+    return "pending";
+  }
+
+  async cancelActive(session: OutwardAcpSessionRecord): Promise<OutwardStopResult> {
+    return this.cancelRun(session);
+  }
+
+  /** Clear Stop admission fencing only after no Run, lock, queue or capacity wait can still execute. */
+  private clearSettledStopFence(session: OutwardAcpSessionRecord): boolean {
+    return clearSettledStopFence(this.options.db, session.conversationId);
+  }
+
+  /** Recovery owner calls this after fenced Run/lock reconciliation. */
+  reconcileStopFences(): void {
+    const prefix = "outward-stop-fence:";
+    const rows = this.options.db.raw.prepare("SELECT key FROM settings WHERE key LIKE ? ORDER BY key")
+      .all(`${prefix}%`) as Array<{ key: string }>;
+    for (const { key } of rows) clearSettledStopFence(this.options.db, key.slice(prefix.length));
+  }
+
+  /** Cancel a capacity wait once any claimed successor Run has durably settled. */
+  private async cancelCapacityWait(session: OutwardAcpSessionRecord, runSettled: boolean): Promise<boolean> {
+    const wait = listRunContinuations(this.options.db, OUTWARD_ACP_SURFACE).find((item) =>
+      item.capacityWait === true && item.chatKey === session.conversationId && item.outward?.sessionId === session.sessionId
+      && (item.state === "pending" || item.state === "claimed"));
+    if (!wait) return false;
+    if (wait.state === "claimed" && !runSettled) return true;
+    try { await this.cancelDeferred(session); } catch { /* re-read durable state below */ }
+    return hasPendingCapacityWait(this.options.db, OUTWARD_ACP_SURFACE, session.conversationId);
+  }
+
+  /** Cancel only the active Run, wherever its owner process is; the queue is untouched. */
+  private async cancelRun(session: OutwardAcpSessionRecord): Promise<OutwardStopResult> {
     const record = this.active.get(session.conversationId);
     if (!record) return this.requestRemoteStop(session);
     record.cancelRequested = true;
@@ -481,7 +577,7 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
     this.closing = true;
     const records = [...this.active.values()];
     await Promise.all(records.map(async (record) => {
-      await this.cancel(record.session);
+      await this.cancelRun(record.session);
       await record.done;
     }));
   }
@@ -495,6 +591,15 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
     if (optedIn && input.requestId) {
       const replay = this.replayRequest(input.session, input.requestId);
       if (replay) return replay;
+    }
+    if (db.getSetting(stopFenceKey(conversationId))) {
+      // A Stop caller may have disconnected while cancellation was pending.
+      // Retry the existing proof-based recovery before keeping the lane fenced.
+      await recoverOutwardLanes(db);
+      this.reconcileStopFences();
+    }
+    if (db.getSetting(stopFenceKey(conversationId))) {
+      throw new acp.RequestError(OUTWARD_ACP_BUSY_ERROR, "outward ACP Stop is still pending", { sessionId: input.session.sessionId });
     }
     if (hasPendingCapacityWait(db, OUTWARD_ACP_SURFACE, input.session.conversationId, input.capacityResume?.id)) {
       throw new acp.RequestError(OUTWARD_ACP_BUSY_ERROR, "outward ACP Workstream is awaiting provider capacity");
@@ -593,6 +698,12 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
     try {
       const identity = { surfaceIdentity: OUTWARD_ACP_SURFACE, chatKey: input.session.conversationId };
       db.runInTransaction(() => {
+        // A Stop that discarded this claimed row won: no Run may be created for it.
+        if (queued && !db.ownsPendingClaim(lane, queued.id)) throw new QueuedMessageStopped();
+        if (db.getSetting(stopFenceKey(input.session.conversationId))) {
+          if (queued) throw new QueuedMessageStopped();
+          throw new acp.RequestError(OUTWARD_ACP_BUSY_ERROR, "outward ACP Stop is still pending", { sessionId: input.session.sessionId });
+        }
         db.insertRun(runId, identity, provider);
         // Persist the Run -> queued row link with the Run, so a crash after this
         // point can never replay a prompt whose execution may have started.
@@ -629,7 +740,7 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
       };
       this.active.set(input.session.conversationId, active);
       signalAbort = () => {
-        void this.cancel(input.session).catch(() => {
+        void this.cancelRun(input.session).catch(() => {
           console.warn("[acp:outward] cancellation cleanup failed");
         });
       };
@@ -639,7 +750,7 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
       stopPoll = setInterval(() => {
         try {
           if (db.getSetting(remoteStopKey(runId))) {
-            void this.cancel(input.session).catch(() => console.warn("[acp:outward] remote stop cleanup failed"));
+            void this.cancelRun(input.session).catch(() => console.warn("[acp:outward] remote stop cleanup failed"));
           }
         } catch { /* a transient read failure is retried on the next tick */ }
       }, REMOTE_STOP_POLL_MS);
@@ -745,6 +856,7 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
       }
       return { stopReason: cancelled ? "cancelled" : normalizeStopReason(result.stopReason) };
     } catch (error) {
+      if (error instanceof QueuedMessageStopped) return { stopReason: "cancelled" };
       if (active?.cancelRequested) {
         if (eventStore && db.getRun(runId)?.status === "running") {
           eventStore.collect(cancelledEvent(runId, activeProvider, input.session, "user"));
@@ -779,7 +891,12 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
             reason: "configured providers at capacity or requiring authentication",
             afterSeconds: 300,
             capacityWait: true,
-            outward: { sessionId: input.session.sessionId, prompt: input.prompt, attachmentCount: input.attachments?.length ?? 0 },
+            outward: {
+              sessionId: input.session.sessionId,
+              prompt: input.prompt,
+              attachmentCount: input.attachments?.length ?? 0,
+              ...(queued?.key ? { receiptKey: queued.key } : input.requestId ? { receiptKey: requestKey(input.session, input.requestId) } : {}),
+            },
           });
           if (queued) {
             // Commit the existing capacity wait and queue-row retirement together.
@@ -898,7 +1015,7 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
         chatType: "acp",
         attachments: attachments.length > 0 ? [`${RETAINED_ATTACHMENT_MARKER}${retainedId}`] : [],
         scheduledOccurrenceKey: key,
-      }, OUTWARD_QUEUE_MAX_DEPTH, queueReceiptKey(key), queueRunLinkKey(key), queueReservationKey(key), reservationToken ?? "");
+      }, OUTWARD_QUEUE_MAX_DEPTH, queueReceiptKey(key), queueRunLinkKey(key), queueReservationKey(key), reservationToken ?? "", stopFenceKey(session.conversationId));
     } catch (error) {
       await releaseRetainedOutwardAcpAttachments(session.cwd, retainedId).catch(() => undefined);
       throw error;
@@ -907,6 +1024,9 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
       await releaseRetainedOutwardAcpAttachments(session.cwd, retainedId).catch(() => undefined);
       if (admission.kind === "full") {
         throw new acp.RequestError(OUTWARD_ACP_BUSY_ERROR, "outward ACP queue is full", { sessionId: session.sessionId });
+      }
+      if (admission.kind === "blocked") {
+        throw new acp.RequestError(OUTWARD_ACP_BUSY_ERROR, "outward ACP Stop is still pending", { sessionId: session.sessionId });
       }
       if (admission.kind === "existing") {
         return this.queueReceipt("queued", {
@@ -920,7 +1040,7 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
     }
     const queueId = admission.id;
     let steered = false;
-    if (mode === "interrupt") await this.cancel(session);
+    if (mode === "interrupt") await this.cancelRun(session);
     else if (mode === "augment") steered = await this.trySteerQueued(session, queueId);
     this.scheduleDrain(session);
     if (steered) return this.queueReceipt("steered", { queueId, mode, requestId: input.requestId });
@@ -994,7 +1114,13 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
     const run = db.getRun(runId);
     if (!run || run.status === "running") return;
     db.runInTransaction(() => {
-      this.writeQueueReceipt(key, { status: run.status, runId });
+      const capacityWait = listRunContinuations(db, OUTWARD_ACP_SURFACE).find((wait) =>
+        wait.capacityWait === true && wait.originRunId === runId && (wait.state === "pending" || wait.state === "claimed"));
+      if (capacityWait) {
+        this.writeQueueReceipt(key, { outcome: "deferred", status: "waiting", runId, continuationId: capacityWait.id });
+      } else {
+        this.writeQueueReceipt(key, { status: run.status, runId });
+      }
       clearSetting(db, queueRunLinkKey(key));
     });
   }
@@ -1025,7 +1151,8 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
     const run = db.getRun(runId);
     if (!run || run.status === "running") return; // link stays: the next claim fails closed
     db.runInTransaction(() => {
-      if (!db.completePendingMsg(lane, queued.id)) throw new Error("queued row claim was lost before settlement");
+      // A user Stop deletes the claimed row and writes the cancelled receipt itself.
+      if (!db.completePendingMsg(lane, queued.id)) return;
       this.writeQueueReceipt(queued.key, { status: run.status, runId });
       clearSetting(db, queueRunLinkKey(queued.key));
       clearSetting(db, `outward-queue-attempts:${queued.key}`);
@@ -1100,6 +1227,7 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
   /** Supervised-owner entry: give every Workstream with accepted work a chance to run. */
   async drainAllQueued(): Promise<void> {
     const { db, lookupSession } = this.options;
+    this.reconcileStopFences();
     if (!lookupSession) return;
     const rows = db.raw.prepare("SELECT DISTINCT chat_id AS chatId FROM pending_messages WHERE surface = ?")
       .all(OUTWARD_ACP_SURFACE) as Array<{ chatId: string }>;
@@ -1136,14 +1264,33 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
   }
 }
 
+/** A user Stop discarded the queued message before its Run was created. */
+class QueuedMessageStopped extends Error {
+  constructor() { super("queued message was stopped before execution"); this.name = "QueuedMessageStopped"; }
+}
+
 /** Delete a durable key. setSetting(key, null) would persist a NULL row per Run, forever. */
 function clearSetting(db: BridgeDb, key: string): void {
   db.raw.prepare("DELETE FROM settings WHERE key = ?").run(key);
 }
 
+function clearSettledStopFence(db: BridgeDb, conversationId: string): boolean {
+  return db.runInImmediateTransaction(() => {
+    const running = db.listRunningRuns(OUTWARD_ACP_SURFACE).some((run) => run.chat_id === conversationId);
+    if (running || db.hasChatLock(conversationId)
+        || db.pendingMsgCount(OUTWARD_ACP_SURFACE, conversationId) > 0
+        || hasPendingCapacityWait(db, OUTWARD_ACP_SURFACE, conversationId)) return false;
+    clearSetting(db, stopFenceKey(conversationId));
+    return true;
+  });
+}
+
+function stopFenceKey(conversationId: string): string { return `outward-stop-fence:${conversationId}`; }
+
 function requestKey(session: OutwardAcpSessionRecord, requestId: string): string {
   return `acp-request:${session.sessionId}:${requestId}`;
 }
+
 function remoteStopKey(runId: string): string { return `outward-cancel:${runId}`; }
 function queueRunLinkKey(key: string): string { return `outward-queue-run:${key}`; }
 function queueReceiptKey(key: string): string { return `outward-queue-receipt:${key}`; }
@@ -1218,6 +1365,19 @@ export function createProductionOutwardAcpPromptExecutor(
 ): BridgeOutwardAcpPromptExecutor {
   const providerChain = configuredProviderChain(env);
   const bots = loadBotsConfig(env);
+  const capacity = resolveExecutionCapacityConfig(env);
+  const executionCapacityDb = openExecutionCapacityCoordinator(capacity, dbPath, db, {
+    serviceId: outwardServiceId(),
+    installationId: env.AGENT_BRIDGE_INSTALLATION_ID,
+    requireInstallationIdentity: env.NODE_ENV === "production" && Boolean(env.AGENT_BRIDGE_INSTALLATION_ID?.trim()),
+    databaseRole: "interactive",
+    // A separate coordinator connection is opened for every transient ACP client;
+    // trusted rollout and long-lived service startup own full integrity scans.
+    verifyForeignKeyIntegrity: false,
+  });
+  if (executionCapacityDb && executionCapacityDb !== db) {
+    db.onClose(() => executionCapacityDb.close());
+  }
   const allowedUserIds = new Set<string>();
   const buildEngine = (session: OutwardAcpSessionRecord, attemptProvider: BotKind): BridgeEngine => {
     const executionMode = resolveExecutionMode(attemptProvider, env);
@@ -1240,6 +1400,9 @@ export function createProductionOutwardAcpPromptExecutor(
       pollIntervalMs: 1000,
       workingDir: session.cwd,
       fullConfig,
+      allowRunContinuations: false,
+      maxConcurrentExecutions: capacity.maxConcurrentExecutions,
+      executionCapacityDb: executionCapacityDb ?? undefined,
     }, db, NO_DELIVERY_PLATFORM);
   };
   return new BridgeOutwardAcpPromptExecutor({

@@ -341,6 +341,6 @@ export function createOutwardAcpAgent(options: OutwardAcpAgentOptions = {}): Age
   return app.onNotification(acp.methods.agent.session.cancel, async (ctx) => {
     const session = getSession(ctx.params.sessionId);
     if (!session) return;
-    await promptExecutor.cancel(session);
+    await promptExecutor.cancelActive(session);
   });
 }

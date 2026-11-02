@@ -71,7 +71,7 @@ describe("outward ACP durable queue ownership", () => {
     } finally { f.cleanup(); }
   });
 
-  it("hands a queued capacity rejection to the existing durable wait without retaining two copies", async () => {
+  it("hands a queued capacity rejection to the durable wait and replaces its receipt on Stop", async () => {
     const f = fixture();
     try {
       const queuedKey = "acp-request:s1:capacity-turn";
@@ -95,13 +95,45 @@ describe("outward ACP durable queue ownership", () => {
       expect(attempts).toBe(1);
       expect(f.db.pendingMsgCount(OUTWARD_ACP_SURFACE, f.session.conversationId)).toBe(0);
       expect(listRunContinuations(f.db, OUTWARD_ACP_SURFACE)).toMatchObject([
-        { state: "pending", capacityWait: true, outward: { sessionId: f.session.sessionId, prompt: "resume after capacity" } },
+        { state: "pending", capacityWait: true, outward: { sessionId: f.session.sessionId, prompt: "resume after capacity", receiptKey: queuedKey } },
       ]);
       expect(executor.status(f.session).state).toBe("waiting");
       expect(JSON.parse(f.db.getSetting(`outward-queue-receipt:${queuedKey}`)!)).toMatchObject({ outcome: "deferred", status: "waiting" });
       const replay = await executor.execute(base(f.session, "resume after capacity", { busyMessages: true, requestId: "capacity-turn", deferCapacity: true }));
       expect((replay._meta as any)["agent-bridge"].outcome).toBe("deferred");
       expect(attempts).toBe(1);
+      expect(await executor.cancel(f.session)).toBe("confirmed");
+      expect(listRunContinuations(f.db, OUTWARD_ACP_SURFACE)[0]?.state).toBe("cancelled");
+      expect(JSON.parse(f.db.getSetting(`outward-queue-receipt:${queuedKey}`)!)).toMatchObject({ outcome: "settled", status: "cancelled" });
+      const stoppedReplay = await executor.execute(base(f.session, "resume after capacity", { busyMessages: true, requestId: "capacity-turn", deferCapacity: true }));
+      expect((stoppedReplay._meta as any)["agent-bridge"]).toMatchObject({ outcome: "settled", status: "cancelled" });
+      expect(attempts).toBe(1);
+    } finally { f.cleanup(); }
+  });
+
+  it("records and settles a direct capacity wait receipt by request identity", async () => {
+    const f = fixture();
+    try {
+      const executor = new BridgeOutwardAcpPromptExecutor({
+        db: f.db, providerChain: ["codex"] as const, enableDeferredCapacity: true,
+        createEngine: () => ({ executeSurfaceNeutralTurn: async (input) => {
+          input.collect(eventType.runStarted({ runId: input.runId, bot: "codex", chatId: String(input.chatId), chatKey: input.chatKey, command: "fake", cwd: f.root, model: null }));
+          throw new Error("MODEL_CAPACITY_EXHAUSTED");
+        } }),
+      });
+      const requestId = "direct-capacity-turn";
+      const baseInput = base(f.session, "direct capacity task", { busyMessages: true, requestId, deferCapacity: true });
+      const deferred = await executor.execute(baseInput);
+      expect((deferred._meta as any)["agent-bridge"].outcome).toBe("deferred");
+      const receiptKey = `acp-request:${f.session.sessionId}:${requestId}`;
+      expect(listRunContinuations(f.db, OUTWARD_ACP_SURFACE)[0]?.outward?.receiptKey).toBe(receiptKey);
+      expect(JSON.parse(f.db.getSetting(`outward-queue-receipt:${receiptKey}`)!)).toMatchObject({ outcome: "deferred", status: "waiting" });
+      const replay = await executor.execute(baseInput);
+      expect((replay._meta as any)["agent-bridge"].outcome).toBe("deferred");
+      expect(await executor.cancel(f.session)).toBe("confirmed");
+      expect(JSON.parse(f.db.getSetting(`outward-queue-receipt:${receiptKey}`)!)).toMatchObject({ outcome: "settled", status: "cancelled" });
+      const stoppedReplay = await executor.execute(baseInput);
+      expect((stoppedReplay._meta as any)["agent-bridge"].status).toBe("cancelled");
     } finally { f.cleanup(); }
   });
 

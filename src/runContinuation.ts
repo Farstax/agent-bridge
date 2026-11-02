@@ -83,7 +83,7 @@ export interface RunContinuation {
   /** An ACP-v1 deferred Workstream payload. The existing settings-backed
    * continuation record owns the original admitted input; no second queue or
    * transcript database is introduced. */
-  outward?: { sessionId: string; prompt: string; attachmentCount: number };
+  outward?: { sessionId: string; prompt: string; attachmentCount: number; receiptKey?: string };
   /** The task was retired due to capacity expiry and awaits final notification. */
   expiryDeliveryPending?: true;
 }
@@ -104,7 +104,7 @@ export interface RequestRunContinuationInput {
   delivery?: { chatId: string | number; chatType: string; threadId?: string | number };
   capacityWait?: boolean;
   retainedPendingMessageIds?: number[];
-  outward?: { sessionId: string; prompt: string; attachmentCount: number };
+  outward?: { sessionId: string; prompt: string; attachmentCount: number; receiptKey?: string };
 }
 
 function key(id: string): string {
@@ -160,7 +160,8 @@ function parse(value: string): RunContinuation | null {
       candidate.outward.sessionId.length > 256 ||
       typeof candidate.outward.prompt !== "string" || candidate.outward.prompt.length > 160_000 ||
       !Number.isSafeInteger(candidate.outward.attachmentCount) ||
-      candidate.outward.attachmentCount < 0 || candidate.outward.attachmentCount > 8
+      candidate.outward.attachmentCount < 0 || candidate.outward.attachmentCount > 8 ||
+      (candidate.outward.receiptKey !== undefined && (typeof candidate.outward.receiptKey !== "string" || candidate.outward.receiptKey.length > 512))
     )) return null;
     if (candidate.rolloutProvenance) {
       const p = candidate.rolloutProvenance;
@@ -222,7 +223,8 @@ export function requestRunContinuation(
     !input.outward.sessionId || input.outward.sessionId.length > 256 ||
     input.outward.prompt.length > 160_000 ||
     !Number.isSafeInteger(input.outward.attachmentCount) || input.outward.attachmentCount < 0 ||
-    input.outward.attachmentCount > 8
+    input.outward.attachmentCount > 8 ||
+    (input.outward.receiptKey !== undefined && (typeof input.outward.receiptKey !== "string" || input.outward.receiptKey.length > 512))
   )) throw new Error("invalid outward ACP continuation payload");
   const originRunId = bounded(input.originRunId, "origin run id", 200);
   const surfaceIdentity = bounded(input.surfaceIdentity, "surface identity", 160);

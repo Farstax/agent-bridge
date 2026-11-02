@@ -1885,6 +1885,36 @@ describe("BridgeEngine", () => {
       expect(capturedPrompts[0]).not.toContain("[Agent Bridge context]");
       expect(capturedPrompts[1]).not.toContain("[Agent Bridge context]");
     });
+
+    it("does not offer ordinary continuation to outward ACP without an unattended owner", async () => {
+      const { BridgeEngine } = await import("../src/engine.js");
+      const capturedPrompts: string[] = [];
+      const capturedContextEnvs: Array<Record<string, string> | undefined> = [];
+      const runCli = vi.fn().mockImplementation(async (_cmd: string, args: string[], _cwd: string, options: any) => {
+        capturedPrompts.push(args[1]);
+        capturedContextEnvs.push(options.contextEnv);
+        return cursorResult("done", "outward-session");
+      });
+      const engine = new BridgeEngine({
+        surfaceIdentity: "acp:outward",
+        kind: "grok",
+        botConfig: { command: "grok", modelPreference: [] },
+        allowedUserIds: new Set(["42"]),
+        executionMode: "safe",
+        pollIntervalMs: 1000,
+        workingDir: process.cwd(),
+        fullConfig: makeFullConfig(dbPath),
+        allowRunContinuations: false,
+      }, db, makeMockClient(), acpEngineExec(runCli));
+
+      await engine.handleMessages([makeMessage("hello")]);
+
+      expect(capturedContextEnvs.length).toBeGreaterThan(0);
+      expect(capturedContextEnvs.every((env) => env?.AGENT_BRIDGE_WAIT_COMMAND === undefined)).toBe(true);
+      expect(capturedContextEnvs.every((env) => env?.AGENT_BRIDGE_OUTCOME_COMMAND === undefined)).toBe(true);
+      expect(capturedPrompts.every((prompt) => !prompt.includes("[Agent Bridge continuation]"))).toBe(true);
+      expect(capturedPrompts.every((prompt) => !prompt.includes("[Agent Bridge outcome]"))).toBe(true);
+    });
   });
 
   describe("/reset command", () => {
