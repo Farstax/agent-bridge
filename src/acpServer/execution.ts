@@ -72,6 +72,7 @@ export interface OutwardAcpPromptExecutionInput {
 /** A durably queued message claimed by the lane owner for execution. */
 type QueuedExecution = {
   id: number;
+  laneHandle: ExecutionLaneHandle;
   key: string;
   retainedId: string | null;
   requeued: boolean;
@@ -1008,7 +1009,8 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
     if (capacityRequeue) {
       const attemptsKey = `outward-queue-attempts:${queued.key}`;
       const attempts = Number(db.getSetting(attemptsKey) ?? "0") + 1;
-      db.runInTransaction(() => {
+      const settled = db.runInImmediateTransaction(() => {
+        if (!db.ownsPendingClaim(queued.laneHandle, queued.id)) return false;
         db.setSetting(attemptsKey, String(attempts));
         clearSetting(db, queueRunLinkKey(queued.key));
         if (attempts < QUEUE_CAPACITY_RETRIES) {
@@ -1017,7 +1019,9 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
           this.writeQueueReceipt(queued.key, { outcome: "settled", status: "failed", reason: "provider_capacity" });
           clearSetting(db, attemptsKey);
         }
+        return true;
       });
+      if (!settled) return "settled"; // Stop or recovery retired this claim; preserve its receipt.
       return attempts < QUEUE_CAPACITY_RETRIES ? "deferred" : "committed";
     }
     const run = db.getRun(runId);
@@ -1060,7 +1064,7 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
         return "committed";
       }
     }
-    const queued: QueuedExecution = { id: message.id, key, retainedId, requeued: false, coreManaged: true };
+    const queued: QueuedExecution = { id: message.id, laneHandle: message.laneHandle!, key, retainedId, requeued: false, coreManaged: true };
     try {
       await this.runOnLane({
         session,
@@ -1292,7 +1296,9 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
   async drainQueued(session: OutwardAcpSessionRecord): Promise<void> {
     if (this.closing || !this.options.db.raw.open) return;
     await this.options.createEngine(session, this.selectedProvider(session))
-      .recoverPendingQueue(session.conversationId);
+      // A transient ACP client must not replace an expired lease while its
+      // previous owner may still be executing an external provider process.
+      .recoverPendingQueue(session.conversationId, undefined, undefined, false);
   }
 
   /** Supervised-owner entry: give every Workstream with accepted work a chance to run. */
@@ -1505,7 +1511,7 @@ export function createProductionOutwardAcpPromptExecutor(
           sessionId: lookupProviderSession(db, { surfaceIdentity: OUTWARD_ACP_SURFACE, chatKey: session.conversationId }, attemptProvider),
         }),
         recoverPendingQueue: (chatKey, activeContinuationId, capacityClaimToken) =>
-          engine.recoverPendingQueue(chatKey, activeContinuationId, capacityClaimToken),
+          engine.recoverPendingQueue(chatKey, activeContinuationId, capacityClaimToken, false),
       };
     },
   });

@@ -61,6 +61,32 @@ function coreQueueOwner(db: ReturnType<typeof openDb>, handler: (message: Pendin
 }
 
 describe("outward ACP durable queue ownership", () => {
+  it("does not replace an expired ACP lane lease while a live Run still owns it", async () => {
+    const f = fixture();
+    let release!: () => void;
+    const blocked = new Promise<void>((resolve) => { release = resolve; });
+    try {
+      f.hold(blocked);
+      const active = f.executor.execute(base(f.session, "live owner"));
+      for (let index = 0; index < 100 && f.db.listRunningRuns(OUTWARD_ACP_SURFACE).length === 0; index += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+      expect(f.db.listRunningRuns(OUTWARD_ACP_SURFACE)).toHaveLength(1);
+      f.db.raw.prepare("UPDATE execution_locks SET lease_expires_at = ? WHERE surface = ? AND chat_key = ?")
+        .run(new Date(0).toISOString(), OUTWARD_ACP_SURFACE, f.session.conversationId);
+      f.db.admitMessage(OUTWARD_ACP_SURFACE, f.session.conversationId, {
+        prompt: "must wait for live owner", chatId: f.session.sessionId, chatType: "acp", scheduledOccurrenceKey: "acp-queue:expired-live-owner",
+      }, 5, true);
+      const ran: string[] = [];
+      const core = coreQueueOwner(f.db, async (message) => { ran.push(message.prompt); return "committed"; });
+      expect(await core.recoverPendingQueue(f.session.conversationId, undefined, undefined, false)).toBe(true);
+      expect(ran).toEqual([]);
+      expect(f.db.pendingMsgCount(OUTWARD_ACP_SURFACE, f.session.conversationId)).toBe(1);
+      release();
+      await active;
+    } finally { release(); f.cleanup(); }
+  });
+
   it("a supervised owner drains accepted work with no connected client", async () => {
     const f = fixture();
     try {
@@ -151,6 +177,34 @@ describe("outward ACP durable queue ownership", () => {
       expect(f.db.pendingMsgCount(OUTWARD_ACP_SURFACE, f.session.conversationId)).toBe(0);
       expect(JSON.parse(f.db.getSetting(`outward-queue-receipt:${key}`)!)).toMatchObject({ status: "done" });
       expect(readdirSync(f.root).some((name) => name.startsWith(".agent-bridge-queued-attachments-"))).toBe(false);
+    } finally { f.cleanup(); }
+  });
+
+  it("preserves Stop's receipt when its claimed row disappears before capacity retry settlement", async () => {
+    const f = fixture();
+    try {
+      const key = "acp-request:s1:capacity-stopped-race";
+      const rowId = f.db.enqueueMsg(OUTWARD_ACP_SURFACE, f.session.conversationId, {
+        prompt: "capacity retry racing Stop", chatId: f.session.sessionId, chatType: "acp", scheduledOccurrenceKey: key,
+      });
+      const core = coreQueueOwner(f.db, (message) => executor.executeQueuedMessage(f.session, message));
+      const executor = new BridgeOutwardAcpPromptExecutor({
+        db: f.db, providerChain: ["codex"] as const,
+        createEngine: () => ({ executeSurfaceNeutralTurn: async (input) => {
+          input.collect(eventType.runStarted({ runId: input.runId, bot: "codex", chatId: String(input.chatId), chatKey: input.chatKey, command: "fake", cwd: f.root, model: null }));
+          input.onProviderRecoveryDecision?.("capacity", true);
+          // Model the Stop transaction winning immediately before retry receipt
+          // settlement: the queue row is gone and the cancelled receipt is durable.
+          f.db.runInImmediateTransaction(() => {
+            f.db.deletePendingMsg(rowId);
+            f.db.setSetting(`outward-queue-receipt:${key}`, JSON.stringify({ outcome: "settled", status: "cancelled", reason: "stopped" }));
+          });
+          throw new Error("MODEL_CAPACITY_EXHAUSTED");
+        }, recoverPendingQueue: (chatKey) => core.recoverPendingQueue(chatKey) }),
+      });
+      await executor.drainQueued(f.session);
+      expect(f.db.pendingMsgCount(OUTWARD_ACP_SURFACE, f.session.conversationId)).toBe(0);
+      expect(JSON.parse(f.db.getSetting(`outward-queue-receipt:${key}`)!)).toMatchObject({ outcome: "settled", status: "cancelled", reason: "stopped" });
     } finally { f.cleanup(); }
   });
 

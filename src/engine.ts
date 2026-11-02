@@ -341,16 +341,18 @@ export class BridgeEngine {
     }));
   }
 
-  async recoverPendingQueue(chatKey: string, activeContinuationId?: string, capacityClaimToken?: string): Promise<boolean> {
+  async recoverPendingQueue(chatKey: string, activeContinuationId?: string, capacityClaimToken?: string, replaceExpiredLock = true): Promise<boolean> {
     if (!this.db.raw.open) return false;
     if (this.db.pendingMsgCount(this.surfaceIdentity, chatKey) === 0) return false;
     if (hasPendingCapacityWait(this.db, this.surfaceIdentity, chatKey, activeContinuationId)) return true;
-    const handle = this.db.acquireLock(this.surfaceIdentity, chatKey);
+    const handle = this.db.acquireLock(this.surfaceIdentity, chatKey, replaceExpiredLock);
     if (handle) {
       await this._drainQueueAndUnlock(handle, undefined, 0, false, this.opts.busyMessageMode === "augment", undefined, activeContinuationId, capacityClaimToken);
       return true;
     }
-    this._scheduleDurableQueueRecovery(chatKey);
+    // A transient outward ACP client cannot prove that the expired lock's
+    // owner is dead. Its owner completion or startup recovery will retry.
+    if (replaceExpiredLock) this._scheduleDurableQueueRecovery(chatKey);
     return true;
   }
 
