@@ -2,7 +2,10 @@ import * as acp from "@agentclientprotocol/sdk/unstable";
 import { AgentApp } from "@agentclientprotocol/sdk/unstable";
 import { randomUUID } from "node:crypto";
 import { realpathSync, statSync } from "node:fs";
-import { basename, isAbsolute, relative, sep } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, sep } from "node:path";
+import { rm, writeFile } from "node:fs/promises";
+import { createWhisperCppTranscriber, prepareVoiceTurn, type VoiceTranscriber } from "../voiceIngress.js";
+import type { InteractiveTurnInput } from "../interactiveIngress.js";
 import type {
   NewOutwardAcpSession,
   OutwardAcpSessionRecord,
@@ -37,6 +40,8 @@ export interface OutwardAcpAgentOptions {
   commands?: AcpCommands;
   /** Trusted process-local root; client-supplied cwd values are confined beneath it. */
   workspaceRoot?: string;
+  /** Test override; production reuses the pinned local Whisper runtime. */
+  voiceTranscriber?: VoiceTranscriber;
 }
 
 /**
@@ -53,6 +58,7 @@ export const WORKSTREAM_METHODS = {
   cancelDeferred: "_agent-bridge/workstreams/cancel_deferred",
   commands: "_agent-bridge/commands/list",
   runCommand: "_agent-bridge/commands/run",
+  transcribeVoice: "_agent-bridge/voice/transcribe",
 } as const;
 
 const WORKSTREAM_TITLE_MAX = 200;
@@ -293,6 +299,59 @@ export function createOutwardAcpAgent(options: OutwardAcpAgentOptions = {}): Age
         await ctx.client.notify(acp.methods.client.session.update, replayUpdate(session.sessionId, turn));
       }
       return {};
+    });
+  }
+
+  // Voice is a pre-prompt operation. It never starts a Run or persists raw
+  // microphone audio: Desk submits the returned text through session/prompt.
+  if (sessions.get) {
+    const getSessionForVoice = sessions.get.bind(sessions);
+    app = app.onRequest(WORKSTREAM_METHODS.transcribeVoice, objectParams, async (ctx) => {
+      const session = getSessionForVoice(stringParam(ctx.params, "sessionId"));
+      if (!session) throw acp.RequestError.invalidParams({ field: "sessionId" }, "unknown outward ACP session");
+      const cwd = authorizeWorkspacePath(stringParam(ctx.params, "cwd", 4096), workspaceRoot);
+      if (session.cwd !== cwd) throw acp.RequestError.invalidParams({ field: "cwd" }, "session cwd does not match the Workstream");
+      const format = stringParam(ctx.params, "mimeType", 128).toLowerCase().split(";")[0]!.trim();
+      const extensions: Record<string, string> = {
+        "audio/webm": "webm", "audio/ogg": "ogg", "audio/mp4": "m4a",
+        "audio/wav": "wav", "audio/mpeg": "mp3",
+      };
+      const extension = extensions[format];
+      if (!extension) throw acp.RequestError.invalidParams({ field: "mimeType" }, "unsupported voice recording format");
+      const encoded = ctx.params.audioBase64;
+      const maximum = 8 * 1024 * 1024;
+      if (typeof encoded !== "string" || !encoded || encoded.length > Math.ceil(maximum / 3) * 4
+        || !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(encoded)) {
+        throw acp.RequestError.invalidParams({ field: "audioBase64" }, "invalid or oversized voice recording");
+      }
+      const audio = Buffer.from(encoded, "base64");
+      if (audio.byteLength === 0 || audio.byteLength > maximum || audio.toString("base64") !== encoded) {
+        throw acp.RequestError.invalidParams({ field: "audioBase64" }, "invalid or oversized voice recording");
+      }
+      const input: InteractiveTurnInput = {
+        surfaceIdentity: "desk:outward-acp", chatKey: session.sessionId,
+        actorId: "desk", messageId: randomUUID(), text: "",
+        delivery: { chatId: session.sessionId, chatType: "private" },
+        attachments: [{ kind: "audio", fileId: "desk-voice", fileName: `recording.${extension}`,
+          mimeType: format, fileSize: audio.byteLength }],
+      };
+      const prepared = await prepareVoiceTurn(input, {
+        transcriber: options.voiceTranscriber ?? createWhisperCppTranscriber(),
+        signal: ctx.signal, workspaceDir: cwd, maxAudioBytes: maximum,
+        stager: { async stage({ operationDir }) {
+          const path = join(operationDir, `recording.${extension}`);
+          await writeFile(path, audio, { mode: 0o600 });
+          return path;
+        } },
+      });
+      if (prepared.kind === "ready") return { text: prepared.turn.text };
+      if (prepared.kind === "failed" && prepared.retainedAttachmentPath) {
+        await rm(dirname(prepared.retainedAttachmentPath), { recursive: true, force: true });
+      }
+      throw new acp.RequestError(-32002,
+        prepared.kind === "cancelled" ? "Voice transcription cancelled"
+          : prepared.kind === "unavailable" ? prepared.reason
+          : "Voice transcription failed");
     });
   }
 
