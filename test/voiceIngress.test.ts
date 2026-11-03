@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
-import { access, mkdir, mkdtemp, readFile, symlink, utimes, writeFile, rm } from "node:fs/promises";
+import { access, chmod, mkdir, mkdtemp, readFile, symlink, utimes, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -21,9 +21,11 @@ import {
   WHISPER_CPP_UBUNTU_X64_ARCHIVE_SHA256,
   acquireWorkspaceTranscriptionLease,
   createWhisperCppTranscriber,
+  parseFfprobeDuration,
   prepareVoiceBatchForDispatch,
   prepareVoiceTurn,
   reapStaleVoiceTempDirs,
+  resolveVoiceDurationSeconds,
   runBoundedProcess,
   surfaceVoiceAudioStager,
   unavailableVoiceTranscriber,
@@ -240,6 +242,58 @@ describe("voice ingress", () => {
         maxDurationSeconds: 30,
         maxTempBytes: 1024,
       })).rejects.toThrow(/ownership or mode is unsafe|checksum mismatch/);
+    });
+  });
+
+  it("treats ffprobe N/A as missing duration so MediaRecorder webm can be measured after decode", () => {
+    expect(parseFfprobeDuration("N/A\n")).toBeNull();
+    expect(parseFfprobeDuration("1.008000\n")).toBe(1.008);
+    expect(parseFfprobeDuration("")).toBeNull();
+  });
+
+  it("measures duration from the normalized WAV when the source container has none", async () => {
+    if (process.platform !== "linux") return;
+    await withTempRoot(async (root) => {
+      const nice = join(root, "nice");
+      const ffprobe = join(root, "ffprobe");
+      const wavPath = join(root, "normalized.wav");
+      await writeFile(wavPath, "RIFF");
+      await writeFile(nice, "#!/bin/bash\nshift 2\nexec \"$@\"\n");
+      await writeFile(ffprobe, "#!/bin/bash\nfile=\"${@: -1}\"\ncase \"$file\" in *.wav) echo 1.250000 ;; *) echo N/A ;; esac\n");
+      await chmod(nice, 0o755);
+      await chmod(ffprobe, 0o755);
+      await expect(resolveVoiceDurationSeconds({
+        sourceProbeStdout: "N/A\n",
+        wavPath,
+        operationDir: root,
+        ffprobePath: ffprobe,
+        nicePath: nice,
+        signal: new AbortController().signal,
+        maxDurationSeconds: 120,
+      })).resolves.toBe(1.25);
+    });
+  });
+
+  it("still rejects a decoded recording that exceeds the duration limit", async () => {
+    if (process.platform !== "linux") return;
+    await withTempRoot(async (root) => {
+      const nice = join(root, "nice");
+      const ffprobe = join(root, "ffprobe");
+      const wavPath = join(root, "normalized.wav");
+      await writeFile(wavPath, "RIFF");
+      await writeFile(nice, "#!/bin/bash\nshift 2\nexec \"$@\"\n");
+      await writeFile(ffprobe, "#!/bin/bash\necho 121.0\n");
+      await chmod(nice, 0o755);
+      await chmod(ffprobe, 0o755);
+      await expect(resolveVoiceDurationSeconds({
+        sourceProbeStdout: "N/A\n",
+        wavPath,
+        operationDir: root,
+        ffprobePath: ffprobe,
+        nicePath: nice,
+        signal: new AbortController().signal,
+        maxDurationSeconds: 120,
+      })).rejects.toThrow(/120-second processing limit/);
     });
   });
 

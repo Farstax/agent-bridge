@@ -137,6 +137,47 @@ function abortError(): Error {
   return error;
 }
 
+/** ffprobe prints `N/A` when the container has no duration (common for MediaRecorder webm/mp4). */
+export function parseFfprobeDuration(stdout: string): number | null {
+  const duration = Number.parseFloat(stdout.trim());
+  return Number.isFinite(duration) ? duration : null;
+}
+
+function assertVoiceDurationLimit(duration: number, maxDurationSeconds: number): void {
+  if (duration > maxDurationSeconds) {
+    throw new Error(`Audio exceeds the ${maxDurationSeconds}-second processing limit.`);
+  }
+}
+
+/** When the source container has no duration, measure the normalized WAV instead. */
+export async function resolveVoiceDurationSeconds(input: {
+  sourceProbeStdout: string;
+  wavPath: string;
+  operationDir: string;
+  ffprobePath: string;
+  nicePath: string;
+  signal: AbortSignal;
+  maxDurationSeconds: number;
+}): Promise<number> {
+  const sourceDuration = parseFfprobeDuration(input.sourceProbeStdout);
+  if (sourceDuration !== null) {
+    assertVoiceDurationLimit(sourceDuration, input.maxDurationSeconds);
+    return sourceDuration;
+  }
+  const wavProbe = await runBoundedProcess(input.nicePath, [
+    "-n", "19", input.ffprobePath, "-v", "error",
+    "-show_entries", "format=duration", "-of", "default=nw=1:nk=1", input.wavPath,
+  ], {
+    cwd: input.operationDir,
+    signal: input.signal,
+    timeoutMs: DEFAULT_VOICE_CONVERSION_TIMEOUT_MS,
+  });
+  const duration = parseFfprobeDuration(wavProbe.stdout);
+  if (duration === null) throw new Error("Could not determine voice-note duration.");
+  assertVoiceDurationLimit(duration, input.maxDurationSeconds);
+  return duration;
+}
+
 function isPathInside(parent: string, candidate: string): boolean {
   const rel = relative(resolve(parent), resolve(candidate));
   return rel !== "" && !rel.startsWith("..") && !isAbsolute(rel);
@@ -512,9 +553,8 @@ export function createWhisperCppTranscriber(paths: WhisperCppPaths = {}): VoiceT
           signal: input.signal,
           timeoutMs: DEFAULT_VOICE_CONVERSION_TIMEOUT_MS,
         });
-        const duration = Number.parseFloat(probe.stdout.trim());
-        if (!Number.isFinite(duration)) throw new Error("Could not determine voice-note duration.");
-        if (duration > input.maxDurationSeconds) throw new Error(`Audio exceeds the ${input.maxDurationSeconds}-second processing limit.`);
+        const sourceDuration = parseFfprobeDuration(probe.stdout);
+        if (sourceDuration !== null) assertVoiceDurationLimit(sourceDuration, input.maxDurationSeconds);
 
         const wavPath = join(input.operationDir, "normalized.wav");
         await runBoundedProcess(runtime.nicePath, ["-n", "19", runtime.ffmpegPath, "-nostdin", "-hide_banner", "-loglevel", "error", "-y", "-i", input.filePath, "-ac", "1", "-ar", "16000", "-f", "wav", wavPath], {
@@ -525,6 +565,15 @@ export function createWhisperCppTranscriber(paths: WhisperCppPaths = {}): VoiceT
         if (await operationDirBytes(input.operationDir) > input.maxTempBytes) {
           throw new Error("Voice transcription exceeded the temporary-storage limit.");
         }
+        await resolveVoiceDurationSeconds({
+          sourceProbeStdout: probe.stdout,
+          wavPath,
+          operationDir: input.operationDir,
+          ffprobePath: runtime.ffprobePath,
+          nicePath: runtime.nicePath,
+          signal: input.signal,
+          maxDurationSeconds: input.maxDurationSeconds,
+        });
 
         const outputPrefix = join(input.operationDir, `transcript-${randomUUID()}`);
         await runBoundedProcess(runtime.nicePath, [
