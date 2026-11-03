@@ -64,6 +64,8 @@ export interface AcpCommandOptions {
   config: BridgeConfig;
   control: AcpCommandControl;
   codexUsage?: () => Promise<string>;
+  /** Discover live provider-owned model/effort choices on demand, outside the prompt path. */
+  prepareConfig?: (session: OutwardAcpSessionRecord, provider: BotKind, command: "models" | "effort") => Promise<unknown>;
 }
 
 const NOT_ON_OUTWARD = "owner/admin command; not authorised on the outward ACP surface";
@@ -229,6 +231,7 @@ export class AcpCommands {
         return this.selectBusyMode(session, request.select);
       case "models":
       case "effort":
+        await this.options.prepareConfig?.(session, provider, name);
         return this.selectSetting(session, name, provider, request.select);
       case "btw": {
         const prompt = request.argument?.trim();

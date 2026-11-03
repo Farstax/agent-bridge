@@ -36,6 +36,8 @@ export async function prepareInteractiveAcpConfigControl(input: {
   chatKey: string;
   db: BridgeDb;
   executionMode: "safe" | "trusted";
+  /** Optional authorised Workstream directory for an outward ACP control session. */
+  cwd?: string;
   discover?: AcpConfigDiscover;
 }): Promise<boolean> {
   const category = controlCategory(input.commandText);
@@ -46,7 +48,7 @@ export async function prepareInteractiveAcpConfigControl(input: {
   const existingAcpSessionId = lookupProviderSession(input.db, { surfaceIdentity: input.surfaceIdentity, chatKey: input.chatKey }, input.kind);
   const discoveryInput = {
     bot: input.kind,
-    cwd: getCliWorkingDir(input.kind),
+    cwd: input.cwd ?? getCliWorkingDir(input.kind),
     conversationId: input.chatKey,
     executionMode: input.executionMode,
   } as const;
