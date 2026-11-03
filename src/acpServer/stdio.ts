@@ -78,7 +78,7 @@ try {
     codexUsage: getCodexUsageText,
     prepareConfig: (session, provider, command) => prepareInteractiveAcpConfigControl({
       kind: provider, commandText: `/${command}`, surfaceIdentity: OUTWARD_ACP_SURFACE,
-      chatKey: session.conversationId, db, executionMode: resolveExecutionMode(provider), cwd: session.cwd,
+      chatKey: session.conversationId, db, executionMode: resolveExecutionMode(provider, process.env), cwd: session.cwd,
     }),
   });
   const connection = createOutwardAcpAgent({ sessions, promptExecutor, workstreams: promptExecutor, commands, workspaceRoot }).connect(stream);
