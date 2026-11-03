@@ -9,7 +9,7 @@ import { effortSettingKey } from "../src/effort.js";
 import { clearAcpSessionConfigSnapshot, replaceAcpSessionConfigSnapshot } from "../src/acp/sessionConfig.js";
 import { OutwardAcpSessionRepository } from "../src/repositories/outwardAcpSessionRepository.js";
 import { createOutwardAcpAgent, WORKSTREAM_METHODS, type OutwardAcpSessionStore } from "../src/acpServer/app.js";
-import { AcpCommands } from "../src/acpServer/commands.js";
+import { AcpCommands, type AcpCommandOptions } from "../src/acpServer/commands.js";
 import { BridgeOutwardAcpPromptExecutor, OUTWARD_ACP_SURFACE } from "../src/acpServer/execution.js";
 import type { BotKind, BridgeConfig } from "../src/types.js";
 
@@ -33,7 +33,7 @@ const config = {
   },
 } as unknown as BridgeConfig;
 
-function setup(options: { chain?: BotKind[]; btw?: boolean; gate?: Promise<void>; available?: BotKind[] } = {}) {
+function setup(options: { chain?: BotKind[]; btw?: boolean; gate?: Promise<void>; available?: BotKind[]; prepareConfig?: AcpCommandOptions["prepareConfig"] } = {}) {
   const root = mkdtempSync(join(tmpdir(), "agent-bridge-acp-commands-"));
   roots.push(root);
   const db = openDb(join(root, "bridge.sqlite"), { databaseRole: "interactive" });
@@ -72,7 +72,7 @@ function setup(options: { chain?: BotKind[]; btw?: boolean; gate?: Promise<void>
       },
     }),
   });
-  const commands = new AcpCommands({ db, config, control: exec, codexUsage: async () => "Codex usage: 12%" });
+  const commands = new AcpCommands({ db, config, control: exec, codexUsage: async () => "Codex usage: 12%", prepareConfig: options.prepareConfig });
   const app = createOutwardAcpAgent({ sessions, promptExecutor: exec, workstreams: exec, commands, workspaceRoot: root });
   const run = <T = { command: string; text: string; options?: Array<{ label: string; selected: boolean; token: string }> }>(
     params: Record<string, unknown>,
@@ -85,6 +85,25 @@ function setup(options: { chain?: BotKind[]; btw?: boolean; gate?: Promise<void>
 }
 
 describe("outward ACP commands", () => {
+  it("shows every live provider-advertised model and effort option in outward Desk commands", async () => {
+    clearAcpSessionConfigSnapshot("codex");
+    onTestFinished(() => clearAcpSessionConfigSnapshot("codex"));
+    const discover = vi.fn(async (_session: unknown, provider: BotKind, _command: "models" | "effort") => {
+      replaceAcpSessionConfigSnapshot(provider, [
+        { id: "model", type: "select", category: "model", currentValue: "fast", options: [{ value: "fast", name: "Fast" }, { value: "deep", name: "Deep" }] },
+        { id: "effort", type: "select", category: "thought_level", currentValue: "low", options: [{ value: "low", name: "Low" }, { value: "high", name: "High" }] },
+      ]);
+    });
+    const { run } = setup({ prepareConfig: discover });
+    expect((await run({ command: "models" })).options?.map((option) => option.label))
+      .toEqual(["Fast", "Deep", "Use provider default"]);
+    expect((await run({ command: "effort" })).options?.map((option) => option.label))
+      .toEqual(["Low", "High", "Use provider default"]);
+    expect(discover).toHaveBeenCalledTimes(2);
+    expect(discover).toHaveBeenNthCalledWith(1, expect.objectContaining({ cwd: expect.any(String) }), "codex", "models");
+    expect(discover).toHaveBeenNthCalledWith(2, expect.objectContaining({ cwd: expect.any(String) }), "codex", "effort");
+  });
+
   it("projects provider-aware command availability from one status snapshot", async () => {
     const { list, exec } = setup();
     const status = vi.spyOn(exec, "status");

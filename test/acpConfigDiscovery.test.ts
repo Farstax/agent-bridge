@@ -6,6 +6,7 @@ import {
   type AcpSessionConfigOptionSnapshot,
 } from "../src/acp/sessionConfig.js";
 import { openDb } from "../src/db.js";
+import { resolveExecutionMode } from "../src/config.js";
 import { prepareInteractiveAcpConfigControl } from "../src/interactiveAcpConfig.js";
 import { lookupProviderSession, persistProviderSession } from "../src/providers/sessionRuntime.js";
 import { createFakeAcpAgent } from "./support/fakeAcpAgent.js";
@@ -68,6 +69,42 @@ describe("ACP config discovery", () => {
       });
 
       expect(lookupProviderSession(db, { surfaceIdentity: "telegram:interactive", chatKey: "chat-fresh" }, "codex")).toBeNull();
+    } finally {
+      db.close();
+    }
+  });
+
+  it("reuses provider execution mode and authorised Workstream cwd for outward config discovery", async () => {
+    const db = openDb(":memory:");
+    try {
+      const executionMode = resolveExecutionMode("codex", {
+        BRIDGE_EXECUTION_MODE: "safe",
+        CODEX_EXECUTION_MODE: "trusted",
+      });
+      expect(executionMode).toBe("trusted");
+      const received: Array<{ cwd: string; executionMode: string; conversationId: string; existingAcpSessionId: string | null }> = [];
+      await prepareInteractiveAcpConfigControl({
+        kind: "codex",
+        commandText: "/models",
+        surfaceIdentity: "acp:outward",
+        chatKey: "acp:workstream-1",
+        db,
+        cwd: "/apps/workstream-1",
+        executionMode,
+        discover: async (input) => {
+          received.push(input);
+          replaceAcpSessionConfigSnapshot("codex", modelOptions, []);
+          return { sessionId: "transient-catalogue-only", configOptions: modelOptions };
+        },
+      });
+
+      expect(received).toEqual([expect.objectContaining({
+        cwd: "/apps/workstream-1",
+        executionMode: "trusted",
+        conversationId: "acp:workstream-1",
+        existingAcpSessionId: null,
+      })]);
+      expect(lookupProviderSession(db, { surfaceIdentity: "acp:outward", chatKey: "acp:workstream-1" }, "codex")).toBeNull();
     } finally {
       db.close();
     }
