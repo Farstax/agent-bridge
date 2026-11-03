@@ -23,7 +23,7 @@ The pinned production contract is:
 - one Whisper thread/process;
 - low process priority (`nice 19`);
 - compressed input limit: 10 MiB;
-- audio duration limit: 120 seconds;
+- audio duration limit: 120 seconds (measured from the source container when present, otherwise from the normalized WAV after conversion — browser MediaRecorder webm/mp4 often omit container duration);
 - conversion/helper timeout: 10 seconds;
 - transcription timeout: 90 seconds;
 - temporary-storage budget: 32 MiB per job;
