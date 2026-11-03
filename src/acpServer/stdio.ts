@@ -11,6 +11,7 @@ import { getCodexUsageText } from "../codexUsage.js";
 import { outwardServiceId, recoverOutwardLanes } from "./recovery.js";
 import { AcpCommands } from "./commands.js";
 import { prepareInteractiveAcpConfigControl } from "../interactiveAcpConfig.js";
+import { resolveExecutionMode } from "../config.js";
 import {
   OUTWARD_ACP_SURFACE,
   type BridgeOutwardAcpPromptExecutor,
@@ -77,7 +78,7 @@ try {
     codexUsage: getCodexUsageText,
     prepareConfig: (session, provider, command) => prepareInteractiveAcpConfigControl({
       kind: provider, commandText: `/${command}`, surfaceIdentity: OUTWARD_ACP_SURFACE,
-      chatKey: session.conversationId, db, executionMode: "safe", cwd: session.cwd,
+      chatKey: session.conversationId, db, executionMode: resolveExecutionMode(provider), cwd: session.cwd,
     }),
   });
   const connection = createOutwardAcpAgent({ sessions, promptExecutor, workstreams: promptExecutor, commands, workspaceRoot }).connect(stream);
