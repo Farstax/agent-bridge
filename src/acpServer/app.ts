@@ -206,7 +206,7 @@ export function createOutwardAcpAgent(options: OutwardAcpAgentOptions = {}): Age
       commands: supportsWorkstreams && Boolean(options.commands),
       deferredCapacity: supportsWorkstreams && options.promptExecutor?.supportsDeferredCapacity === true,
       busyMessages: supportsWorkstreams && options.promptExecutor?.supportsBusyMessages === true,
-      artifacts: supportsWorkstreams && Boolean(sessions.isCompletedRun),
+      artifacts: supportsWorkstreams && Boolean(sessions?.isCompletedRun),
       historyPages: supportsWorkstreams && Boolean(sessions?.historyPage),
     }),
     agentInfo: { ...BRIDGE_ACP_AGENT_INFO },
