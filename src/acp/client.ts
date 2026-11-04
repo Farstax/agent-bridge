@@ -530,6 +530,31 @@ export async function runAcpTurn(input: AcpTurnInput): Promise<AcpTurnResult> {
         const observed = gate.observe(ctx.params);
         // Parsed ACP update boundary: trace before replay/presentation policy or reconstruction.
         trace?.observe(observed.notification.sessionId, observed.notification.update);
+        // Session notices are diagnostics, never assistant text. Retain only
+        // bounded, non-content metadata so generic event/history consumers
+        // cannot accidentally display or persist the provider's warning body.
+        if (observed.notification.update.sessionUpdate === "notice") {
+          const severity = (observed.notification.update as { severity?: unknown }).severity;
+          const safeSeverity = severity === "warning" || severity === "error" ? severity : "info";
+          const sanitized = {
+            channel: observed.channel,
+            notification: {
+              sessionId: observed.notification.sessionId,
+              update: {
+                sessionUpdate: "notice",
+                severity: safeSeverity,
+                title: "Provider notice",
+              } as SessionNotification["update"],
+            },
+          };
+          updates.push(sanitized);
+          remember({
+            kind: "session_update",
+            channel: sanitized.channel,
+            notification: sanitized.notification,
+          });
+          return;
+        }
         updates.push(observed);
         const isRootLive = observed.channel === "live"
           && Boolean(currentAcpSessionId)

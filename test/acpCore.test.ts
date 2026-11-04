@@ -92,6 +92,54 @@ describe("ACP core client", () => {
     expect(second.liveText).toBe("live:second");
   });
 
+
+  it("negotiates typed session notices and keeps repeated advisories out of live and retained answers", async () => {
+    const capabilities: acp.ClientCapabilities[] = [];
+    const originalWarning = "Warning: This session was recorded with model gpt-6.1-terra but is resuming with gpt-6.1-sol.";
+    const agent = createFakeAcpAgent({
+      resume: true,
+      onInitialize: (value) => capabilities.push(value),
+      notices: [
+        { severity: "warning", title: originalWarning, description: "Authorization: Bearer notice-secret" },
+        { severity: "info", title: "Context compacted", description: "Internal details not intended as assistant output" },
+      ],
+    });
+    let existingAcpSessionId: string | null = null;
+    for (const [index, prompt] of ["first", "second", originalWarning].entries()) {
+      const progress: string[] = [];
+      const result = await runAcpTurn({
+        peer: agent,
+        cwd: process.cwd(),
+        conversationId: "notice-conversation",
+        runId: `notice-run-${index}`,
+        existingAcpSessionId,
+        prompt,
+        executionMode: "trusted",
+        onLiveText: (chunk) => progress.push(chunk),
+      });
+      expect(result.sessionMode).toBe(index === 0 ? "fresh" : "resume");
+      expect(result.liveText).toBe(`live:${prompt}`);
+      expect(progress.join("")).toBe(`live:${prompt}`);
+      const notices = result.events.filter((event) =>
+        event.kind === "session_update" && event.notification?.update.sessionUpdate === "notice");
+      expect(notices).toHaveLength(2);
+      expect(notices.map((event) => event.notification?.update)).toEqual([
+        { sessionUpdate: "notice", severity: "warning", title: "Provider notice" },
+        { sessionUpdate: "notice", severity: "info", title: "Provider notice" },
+      ]);
+      expect(JSON.stringify(notices)).not.toContain("notice-secret");
+      expect(JSON.stringify(notices)).not.toContain("notice-update-secret");
+      expect(JSON.stringify(notices)).not.toContain("notice-envelope-secret");
+      expect(JSON.stringify(notices)).not.toContain("gpt-6.1-terra");
+      expect(JSON.stringify(result.updates.filter((event) => event.notification.update.sessionUpdate === "notice")))
+        .not.toContain("Authorization");
+      existingAcpSessionId = result.acpSessionId;
+    }
+    expect(capabilities).toHaveLength(3);
+    expect(capabilities.every((item) =>
+      (item as { session?: { notices?: object } }).session?.notices !== undefined)).toBe(true);
+  });
+
   it("prefers session/resume when advertised so history is not replayed", async () => {
     const agent = createFakeAcpAgent({ loadSession: true, resume: true, close: true });
     const first = await runAcpTurn({

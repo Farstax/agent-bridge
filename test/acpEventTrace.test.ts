@@ -90,6 +90,22 @@ describe("opt-in ACP event trace", () => {
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
 
+  it("sanitizes notice metadata without retaining warning text or credentials", () => {
+    const record = sanitizeAcpTraceUpdate(1, "session", {
+      sessionUpdate: "notice",
+      severity: "warning",
+      title: "resuming with gpt-6.1-sol",
+      description: "Authorization: Bearer notice-secret",
+    }, env());
+    expect(record).toEqual({
+      sequence: 1,
+      eventClass: "session_update",
+      sessionId: "session",
+      sessionUpdate: "notice",
+      noticeSeverity: "warning",
+    });
+  });
+
   it("does not serialize arbitrary fields when sanitizing malformed updates", () => {
     const record = sanitizeAcpTraceUpdate(1, "session", { sessionUpdate: "tool_call", raw: { password: "no" }, _meta: { any: "no" } }, env());
     expect(record).toEqual({ sequence: 1, eventClass: "session_update", sessionId: "session", sessionUpdate: "tool_call" });

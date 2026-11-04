@@ -43,6 +43,14 @@ export function sanitizeAcpTraceUpdate(sequence: number, sessionId: string, upda
     sessionId,
     sessionUpdate: SAFE_VALUE(source.sessionUpdate) ?? "unknown",
   };
+  // Notice titles/descriptions can contain provider configuration or secrets.
+  // An opt-in trace records only the protocol class and validated severity.
+  if (source.sessionUpdate === "notice") {
+    if (source.severity === "info" || source.severity === "warning" || source.severity === "error") {
+      record.noticeSeverity = source.severity;
+    }
+    return record;
+  }
   const content = source.content;
   if (content && typeof content === "object" && !Array.isArray(content)) {
     const contentSource = content as Record<string, unknown>;
