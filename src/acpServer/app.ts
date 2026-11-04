@@ -13,6 +13,7 @@ import type {
 import type { OutwardAcpPromptExecutor, OutwardWorkstreamControl } from "./execution.js";
 import { type AcpCommands } from "./commands.js";
 import { stageOutwardAcpAttachments } from "./attachments.js";
+import { listDeskArtifacts, readDeskArtifact } from "./artifacts.js";
 import {
   bridgeAgentCapabilities,
   BRIDGE_ACP_AGENT_INFO,
@@ -59,6 +60,8 @@ export const WORKSTREAM_METHODS = {
   commands: "_agent-bridge/commands/list",
   runCommand: "_agent-bridge/commands/run",
   transcribeVoice: "_agent-bridge/voice/transcribe",
+  listArtifacts: "_agent-bridge/artifacts/list",
+  readArtifact: "_agent-bridge/artifacts/read",
 } as const;
 
 const WORKSTREAM_TITLE_MAX = 200;
@@ -193,6 +196,7 @@ export function createOutwardAcpAgent(options: OutwardAcpAgentOptions = {}): Age
       commands: supportsWorkstreams && Boolean(options.commands),
       deferredCapacity: supportsWorkstreams && options.promptExecutor?.supportsDeferredCapacity === true,
       busyMessages: supportsWorkstreams && options.promptExecutor?.supportsBusyMessages === true,
+      artifacts: supportsWorkstreams,
     }),
     agentInfo: { ...BRIDGE_ACP_AGENT_INFO },
   }));
@@ -249,6 +253,18 @@ export function createOutwardAcpAgent(options: OutwardAcpAgentOptions = {}): Age
         if (!control.cancelDeferred) throw new acp.RequestError(-32002, "deferred Workstream cancellation is unavailable");
         const session = getKnown(ctx.params);
         return { workstream: workstreamView(session), status: await control.cancelDeferred(session) };
+      });
+    // These requests resolve the Workstream on the guest and never accept
+    // filesystem paths supplied by a browser/ACP client.
+    app = app
+      .onRequest(WORKSTREAM_METHODS.listArtifacts, objectParams, async (ctx) => {
+        const session = getKnown(ctx.params);
+        return { artifacts: await listDeskArtifacts(session.conversationId) };
+      })
+      .onRequest(WORKSTREAM_METHODS.readArtifact, objectParams, async (ctx) => {
+        const session = getKnown(ctx.params);
+        const id = stringParam(ctx.params, "artifactId", 64);
+        return readDeskArtifact(session.conversationId, id);
       });
     if (options.commands) {
       const commands = options.commands;
