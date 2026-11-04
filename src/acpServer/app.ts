@@ -30,6 +30,8 @@ export interface OutwardAcpSessionStore {
   get?(sessionId: string): OutwardAcpSessionRecord | null;
   /** Durable per-conversation transcript for `session/load` replay, oldest first. */
   history?(conversationId: string): ReadonlyArray<OutwardAcpHistoryTurn>;
+  /** Number of user turns excluded from the bounded session/load replay. */
+  userTurnOffset?(conversationId: string): number;
   list?(cwd: string, options: { includeArchived?: boolean }): OutwardAcpSessionRecord[];
   update?(sessionId: string, change: { title?: string; archived?: boolean }): OutwardAcpSessionRecord | null;
 }
@@ -259,7 +261,9 @@ export function createOutwardAcpAgent(options: OutwardAcpAgentOptions = {}): Age
     app = app
       .onRequest(WORKSTREAM_METHODS.listArtifacts, objectParams, async (ctx) => {
         const session = getKnown(ctx.params);
-        return { artifacts: await listDeskArtifacts(session.conversationId) };
+        const offset = sessions.userTurnOffset?.(session.conversationId) ?? 0;
+        const artifacts = await listDeskArtifacts(session.conversationId);
+        return { artifacts: artifacts.map((item) => ({ ...item, turnIndex: item.turnIndex - offset })) };
       })
       .onRequest(WORKSTREAM_METHODS.readArtifact, objectParams, async (ctx) => {
         const session = getKnown(ctx.params);
