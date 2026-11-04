@@ -60,6 +60,8 @@ export interface OutwardAcpPromptExecutionInput {
   runId?: string;
   signal: AbortSignal;
   onUpdate: (update: OutwardUpdate) => void | Promise<void>;
+  /** Request-scoped opt-in for transient, safe answer previews. */
+  answerPreview?: boolean;
   /** ACP v1 caller opted into the deferred capacity extension. */
   deferCapacity?: boolean;
   /** Trusted, claimed continuation only; not supplied by an ACP client. */
@@ -722,6 +724,8 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
     let encounteredCapacity = false;
     let queueCapacityRequeue = false;
     let recoveryChainExhausted = false;
+    let clearLivePreview: (() => void) | null = null;
+    let settleLiveUpdates: (() => Promise<void>) | null = null;
     try {
       const identity = { surfaceIdentity: OUTWARD_ACP_SURFACE, chatKey: input.session.conversationId };
       db.runInTransaction(() => {
@@ -795,6 +799,19 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
       const enqueueUpdate = (update: OutwardUpdate): void => {
         updateChain = updateChain.then(() => input.onUpdate(update));
       };
+      let previewEmitted = false;
+      const resetPreview = (): void => {
+        if (!previewEmitted) return;
+        previewEmitted = false;
+        // The empty ACP chunk carries only a transient reset; it is never history.
+        enqueueUpdate({
+          sessionUpdate: "agent_message_chunk",
+          content: { type: "text", text: "" },
+          _meta: { "agent-bridge/preview-reset": 1 },
+        } as OutwardUpdate);
+      };
+      clearLivePreview = resetPreview;
+      settleLiveUpdates = () => updateChain;
       const collect = (event: BridgeEvent): void => {
         if (event.type === "run.started") activeProvider = event.bot;
         if (event.type === "run.completed") completed = event;
@@ -827,6 +844,12 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
         runId,
         eventContext,
         collect,
+        onProviderExecutionStarted: resetPreview,
+        onAnswerDelta: input.answerPreview === true ? (delta) => {
+          if (!delta || active?.cancelRequested || input.signal.aborted) return;
+          previewEmitted = true;
+          enqueueUpdate({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: delta } });
+        } : undefined,
         onProviderRecoveryDecision: (reason, exhausted) => {
           if (reason === "capacity") encounteredCapacity = true;
           if (exhausted) recoveryChainExhausted = true;
@@ -843,6 +866,7 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
         persistProviderSession(db, { surfaceIdentity: OUTWARD_ACP_SURFACE, chatKey: input.session.conversationId }, actualProvider, result.sessionId, runId);
       });
 
+      if (cancelled) resetPreview();
       await updateChain;
 
       if (cancelled) {
@@ -878,7 +902,7 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
           throw new Error("outward ACP terminal Run state was not persisted");
         }
       }));
-      if (!cancelled && result.text) {
+      if (!cancelled && result.text && !previewEmitted) {
         await input.onUpdate({
           sessionUpdate: "agent_message_chunk",
           content: { type: "text", text: result.text },
@@ -886,6 +910,8 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
       }
       return { stopReason: cancelled ? "cancelled" : normalizeStopReason(result.stopReason) };
     } catch (error) {
+      clearLivePreview?.();
+      await settleLiveUpdates?.().catch(() => undefined);
       await discardDeskRunArtifacts(input.session.conversationId, runId).catch(() => {
         console.warn("[acp:outward] could not reclaim failed Desk artifacts");
       });

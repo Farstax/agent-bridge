@@ -177,6 +177,8 @@ export interface SurfaceNeutralTurnInput {
   eventContext: NonNullable<CliOptions["eventContext"]>;
   collect: (event: BridgeEvent) => void;
   onProviderExecutionStarted?: () => void;
+  /** Only provider-qualified, redacted provisional answer text; not raw progress. */
+  onAnswerDelta?: (text: string) => void;
   /** Outward ACP owns generated files; never send them through a messaging client. */
   onOutputArtifacts?: (outDir: string) => Promise<{ retained: number; discarded: number }>;
   /** Per-Run provider recovery evidence for durable capacity decisions. */
@@ -2057,7 +2059,8 @@ export class BridgeEngine {
         input.chatId,
         // Surface-neutral runs never use messaging delivery. Outward ACP can
         // supply a fenced, durable artifact owner instead of discarding output.
-        { onProviderExecutionStarted: input.onProviderExecutionStarted, publishArtifacts: false,
+        { onProviderExecutionStarted: input.onProviderExecutionStarted,
+          onAnswerDelta: input.onAnswerDelta, publishArtifacts: false,
           onOutputArtifacts: input.onOutputArtifacts },
         () => {},
         input.attachments ?? [],
