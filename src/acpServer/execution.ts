@@ -851,6 +851,7 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
           enqueueUpdate({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: delta } });
         } : undefined,
         onProviderRecoveryDecision: (reason, exhausted) => {
+          if (reason !== null) resetPreview();
           if (reason === "capacity") encounteredCapacity = true;
           if (exhausted) recoveryChainExhausted = true;
         },
@@ -866,7 +867,7 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
         persistProviderSession(db, { surfaceIdentity: OUTWARD_ACP_SURFACE, chatKey: input.session.conversationId }, actualProvider, result.sessionId, runId);
       });
 
-      if (cancelled) resetPreview();
+      if (cancelled || !result.text) resetPreview();
       await updateChain;
 
       if (cancelled) {
