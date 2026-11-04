@@ -52,6 +52,9 @@ try {
     get: (sessionId) => sessionRepo.get(sessionId),
     list: (cwd, options) => sessionRepo.list(cwd, options),
     update: (sessionId, change) => sessionRepo.update(sessionId, change),
+    historyPage: (conversationId, beforeId) => db.getConvHistoryPage(
+      conversationId, 50, beforeId, OUTWARD_ACP_SURFACE,
+    ),
     history: (conversationId) => db.getRecentConvTurns(
       conversationId,
       OUTWARD_ACP_HISTORY_LIMIT,

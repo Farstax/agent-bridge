@@ -29,6 +29,11 @@ export interface OutwardAcpSessionStore {
   get?(sessionId: string): OutwardAcpSessionRecord | null;
   /** Durable per-conversation transcript for `session/load` replay, oldest first. */
   history?(conversationId: string): ReadonlyArray<OutwardAcpHistoryTurn>;
+  historyPage?(conversationId: string, beforeId?: number): {
+    turns: ReadonlyArray<{ id: number; role: "user" | "assistant"; text: string; createdAt: string; ordinal: number }>;
+    nextCursor: number | null;
+    turnCount: number;
+  };
   list?(cwd: string, options: { includeArchived?: boolean }): OutwardAcpSessionRecord[];
   update?(sessionId: string, change: { title?: string; archived?: boolean }): OutwardAcpSessionRecord | null;
 }
@@ -52,6 +57,7 @@ export interface OutwardAcpAgentOptions {
  */
 export const WORKSTREAM_METHODS = {
   list: "_agent-bridge/workstreams/list",
+  historyPage: "_agent-bridge/workstreams/history_page",
   update: "_agent-bridge/workstreams/update",
   status: "_agent-bridge/workstreams/status",
   selectProvider: "_agent-bridge/workstreams/select_provider",
@@ -193,6 +199,7 @@ export function createOutwardAcpAgent(options: OutwardAcpAgentOptions = {}): Age
       commands: supportsWorkstreams && Boolean(options.commands),
       deferredCapacity: supportsWorkstreams && options.promptExecutor?.supportsDeferredCapacity === true,
       busyMessages: supportsWorkstreams && options.promptExecutor?.supportsBusyMessages === true,
+      historyPages: supportsWorkstreams && Boolean(sessions?.historyPage),
     }),
     agentInfo: { ...BRIDGE_ACP_AGENT_INFO },
   }));
@@ -211,6 +218,23 @@ export function createOutwardAcpAgent(options: OutwardAcpAgentOptions = {}): Age
       return session;
     };
     app = app
+      .onRequest(WORKSTREAM_METHODS.historyPage, objectParams, (ctx) => {
+        if (!sessions.historyPage) throw new acp.RequestError(-32601, "History pages not supported");
+        const session = getKnown(ctx.params);
+        const beforeId = ctx.params.beforeId;
+        if (beforeId !== undefined && (!Number.isSafeInteger(beforeId) || (beforeId as number) < 1)) {
+          throw acp.RequestError.invalidParams({ field: "beforeId" }, "invalid history cursor");
+        }
+        const page = sessions.historyPage(session.conversationId, beforeId as number | undefined);
+        const messages: Array<{ id: string; role: "user" | "assistant"; text: string; createdAt: string; state: "complete" }> = [];
+        for (const turn of page.turns) {
+          const id = `${session.sessionId}:${turn.role}:${turn.ordinal}`;
+          const last = messages.at(-1);
+          if (turn.role === "assistant" && last?.id === id) last.text += turn.text;
+          else messages.push({ id, role: turn.role, text: turn.text, createdAt: turn.createdAt, state: "complete" });
+        }
+        return { messages, nextCursor: page.nextCursor, hasMore: page.nextCursor !== null, turnCount: page.turnCount };
+      })
       .onRequest(WORKSTREAM_METHODS.list, objectParams, (ctx) => {
         const cwd = authorizeWorkspacePath(stringParam(ctx.params, "cwd", 4096), workspaceRoot);
         const includeArchived = optionalBoolean(ctx.params, "includeArchived") ?? false;

@@ -200,6 +200,37 @@ describe("outward ACP Workstreams (#1101)", () => {
     expect(attempts).toEqual([]);
   });
 
+  it("authorizes and serves complete 50-turn pages through the outward ACP extension", async () => {
+    const f = fixture();
+    f.sessions.historyPage = (conversationId, beforeId) =>
+      f.db.getConvHistoryPage(conversationId, 50, beforeId, OUTWARD_ACP_SURFACE);
+    f.repo.create({ sessionId: "history-1", conversationId: "acp:history-1", cwd: f.root });
+    for (let i = 0; i < 105; i++) {
+      f.db.addConvTurn("acp:history-1", "user", `question ${i}`, undefined, { surfaceIdentity: OUTWARD_ACP_SURFACE });
+      f.db.addConvTurn("acp:history-1", "assistant", `answer ${i}`, undefined, { surfaceIdentity: OUTWARD_ACP_SURFACE });
+    }
+    const app = agent(f, { workstreams: executor(f.db, []) });
+    const init = await connectWithAcpInitialization(acp.client({ name: "desk" }), app, (peer) =>
+      peer.request(acp.methods.agent.initialize, { protocolVersion: 1, clientCapabilities: {} }));
+    expect(init.agentCapabilities?._meta).toEqual({ "agent-bridge": { workstreams: 1, historyPages: 1 } });
+    const first = await call<{ messages: Array<{ id: string; text: string }>; nextCursor: number | null; turnCount: number }>(
+      app, WORKSTREAM_METHODS.historyPage, { sessionId: "history-1", cwd: f.root },
+    );
+    expect(first.messages).toHaveLength(100);
+    expect(first.messages[0]).toMatchObject({ id: "history-1:user:55", text: "question 55" });
+    expect(first.messages.at(-1)).toMatchObject({ id: "history-1:assistant:104", text: "answer 104" });
+    expect(first.turnCount).toBe(105);
+    const second = await call<typeof first>(app, WORKSTREAM_METHODS.historyPage,
+      { sessionId: "history-1", cwd: f.root, beforeId: first.nextCursor });
+    expect(second.messages[0]?.id).toBe("history-1:user:5");
+    await expect(call(app, WORKSTREAM_METHODS.historyPage,
+      { sessionId: "history-1", cwd: "/not-this-workspace" })).rejects.toMatchObject({ code: -32602 });
+    await expect(call(app, WORKSTREAM_METHODS.historyPage,
+      { sessionId: "missing", cwd: f.root })).rejects.toMatchObject({ code: -32602 });
+    await expect(call(app, WORKSTREAM_METHODS.historyPage,
+      { sessionId: "history-1", cwd: f.root, beforeId: 0 })).rejects.toMatchObject({ code: -32602 });
+  });
+
   it("advertises Workstream controls only when wired", async () => {
     const f = fixture();
     const wired = agent(f, { workstreams: executor(f.db, []) });
