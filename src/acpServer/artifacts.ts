@@ -14,6 +14,7 @@ const MAX_FILES = 8;
 const MAX_BYTES = 8 * 1024 * 1024;
 const MAX_TOTAL_BYTES = 16 * 1024 * 1024;
 const MAX_CONVERSATION_RETAINED_BYTES = 64 * 1024 * 1024;
+const MAX_GUEST_RETAINED_BYTES = 96 * 1024 * 1024;
 
 const MIME: Record<string, string> = {
   ".svg": "image/svg+xml", ".png": "image/png", ".jpg": "image/jpeg",
@@ -65,6 +66,26 @@ async function readManifest(dir: string, conversationId: string): Promise<Manife
   } catch { return null; }
 }
 
+/** Count currently retained guest artifacts; messaging output is not touched. */
+async function guestRetainedBytes(): Promise<number> {
+  let dirs;
+  try { dirs = await readdir(ROOT, { withFileTypes: true }); }
+  catch { return 0; }
+  let total = 0;
+  for (const entry of dirs) {
+    if (!entry.isDirectory()) continue;
+    try {
+      const data = JSON.parse(await readFile(join(ROOT, entry.name, MANIFEST), "utf8")) as Manifest;
+      if (!Number.isFinite(Date.parse(data.expiresAt)) || Date.parse(data.expiresAt) <= Date.now()
+        || !Array.isArray(data.artifacts)) continue;
+      for (const artifact of data.artifacts) {
+        if (Number.isSafeInteger(artifact.size) && artifact.size > 0) total += artifact.size;
+      }
+    } catch { /* no Desk manifest, including ordinary messaging output */ }
+  }
+  return total;
+}
+
 /** Keep only explicitly supported regular files, with hard size/count bounds. */
 export async function retainDeskArtifacts(
   outDir: string, conversationId: string, runId: string, turnIndex: number,
@@ -109,14 +130,17 @@ export async function retainDeskArtifacts(
   // than evicting still-valid artifacts to admit new output.
   const alreadyRetained = (await listDeskArtifacts(conversationId))
     .reduce((bytes, artifact) => bytes + artifact.size, 0);
-  if (alreadyRetained + total > MAX_CONVERSATION_RETAINED_BYTES) {
+  if (alreadyRetained + total > MAX_CONVERSATION_RETAINED_BYTES
+    || (await guestRetainedBytes()) + total > MAX_GUEST_RETAINED_BYTES) {
     await cleanOutputDir(outDir);
     return { retained: 0, discarded: discarded + artifacts.length };
   }
   try {
     const manifest: Manifest = { conversationId, runId, expiresAt, artifacts };
-    await writeFile(join(outDir, MANIFEST), JSON.stringify(manifest), { mode: 0o600, flag: "wx" });
+    // Write the expiry marker first so interruption before the manifest
+    // cannot leave an unbounded orphan that the existing sweeper ignores.
     await writeFile(join(outDir, RETENTION_MARKER), JSON.stringify({ expiresAt }), { mode: 0o600, flag: "wx" });
+    await writeFile(join(outDir, MANIFEST), JSON.stringify(manifest), { mode: 0o600, flag: "wx" });
     await cleanupExpiredRetainedOutputDirs();
     return { retained: artifacts.length, discarded };
   } catch (error) {
