@@ -132,6 +132,32 @@ describe("outward ACP prompt execution", () => {
                 },
               },
             }));
+
+            // Provider notices are diagnostics, even when their title resembles
+            // answer text. Existing outward clients must never receive them.
+            input.collect(eventType.acpEvent({
+              runId: input.runId,
+              bot: "codex",
+              chatId: String(input.chatId),
+              chatKey: input.chatKey,
+              sessionId: "provider-session",
+              sessionMode: "load",
+              event: {
+                kind: "session_update",
+                channel: "live",
+                acpSessionId: "provider-session",
+                sessionMode: "load",
+                notification: {
+                  sessionId: "provider-session",
+                  update: {
+                    sessionUpdate: "notice",
+                    severity: "warning",
+                    title: "Model mismatch",
+                    description: "Do not display or persist this notice as an answer",
+                  },
+                },
+              },
+            }));
             input.collect(eventType.runCompleted({
               runId: input.runId,
               bot: "codex",

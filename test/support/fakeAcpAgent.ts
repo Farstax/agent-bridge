@@ -19,6 +19,8 @@ export interface FakeAcpAgentOptions {
   initializeError?: Error;
   /** Emit only the session/update usage_update notification; omit PromptResponse.usage. */
   usageUpdateOnly?: boolean;
+  onInitialize?: (capabilities: acp.ClientCapabilities) => void;
+  notices?: ReadonlyArray<{ severity: "info" | "warning" | "error"; title: string; description?: string }>;
   /** Negotiated agentCapabilities.promptCapabilities. Omitted fields default to unsupported. */
   promptCapabilities?: { image?: boolean; audio?: boolean; embeddedContext?: boolean };
   /**
@@ -73,7 +75,8 @@ export function createFakeAcpAgent(options: FakeAcpAgentOptions = {}): acp.Agent
   };
 
   const fake = acp.agent({ name: "fake-acp-agent" })
-    .onRequest(acp.methods.agent.initialize, async () => {
+    .onRequest(acp.methods.agent.initialize, async (ctx) => {
+      options.onInitialize?.(ctx.params.clientCapabilities);
       if (options.initializeError) throw options.initializeError;
       return {
         protocolVersion: acp.PROTOCOL_VERSION,
@@ -245,6 +248,12 @@ export function createFakeAcpAgent(options: FakeAcpAgentOptions = {}): acp.Agent
         });
       }
 
+      for (const notice of options.notices ?? []) {
+        await ctx.client.notify(acp.methods.client.session.update, {
+          sessionId: ctx.params.sessionId,
+          update: { sessionUpdate: "notice", ...notice } as acp.SessionUpdate,
+        });
+      }
       await ctx.client.notify(acp.methods.client.session.update, {
         sessionId: ctx.params.sessionId,
         update: {

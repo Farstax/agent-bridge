@@ -202,7 +202,9 @@ function liveRootProviderUpdate(event: BridgeEvent): OutwardUpdate | null {
   if (retained.notification.sessionId !== retained.acpSessionId) return null;
   if (!retained.notification.update || typeof retained.notification.update !== "object") return null;
   const update = retained.notification.update as OutwardUpdate;
-  return isBridgeAuthoritativeTextUpdate(update) ? null : update;
+  // Inward notices are diagnostics, never outward ACP answer or activity.
+  // Do not forward them to clients that have not negotiated session.notices.
+  return update.sessionUpdate === "notice" || isBridgeAuthoritativeTextUpdate(update) ? null : update;
 }
 
 function normalizeStopReason(value: string | undefined): acp.StopReason {

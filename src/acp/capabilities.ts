@@ -3,6 +3,7 @@ import { PROTOCOL_VERSION, type ClientCapabilities, type InitializeRequest } fro
 /** Draft ACP subagent-session extension supported by the pinned codex-acp adapter. */
 type SubagentAwareClientCapabilities = ClientCapabilities & {
   subagents?: Record<string, never>;
+  session?: { notices?: Record<string, never> };
 };
 
 /**
@@ -12,12 +13,15 @@ type SubagentAwareClientCapabilities = ClientCapabilities & {
  * `terminal` are deliberately not advertised. `plan: {}` tells the agent
  * Bridge can receive plan_update/plan_removed session updates; `subagents: {}`
  * truthfully advertises that Bridge can receive the adapter's structured
- * native subagent lifecycle extension. The field remains generic ACP plumbing,
+ * native subagent lifecycle extension. `session.notices` makes supported
+ * provider advisories typed diagnostics rather than assistant text.
+ * These fields remain generic ACP plumbing,
  * not provider policy.
  */
 export const BRIDGE_ACP_CLIENT_CAPABILITIES: SubagentAwareClientCapabilities = {
   plan: {},
   subagents: {},
+  session: { notices: {} },
 };
 
 export const BRIDGE_ACP_CLIENT_INFO = {
