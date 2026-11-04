@@ -13,6 +13,7 @@ const RETAIN_MS = 24 * 60 * 60 * 1000;
 const MAX_FILES = 8;
 const MAX_BYTES = 8 * 1024 * 1024;
 const MAX_TOTAL_BYTES = 16 * 1024 * 1024;
+const MAX_CONVERSATION_RETAINED_BYTES = 64 * 1024 * 1024;
 
 const MIME: Record<string, string> = {
   ".svg": "image/svg+xml", ".png": "image/png", ".jpg": "image/jpeg",
@@ -102,6 +103,15 @@ export async function retainDeskArtifacts(
   if (!artifacts.length) {
     await cleanOutputDir(outDir);
     return { retained: 0, discarded };
+  }
+  // A burst of small successful Runs must not grow private beta guest disks
+  // indefinitely within the retention window. Preserve older links rather
+  // than evicting still-valid artifacts to admit new output.
+  const alreadyRetained = (await listDeskArtifacts(conversationId))
+    .reduce((bytes, artifact) => bytes + artifact.size, 0);
+  if (alreadyRetained + total > MAX_CONVERSATION_RETAINED_BYTES) {
+    await cleanOutputDir(outDir);
+    return { retained: 0, discarded: discarded + artifacts.length };
   }
   try {
     const manifest: Manifest = { conversationId, runId, expiresAt, artifacts };
