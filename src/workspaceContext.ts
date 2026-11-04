@@ -1,5 +1,5 @@
 import { AsyncLocalStorage } from "node:async_hooks";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { getSharedSkillsHomeDir, resolveSkillPaths } from "./skills.js";
 import type { InteractiveSurroundingContextMessage } from "./interactiveIngress.js";
@@ -55,9 +55,20 @@ export function runtimeInspectorContext(env: NodeJS.ProcessEnv = process.env, re
   ].join("\n");
 }
 
+/** True when at least one shared Skill is installed; the pointer is useless otherwise. */
+function hasInstalledSkills(env: NodeJS.ProcessEnv): boolean {
+  const root = resolveSkillPaths(getSharedSkillsHomeDir(env)).agentsSkillsDir;
+  try {
+    return readdirSync(root, { withFileTypes: true }).some((entry) => entry.isDirectory() && existsSync(join(root, entry.name, "SKILL.md")));
+  } catch { return false; }
+}
+
 export function loadWorkspaceContext(env: NodeJS.ProcessEnv = process.env): string {
   const file = env.AGENT_BRIDGE_WORKSPACE_CONTEXT_FILE;
-  if (!file) return "";
+  // Installed Skills stay discoverable without a linked-repository context
+  // file (for example Desk in a fresh workspace); providers that do not load
+  // native Skill directories rely on this pointer.
+  if (!file) return hasInstalledSkills(env) ? skillsContext(env) : "";
   try {
     const skills = skillsContext(env);
     const separator = "\n\n";

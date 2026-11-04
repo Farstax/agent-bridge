@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadWorkspaceContext, prependWorkspaceContext } from "../src/workspaceContext.js";
@@ -51,9 +51,25 @@ describe("workspace context", () => {
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
 
-  it("fails open with an empty string when no context file is configured", () => {
-    expect(loadWorkspaceContext({})).toBe("");
-    expect(prependWorkspaceContext("Please inspect the repository", {})).toBe("Please inspect the repository");
+  it("fails open with an empty string when no context file is configured and no Skill is installed", () => {
+    const home = mkdtempSync(join(tmpdir(), "workspace-context-home-"));
+    try {
+      expect(loadWorkspaceContext({ HOME: home })).toBe("");
+      expect(prependWorkspaceContext("Please inspect the repository", { HOME: home })).toBe("Please inspect the repository");
+    } finally { rmSync(home, { recursive: true, force: true }); }
+  });
+
+  it("points every provider at installed shared Skills even without a workspace context file", () => {
+    const home = mkdtempSync(join(tmpdir(), "workspace-context-home-"));
+    mkdirSync(join(home, ".agents/skills/farstax-workspace"), { recursive: true });
+    writeFileSync(join(home, ".agents/skills/farstax-workspace/SKILL.md"), "---\nname: farstax-workspace\n---\n");
+    try {
+      const context = loadWorkspaceContext({ HOME: home });
+      expect(context).toContain(`${home}/.agents/skills`);
+      expect(context).toContain("<shared-skills-root>/<skill-name>/SKILL.md");
+      expect(prependWorkspaceContext("Build and publish a Hello World website.", { HOME: home }))
+        .toMatch(/^\[Managed workspace context\]\n## Agent Bridge skills[\s\S]*Build and publish a Hello World website\.$/);
+    } finally { rmSync(home, { recursive: true, force: true }); }
   });
 
   it("fails open with an empty string when the configured context file is unreadable", () => {
