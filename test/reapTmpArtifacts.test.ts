@@ -2,7 +2,9 @@ import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import Database from "better-sqlite3";
 import { afterEach, describe, expect, it } from "vitest";
+import { openDb } from "../src/db.js";
 
 const scriptPath = new URL("../scripts/reap-tmp-artifacts.sh", import.meta.url).pathname;
 
@@ -85,7 +87,7 @@ describe("reap-tmp-artifacts.sh", () => {
     const { root, env } = telemetryFixture("exit 0");
     const result = run(env);
     expect(result.status).toBe(0);
-    expect(readFileSync(join(root, "calls"), "utf8")).toContain(`prune --db ${env.BRIDGE_DB_PATH}`);
+    expect(readFileSync(join(root, "calls"), "utf8")).toContain(`prune --db ${env.BRIDGE_DB_PATH} --database-role ${env.BRIDGE_DB_PATH}=interactive`);
   });
 
   it("defers ACP telemetry retention when the live database is locked", () => {
@@ -442,4 +444,53 @@ describe("reap-tmp-artifacts.sh", () => {
     }
   });
 
+
+  describe("against a real interactive database", { timeout: 60_000 }, () => {
+    const repoRoot = new URL("..", import.meta.url).pathname.replace(/\/$/, "");
+    function realFixture() {
+      const root = makeRoot();
+      const current = join(root, "current");
+      symlinkSync(repoRoot, current);
+      const database = join(root, "interactive.db");
+      openDb(database, { databaseRole: "interactive" }).close();
+      const env = { REAP_TMP_ROOT: join(root, "tmp"), REAP_WORKTREE_REPOS: ",", BRIDGE_DB_PATH: database, BRIDGE_CURRENT_RELEASE_DIR: current, BRIDGE_ACP_WORKSPACE_ROOT: root, NODE_ENV: "test" };
+      return { root, database, env };
+    }
+
+    it("accepts a schema-current interactive database with outward_acp_sessions", () => {
+      const { env } = realFixture();
+      const result = run(env);
+      expect(result.stderr).not.toContain("unknown=[outward_acp_sessions]");
+      expect(result.stderr).not.toContain("ACP telemetry retention failed");
+      expect(result.status, result.stderr).toBe(0);
+    });
+
+    it("still rejects an unknown table in the interactive database", () => {
+      const { database, env } = realFixture();
+      const raw = new Database(database);
+      raw.exec("CREATE TABLE surprise_table(id INTEGER PRIMARY KEY)");
+      raw.close();
+      const result = run(env);
+      expect(result.stderr).toContain("unknown=[surprise_table]");
+      expect(result.stderr).toContain("ACP telemetry retention failed");
+      expect(result.status).toBe(1);
+    });
+
+    it("fails explicitly, without a broad fallback, when the project root is missing", () => {
+      const { root, env } = realFixture();
+      const { BRIDGE_ACP_WORKSPACE_ROOT: _root, ...rest } = env;
+      const result = run({ ...rest, BRIDGE_PROJECT_DIR: join(root, "gone") });
+      expect(result.stderr).toContain("ENOENT");
+      expect(result.stderr).toContain("ACP maintenance failed");
+      expect(result.status).toBe(1);
+    });
+
+    it("runs ACP maintenance when the project root resolves", () => {
+      const { root, env } = realFixture();
+      const { BRIDGE_ACP_WORKSPACE_ROOT: _root, ...rest } = env;
+      const result = run({ ...rest, BRIDGE_PROJECT_DIR: root });
+      expect(result.stderr).not.toContain("ACP maintenance failed");
+      expect(result.status, result.stderr).toBe(0);
+    });
+  });
 });

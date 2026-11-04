@@ -36,7 +36,7 @@ prune_acp_telemetry() {
   command -v "$node_bin" >/dev/null 2>&1 || { log "ACP telemetry retention skipped: node is unavailable"; return 0; }
   [[ -f "$release/node_modules/tsx/dist/cli.mjs" && -f "$release/scripts/rollout-db.ts" ]] || { log "ACP telemetry retention skipped: active retention tooling is unavailable"; return 0; }
   local prune_error
-  if prune_error="$("$node_bin" "$release/node_modules/tsx/dist/cli.mjs" "$release/scripts/rollout-db.ts" prune --db "$database" 2>&1 >/dev/null)"; then
+  if prune_error="$("$node_bin" "$release/node_modules/tsx/dist/cli.mjs" "$release/scripts/rollout-db.ts" prune --db "$database" --database-role "$database=interactive" 2>&1 >/dev/null)"; then
     return 0
   fi
   # The live bridge may hold the write lock. Committed batches stay deleted;
