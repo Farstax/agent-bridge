@@ -159,7 +159,8 @@ async function main(): Promise<void> {
       .catch((error) => console.error("[acp:outward:continuations] queue drain failed", error))
       .finally(() => { ticking = false; });
   }, 5_000);
-  drainTimer.unref();
+  // Keep the drain timer referenced: this systemd worker must remain alive
+  // even when there are no pending continuations or other active handles.
   const shutdown = async () => {
     clearInterval(drainTimer);
     runner.stop();
