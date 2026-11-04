@@ -2249,7 +2249,10 @@ export class BridgeEngine {
             contextEnv: promptForCli.contextEnv,
             eventContext,
             onEvent: collect ?? undefined,
-            onProviderRetry: () => this._discardAbandonedAttemptOutcome(laneHandle, runId),
+            onProviderRetry: () => {
+              this._discardAbandonedAttemptOutcome(laneHandle, runId);
+              (body as { onProviderExecutionStarted?: () => void }).onProviderExecutionStarted?.();
+            },
             onSteerReady: (steer) => this.laneCoordinator.setSteerHandle(executionLane, steer),
             suppressTransientRetry: (body as { suppressTransientRetry?: boolean }).suppressTransientRetry,
           },
@@ -2377,7 +2380,10 @@ export class BridgeEngine {
                 contextEnv: followup.contextEnv,
                 eventContext,
                 onEvent: collect ?? undefined,
-                onProviderRetry: () => this._discardAbandonedAttemptOutcome(laneHandle, runId),
+                onProviderRetry: () => {
+              this._discardAbandonedAttemptOutcome(laneHandle, runId);
+              (body as { onProviderExecutionStarted?: () => void }).onProviderExecutionStarted?.();
+            },
               },
               {
                 prompt: followupInvocation.prompt ?? followup.prompt,
