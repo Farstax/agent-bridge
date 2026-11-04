@@ -32,6 +32,8 @@ export interface OutwardAcpSessionStore {
   history?(conversationId: string): ReadonlyArray<OutwardAcpHistoryTurn>;
   /** Number of user turns excluded from the bounded session/load replay. */
   userTurnOffset?(conversationId: string): number;
+  /** Durable Run authority; never expose output from failed, cancelled or unfinished work. */
+  isCompletedRun?(conversationId: string, runId: string): boolean;
   list?(cwd: string, options: { includeArchived?: boolean }): OutwardAcpSessionRecord[];
   update?(sessionId: string, change: { title?: string; archived?: boolean }): OutwardAcpSessionRecord | null;
 }
@@ -198,7 +200,7 @@ export function createOutwardAcpAgent(options: OutwardAcpAgentOptions = {}): Age
       commands: supportsWorkstreams && Boolean(options.commands),
       deferredCapacity: supportsWorkstreams && options.promptExecutor?.supportsDeferredCapacity === true,
       busyMessages: supportsWorkstreams && options.promptExecutor?.supportsBusyMessages === true,
-      artifacts: supportsWorkstreams,
+      artifacts: supportsWorkstreams && Boolean(sessions.isCompletedRun),
     }),
     agentInfo: { ...BRIDGE_ACP_AGENT_INFO },
   }));
@@ -263,12 +265,15 @@ export function createOutwardAcpAgent(options: OutwardAcpAgentOptions = {}): Age
         const session = getKnown(ctx.params);
         const offset = sessions.userTurnOffset?.(session.conversationId) ?? 0;
         const artifacts = await listDeskArtifacts(session.conversationId);
-        return { artifacts: artifacts.map((item) => ({ ...item, turnIndex: item.turnIndex - offset })) };
+        return { artifacts: artifacts.filter((item) => sessions.isCompletedRun?.(session.conversationId, item.runId))
+          .map((item) => ({ ...item, turnIndex: item.turnIndex - offset })) };
       })
       .onRequest(WORKSTREAM_METHODS.readArtifact, objectParams, async (ctx) => {
         const session = getKnown(ctx.params);
         const id = stringParam(ctx.params, "artifactId", 64);
-        return readDeskArtifact(session.conversationId, id);
+        const result = await readDeskArtifact(session.conversationId, id);
+        return result.status === "found" && !sessions.isCompletedRun?.(session.conversationId, result.artifact.runId)
+          ? { status: "not_found" as const } : result;
       });
     if (options.commands) {
       const commands = options.commands;
