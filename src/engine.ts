@@ -177,6 +177,8 @@ export interface SurfaceNeutralTurnInput {
   eventContext: NonNullable<CliOptions["eventContext"]>;
   collect: (event: BridgeEvent) => void;
   onProviderExecutionStarted?: () => void;
+  /** Outward ACP owns generated files; never send them through a messaging client. */
+  onOutputArtifacts?: (outDir: string) => Promise<{ retained: number; discarded: number }>;
   /** Per-Run provider recovery evidence for durable capacity decisions. */
   onProviderRecoveryDecision?: (reason: ProviderFallbackReason | null, exhausted: boolean) => void;
 }
@@ -2053,9 +2055,10 @@ export class BridgeEngine {
         input.prompt,
         input.sessionId,
         input.chatId,
-        // Non-messaging Runs have no delivery owner for generated files; the
-        // staged output is discarded instead of sent to a messaging client.
-        { onProviderExecutionStarted: input.onProviderExecutionStarted, publishArtifacts: false },
+        // Surface-neutral runs never use messaging delivery. Outward ACP can
+        // supply a fenced, durable artifact owner instead of discarding output.
+        { onProviderExecutionStarted: input.onProviderExecutionStarted, publishArtifacts: false,
+          onOutputArtifacts: input.onOutputArtifacts },
         () => {},
         input.attachments ?? [],
         input.eventContext,
@@ -2198,7 +2201,7 @@ export class BridgeEngine {
       outputDir: null,
     }).nativeSessionMode;
     // Read-only verification turns get no scratch helper: its write and clear are mutations.
-    const promptForCli = await this._buildPromptForCli(chatKey, prompt, nativeSessionMode, model, runId, executionKind, chatId, threadId, isVerificationOnly ? undefined : laneHandle, !isVerificationOnly && this.kind !== "autonomous" && publishArtifacts && Boolean(this.opts.fullConfig?.dbPath));
+    const promptForCli = await this._buildPromptForCli(chatKey, prompt, nativeSessionMode, model, runId, executionKind, chatId, threadId, isVerificationOnly ? undefined : laneHandle, !isVerificationOnly && this.kind !== "autonomous" && (publishArtifacts || Boolean(body.onOutputArtifacts)) && Boolean(this.opts.fullConfig?.dbPath));
     const invocation = buildCliInvocation({
       bot: executionKind,
       command: this.opts.botConfig.command,
@@ -2437,7 +2440,20 @@ export class BridgeEngine {
       }
       this._renewLaneOrThrow(laneHandle);
       if (!publishArtifacts) {
-        await this._cleanTerminalOutputDir(outDir, "non-messaging Run");
+        if (typeof body.onOutputArtifacts === "function" && this._canPublish(laneHandle)) {
+          try {
+            const delivery: { retained: number; discarded: number } = await body.onOutputArtifacts(outDir);
+            if (delivery.discarded > 0) {
+              stagedResult = { ...stagedResult, text: `${stagedResult.text}\n\n${delivery.discarded} generated file(s) could not be delivered because of type or size limits.` };
+            }
+          } catch (error) {
+            console.error(`[${this.kind}] Desk artifact retention failed`, error instanceof Error ? error.name : "unknown");
+            await this._cleanTerminalOutputDir(outDir, "Desk artifact failure");
+            stagedResult = { ...stagedResult, text: `${stagedResult.text}\n\nGenerated files could not be delivered. Please try again.` };
+          }
+        } else {
+          await this._cleanTerminalOutputDir(outDir, "non-messaging Run");
+        }
       } else if (this._canPublish(laneHandle)) {
         await uploadOutputFiles(outDir, chatId, this.client, fileSendOptions, () => this._canPublish(laneHandle)).catch((err) =>
           console.error(`[${this.kind}] output file upload failed`, err)

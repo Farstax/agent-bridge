@@ -13,6 +13,7 @@ import type {
 import type { OutwardAcpPromptExecutor, OutwardWorkstreamControl } from "./execution.js";
 import { type AcpCommands } from "./commands.js";
 import { stageOutwardAcpAttachments } from "./attachments.js";
+import { listDeskArtifacts, readDeskArtifact } from "./artifacts.js";
 import {
   bridgeAgentCapabilities,
   BRIDGE_ACP_AGENT_INFO,
@@ -29,6 +30,10 @@ export interface OutwardAcpSessionStore {
   get?(sessionId: string): OutwardAcpSessionRecord | null;
   /** Durable per-conversation transcript for `session/load` replay, oldest first. */
   history?(conversationId: string): ReadonlyArray<OutwardAcpHistoryTurn>;
+  /** Number of user turns excluded from bounded replay. */
+  userTurnOffset?(conversationId: string): number;
+  /** Durable Run authority for generated files. */
+  isCompletedRun?(conversationId: string, runId: string): boolean;
   historyPage?(conversationId: string, beforeId?: number): {
     turns: ReadonlyArray<{ id: number; role: "user" | "assistant"; text: string; createdAt: string; ordinal: number }>;
     nextCursor: number | null;
@@ -65,6 +70,8 @@ export const WORKSTREAM_METHODS = {
   commands: "_agent-bridge/commands/list",
   runCommand: "_agent-bridge/commands/run",
   transcribeVoice: "_agent-bridge/voice/transcribe",
+  listArtifacts: "_agent-bridge/artifacts/list",
+  readArtifact: "_agent-bridge/artifacts/read",
 } as const;
 
 const WORKSTREAM_TITLE_MAX = 200;
@@ -199,6 +206,7 @@ export function createOutwardAcpAgent(options: OutwardAcpAgentOptions = {}): Age
       commands: supportsWorkstreams && Boolean(options.commands),
       deferredCapacity: supportsWorkstreams && options.promptExecutor?.supportsDeferredCapacity === true,
       busyMessages: supportsWorkstreams && options.promptExecutor?.supportsBusyMessages === true,
+      artifacts: supportsWorkstreams && Boolean(sessions?.isCompletedRun),
       historyPages: supportsWorkstreams && Boolean(sessions?.historyPage),
     }),
     agentInfo: { ...BRIDGE_ACP_AGENT_INFO },
@@ -273,6 +281,23 @@ export function createOutwardAcpAgent(options: OutwardAcpAgentOptions = {}): Age
         if (!control.cancelDeferred) throw new acp.RequestError(-32002, "deferred Workstream cancellation is unavailable");
         const session = getKnown(ctx.params);
         return { workstream: workstreamView(session), status: await control.cancelDeferred(session) };
+      });
+    // These requests resolve the Workstream on the guest and never accept
+    // filesystem paths supplied by a browser/ACP client.
+    app = app
+      .onRequest(WORKSTREAM_METHODS.listArtifacts, objectParams, async (ctx) => {
+        const session = getKnown(ctx.params);
+        const offset = sessions.historyPage ? 0 : (sessions.userTurnOffset?.(session.conversationId) ?? 0);
+        const artifacts = await listDeskArtifacts(session.conversationId);
+        return { artifacts: artifacts.filter((item) => sessions.isCompletedRun?.(session.conversationId, item.runId))
+          .map((item) => ({ ...item, turnIndex: item.turnIndex - offset })) };
+      })
+      .onRequest(WORKSTREAM_METHODS.readArtifact, objectParams, async (ctx) => {
+        const session = getKnown(ctx.params);
+        const id = stringParam(ctx.params, "artifactId", 64);
+        const result = await readDeskArtifact(session.conversationId, id);
+        return result.status === "found" && !sessions.isCompletedRun?.(session.conversationId, result.artifact.runId)
+          ? { status: "not_found" as const } : result;
       });
     if (options.commands) {
       const commands = options.commands;

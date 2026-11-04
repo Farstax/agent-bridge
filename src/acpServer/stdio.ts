@@ -61,6 +61,15 @@ try {
       undefined,
       OUTWARD_ACP_SURFACE,
     ).map((turn) => ({ role: turn.role as "user" | "assistant", text: turn.text })),
+    userTurnOffset: (conversationId) => {
+      const recent = db.getRecentConvTurns(conversationId, OUTWARD_ACP_HISTORY_LIMIT, undefined, OUTWARD_ACP_SURFACE);
+      const total = db.getConvHistoryPage(conversationId, 1, undefined, OUTWARD_ACP_SURFACE).turnCount;
+      return total - recent.filter((turn) => turn.role === "user").length;
+    },
+    isCompletedRun: (conversationId, runId) => {
+      const run = db.getRun(runId);
+      return run?.surface_identity === OUTWARD_ACP_SURFACE && run?.chat_id === conversationId && run?.status === "done";
+    },
   };
   // Establish the same bounded API-key evidence interactive routing uses, so
   // canonical provider availability is accurate for key-authenticated hosts.

@@ -19,6 +19,7 @@ import { applyManualCliSwitchHandoff, getStoredCliPreference, type CliKind } fro
 import type { BotKind, BridgeConfig, CliResult, RouteableBotKind } from "../types.js";
 import { QUEUED_ATTACHMENT_MARKER, readRetainedOutwardAcpAttachments, retainOutwardAcpAttachmentsForWait, releaseRetainedOutwardAcpAttachments } from "./attachments.js";
 import { resolveLaneBusyMessageMode } from "../busyMessageMode.js";
+import { discardDeskRunArtifacts, retainDeskArtifacts } from "./artifacts.js";
 import { hasPendingCapacityWait, listRunContinuations, linkCapacityContinuationRun, requestRunContinuation, cancelPendingRunContinuation, settleRunContinuation, type RunContinuation } from "../runContinuation.js";
 
 
@@ -845,6 +846,9 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
       await updateChain;
 
       if (cancelled) {
+        await discardDeskRunArtifacts(input.session.conversationId, runId).catch(() => {
+          console.warn("[acp:outward] could not reclaim cancelled Desk artifacts");
+        });
         if (db.getRun(runId)?.status === "running") {
           eventStore.collect(active.cancelRequested
             ? cancelledEvent(runId, actualProvider, input.session, "user")
@@ -882,6 +886,9 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
       }
       return { stopReason: cancelled ? "cancelled" : normalizeStopReason(result.stopReason) };
     } catch (error) {
+      await discardDeskRunArtifacts(input.session.conversationId, runId).catch(() => {
+        console.warn("[acp:outward] could not reclaim failed Desk artifacts");
+      });
       if (error instanceof QueuedMessageStopped) return { stopReason: "cancelled" };
       if (active?.cancelRequested) {
         if (eventStore && db.getRun(runId)?.status === "running") {
@@ -1511,6 +1518,10 @@ export function createProductionOutwardAcpPromptExecutor(
         executeSurfaceNeutralTurn: (turnInput) => engine.executeSurfaceNeutralTurn({
           ...turnInput,
           sessionId: lookupProviderSession(db, { surfaceIdentity: OUTWARD_ACP_SURFACE, chatKey: session.conversationId }, attemptProvider),
+          onOutputArtifacts: (outDir) => {
+            const turnCount = db.getConvHistoryPage(session.conversationId, 1, undefined, OUTWARD_ACP_SURFACE).turnCount;
+            return retainDeskArtifacts(outDir, session.conversationId, turnInput.runId, Math.max(0, turnCount - 1));
+          },
         }),
         recoverPendingQueue: (chatKey, activeContinuationId, capacityClaimToken) =>
           engine.recoverPendingQueue(chatKey, activeContinuationId, capacityClaimToken, false),
