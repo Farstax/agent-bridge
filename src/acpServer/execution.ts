@@ -19,6 +19,7 @@ import { applyManualCliSwitchHandoff, getStoredCliPreference, type CliKind } fro
 import type { BotKind, BridgeConfig, CliResult, RouteableBotKind } from "../types.js";
 import { QUEUED_ATTACHMENT_MARKER, readRetainedOutwardAcpAttachments, retainOutwardAcpAttachmentsForWait, releaseRetainedOutwardAcpAttachments } from "./attachments.js";
 import { resolveLaneBusyMessageMode } from "../busyMessageMode.js";
+import { retainDeskArtifacts } from "./artifacts.js";
 import { hasPendingCapacityWait, listRunContinuations, linkCapacityContinuationRun, requestRunContinuation, cancelPendingRunContinuation, settleRunContinuation, type RunContinuation } from "../runContinuation.js";
 
 
@@ -1511,6 +1512,12 @@ export function createProductionOutwardAcpPromptExecutor(
         executeSurfaceNeutralTurn: (turnInput) => engine.executeSurfaceNeutralTurn({
           ...turnInput,
           sessionId: lookupProviderSession(db, { surfaceIdentity: OUTWARD_ACP_SURFACE, chatKey: session.conversationId }, attemptProvider),
+          onOutputArtifacts: (outDir) => {
+            const count = db.raw.prepare(
+              "SELECT COUNT(*) AS count FROM conversation_turns WHERE chat_key = ? AND surface_identity = ? AND role = 'user'",
+            ).get(session.conversationId, OUTWARD_ACP_SURFACE) as { count: number } | undefined;
+            return retainDeskArtifacts(outDir, session.conversationId, turnInput.runId, Math.max(0, (count?.count ?? 1) - 1));
+          },
         }),
         recoverPendingQueue: (chatKey, activeContinuationId, capacityClaimToken) =>
           engine.recoverPendingQueue(chatKey, activeContinuationId, capacityClaimToken, false),
