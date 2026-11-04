@@ -66,6 +66,10 @@ try {
       ).get(conversationId, OUTWARD_ACP_SURFACE, recent[0]!.id) as { count: number };
       return row.count;
     },
+    isCompletedRun: (conversationId, runId) => {
+      const run = db.getRun(runId);
+      return run?.surface_identity === OUTWARD_ACP_SURFACE && run?.chat_id === conversationId && run?.status === "done";
+    },
   };
   // Establish the same bounded API-key evidence interactive routing uses, so
   // canonical provider availability is accurate for key-authenticated hosts.
