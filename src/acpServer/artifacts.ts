@@ -168,3 +168,10 @@ export async function readDeskArtifact(conversationId: string, id: string): Prom
   }
   return { status: "not_found" };
 }
+
+/** Reclaim staged output if durable Run settlement rejects/cancels it. */
+export async function discardDeskRunArtifacts(conversationId: string, runId: string): Promise<void> {
+  for (const { dir, data } of await manifests(conversationId)) {
+    if (data.runId === runId) await cleanOutputDir(dir);
+  }
+}
