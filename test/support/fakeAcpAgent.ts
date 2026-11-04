@@ -251,8 +251,13 @@ export function createFakeAcpAgent(options: FakeAcpAgentOptions = {}): acp.Agent
       for (const notice of options.notices ?? []) {
         await ctx.client.notify(acp.methods.client.session.update, {
           sessionId: ctx.params.sessionId,
-          update: { sessionUpdate: "notice", ...notice } as acp.SessionUpdate,
-        });
+          update: {
+            sessionUpdate: "notice",
+            ...notice,
+            _meta: { providerSecret: "notice-update-secret" },
+          } as acp.SessionUpdate,
+          _meta: { providerSecret: "notice-envelope-secret" },
+        } as acp.SessionNotification);
       }
       await ctx.client.notify(acp.methods.client.session.update, {
         sessionId: ctx.params.sessionId,

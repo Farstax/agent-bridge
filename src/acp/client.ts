@@ -537,9 +537,9 @@ export async function runAcpTurn(input: AcpTurnInput): Promise<AcpTurnResult> {
           const severity = (observed.notification.update as { severity?: unknown }).severity;
           const safeSeverity = severity === "warning" || severity === "error" ? severity : "info";
           const sanitized = {
-            ...observed,
+            channel: observed.channel,
             notification: {
-              ...observed.notification,
+              sessionId: observed.notification.sessionId,
               update: {
                 sessionUpdate: "notice",
                 severity: safeSeverity,

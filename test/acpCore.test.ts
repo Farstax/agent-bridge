@@ -128,6 +128,8 @@ describe("ACP core client", () => {
         { sessionUpdate: "notice", severity: "info", title: "Provider notice" },
       ]);
       expect(JSON.stringify(notices)).not.toContain("notice-secret");
+      expect(JSON.stringify(notices)).not.toContain("notice-update-secret");
+      expect(JSON.stringify(notices)).not.toContain("notice-envelope-secret");
       expect(JSON.stringify(notices)).not.toContain("gpt-6.1-terra");
       expect(JSON.stringify(result.updates.filter((event) => event.notification.update.sessionUpdate === "notice")))
         .not.toContain("Authorization");
