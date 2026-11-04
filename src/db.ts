@@ -861,6 +861,10 @@ export class BridgeDb {
     return this.conversations.getRecentConvTurns(chatKey, limit, sinceId, surfaceIdentity);
   }
 
+  getConvHistoryPage(chatKey: string, limit: number, beforeId?: number, surfaceIdentity?: string) {
+    return this.conversations.getConvHistoryPage(chatKey, limit, beforeId, surfaceIdentity);
+  }
+
   buildConvContext(chatKey: string, maxChars = DEFAULT_CONTEXT_MAX_CHARS, surfaceIdentity?: string): string {
     return this.conversations.buildConvContext(chatKey, maxChars, surfaceIdentity);
   }

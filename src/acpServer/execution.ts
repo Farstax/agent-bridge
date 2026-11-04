@@ -1519,10 +1519,8 @@ export function createProductionOutwardAcpPromptExecutor(
           ...turnInput,
           sessionId: lookupProviderSession(db, { surfaceIdentity: OUTWARD_ACP_SURFACE, chatKey: session.conversationId }, attemptProvider),
           onOutputArtifacts: (outDir) => {
-            const count = db.raw.prepare(
-              "SELECT COUNT(*) AS count FROM conversation_turns WHERE chat_key = ? AND surface_identity = ? AND role = 'user'",
-            ).get(session.conversationId, OUTWARD_ACP_SURFACE) as { count: number } | undefined;
-            return retainDeskArtifacts(outDir, session.conversationId, turnInput.runId, Math.max(0, (count?.count ?? 1) - 1));
+            const turnCount = db.getConvHistoryPage(session.conversationId, 1, undefined, OUTWARD_ACP_SURFACE).turnCount;
+            return retainDeskArtifacts(outDir, session.conversationId, turnInput.runId, Math.max(0, turnCount - 1));
           },
         }),
         recoverPendingQueue: (chatKey, activeContinuationId, capacityClaimToken) =>

@@ -52,6 +52,9 @@ try {
     get: (sessionId) => sessionRepo.get(sessionId),
     list: (cwd, options) => sessionRepo.list(cwd, options),
     update: (sessionId, change) => sessionRepo.update(sessionId, change),
+    historyPage: (conversationId, beforeId) => db.getConvHistoryPage(
+      conversationId, 50, beforeId, OUTWARD_ACP_SURFACE,
+    ),
     history: (conversationId) => db.getRecentConvTurns(
       conversationId,
       OUTWARD_ACP_HISTORY_LIMIT,
@@ -60,11 +63,8 @@ try {
     ).map((turn) => ({ role: turn.role as "user" | "assistant", text: turn.text })),
     userTurnOffset: (conversationId) => {
       const recent = db.getRecentConvTurns(conversationId, OUTWARD_ACP_HISTORY_LIMIT, undefined, OUTWARD_ACP_SURFACE);
-      if (!recent.length) return 0;
-      const row = db.raw.prepare(
-        "SELECT COUNT(*) AS count FROM conversation_turns WHERE chat_key = ? AND surface_identity = ? AND role = 'user' AND id < ?",
-      ).get(conversationId, OUTWARD_ACP_SURFACE, recent[0]!.id) as { count: number };
-      return row.count;
+      const total = db.getConvHistoryPage(conversationId, 1, undefined, OUTWARD_ACP_SURFACE).turnCount;
+      return total - recent.filter((turn) => turn.role === "user").length;
     },
     isCompletedRun: (conversationId, runId) => {
       const run = db.getRun(runId);

@@ -203,6 +203,40 @@ export class ConversationRepository {
       .all(...scopeParams, limit) as ConvTurnRow[];
   }
 
+  /** Read-only keyset pages of complete outward Workstream exchanges. Cursor is an exclusive durable row ID. */
+  getConvHistoryPage(chatKey: string, limit: number, beforeId?: number, surfaceIdentity?: string): {
+    turns: Array<{ id: number; role: "user" | "assistant"; text: string; createdAt: string; ordinal: number }>;
+    nextCursor: number | null;
+    turnCount: number;
+  } {
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 50) throw new Error("invalid history page size");
+    if (beforeId !== undefined && (!Number.isSafeInteger(beforeId) || beforeId < 1)) throw new Error("invalid history cursor");
+    const surface = surfaceIdentity?.trim();
+    const scope = surface
+      ? "chat_key = ? AND (surface_identity = ? OR surface_identity IS NULL)"
+      : "chat_key = ?";
+    const args: Array<string | number> = surface ? [chatKey, surface] : [chatKey];
+    const ceiling = beforeId ?? Number.MAX_SAFE_INTEGER;
+    const roots = this.db.prepare(`SELECT id FROM conversation_turns
+      WHERE ${scope} AND role = 'user' AND id < ?
+      ORDER BY id DESC LIMIT ?`).all(...args, ceiling, limit + 1) as Array<{ id: number }>;
+    const total = this.db.prepare(`SELECT COUNT(*) AS n FROM conversation_turns
+      WHERE ${scope} AND role = 'user'`).get(...args) as { n: number };
+    if (!roots.length) return { turns: [], nextCursor: null, turnCount: total.n };
+    const firstId = roots[Math.min(limit, roots.length) - 1]!.id;
+    const previous = this.db.prepare(`SELECT COUNT(*) AS n FROM conversation_turns
+      WHERE ${scope} AND role = 'user' AND id < ?`).get(...args, firstId) as { n: number };
+    const rows = this.db.prepare(`SELECT id, role, text, created_at FROM conversation_turns
+      WHERE ${scope} AND id >= ? AND id < ?
+      ORDER BY id ASC`).all(...args, firstId, ceiling) as Array<{ id: number; role: string; text: string; created_at: string }>;
+    let ordinal = previous.n - 1;
+    const turns = rows.map((row) => {
+      if (row.role === "user") ordinal += 1;
+      return { id: row.id, role: row.role as "user" | "assistant", text: row.text, createdAt: row.created_at, ordinal };
+    });
+    return { turns, nextCursor: roots.length > limit ? firstId : null, turnCount: total.n };
+  }
+
   buildConvContext(
     chatKey: string,
     maxChars = DEFAULT_CONTEXT_MAX_CHARS,
