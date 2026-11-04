@@ -58,6 +58,14 @@ try {
       undefined,
       OUTWARD_ACP_SURFACE,
     ).map((turn) => ({ role: turn.role as "user" | "assistant", text: turn.text })),
+    userTurnOffset: (conversationId) => {
+      const recent = db.getRecentConvTurns(conversationId, OUTWARD_ACP_HISTORY_LIMIT, undefined, OUTWARD_ACP_SURFACE);
+      if (!recent.length) return 0;
+      const row = db.raw.prepare(
+        "SELECT COUNT(*) AS count FROM conversation_turns WHERE chat_key = ? AND surface_identity = ? AND role = 'user' AND id < ?",
+      ).get(conversationId, OUTWARD_ACP_SURFACE, recent[0]!.id) as { count: number };
+      return row.count;
+    },
   };
   // Establish the same bounded API-key evidence interactive routing uses, so
   // canonical provider availability is accurate for key-authenticated hosts.
