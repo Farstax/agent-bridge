@@ -54,6 +54,18 @@ export function decideProviderRecovery(
   const capacityExhausted = isFallbackEligibleProviderError(classification)
     || isFallbackEligibleProviderError(classifyAnyProviderError(error));
   const evidence = mergeProviderFailureEvidence(readProviderFailureEvidence(error), priorEvidence);
+  if (error.name === "ProviderExecutionCapacityError") {
+    // Host-wide execution slots are shared by every provider. Switching CLIs
+    // cannot create capacity, so this must never look like provider quota.
+    return {
+      classification,
+      reason: null,
+      capacityExhausted: false,
+      authRequired: false,
+      transportReason: null,
+      freshSessionRetry: false,
+    };
+  }
 
   // Transport/availability reasons are evaluated independently of the auth and
   // capacity categories (a stalled provider still abandons its session even if

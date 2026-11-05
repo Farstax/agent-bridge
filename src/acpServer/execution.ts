@@ -930,6 +930,16 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
         eventStore.collect(failedEvent(runId, activeProvider, input.session));
         eventStore.finalize();
       }
+      if (error instanceof Error && error.name === "ProviderExecutionCapacityError") {
+        // Host-wide execution slots are shared by every provider. Do not wrap
+        // this as a generic execution failure and do not enter deferred wait
+        // or provider fallback — switching CLIs cannot create a slot.
+        throw new acp.RequestError(
+          OUTWARD_ACP_BUSY_ERROR,
+          "outward ACP execution capacity is occupied",
+          { sessionId: input.session.sessionId, runId, reason: "execution_capacity" },
+        );
+      }
       // A standard ACP client has no deferred-result semantics. Only clients
       // that explicitly opted in, and only when the independently supervised
       // workspace worker is enabled, may receive a durable waiting outcome.
