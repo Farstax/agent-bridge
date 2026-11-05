@@ -60,7 +60,13 @@ export function createCodexAcpAnswerPreview(
       const update = notification.update as typeof notification.update & MetaCarrier;
       const misplacedCodexMarker = hasOwnCodexMarker(notification._meta);
       const updateCodexMarker = hasOwnCodexMarker(update._meta);
-      if (misplacedCodexMarker || updateCodexMarker) phaseSemanticsSeen = true;
+      const answerChunk = update.sessionUpdate === "agent_message_chunk" && update.content.type === "text";
+      // A session_info_update may carry Codex metadata without announcing
+      // phase-aware answer text. Only an explicit phase or a malformed marker
+      // on an answer chunk changes the safety classification.
+      if (validUpdatePhase(update) !== undefined || (answerChunk && (misplacedCodexMarker || updateCodexMarker))) {
+        phaseSemanticsSeen = true;
+      }
 
       // Every parent-session update feeds boundary reconstruction; only the
       // decision below controls whether a text chunk may be shown.

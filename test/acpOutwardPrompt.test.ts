@@ -227,6 +227,106 @@ describe("outward ACP prompt execution", () => {
     }
   });
 
+  it("forwards safe opted-in answer chunks over ACP before completion without duplicating the final answer", async () => {
+    const root = mkdtempSync(join(tmpdir(), "agent-bridge-outward-preview-"));
+    const db = openDb(join(root, "bridge.sqlite"), { databaseRole: "interactive" });
+    let release!: () => void;
+    const providerFinished = new Promise<void>((resolve) => { release = resolve; });
+    try {
+      const sessions = new OutwardAcpSessionRepository(db.raw);
+      const session = sessions.create({ sessionId: "preview-session", conversationId: "acp:preview", cwd: root });
+      const executor = new BridgeOutwardAcpPromptExecutor({
+        db, providerChain: ["codex"] as const,
+        runId: () => "run-preview",
+        createEngine: () => ({
+          executeSurfaceNeutralTurn: async (input) => {
+            input.onProviderExecutionStarted?.();
+            input.onAnswerDelta?.("early safe answer");
+            await providerFinished;
+            return { text: "authoritative answer", sessionId: "provider-preview", stopReason: "end_turn" };
+          },
+        }),
+      });
+      const updates: acp.SessionNotification[] = [];
+      let resolvePreview!: () => void;
+      const gotPreview = new Promise<void>((resolve) => { resolvePreview = resolve; });
+      const client = acp.client({ name: "farstax-desk-test" })
+        .onNotification(acp.methods.client.session.update, (ctx) => {
+          updates.push(ctx.params);
+          if (ctx.params.update.sessionUpdate === "agent_message_chunk"
+            && ctx.params.update.content.type === "text"
+            && ctx.params.update.content.text === "early safe answer") resolvePreview();
+        });
+      const response = await connectWithAcpInitialization(
+        client, createOutwardAcpAgent({ sessions, promptExecutor: executor, workspaceRoot: root }),
+        async (agent) => {
+          await agent.request(acp.methods.agent.initialize, {
+            protocolVersion: acp.PROTOCOL_VERSION, clientCapabilities: {},
+          });
+          const running = agent.request(acp.methods.agent.session.prompt, {
+            sessionId: session.sessionId, prompt: [{ type: "text", text: "hello" }],
+            _meta: { "agent-bridge/answer-preview": 1 },
+          });
+          try {
+            await Promise.race([
+              gotPreview,
+              new Promise<never>((_, reject) => setTimeout(() => reject(new Error("preview was not streamed before completion")), 2500)),
+            ]);
+            expect(db.getRun("run-preview")?.status).toBe("running");
+          } finally {
+            release();
+          }
+          return running;
+        },
+      );
+      expect(response.stopReason).toBe("end_turn");
+      expect(updates.filter((u) => u.update.sessionUpdate === "agent_message_chunk"))
+        .toHaveLength(1);
+      expect(db.getRecentConvTurns("acp:preview", 5, undefined, OUTWARD_ACP_SURFACE)
+        .some((turn) => turn.role === "assistant" && turn.text === "authoritative answer")).toBe(true);
+    } finally {
+      release();
+      db.close();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("resets a safe preview on retry and cancellation without exposing a stale final", async () => {
+    const root = mkdtempSync(join(tmpdir(), "agent-bridge-preview-reset-"));
+    const db = openDb(join(root, "bridge.sqlite"), { databaseRole: "interactive" });
+    try {
+      const session = new OutwardAcpSessionRepository(db.raw).create({
+        sessionId: "reset-session", conversationId: "acp:reset", cwd: root,
+      });
+      const updates: acp.SessionNotification["update"][] = [];
+      const executor = new BridgeOutwardAcpPromptExecutor({
+        db, providerChain: ["codex"] as const, runId: () => "run-reset",
+        createEngine: () => ({
+          executeSurfaceNeutralTurn: async (input) => {
+            input.onProviderExecutionStarted?.();
+            input.onAnswerDelta?.("abandoned");
+            input.onProviderExecutionStarted?.();
+            input.onAnswerDelta?.("current");
+            return { text: "current authoritative answer", sessionId: "provider-reset", stopReason: "cancelled" };
+          },
+        }),
+      });
+      const response = await executor.execute({
+        session, prompt: "retry", signal: new AbortController().signal,
+        answerPreview: true, onUpdate: (update) => { updates.push(update); },
+      });
+      expect(response.stopReason).toBe("cancelled");
+      expect(updates.map((update) => (
+        update.sessionUpdate === "agent_message_chunk" ? update.content.text : ""
+      ))).toEqual(["abandoned", "", "current", ""]);
+      expect((updates[1] as { _meta?: Record<string, unknown> })._meta?.["agent-bridge/preview-reset"]).toBe(1);
+      expect((updates[3] as { _meta?: Record<string, unknown> })._meta?.["agent-bridge/preview-reset"]).toBe(1);
+    } finally {
+      db.close();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("never publishes provider partial answer text when the turn is cancelled", async () => {
     const root = mkdtempSync(join(tmpdir(), "agent-bridge-outward-prompt-cancel-"));
     const db = openDb(join(root, "bridge.sqlite"), { databaseRole: "interactive" });

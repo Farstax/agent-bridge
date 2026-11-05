@@ -562,10 +562,11 @@ export async function runResolvedAcpProviderTurn(
   const redactionEnv = { ...process.env, ...contextEnv };
   const secretValues = getProviderApiKeySecretValues(redactionEnv);
   const liveRedactor = createStreamingSecretRedactor(secretValues);
-  const answerPreview = options.onAnswerDelta && runtime.provisionalAnswers
+  const newAnswerPreview = () => options.onAnswerDelta && runtime.provisionalAnswers
     ? (policy.presentation.createPreview?.(options.onAnswerDelta, secretValues)
       ?? createStandardAnswerPreview(options.onAnswerDelta, secretValues))
     : null;
+  let answerPreview = newAnswerPreview();
   const activityProjector = options.onProgress?.activity && policy.createActivityProjector
     ? policy.createActivityProjector()
     : null;
@@ -577,6 +578,8 @@ export async function runResolvedAcpProviderTurn(
   // session/prompt the provider may have started the task.
   let promptEverSubmitted = false;
   const runTurn = async (attempt: 1 | 2): Promise<AcpTurnResult> => {
+    // Never reuse a preview classifier or its buffered text across an ACP retry.
+    if (attempt === 2) answerPreview = newAnswerPreview();
     const credentialExecutionLock = policy.credentialExecutionLock?.(effectiveEnv, attempt) ?? null;
     const turn = await runSupervisedStdioSession(
       runtime.executable,

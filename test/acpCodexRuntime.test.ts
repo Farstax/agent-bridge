@@ -121,6 +121,14 @@ describe("Codex ACP provisional answer classification", () => {
     expect(chunks.join("")).toBe("");
   });
 
+  it("does not suppress unphased answers after unrelated Codex session metadata", () => {
+    const { chunks, preview } = previewCollector();
+    preview.observe(event({ sessionUpdate: "session_info_update", updateMeta: { codex: { threadId: "metadata-only" } } }));
+    preview.observe(event({ text: "visible answer" }));
+    preview.finish("end_turn");
+    expect(chunks.join("")).toBe("visible answer");
+  });
+
   it("redacts secrets split across multiple answer deltas", () => {
     const secret = "split-secret-123";
     const { chunks, preview } = previewCollector([secret]);
