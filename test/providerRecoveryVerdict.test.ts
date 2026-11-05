@@ -39,6 +39,14 @@ describe("provider recovery verdict", () => {
     expect(decideProviderRecovery("codex", new Error("ordinary repository failure")).reason).toBeNull();
   });
 
+  it("does not treat host execution-slot exhaustion as provider capacity fallback (#1151)", () => {
+    const error = new Error("all provider execution slots are occupied");
+    error.name = "ProviderExecutionCapacityError";
+    expect(decideProviderRecovery("codex", error)).toMatchObject({
+      reason: null, capacityExhausted: false, authRequired: false, transportReason: null,
+    });
+  });
+
   it("keeps submission evidence monotonic across attempts of the same admitted action", () => {
     const laterSetupFailure = tagged("Internal error: setup failed", false);
     const earlier = readProviderFailureEvidence(tagged("first attempt died", true));

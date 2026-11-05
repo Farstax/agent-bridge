@@ -546,4 +546,45 @@ describe("outward ACP prompt execution", () => {
       rmSync(root, { recursive: true, force: true });
     }
   });
+
+  it("reports host execution-slot exhaustion as busy without wrapping or provider fallback (#1151)", async () => {
+    const root = mkdtempSync(join(tmpdir(), "agent-bridge-outward-host-capacity-"));
+    const db = openDb(join(root, "bridge.sqlite"), { databaseRole: "interactive" });
+    try {
+      const session = new OutwardAcpSessionRepository(db.raw).create({
+        sessionId: "outward-capacity",
+        conversationId: "acp:host-capacity",
+        cwd: root,
+      });
+      let attempts = 0;
+      const executor = new BridgeOutwardAcpPromptExecutor({
+        db,
+        providerChain: ["codex", "claude"] as const,
+        runId: () => "run-host-capacity",
+        createEngine: () => ({
+          executeSurfaceNeutralTurn: async () => {
+            attempts += 1;
+            const error = new Error("all provider execution slots are occupied");
+            error.name = "ProviderExecutionCapacityError";
+            throw error;
+          },
+        }),
+      });
+      await expect(executor.execute({
+        session,
+        prompt: "hello",
+        signal: new AbortController().signal,
+        onUpdate: () => undefined,
+      })).rejects.toMatchObject({
+        code: -32002,
+        message: "outward ACP execution capacity is occupied",
+        data: expect.objectContaining({ reason: "execution_capacity", runId: "run-host-capacity" }),
+      });
+      expect(attempts).toBe(1);
+      expect(db.getRun("run-host-capacity")).toMatchObject({ status: "failed" });
+    } finally {
+      db.close();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
 });
