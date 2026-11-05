@@ -6,6 +6,8 @@ import { realpathSync } from "node:fs";
 import { openProductionDb } from "../db.js";
 import { OutwardAcpSessionRepository } from "../repositories/outwardAcpSessionRepository.js";
 import { createOutwardAcpAgent, type OutwardAcpSessionStore } from "./app.js";
+import { PROVIDER_API_KEY_AUTH, isProviderApiKeyConfigured } from "../providers/apiKeyAuth.js";
+import { isManagedProviderId } from "../providers/types.js";
 import { prepareInteractiveCliAuth } from "../interactiveCliAuth.js";
 import { getCodexUsageText } from "../codexUsage.js";
 import { outwardServiceId, recoverOutwardLanes } from "./recovery.js";
@@ -25,8 +27,20 @@ const OUTWARD_ACP_HISTORY_LIMIT = 200;
 console.log = (...args: unknown[]) => console.error(...args);
 console.info = (...args: unknown[]) => console.error(...args);
 
+const startupTimingEnabled = process.env.BRIDGE_ACP_STARTUP_TIMING === "1";
+const startupBodyStarted = performance.now();
+if (startupTimingEnabled) console.error(JSON.stringify({ event: "acp_startup_timing", phase: "process_uptime_at_body", durationMs: Math.round(process.uptime() * 1000), includesNodeStartup: true }));
+let startupPhaseStarted = startupBodyStarted;
+function startupPhase(phase: string): void {
+  if (!startupTimingEnabled) return;
+  const now = performance.now();
+  console.error(JSON.stringify({ event: "acp_startup_timing", phase, durationMs: Math.round((now - startupPhaseStarted) * 1000) / 1000 }));
+  startupPhaseStarted = now;
+}
+
 const bridgeProjectDir = process.env.BRIDGE_PROJECT_DIR || process.cwd();
 const workspaceRoot = realpathSync(process.env.BRIDGE_ACP_WORKSPACE_ROOT || bridgeProjectDir);
+startupPhase("workspace_root");
 const dbPath = process.env.DB_PATH || `${bridgeProjectDir}/.data/bridge.sqlite`;
 const db = openProductionDb(dbPath, {
   serviceId: outwardServiceId(),
@@ -41,8 +55,11 @@ const db = openProductionDb(dbPath, {
   verifyForeignKeyIntegrity: false,
 });
 
+startupPhase("database_open");
+
 // Reconcile only when process ownership and provider containment are proven.
 await recoverOutwardLanes(db);
+startupPhase("outward_recovery");
 
 let promptExecutor: BridgeOutwardAcpPromptExecutor | null = null;
 try {
@@ -71,14 +88,18 @@ try {
       return run?.surface_identity === OUTWARD_ACP_SURFACE && run?.chat_id === conversationId && run?.status === "done";
     },
   };
+  startupPhase("session_setup");
   // Establish the same bounded API-key evidence interactive routing uses, so
   // canonical provider availability is accurate for key-authenticated hosts.
+  if (startupTimingEnabled) console.error(JSON.stringify({ event: "acp_startup_timing", phase: "auth_configured", configured: Object.keys(PROVIDER_API_KEY_AUTH).some((provider) => isManagedProviderId(provider) && isProviderApiKeyConfigured(provider, process.env)) }));
   try {
     await prepareInteractiveCliAuth(process.env);
   } catch (error) {
     console.error("[outward-acp] provider API-key verification failed", error);
   }
+  startupPhase("auth_preparation");
   promptExecutor = createProductionOutwardAcpPromptExecutor(db, dbPath);
+  startupPhase("executor_construction");
   const stream = acp.ndJsonStream(
     Writable.toWeb(process.stdout),
     Readable.toWeb(process.stdin) as ReadableStream<Uint8Array>,
@@ -94,6 +115,8 @@ try {
     }),
   });
   const connection = createOutwardAcpAgent({ sessions, promptExecutor, workstreams: promptExecutor, commands, workspaceRoot }).connect(stream);
+  startupPhase("connection_setup");
+  if (startupTimingEnabled) console.error(JSON.stringify({ event: "acp_startup_timing", phase: "body_total", durationMs: Math.round((performance.now() - startupBodyStarted) * 1000) / 1000, moduleImportsIncluded: false }));
   await connection.closed;
 } finally {
   try {

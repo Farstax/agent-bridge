@@ -300,6 +300,27 @@ async function waitForRunningRun(dbPath: string, conversationId: string, timeout
 }
 
 describe("outward ACP stdio boundary", { timeout: 30_000 }, () => {
+  it("keeps opt-in startup timings on stderr while ACP initialize remains valid", async () => {
+    const root = mkdtempSync(join(tmpdir(), "acp-timing-"));
+    try {
+      for (const enabled of [false, true]) {
+        const dbPath = join(root, `bridge-${enabled}.sqlite`);
+        openDb(dbPath, { databaseRole: "interactive" }).close();
+        const server = startOutwardAcpProcess(dbPath, { BRIDGE_ACP_STARTUP_TIMING: enabled ? "1" : "", CODEX_API_KEY: "", OPENAI_API_KEY: "", ANTHROPIC_API_KEY: "", ANTHROPIC_AUTH_TOKEN: "" });
+        try {
+          expect((await initialize(server, 1)).result?.protocolVersion).toBe(acp.PROTOCOL_VERSION);
+          const records = server.stderr().split("\n").filter((line) => line.includes("acp_startup_timing")).map((line) => JSON.parse(line));
+          if (!enabled) expect(records).toEqual([]);
+          else {
+            expect(records.map((record) => record.phase)).toEqual(["process_uptime_at_body", "workspace_root", "database_open", "outward_recovery", "session_setup", "auth_configured", "auth_preparation", "executor_construction", "connection_setup", "body_total"]);
+            expect(records.find((record) => record.phase === "auth_configured").configured).toBe(false);
+            expect(records.find((record) => record.phase === "body_total").moduleImportsIncluded).toBe(false);
+          }
+        } finally { await stopProcess(server); }
+      }
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
   it("keeps a crashed ACP lane fenced while its provider child is still alive", async () => {
     const root = mkdtempSync(join(tmpdir(), "acp-live-child-"));
     const database = join(root, "bridge.sqlite");
