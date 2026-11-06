@@ -265,6 +265,8 @@ describe("outward ACP busy-message admission over real stdio", () => {
             lock: probe.raw.prepare("SELECT surface, chat_key, service_id, run_id, acquisition_id FROM execution_locks WHERE chat_key = ?").all(row.id),
             pending: probe.raw.prepare("SELECT id, state, scheduled_occurrence_key FROM pending_messages WHERE chat_key = ?").all(row.id),
             latest: probe.getLatestRunForConversation({ surfaceIdentity: "acp:outward", chatKey: row.id }),
+            failedRun: early?.error?.data?.runId ? probe.getRun(early.error.data.runId) : null,
+            allRuns: probe.raw.prepare("SELECT run_id, status, error, started_at, ended_at FROM bridge_runs WHERE chat_id = ? ORDER BY started_at").all(row.id),
             reservation: probe.getSetting(`outward-queue-reservation:${key}`),
             link: probe.getSetting(`outward-queue-run:${key}`),
             receipt: probe.getSetting(`outward-queue-receipt:${key}`),
