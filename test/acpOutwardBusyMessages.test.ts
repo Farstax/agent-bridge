@@ -213,7 +213,30 @@ describe("outward ACP busy-message admission over real stdio", () => {
       const first = prompt(a, sid, `hold:${name}`, meta).then((value) => { early ??= value; return value; });
       const second = prompt(b, sid, `hold:${name}`, meta).then((value) => { early ??= value; return value; });
       await waitFor(() => early !== undefined);
-      expect(early!.result._meta["agent-bridge"].outcome).toBe("running");
+      if (early?.result?._meta?.["agent-bridge"]?.outcome !== "running") {
+        // CI-only failure evidence: the sender can receive an ACP error, not
+        // merely a misleading receipt. Capture the authoritative shared state.
+        const probe = openDb(dbPath, { serviceId: "acp:race-diagnostic", databaseRole: "interactive" });
+        let snapshot: unknown;
+        try {
+          const row = probe.raw.prepare("SELECT conversation_id AS id FROM outward_acp_sessions WHERE session_id = ?")
+            .get(sid) as { id: string };
+          const key = `acp-request:${sid}:same-direct-${index}`;
+          snapshot = {
+            lock: probe.raw.prepare("SELECT surface, chat_key, service_id, run_id, acquisition_id FROM execution_locks WHERE chat_key = ?").all(row.id),
+            pending: probe.raw.prepare("SELECT id, state, scheduled_occurrence_key FROM pending_messages WHERE chat_key = ?").all(row.id),
+            latest: probe.getLatestRunForConversation({ surfaceIdentity: "acp:outward", chatKey: row.id }),
+            reservation: probe.getSetting(`outward-queue-reservation:${key}`),
+            link: probe.getSetting(`outward-queue-run:${key}`),
+            receipt: probe.getSetting(`outward-queue-receipt:${key}`),
+          };
+        } finally {
+          probe.close();
+        }
+        throw new Error(`direct race iteration ${index}: ${JSON.stringify({
+          early, snapshot, aStderr: a.stderr.slice(-1200), bStderr: b.stderr.slice(-1200),
+        })}`);
+      }
       await waitFor(() => executions().length === index + 1);
       expect(executions()).toHaveLength(index + 1);
       expect((await status(b, sid)).queued).toBe(0);
