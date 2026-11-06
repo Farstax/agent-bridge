@@ -202,6 +202,45 @@ describe("outward ACP busy-message admission over real stdio", () => {
     }
   }, 60000);
 
+  it("recovers an expired reservation only after its direct owner is proven absent", async () => {
+    const b = agent(); await b.initialize();
+    const sid = await session(b);
+    const requestId = "stale-owner-before-run";
+    const key = `acp-request:${sid}:${requestId}`;
+    // Model a deceased ACP stdio owner after initialization, so the same
+    // already-connected client must perform recovery on its prompt path.
+    const owner = openDb(dbPath, { serviceId: "acp:outward/2147483647/0", databaseRole: "interactive" });
+    try {
+      const row = owner.raw.prepare("SELECT conversation_id AS id FROM outward_acp_sessions WHERE session_id = ?")
+        .get(sid) as { id: string };
+      const lane = owner.acquireLaneForIdempotentRequest(
+        "acp:outward", row.id, key,
+        `outward-queue-reservation:${key}`,
+        `outward-queue-receipt:${key}`,
+        `outward-queue-run:${key}`,
+        "dead-owner-token",
+      );
+      expect(lane).not.toBeNull();
+      owner.raw.prepare("UPDATE execution_locks SET lease_expires_at = ? WHERE acquisition_id = ?")
+        .run("2000-01-01T00:00:00.000Z", lane!.acquisitionId);
+
+      const submitted = prompt(b, sid, "hold:stale", { ...OPT_IN, "agent-bridge/request-id": requestId });
+      await waitFor(() => executions().length === 1);
+      release("stale");
+      const outcome = await submitted;
+      expect(outcome.error).toBeUndefined();
+      expect(executions()).toHaveLength(1);
+      expect(owner.getSetting(`outward-queue-reservation:${key}`)).toBeNull();
+      expect(owner.getPendingMessageIdByCorrelationKey("acp:outward", key)).toBeNull();
+      const audits = owner.raw.prepare(
+        "SELECT status FROM reconciliation_audit WHERE kind = 'lock' AND reason = 'outward_acp_service_restart'",
+      ).all() as Array<{ status: string }>;
+      expect(audits.some((audit) => audit.status === "completed")).toBe(true);
+    } finally {
+      owner.close();
+    }
+  }, 60000);
+
   it("keeps exactly one direct Run across repeated simultaneous request-ID submissions", async () => {
     const a = agent(); const b = agent();
     await Promise.all([a.initialize(), b.initialize()]);
