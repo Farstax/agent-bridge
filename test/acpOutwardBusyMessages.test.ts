@@ -162,6 +162,67 @@ describe("outward ACP busy-message admission over real stdio", () => {
     expect(executions()).toHaveLength(1);
   }, 60000);
 
+
+  it("never acknowledges an abandoned direct reservation as a running Run", async () => {
+    const a = agent(); const b = agent();
+    await Promise.all([a.initialize(), b.initialize()]);
+    const sid = await session(a);
+    const requestId = "owner-abandoned-before-run";
+    const key = `acp-request:${sid}:${requestId}`;
+    const owner = openDb(dbPath, { serviceId: "acp:fixture-reservation-owner", databaseRole: "interactive" });
+    try {
+      const row = owner.raw.prepare("SELECT conversation_id AS id FROM outward_acp_sessions WHERE session_id = ?")
+        .get(sid) as { id: string };
+      const lane = owner.acquireLaneForIdempotentRequest(
+        "acp:outward", row.id, key,
+        `outward-queue-reservation:${key}`,
+        `outward-queue-receipt:${key}`,
+        `outward-queue-run:${key}`,
+        "fixture-owner-token",
+      );
+      expect(lane).not.toBeNull();
+      const attempt = prompt(b, sid, "hold:abandoned", { ...OPT_IN, "agent-bridge/request-id": requestId });
+      // The owner has not persisted a Run; a transient reservation is not
+      // a completed ACP receipt. It must not falsely claim "running".
+      let responded = false;
+      void attempt.then(() => { responded = true; });
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      expect(responded).toBe(false);
+      expect(executions()).toHaveLength(0);
+      expect(owner.unlock(lane!)).toBe(true);
+      // The outstanding idempotent request can safely claim the abandoned
+      // reservation because no Run link or receipt was ever committed.
+      await waitFor(() => executions().length === 1);
+      release("abandoned");
+      expect((await attempt).result.stopReason).toBe("end_turn");
+      expect(executions()).toHaveLength(1);
+      expect(owner.getPendingMessageIdByCorrelationKey("acp:outward", key)).toBeNull();
+    } finally {
+      owner.close();
+    }
+  }, 60000);
+
+  it("keeps exactly one direct Run across repeated simultaneous request-ID submissions", async () => {
+    const a = agent(); const b = agent();
+    await Promise.all([a.initialize(), b.initialize()]);
+    for (let index = 0; index < 16; index += 1) {
+      const sid = await session(a);
+      const name = `repeated-${index}`;
+      const meta = { ...OPT_IN, "agent-bridge/request-id": `same-direct-${index}` };
+      let early: Awaited<ReturnType<typeof prompt>> | undefined;
+      const first = prompt(a, sid, `hold:${name}`, meta).then((value) => { early ??= value; return value; });
+      const second = prompt(b, sid, `hold:${name}`, meta).then((value) => { early ??= value; return value; });
+      await waitFor(() => early !== undefined);
+      expect(early!.result._meta["agent-bridge"].outcome).toBe("running");
+      await waitFor(() => executions().length === index + 1);
+      expect(executions()).toHaveLength(index + 1);
+      expect((await status(b, sid)).queued).toBe(0);
+      release(name);
+      await Promise.all([first, second]);
+      expect(executions()).toHaveLength(index + 1);
+    }
+  }, 120000);
+
   it("rejects admission when the durable queue is full", async () => {
     const a = agent(); await a.initialize();
     const sid = await session(a);
