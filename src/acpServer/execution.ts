@@ -731,7 +731,9 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
     let settleLiveUpdates: (() => Promise<void>) | null = null;
     try {
       const identity = { surfaceIdentity: OUTWARD_ACP_SURFACE, chatKey: input.session.conversationId };
-      db.runInTransaction(() => {
+      // Validate actual lane ownership inside the same transaction as Run
+      // creation; a losing client must not insert an unfenced second Run.
+      db.runWithLockFence(lane, () => {
         // A Stop that discarded this claimed row won: no Run may be created for it.
         if (queued && !db.ownsPendingClaim(lane, queued.id)) throw new QueuedMessageStopped();
         if (db.getSetting(stopFenceKey(input.session.conversationId))) {
