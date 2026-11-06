@@ -1,4 +1,4 @@
-import { chmodSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -19,26 +19,28 @@ function withCursorEnvironment<T>(run: (root: string, evidencePath: string) => T
   const evidencePath = join(root, "qualification.json");
   const executable = join(root, "cursor-agent");
   writeFileSync(executable, `#!/bin/sh
-if [ "$1" = "status" ]; then
-  echo '{"status":"authenticated","isAuthenticated":true,"hasAccessToken":true,"hasRefreshToken":true}'
-  exit 0
-fi
 echo '${CURSOR_ACP_VERSION}'
 `, "utf8");
   chmodSync(executable, 0o755);
+  mkdirSync(join(root, ".config", "cursor"), { recursive: true });
+  writeFileSync(join(root, ".config", "cursor", "auth.json"), "{}\n");
 
   const previous = {
+    home: process.env.HOME,
     evidencePath: process.env.AGENT_BRIDGE_PROVIDER_QUALIFICATION_PATH,
     command: process.env.CURSOR_ACP_COMMAND,
     apiKey: process.env.CURSOR_API_KEY,
   };
   process.env.AGENT_BRIDGE_PROVIDER_QUALIFICATION_PATH = evidencePath;
   process.env.CURSOR_ACP_COMMAND = executable;
+  process.env.HOME = root;
   delete process.env.CURSOR_API_KEY;
 
   try {
     return run(root, evidencePath);
   } finally {
+    if (previous.home === undefined) delete process.env.HOME;
+    else process.env.HOME = previous.home;
     if (previous.evidencePath === undefined) delete process.env.AGENT_BRIDGE_PROVIDER_QUALIFICATION_PATH;
     else process.env.AGENT_BRIDGE_PROVIDER_QUALIFICATION_PATH = previous.evidencePath;
     if (previous.command === undefined) delete process.env.CURSOR_ACP_COMMAND;
@@ -111,7 +113,7 @@ describe("Cursor routing safety", () => {
         
         (cli) => cli === "cursor" ? isCursorRouteable() : true,
       );
-      expect(isCursorRouteable({ readVersion: () => CURSOR_ACP_VERSION })).toBe(true);
+      expect(isCursorRouteable()).toBe(true);
       expect(chain.getActiveCli("chat:1")).toBe("codex");
       expect(chain.advance("chat:1")).toBe("cursor");
       expect(chain.getChain()).toEqual(["codex", "cursor", "antigravity"]);

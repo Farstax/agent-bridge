@@ -9,10 +9,6 @@ import {
 import { getAvailableCliKinds, resolveInteractiveCliAuthPaths } from "../src/interactiveCliAuth.js";
 import type { ProviderId } from "../src/providers/types.js";
 
-const cursorStatusUnavailable = () => {
-  throw new Error("Cursor status unavailable in test");
-};
-
 describe("interactive CLI availability filtering", () => {
   it("filters the switch keyboard to available CLIs", () => {
     const available = new Set<CliKind>(["claude"]);
@@ -43,7 +39,6 @@ describe("interactive CLI availability filtering", () => {
         CODEX_ACP_COMMAND: "/missing/codex-acp",
       },
       failedProviders: new Set(),
-      readCursorStatus: cursorStatusUnavailable,
     });
     expect(available.has("codex")).toBe(false);
   });
@@ -59,7 +54,6 @@ describe("interactive CLI availability filtering", () => {
         CODEX_ACP_COMMAND: adapter,
       },
       failedProviders: new Set(),
-      readCursorStatus: cursorStatusUnavailable,
     });
     expect(available.has("codex")).toBe(true);
   });
@@ -70,7 +64,6 @@ describe("interactive CLI availability filtering", () => {
       homeDir: "/tmp/no-creds",
       exists: () => false,
       commandExists: () => false,
-      readCursorStatus: cursorStatusUnavailable,
     });
 
     expect(available).toEqual(new Set<CliKind>());
@@ -89,7 +82,6 @@ describe("interactive CLI availability filtering", () => {
       homeDir,
       exists: (path) => existing.has(path),
       commandExists: () => true,
-      readCursorStatus: cursorStatusUnavailable,
     });
 
     expect(available).toEqual(new Set<CliKind>(["codex", "claude"]));
@@ -108,7 +100,6 @@ describe("interactive CLI availability filtering", () => {
       homeDir,
       exists: (path) => path === paths.antigravity[0],
       commandExists: () => true,
-      readCursorStatus: cursorStatusUnavailable,
     });
 
     expect(available).toEqual(new Set<CliKind>(["antigravity"]));
@@ -125,7 +116,6 @@ describe("interactive CLI availability filtering", () => {
       exists: (path) => path === paths.antigravity[0],
       commandExists: () => true,
       failedProviders: new Set(),
-      readCursorStatus: cursorStatusUnavailable,
     });
 
     expect(paths.antigravity).toEqual([
@@ -147,7 +137,6 @@ describe("interactive CLI availability filtering", () => {
       commandExists: () => true,
       failedProviders: new Set(),
       verifyApiKey: () => false,
-      readCursorStatus: cursorStatusUnavailable,
     });
 
     expect(available.has("antigravity")).toBe(false);
@@ -162,7 +151,6 @@ describe("interactive CLI availability filtering", () => {
       exists: (path) => path === paths.grok[0],
       commandExists: () => true,
       failedProviders: new Set(),
-      readCursorStatus: cursorStatusUnavailable,
     });
 
     expect(paths.grok).toEqual([
@@ -182,7 +170,6 @@ describe("interactive CLI availability filtering", () => {
       exists: (path) => path === paths.grok[0],
       commandExists: () => true,
       failedProviders: new Set(["grok"]),
-      readCursorStatus: cursorStatusUnavailable,
     });
 
     expect(available).toEqual(new Set<CliKind>());
@@ -204,8 +191,6 @@ describe("interactive CLI availability filtering", () => {
       failedProviders: new Set(),
       env,
       verifyApiKey: (candidate: ProviderId) => candidate === provider,
-      readCursorStatus: cursorStatusUnavailable,
-      readCursorVersion: () => "2026.10.22-27dcf5f",
     });
     const rejected = getAvailableCliKinds({
       agyRuntimeReady: () => true,
@@ -215,8 +200,6 @@ describe("interactive CLI availability filtering", () => {
       failedProviders: new Set(),
       env,
       verifyApiKey: () => false,
-      readCursorStatus: cursorStatusUnavailable,
-      readCursorVersion: () => "2026.10.22-27dcf5f",
     });
 
     expect(verified).toEqual(new Set<CliKind>([cliKind]));
@@ -238,7 +221,6 @@ describe("interactive CLI availability filtering", () => {
       failedProviders: new Set(),
       env: { [envVar]: `candidate-${provider}-key` },
       verifyApiKey: (candidate: ProviderId) => candidate === provider,
-      readCursorStatus: cursorStatusUnavailable,
     });
 
     expect(available).toEqual(new Set<CliKind>());
@@ -253,7 +235,6 @@ describe("interactive CLI availability filtering", () => {
       failedProviders: new Set(),
       env: {},
       verifyApiKey: () => false,
-      readCursorStatus: () => ({ isAuthenticated: false }),
     });
 
     expect(available).toEqual(new Set<CliKind>());
@@ -273,7 +254,7 @@ describe("interactive CLI availability filtering", () => {
     const available = getAvailableCliKinds({
       agyRuntimeReady: () => true,
       homeDir,
-      exists: (path) => [paths.codex, paths.claude, paths.antigravity[0], paths.grok[0]].includes(path),
+      exists: (path) => [paths.codex, paths.claude, paths.antigravity[0], paths.grok[0], paths.cursor[0]].includes(path),
       commandExists: (command) => {
         seen.push(command);
         return true;
@@ -286,8 +267,6 @@ describe("interactive CLI availability filtering", () => {
         GROK_ACP_COMMAND: commands.grok,
         CURSOR_ACP_COMMAND: commands.cursor,
       },
-      readCursorStatus: () => ({ isAuthenticated: true }),
-      readCursorVersion: () => "2026.10.22-27dcf5f",
     });
 
     expect(available).toEqual(new Set<CliKind>(["codex", "claude", "antigravity", "grok", "cursor"]));
@@ -306,7 +285,7 @@ describe("interactive CLI availability filtering", () => {
     const available = getAvailableCliKinds({
       agyRuntimeReady: () => true,
       homeDir,
-      exists: (path) => [paths.codex, paths.claude, paths.antigravity[0], paths.grok[0]].includes(path),
+      exists: (path) => [paths.codex, paths.claude, paths.antigravity[0], paths.grok[0], paths.cursor[0]].includes(path),
       commandExists: (command) => command !== missingCommand,
       failedProviders: new Set(),
       env: {
@@ -316,8 +295,6 @@ describe("interactive CLI availability filtering", () => {
         GROK_ACP_COMMAND: "/runtime/grok-custom",
         CURSOR_ACP_COMMAND: "/runtime/cursor-custom",
       },
-      readCursorStatus: () => ({ isAuthenticated: true }),
-      readCursorVersion: () => "2026.10.22-27dcf5f",
     });
 
     expect(available.has(cliKind as CliKind)).toBe(false);
@@ -349,46 +326,36 @@ describe("interactive CLI availability filtering", () => {
       failedProviders: new Set(),
       env: { [envVar]: `invalid-${provider}-key` },
       verifyApiKey: () => false,
-      readCursorStatus: cursorStatusUnavailable,
     });
 
     expect(available.has(expected as CliKind)).toBe(true);
   });
 
-  it("keeps an authenticated Cursor account available when its optional key is invalid and runtime exists", () => {
+  it("keeps an existing Cursor account available when its optional key is invalid", () => {
     const available = getAvailableCliKinds({
-      agyRuntimeReady: () => true,
       homeDir: "/home/tester",
-      exists: () => false,
+      exists: (path) => path === "/home/tester/.config/cursor/auth.json",
       commandExists: () => true,
       failedProviders: new Set(),
       env: { CURSOR_API_KEY: "invalid-cursor-key" },
       verifyApiKey: () => false,
-      readCursorStatus: () => ({ isAuthenticated: true }),
-      readCursorVersion: () => "2026.10.22-27dcf5f",
     });
     expect(available).toEqual(new Set<CliKind>(["cursor"]));
   });
 
-  it("treats Cursor as available only when account status reports authenticated without a verified API key", () => {
+  it("routes Cursor from local login prerequisites without running native status", () => {
     const available = getAvailableCliKinds({
-      agyRuntimeReady: () => true,
+      homeDir: "/home/tester",
+      exists: (path) => path === "/home/tester/.cursor/auth.json",
+      commandExists: () => true,
+      failedProviders: new Set(),
+    });
+    expect(available).toEqual(new Set<CliKind>(["cursor"]));
+    const unavailable = getAvailableCliKinds({
       homeDir: "/home/tester",
       exists: () => false,
       commandExists: () => true,
       failedProviders: new Set(),
-      readCursorStatus: () => ({ isAuthenticated: true }),
-      readCursorVersion: () => "2026.10.22-27dcf5f",
-    });
-    expect(available).toEqual(new Set<CliKind>(["cursor"]));
-
-    const unavailable = getAvailableCliKinds({
-      agyRuntimeReady: () => true,
-      homeDir: "/home/tester",
-      exists: () => true,
-      commandExists: () => true,
-      failedProviders: new Set(),
-      readCursorStatus: () => ({ isAuthenticated: false }),
     });
     expect(unavailable.has("cursor")).toBe(false);
   });
