@@ -1303,6 +1303,15 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
       }
       await new Promise((resolve) => setTimeout(resolve, 20));
     }
+    // A crashed direct owner may leave its reservation and an expired lock
+    // behind. Attempt the existing proof-based containment recovery once;
+    // only a definitively absent owner can release the lane for safe replay.
+    await recoverOutwardLanes(db);
+    const accepted = input.requestId ? this.replayRequest(input.session, input.requestId) : null;
+    if (accepted) return accepted;
+    if (!db.hasExecutionLaneLock(OUTWARD_ACP_SURFACE, input.session.conversationId)) {
+      return this.execute(input);
+    }
     throw new acp.RequestError(
       OUTWARD_ACP_BUSY_ERROR,
       "outward ACP idempotent admission is still pending",
