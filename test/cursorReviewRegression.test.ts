@@ -155,63 +155,22 @@ describe("cursor doctor and session expiry", () => {
   });
 });
 
-describe("cursor auth readiness", () => {
-  it("treats status-authenticated Cursor as authenticated without relying on credential-file presence", () => {
-    expect(isCursorAuthenticated({
-      homeDir: "/no-cursor-home",
-      exists: () => false,
-      env: {},
-      readStatus: () => ({ isAuthenticated: true }),
-    })).toBe(true);
+describe("cursor authentication prerequisites", () => {
+  it("accepts an existing cached Cursor login without a native status probe", () => {
+    expect(isCursorAuthenticated({ homeDir: "/cursor-home", exists: (path) => path === "/cursor-home/.config/cursor/auth.json", env: {} })).toBe(true);
   });
-
-  it("does not treat credential files alone as authenticated", () => {
-    expect(isCursorAuthenticated({
-      homeDir: "/cursor-home",
-      exists: () => true,
-      env: {},
-      readStatus: () => {
-        throw new Error("status unavailable");
-      },
-    })).toBe(false);
+  it("rejects a missing account and an unverified candidate API key", () => {
+    expect(isCursorAuthenticated({ homeDir: "/cursor-home", exists: () => false, env: { CURSOR_API_KEY: "candidate" }, verifyApiKey: () => false })).toBe(false);
   });
-
-  it("does not treat CURSOR_API_KEY as authenticated", () => {
-    expect(isCursorAuthenticated({
-      homeDir: "/no-cursor-home",
-      exists: () => false,
-      env: { CURSOR_API_KEY: "test-key" },
-      readStatus: () => {
-        throw new Error("status unavailable");
-      },
-    })).toBe(false);
+  it("accepts a verified API key without an account file", () => {
+    expect(isCursorAuthenticated({ homeDir: "/cursor-home", exists: () => false, env: { CURSOR_API_KEY: "verified" }, verifyApiKey: () => true })).toBe(true);
   });
-
-  it("is not routeable when status reports unauthenticated", () => {
-    expect(isCursorRouteable({
-      homeDir: "/no-cursor-home",
-      exists: () => false,
-      env: {},
-      readStatus: () => ({ isAuthenticated: false }),
-      failedProviders: new Set(),
-    })).toBe(false);
+  it("excludes missing or explicitly degraded accounts from routing", () => {
+    expect(isCursorRouteable({ homeDir: "/cursor-home", exists: () => false, env: {}, failedProviders: new Set() })).toBe(false);
+    expect(isCursorRouteable({ homeDir: "/cursor-home", exists: (path) => path.endsWith("/cursor/auth.json"), env: {}, failedProviders: new Set(["cursor"]) })).toBe(false);
   });
-
-  it("is not routeable when the installed Cursor ACP version drifts from the release lock", () => {
-    expect(isCursorRouteable({
-      homeDir: "/no-cursor-home",
-      exists: () => false,
-      env: {},
-      readStatus: () => ({ isAuthenticated: true }),
-      readVersion: () => "2026.08.31-4057e58",
-      failedProviders: new Set(),
-    })).toBe(false);
-  });
-
-  it("documents CURSOR_API_KEY as a verified alternative to account auth, not a bare presence check", () => {
-    const example = readFileSync(join(process.cwd(), ".env.cursor.example"), "utf8");
-    expect(example).toMatch(/CURSOR_API_KEY/);
-    expect(example).toMatch(/verified/i);
+  it("retains version validation in the ACP execution policy", () => {
+    expect(cursorAcpPolicy.validateRuntime).toBeTypeOf("function");
   });
 });
 

@@ -29,7 +29,6 @@ describe("interactive API-key startup", () => {
       env,
       exists: () => false,
       commandExists: () => true,
-      readCursorStatus: () => ({ isAuthenticated: false }),
       failedProviders: new Set(),
     });
 
@@ -59,7 +58,6 @@ describe("interactive API-key startup", () => {
         env,
         exists: () => false,
         commandExists: () => true,
-        readCursorStatus: () => ({ isAuthenticated: false }),
         failedProviders: new Set(),
       });
 

@@ -1,24 +1,15 @@
-import { execFileSync } from "node:child_process";
+import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { loadBotsConfig } from "../config.js";
-import { assertCursorAcpVersion, readCursorAcpVersion, resolveCursorAcpCommand } from "./cursorAcpConfig.js";
 import { isProviderApiKeyConfigured, isProviderApiKeyVerified } from "./apiKeyAuth.js";
 import { getProviderRuntimeAuthDegradedProviders } from "./runtimeAvailability.js";
 import type { ProviderId } from "./types.js";
-
-export interface CursorStatusSnapshot {
-  readonly isAuthenticated: boolean;
-}
 
 export interface CursorAvailabilityOptions {
   homeDir?: string;
   exists?: (path: string) => boolean;
   env?: Record<string, string | undefined>;
   failedProviders?: ReadonlySet<ProviderId>;
-  command?: string;
-  readStatus?: () => CursorStatusSnapshot;
-  readVersion?: () => string;
   verifyApiKey?: () => boolean;
 }
 
@@ -29,101 +20,25 @@ export function resolveCursorAuthPaths(homeDir: string = homedir()): string[] {
   ];
 }
 
-export function readCursorCliStatus(
-  command: string,
-  execFile: typeof execFileSync = execFileSync,
-): CursorStatusSnapshot {
-  const raw = execFile(command, ["status", "--format", "json"], {
-    encoding: "utf8",
-    stdio: ["ignore", "pipe", "pipe"],
-    timeout: 10_000,
-  }).trim();
-  if (!raw) throw new Error("Cursor status command returned no output");
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(raw);
-  } catch {
-    throw new Error("Cursor status command returned malformed JSON");
-  }
-  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-    throw new Error("Cursor status command returned malformed JSON");
-  }
-  const record = parsed as Record<string, unknown>;
-  const isAuthenticated = record.isAuthenticated === true || record.status === "authenticated";
-  return { isAuthenticated };
-}
-
 /**
- * Cursor auth readiness accepts either a verified CURSOR_API_KEY or the
- * existing live `cursor-agent status --format json` account contract. A bad
- * optional key never suppresses an otherwise valid account session.
+ * Routing checks cheap account-session prerequisites or a previously verified
+ * API key. File presence does not prove a successful sign-in; ACP execution
+ * remains authoritative. Do not spawn native Cursor status commands.
  */
 export function isCursorAuthenticated(options: CursorAvailabilityOptions = {}): boolean {
   const env = options.env ?? process.env;
-  if (isProviderApiKeyConfigured("cursor", env)) {
-    const keyVerified = options.verifyApiKey?.() ?? isProviderApiKeyVerified("cursor", env);
-    if (keyVerified) return true;
-  }
-
-  const readStatus = options.readStatus ?? (() => {
-    const command = options.command ?? loadBotsConfig(env).cursor.command;
-    return readCursorCliStatus(command);
-  });
-
-  try {
-    return readStatus().isAuthenticated;
-  } catch {
-    return false;
-  }
+  const exists = options.exists ?? existsSync;
+  if (resolveCursorAuthPaths(options.homeDir ?? homedir()).some(exists)) return true;
+  return isProviderApiKeyConfigured("cursor", env)
+    && (options.verifyApiKey?.() ?? isProviderApiKeyVerified("cursor", env));
 }
 
 /**
- * Cursor is routeable when authenticated and the selected ACP runtime is
- * compatible. Qualification remains diagnostic evidence, not a routing
- * prerequisite. Default-chain membership still defers to this gate.
+ * Cursor ACP version validation stays in cursorAcpPolicy.validateRuntime on
+ * actual execution, never on routine Workstream status or chain discovery.
  */
 export function isCursorRouteable(options: CursorAvailabilityOptions = {}): boolean {
   if (!isCursorAuthenticated(options)) return false;
-  const env = options.env ?? process.env;
-  const command = options.command ?? resolveCursorAcpCommand(env);
-  try {
-    assertCursorAcpVersion(command, options.readVersion ?? (() => readCursorAcpVersion(command)));
-  } catch {
-    return false;
-  }
   const failedProviders = options.failedProviders ?? getProviderRuntimeAuthDegradedProviders(options.homeDir);
   return !failedProviders.has("cursor");
-}
-
-const CURSOR_ROUTEABLE_CACHE_TTL_MS = 5_000;
-
-let cursorRouteableCache: { expiresAt: number; result: boolean } | null = null;
-
-export function invalidateCursorRouteableCache(): void {
-  cursorRouteableCache = null;
-}
-
-/**
- * `isCursorRouteable` is the only per-provider check in the interactive CLI
- * availability probe that shells out synchronously (`cursor-agent status` /
- * `--version`, each up to a 10s timeout), blocking the bot's single event
- * loop. Every other provider check here is a cheap file-existence/PATH read,
- * so only this one needs caching -- and there is no cheap signal for "the
- * user just finished `cursor-agent login`" to invalidate on precisely, so a
- * short bounded TTL (rather than the event-based invalidation used for
- * cheaper checks) is the honest trade-off: it caps both the worst-case
- * staleness after a fresh login and the worst-case repeated-probe cost
- * during a burst of messages to the same window.
- */
-export function isCursorRouteableCached(
-  options: CursorAvailabilityOptions = {},
-  now: () => number = Date.now,
-): boolean {
-  const nowMs = now();
-  if (cursorRouteableCache && cursorRouteableCache.expiresAt > nowMs) {
-    return cursorRouteableCache.result;
-  }
-  const result = isCursorRouteable(options);
-  cursorRouteableCache = { expiresAt: nowMs + CURSOR_ROUTEABLE_CACHE_TTL_MS, result };
-  return result;
 }

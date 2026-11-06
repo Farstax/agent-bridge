@@ -1,19 +1,10 @@
-import { beforeEach, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 import {
   getCachedAvailableCliKinds,
   type AvailableCliOptions,
 } from "../src/interactiveCliAuth.js";
-import { invalidateCursorRouteableCache } from "../src/providers/cursorAvailability.js";
-
-const cursorStatusUnavailable = () => {
-  throw new Error("Cursor status unavailable in test");
-};
 
 describe("getCachedAvailableCliKinds", () => {
-  beforeEach(() => {
-    invalidateCursorRouteableCache();
-  });
-
   it("reflects a freshly authenticated non-Cursor provider on the very next call, with no staleness window", () => {
     const authenticatedPaths = new Set<string>();
     const options: AvailableCliOptions = {
@@ -21,7 +12,6 @@ describe("getCachedAvailableCliKinds", () => {
       exists: (path) => authenticatedPaths.has(path),
       commandExists: () => true,
       failedProviders: new Set(),
-      readCursorStatus: cursorStatusUnavailable,
     };
 
     expect(getCachedAvailableCliKinds(options).has("codex")).toBe(false);
@@ -32,20 +22,18 @@ describe("getCachedAvailableCliKinds", () => {
     expect(getCachedAvailableCliKinds(options).has("codex")).toBe(true);
   });
 
-  it("does not let two callers with different injected checks collide on a shared cache entry", () => {
+  it("keeps distinct callers independent without cached authentication", () => {
     const codexOnly: AvailableCliOptions = {
       homeDir: "/home/tester",
       exists: (path) => path.endsWith("codex/auth.json"),
       commandExists: () => true,
       failedProviders: new Set(),
-      readCursorStatus: cursorStatusUnavailable,
     };
     const claudeOnly: AvailableCliOptions = {
       homeDir: "/home/tester",
       exists: (path) => path.endsWith(".credentials.json"),
       commandExists: () => true,
       failedProviders: new Set(),
-      readCursorStatus: cursorStatusUnavailable,
     };
 
     expect(getCachedAvailableCliKinds(codexOnly).has("codex")).toBe(true);
