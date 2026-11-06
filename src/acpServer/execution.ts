@@ -686,7 +686,8 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
         const runId = db.getSetting(queueRunLinkKey(key));
         const run = runId ? db.getRun(runId) : null;
         if (run?.status === "running") return this.queueReceipt("running", { requestId, runId });
-        return this.queueReceipt("running", { requestId, ...(runId ? { runId } : {}) });
+        // A claimed queue row without a persisted Run has not started.
+        return this.queueReceipt("queued", { requestId, queueId: queuedId, position: 0, mode: this.busyMode(session) });
       }
       return this.queueReceipt("queued", {
         queueId: queuedId, mode: this.busyMode(session), requestId,
@@ -1159,7 +1160,9 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
       const position = db.pendingMessagePosition(OUTWARD_ACP_SURFACE, session.conversationId, existing);
       if (position === 0) {
         const runId = db.getSetting(queueRunLinkKey(key));
-        return this.queueReceipt("running", { requestId: input.requestId, ...(runId ? { runId } : {}) });
+        const run = runId ? db.getRun(runId) : null;
+        if (run?.status === "running") return this.queueReceipt("running", { requestId: input.requestId, runId });
+        return this.queueReceipt("queued", { requestId: input.requestId, queueId: existing, position: 0, mode });
       }
       return this.queueReceipt("queued", {
         queueId: existing, mode,
@@ -1206,6 +1209,7 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
       if (admission.kind === "running") {
         return this.queueReceipt("running", { runId: admission.runId, requestId: input.requestId });
       }
+      if (admission.kind === "reserved") return this.resolveDirectReservation(input, key);
       return this.storedQueueReceipt(admission.value, input.requestId);
     }
     const queueId = admission.id;
@@ -1223,7 +1227,7 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
       if (run?.status === "running") return this.queueReceipt("running", { queueId, mode, requestId: input.requestId, runId });
       const settled = db.getSetting(queueReceiptKey(key));
       if (settled) return this.storedQueueReceipt(settled, input.requestId);
-      return this.queueReceipt("running", { queueId, mode, requestId: input.requestId });
+      return this.queueReceipt("queued", { queueId, mode, requestId: input.requestId, position: 0 });
     }
     return this.queueReceipt("queued", {
       queueId, mode, position,
@@ -1269,6 +1273,33 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
     db.setSetting(queueReceiptKey(key), JSON.stringify({ ...receipt, at: new Date(now).toISOString() }));
     db.raw.prepare(`DELETE FROM settings WHERE key LIKE 'outward-queue-receipt:%'
       AND json_valid(value) AND json_extract(value, '$.at') < ?`).run(new Date(now - QUEUE_RECEIPT_RETENTION_MS).toISOString());
+  }
+
+  /**
+   * A competing client may observe the direct owner's temporary reservation
+   * before any Run exists. Never acknowledge that reservation as a running Run.
+   * Once its durable link/receipt appears, replay it; if its lock disappears
+   * before any Run was committed, retry normal atomic admission under this ID.
+   */
+  private async resolveDirectReservation(input: OutwardAcpPromptExecutionInput, key: string): Promise<acp.PromptResponse> {
+    const { db } = this.options;
+    const deadline = Date.now() + 2_000;
+    while (Date.now() < deadline) {
+      const replay = input.requestId ? this.replayRequest(input.session, input.requestId) : null;
+      if (replay) return replay;
+      const reserved = db.getSetting(queueReservationKey(key));
+      if (!reserved || !db.hasExecutionLaneLock(OUTWARD_ACP_SURFACE, input.session.conversationId)) {
+        // Both the link and receipt are absent: execution did not start.
+        // acquireLaneForIdempotentRequest atomically fences any new contender.
+        return this.execute(input);
+      }
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    throw new acp.RequestError(
+      OUTWARD_ACP_BUSY_ERROR,
+      "outward ACP idempotent admission is still pending",
+      { sessionId: input.session.sessionId },
+    );
   }
 
   private storedQueueReceipt(value: string, requestId?: string): acp.PromptResponse {
