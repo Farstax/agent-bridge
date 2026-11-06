@@ -242,6 +242,10 @@ describe("outward ACP busy-message admission over real stdio", () => {
       expect((await status(b, sid)).queued).toBe(0);
       release(name);
       await Promise.all([first, second]);
+      // A running receipt acknowledges admission, not provider completion.
+      // Finish this round before opening another independent Workstream so
+      // the test isolates the same-ID race instead of accumulating live Runs.
+      await waitFor(async () => (await status(b, sid)).state === "idle");
       expect(executions()).toHaveLength(index + 1);
     }
   }, 120000);
