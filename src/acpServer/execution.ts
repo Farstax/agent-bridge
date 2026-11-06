@@ -931,6 +931,14 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
         eventStore.collect(failedEvent(runId, activeProvider, input.session));
         eventStore.finalize();
       }
+      // An idempotent contender can lose the race before its own Run is
+      // persisted while another process commits the same request ID. Report
+      // that durable winner, not an execution error for an unstarted attempt.
+      // Never mask failure once this attempt has its own persisted Run.
+      if (!queued && idempotencyKey && input.requestId && !db.getRun(runId)) {
+        const accepted = this.replayRequest(input.session, input.requestId);
+        if (accepted) return accepted;
+      }
       if (error instanceof Error && error.name === "ProviderExecutionCapacityError") {
         // Host-wide execution slots are shared by every provider. Do not wrap
         // this as a generic execution failure and do not enter deferred wait
