@@ -560,6 +560,7 @@ export class BridgeDb {
     | { kind: "queued"; id: number; position: number }
     | { kind: "existing"; id: number; position: number }
     | { kind: "running"; runId?: string }
+    | { kind: "reserved" }
     | { kind: "receipt"; value: string }
     | { kind: "blocked" }
     | { kind: "full" } {
@@ -575,7 +576,10 @@ export class BridgeDb {
         if (position === 0) {
           const runId = this.getSetting(runLinkSettingKey);
           const run = runId ? this.getRun(runId) : null;
-          return { kind: "running" as const, ...(run?.status === "running" && runId ? { runId } : {}) };
+          if (run?.status === "running" && runId) return { kind: "running" as const, runId };
+        // A claimed queue row may not yet have created its Run. It remains
+        // accepted work, but is not evidence that provider execution started.
+        return { kind: "existing" as const, id: existing.id, position: 0 };
         }
         return { kind: "existing" as const, id: existing.id, position };
       }
@@ -588,7 +592,9 @@ export class BridgeDb {
       if (receipt) return { kind: "receipt" as const, value: receipt };
       if (blockedSettingKey && this.getSetting(blockedSettingKey)) return { kind: "blocked" as const };
       const reservation = this.getSetting(reservationSettingKey);
-      if (reservation && reservation !== reservationToken) return { kind: "running" as const };
+      // A reservation is an in-flight owner, not evidence that a Run exists.
+      // Callers must resolve it before promising the client execution started.
+      if (reservation && reservation !== reservationToken) return { kind: "reserved" as const };
       const pending = this.pendingMsgCount(surface, chatKey);
       if (pending >= maxDepth) return { kind: "full" as const };
       const id = this.enqueueMsg(surface, chatKey, msg);

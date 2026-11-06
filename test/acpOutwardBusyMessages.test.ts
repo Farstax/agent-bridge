@@ -162,6 +162,135 @@ describe("outward ACP busy-message admission over real stdio", () => {
     expect(executions()).toHaveLength(1);
   }, 60000);
 
+
+  it("never acknowledges an abandoned direct reservation as a running Run", async () => {
+    const a = agent(); const b = agent();
+    await Promise.all([a.initialize(), b.initialize()]);
+    const sid = await session(a);
+    const requestId = "owner-abandoned-before-run";
+    const key = `acp-request:${sid}:${requestId}`;
+    const owner = openDb(dbPath, { serviceId: "acp:fixture-reservation-owner", databaseRole: "interactive" });
+    try {
+      const row = owner.raw.prepare("SELECT conversation_id AS id FROM outward_acp_sessions WHERE session_id = ?")
+        .get(sid) as { id: string };
+      const lane = owner.acquireLaneForIdempotentRequest(
+        "acp:outward", row.id, key,
+        `outward-queue-reservation:${key}`,
+        `outward-queue-receipt:${key}`,
+        `outward-queue-run:${key}`,
+        "fixture-owner-token",
+      );
+      expect(lane).not.toBeNull();
+      const attempt = prompt(b, sid, "hold:abandoned", { ...OPT_IN, "agent-bridge/request-id": requestId });
+      // The owner has not persisted a Run; a transient reservation is not
+      // a completed ACP receipt. It must not falsely claim "running".
+      let responded = false;
+      void attempt.then(() => { responded = true; });
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      expect(responded).toBe(false);
+      expect(executions()).toHaveLength(0);
+      expect(owner.unlock(lane!)).toBe(true);
+      // The outstanding idempotent request can safely claim the abandoned
+      // reservation because no Run link or receipt was ever committed.
+      await waitFor(() => executions().length === 1);
+      release("abandoned");
+      expect((await attempt).result.stopReason).toBe("end_turn");
+      expect(executions()).toHaveLength(1);
+      expect(owner.getPendingMessageIdByCorrelationKey("acp:outward", key)).toBeNull();
+    } finally {
+      owner.close();
+    }
+  }, 60000);
+
+  it("recovers an expired reservation only after its direct owner is proven absent", async () => {
+    const b = agent(); await b.initialize();
+    const sid = await session(b);
+    const requestId = "stale-owner-before-run";
+    const key = `acp-request:${sid}:${requestId}`;
+    // Model a deceased ACP stdio owner after initialization, so the same
+    // already-connected client must perform recovery on its prompt path.
+    const owner = openDb(dbPath, { serviceId: "acp:outward/2147483647/0", databaseRole: "interactive" });
+    try {
+      const row = owner.raw.prepare("SELECT conversation_id AS id FROM outward_acp_sessions WHERE session_id = ?")
+        .get(sid) as { id: string };
+      const lane = owner.acquireLaneForIdempotentRequest(
+        "acp:outward", row.id, key,
+        `outward-queue-reservation:${key}`,
+        `outward-queue-receipt:${key}`,
+        `outward-queue-run:${key}`,
+        "dead-owner-token",
+      );
+      expect(lane).not.toBeNull();
+      owner.raw.prepare("UPDATE execution_locks SET lease_expires_at = ? WHERE acquisition_id = ?")
+        .run("2000-01-01T00:00:00.000Z", lane!.acquisitionId);
+
+      const submitted = prompt(b, sid, "hold:stale", { ...OPT_IN, "agent-bridge/request-id": requestId });
+      await waitFor(() => executions().length === 1);
+      release("stale");
+      const outcome = await submitted;
+      expect(outcome.error).toBeUndefined();
+      expect(executions()).toHaveLength(1);
+      expect(owner.getSetting(`outward-queue-reservation:${key}`)).toBeNull();
+      expect(owner.getPendingMessageIdByCorrelationKey("acp:outward", key)).toBeNull();
+      const audits = owner.raw.prepare(
+        "SELECT status FROM reconciliation_audit WHERE kind = 'lock' AND reason = 'outward_acp_service_restart'",
+      ).all() as Array<{ status: string }>;
+      expect(audits.some((audit) => audit.status === "completed")).toBe(true);
+    } finally {
+      owner.close();
+    }
+  }, 60000);
+
+  it("keeps exactly one direct Run across repeated simultaneous request-ID submissions", async () => {
+    const a = agent(); const b = agent();
+    await Promise.all([a.initialize(), b.initialize()]);
+    for (let index = 0; index < 16; index += 1) {
+      const sid = await session(a);
+      const name = `repeated-${index}`;
+      const meta = { ...OPT_IN, "agent-bridge/request-id": `same-direct-${index}` };
+      let early: Awaited<ReturnType<typeof prompt>> | undefined;
+      const first = prompt(a, sid, `hold:${name}`, meta).then((value) => { early ??= value; return value; });
+      const second = prompt(b, sid, `hold:${name}`, meta).then((value) => { early ??= value; return value; });
+      await waitFor(() => early !== undefined);
+      if (early?.result?._meta?.["agent-bridge"]?.outcome !== "running") {
+        // CI-only failure evidence: the sender can receive an ACP error, not
+        // merely a misleading receipt. Capture the authoritative shared state.
+        const probe = openDb(dbPath, { serviceId: "acp:race-diagnostic", databaseRole: "interactive" });
+        let snapshot: unknown;
+        try {
+          const row = probe.raw.prepare("SELECT conversation_id AS id FROM outward_acp_sessions WHERE session_id = ?")
+            .get(sid) as { id: string };
+          const key = `acp-request:${sid}:same-direct-${index}`;
+          snapshot = {
+            lock: probe.raw.prepare("SELECT surface, chat_key, service_id, run_id, acquisition_id FROM execution_locks WHERE chat_key = ?").all(row.id),
+            pending: probe.raw.prepare("SELECT id, state, scheduled_occurrence_key FROM pending_messages WHERE chat_key = ?").all(row.id),
+            latest: probe.getLatestRunForConversation({ surfaceIdentity: "acp:outward", chatKey: row.id }),
+            failedRun: early?.error?.data?.runId ? probe.getRun(early.error.data.runId) : null,
+            allRuns: probe.raw.prepare("SELECT run_id, status, error, started_at, ended_at FROM bridge_runs WHERE chat_id = ? ORDER BY started_at").all(row.id),
+            reservation: probe.getSetting(`outward-queue-reservation:${key}`),
+            link: probe.getSetting(`outward-queue-run:${key}`),
+            receipt: probe.getSetting(`outward-queue-receipt:${key}`),
+          };
+        } finally {
+          probe.close();
+        }
+        throw new Error(`direct race iteration ${index}: ${JSON.stringify({
+          early, snapshot, aStderr: a.stderr.slice(-1200), bStderr: b.stderr.slice(-1200),
+        })}`);
+      }
+      await waitFor(() => executions().length === index + 1);
+      expect(executions()).toHaveLength(index + 1);
+      expect((await status(b, sid)).queued).toBe(0);
+      release(name);
+      await Promise.all([first, second]);
+      // A running receipt acknowledges admission, not provider completion.
+      // Finish this round before opening another independent Workstream so
+      // the test isolates the same-ID race instead of accumulating live Runs.
+      await waitFor(async () => (await status(b, sid)).state === "idle");
+      expect(executions()).toHaveLength(index + 1);
+    }
+  }, 120000);
+
   it("rejects admission when the durable queue is full", async () => {
     const a = agent(); await a.initialize();
     const sid = await session(a);
