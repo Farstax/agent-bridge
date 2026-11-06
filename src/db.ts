@@ -576,7 +576,10 @@ export class BridgeDb {
         if (position === 0) {
           const runId = this.getSetting(runLinkSettingKey);
           const run = runId ? this.getRun(runId) : null;
-          return { kind: "running" as const, ...(run?.status === "running" && runId ? { runId } : {}) };
+          if (run?.status === "running" && runId) return { kind: "running" as const, runId };
+        // A claimed queue row may not yet have created its Run. It remains
+        // accepted work, but is not evidence that provider execution started.
+        return { kind: "existing" as const, id: existing.id, position: 0 };
         }
         return { kind: "existing" as const, id: existing.id, position };
       }
