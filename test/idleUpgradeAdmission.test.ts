@@ -217,6 +217,30 @@ describe("atomic generic idle-only upgrade admission (#1161)", () => {
     } finally { worker.close(); }
   });
 
+  it("does not recover only the first role when another cohort owner is still alive", () => {
+    const workerPath = join(dir, "worker.sqlite");
+    const worker = openDb(workerPath);
+    try {
+      const result = tryAdmitIdleUpgradeRoles([path, workerPath]);
+      if (result.state !== "admitted") throw new Error("expected idle cohort");
+      const first = result.roles[0];
+      const last = result.roles[1];
+      const owner = { ...first.fence, pid: 999999999, startTicks: "1" };
+      db.setSetting(IDLE_UPGRADE_FENCE_KEY, JSON.stringify(owner));
+
+      // The second marker still belongs to this live process. Recovering the
+      // dead first role alone would violate the all-or-none containment gate.
+      expect(recoverIdleUpgradeRoles([path, workerPath], () => true)).toBe(false);
+      expect(readIdleUpgradeState(path)).toBe("deferred_busy");
+      expect(readIdleUpgradeState(workerPath)).toBe("deferred_busy");
+      expect(() => db.insertRun("should-not-admit", identity, "claude"))
+        .toThrow("agent_bridge_idle_maintenance_deferred_busy");
+      expect(releaseIdleUpgrade(workerPath, last.fence.token)).toBe(true);
+      expect(recoverIdleUpgradeRoles([path, workerPath], () => true)).toBe(true);
+      expect(readIdleUpgradeRolesState([path, workerPath])).toBe("idle");
+    } finally { worker.close(); }
+  });
+
   it("requires exact tokens for each role and attempts remaining cleanup after a mismatch", () => {
     const workerPath = join(dir, "worker.sqlite");
     const worker = openDb(workerPath);
