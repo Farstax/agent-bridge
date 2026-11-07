@@ -6,6 +6,7 @@ import { openDb, type BridgeDb } from "../src/db.js";
 import {
   IDLE_UPGRADE_FENCE_KEY, readIdleUpgradeState, recoverIdleUpgrade,
   releaseIdleUpgrade, tryAdmitIdleUpgrade,
+  readIdleUpgradeRolesState, releaseIdleUpgradeRoles, tryAdmitIdleUpgradeRoles,
 } from "../src/idleUpgradeAdmission.js";
 
 let dir: string;
@@ -120,5 +121,83 @@ describe("atomic generic idle-only upgrade admission (#1161)", () => {
     expect(tryAdmitIdleUpgrade(path).state).toBe("unknown");
     expect(db.raw.prepare("SELECT COUNT(*) AS n FROM sqlite_master WHERE type='trigger' AND name LIKE 'ab_idle_maintenance_%'").get())
       .toMatchObject({ n: 0 });
+  });
+
+  it("defers a whole database cohort when another role admits work first", () => {
+    const workerPath = join(dir, "worker.sqlite");
+    const worker = openDb(workerPath);
+    try {
+      worker.insertRun("active-worker", identity, "claude");
+      expect(readIdleUpgradeRolesState([path, workerPath])).toBe("deferred_busy");
+      expect(tryAdmitIdleUpgradeRoles([workerPath, path], process.pid)).toEqual({ state: "deferred_busy" });
+      // Acquisition of the first sorted role must have been rolled back.
+      expect(readIdleUpgradeState(path)).toBe("idle");
+      expect(db.getSetting(IDLE_UPGRADE_FENCE_KEY)).toBeNull();
+      worker.updateRunCompleted("active-worker", "completed", null);
+      const admitted = tryAdmitIdleUpgradeRoles([workerPath, path], process.pid);
+      expect(admitted.state).toBe("admitted");
+      if (admitted.state !== "admitted") throw new Error("failed to admit cohort");
+      expect(admitted.roles.map((role) => role.dbPath)).toEqual([path, workerPath].sort());
+      expect(() => db.insertRun("race-interactive", identity, "codex")).toThrow("agent_bridge_idle_maintenance_deferred_busy");
+      expect(() => worker.insertRun("race-worker", identity, "codex")).toThrow("agent_bridge_idle_maintenance_deferred_busy");
+      expect(releaseIdleUpgradeRoles(admitted.roles)).toBe(true);
+      expect(readIdleUpgradeRolesState([path, workerPath])).toBe("idle");
+      expect(() => worker.insertRun("now-admitted", identity, "codex")).not.toThrow();
+    } finally { worker.close(); }
+  });
+
+  it("fails closed if a required database role is missing, duplicated or malformed", () => {
+    const missing = join(dir, "missing.sqlite");
+    expect(tryAdmitIdleUpgradeRoles([path, missing])).toEqual({ state: "unknown" });
+    expect(tryAdmitIdleUpgradeRoles([path, path])).toEqual({ state: "unknown" });
+    expect(readIdleUpgradeRolesState([path, missing])).toBe("unknown");
+    expect(readIdleUpgradeRolesState([])).toBe("unknown");
+    expect(readIdleUpgradeState(path)).toBe("idle");
+    expect(tryAdmitIdleUpgradeRoles([path], 999999999)).toEqual({ state: "unknown" });
+  });
+
+  it("recognises an in-flight outward reservation rather than claiming idle", () => {
+    db.setSetting("outward-queue-reservation:race", "pending");
+    expect(readIdleUpgradeState(path)).toBe("deferred_busy");
+    expect(tryAdmitIdleUpgradeRoles([path])).toEqual({ state: "deferred_busy" });
+    db.raw.prepare("DELETE FROM settings WHERE key = ?").run("outward-queue-reservation:race");
+    expect(readIdleUpgradeState(path)).toBe("idle");
+  });
+
+  it("keeps an orphan fence until a trusted containment proof then resumes admission", () => {
+    const workerPath = join(dir, "worker.sqlite");
+    const worker = openDb(workerPath);
+    try {
+      const admitted = tryAdmitIdleUpgradeRoles([path, workerPath]);
+      if (admitted.state !== "admitted") throw new Error("failed to admit cohort");
+      for (const role of admitted.roles) {
+        const owner = { ...role.fence, pid: 999999999, startTicks: "1" };
+        const target = role.dbPath === path ? db : worker;
+        target.setSetting(IDLE_UPGRADE_FENCE_KEY, JSON.stringify(owner));
+        expect(recoverIdleUpgrade(role.dbPath, () => false)).toBe(false);
+      }
+      expect(readIdleUpgradeRolesState([path, workerPath])).toBe("deferred_busy");
+      for (const role of admitted.roles) {
+        expect(recoverIdleUpgrade(role.dbPath, () => true)).toBe(true);
+      }
+      expect(readIdleUpgradeRolesState([path, workerPath])).toBe("idle");
+      expect(() => worker.insertRun("after-recovery", identity, "claude")).not.toThrow();
+    } finally { worker.close(); }
+  });
+
+  it("requires exact tokens for each role and attempts remaining cleanup after a mismatch", () => {
+    const workerPath = join(dir, "worker.sqlite");
+    const worker = openDb(workerPath);
+    try {
+      const admitted = tryAdmitIdleUpgradeRoles([path, workerPath]);
+      if (admitted.state !== "admitted") throw new Error("failed to admit cohort");
+      const mismatched = admitted.roles.map((role) => ({
+        ...role, fence: { ...role.fence, token: role.dbPath === path ? "00000000-0000-0000-0000-000000000000" : role.fence.token },
+      }));
+      expect(releaseIdleUpgradeRoles(mismatched)).toBe(false);
+      expect(readIdleUpgradeState(workerPath)).toBe("idle");
+      expect(readIdleUpgradeState(path)).toBe("deferred_busy");
+      expect(releaseIdleUpgrade(path, admitted.roles.find((role) => role.dbPath === path)!.fence.token)).toBe(true);
+    } finally { worker.close(); }
   });
 });
