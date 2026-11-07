@@ -14,7 +14,7 @@
 
 import { execFileSync, spawn, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import type { CliOptions } from "./types.js";
 import { type as evtType } from "./events/types.js";
 import type { BridgeEvent } from "./events/types.js";
@@ -44,6 +44,8 @@ interface ActiveExecution {
 
 const activeExecutions = new Map<number | string, ActiveExecution>();
 const abortedChildren = new WeakSet<ChildProcess>();
+/** Run that owns each supervised provider process, so Stop can reap its detached descendants. */
+const childRunIds = new WeakMap<ChildProcess, string>();
 
 const STRIPPED_ENV_KEYS = /^TELEGRAM_BOT_TOKEN|^TELEGRAM_ALLOWED_USER_IDS/;
 
@@ -141,6 +143,60 @@ export function killChildTree(child: ChildProcess, graceMs: number = defaultKill
     };
     poll();
   });
+}
+
+/**
+ * Provider tools may run in their own session, outside the provider's process
+ * group (Agy's shell tool does), so a group kill cannot reach them. Every
+ * descendant still carries the Run's ownership marker, which is the same proof
+ * getExecutionProcessState uses. Processes owned by another user are not
+ * readable or signalable here and stay out of scope.
+ */
+function runOwnedProcesses(runId: string): Array<{ pid: number; startTicks: string }> {
+  const marker = `${RUN_MARKER_ENV}=${runId}`;
+  const owned: Array<{ pid: number; startTicks: string }> = [];
+  let entries: string[];
+  try { entries = readdirSync("/proc"); } catch { return owned; }
+  for (const entry of entries) {
+    if (!/^\d+$/.test(entry)) continue;
+    const pid = Number(entry);
+    if (pid === process.pid) continue;
+    try {
+      const environment = readFileSync(`/proc/${pid}/environ`, "utf8");
+      if (!environment.split("\0").includes(marker)) continue;
+    } catch { continue; }
+    const startTicks = readProcessStartTicks(pid);
+    if (startTicks) owned.push({ pid, startTicks });
+  }
+  return owned;
+}
+
+/** SIGTERM then bounded SIGKILL for processes that still carry the Run marker. */
+async function reapRunOwnedProcesses(runId: string, graceMs: number): Promise<void> {
+  let remaining = runOwnedProcesses(runId);
+  if (remaining.length === 0) return;
+  const signalAll = (sig: NodeJS.Signals) => {
+    for (const { pid, startTicks } of remaining) {
+      // Guard against PID reuse: only signal the process instance we observed.
+      if (readProcessStartTicks(pid) !== startTicks) continue;
+      try { process.kill(pid, sig); } catch { /* already gone */ }
+    }
+  };
+  const prune = () => {
+    remaining = remaining.filter(({ pid, startTicks }) => readProcessStartTicks(pid) === startTicks);
+  };
+  signalAll("SIGTERM");
+  const escalateAt = Date.now() + graceMs;
+  const giveUpAt = escalateAt + GROUP_EXIT_POLL_BOUND_MS;
+  let escalated = false;
+  for (;;) {
+    prune();
+    if (remaining.length === 0) return;
+    const now = Date.now();
+    if (!escalated && now >= escalateAt) { escalated = true; signalAll("SIGKILL"); }
+    else if (escalated && now >= giveUpAt) return;
+    await new Promise((resolve) => setTimeout(resolve, GROUP_EXIT_POLL_INTERVAL_MS));
+  }
 }
 
 export class CliTimeoutError extends Error {
@@ -253,6 +309,8 @@ export async function abortCliProcessAndWait(chatId: number | string): Promise<b
   active.stdioAbort?.abort();
   let abortedSomething = true;
   const closedPromises: Promise<void>[] = [];
+  // Read before waiting: the child's close handler clears active.child.
+  const runId = (active.child ? childRunIds.get(active.child) : undefined) ?? active.lifecycleHandle?.runId;
 
   if (active?.child) {
     const child = active.child;
@@ -269,6 +327,7 @@ export async function abortCliProcessAndWait(chatId: number | string): Promise<b
   if (closedPromises.length > 0) {
     await Promise.all(closedPromises);
   }
+  if (runId) await reapRunOwnedProcesses(runId, defaultKillGraceMs());
   return abortedSomething;
 }
 
@@ -430,6 +489,7 @@ export async function runSupervisedProcess(
     if (options.eventContext?.serviceId) childEnv[SERVICE_MARKER_ENV] = options.eventContext.serviceId;
     if (options.eventContext?.acquisitionId) childEnv[ACQUISITION_MARKER_ENV] = options.eventContext.acquisitionId;
     const child = spawn(spawnInvocation.command, spawnInvocation.args, { cwd, shell: false, detached: true, env: childEnv });
+    if (options.eventContext?.runId) childRunIds.set(child, options.eventContext.runId);
     if (options.stdin) child.stdin?.write(options.stdin);
     child.stdin?.end();
     if (options.chatId != null) registerProcess(options.chatId, child);
@@ -642,6 +702,7 @@ export async function runSupervisedStdioSession<T>(
   if (options.eventContext?.serviceId) childEnv[SERVICE_MARKER_ENV] = options.eventContext.serviceId;
   if (options.eventContext?.acquisitionId) childEnv[ACQUISITION_MARKER_ENV] = options.eventContext.acquisitionId;
   const child = spawn(spawnInvocation.command, spawnInvocation.args, { cwd, shell: false, detached: true, env: childEnv });
+  if (options.eventContext?.runId) childRunIds.set(child, options.eventContext.runId);
   if (!child.stdin || !child.stdout || !child.stderr) {
     child.kill();
     throw new Error("ACP child is missing stdio pipes");
