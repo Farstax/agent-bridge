@@ -58,8 +58,8 @@ function sessionSettings(
   env: Record<string, string | undefined>,
 ): AcpProviderSessionSettings {
   const config = acpSessionConfigIntents("cursor", request, {
-    model: splitPreference(env.CURSOR_MODEL_PREFERENCE),
-    thoughtLevel: env.CURSOR_EFFORT?.trim() ? [env.CURSOR_EFFORT.trim()] : [],
+    model: request.preferProviderDefaults ? [] : splitPreference(env.CURSOR_MODEL_PREFERENCE),
+    thoughtLevel: !request.preferProviderDefaults && env.CURSOR_EFFORT?.trim() ? [env.CURSOR_EFFORT.trim()] : [],
   });
   return {
     // Request "ask" for safe Runs and "agent" for trusted Runs. The ACP
