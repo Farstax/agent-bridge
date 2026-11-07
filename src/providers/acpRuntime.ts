@@ -72,6 +72,8 @@ export interface AcpProviderPolicy {
   readonly providerId: string;
   readonly registryAgentId: string | null;
   readonly toolFree?: boolean;
+  /** Explicit provider policy for a documented read-only, fresh side-question mode. */
+  readonly readOnlyBtw?: boolean;
   /**
    * Bridge-owned qualification gate for ACP mid-turn steering (issue #748):
    * a live agent may advertise `_meta.steering.supported`, but Bridge only
@@ -698,7 +700,8 @@ export async function runResolvedAcpProviderTurn(
   const flushed = liveRedactor.flush();
   if (flushed) options.onProgress?.(flushed);
   answerPreview?.finish(result.stopReason);
-  replaceAcpSessionConfigSnapshot(providerBotKind(providerId), result.configOptions, result.staleSessionConfig);
+  // A side question must not replace the active provider model/effort discovery snapshot.
+  if (!request.readOnlySideQuestion) replaceAcpSessionConfigSnapshot(providerBotKind(providerId), result.configOptions, result.staleSessionConfig);
   let parsed: CliResult;
   try {
     // Final-output selection is part of provider settlement.  Keep it in the

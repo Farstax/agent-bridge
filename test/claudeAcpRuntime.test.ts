@@ -90,6 +90,25 @@ describe("Claude ACP provider", () => {
     expect((claudeAcpPolicy.sessionSettings?.(request({ toolMode: "none" }), {})?.meta as any).claudeCode.options.tools).toEqual([]);
   });
 
+  it("scopes Claude Plan permissions to fresh side questions while preserving ordinary Runs", () => {
+    const side = claudeAcpPolicy.sessionSettings?.(request({ readOnlySideQuestion: true }), {});
+    expect(side).toMatchObject({
+      modeId: "plan",
+      meta: {
+        systemPrompt: { append: expect.any(String) },
+        claudeCode: { options: {
+          mcpServers: {}, settingSources: [], strictMcpConfig: true, allowDangerouslySkipPermissions: false,
+        } },
+      },
+    });
+    expect((side?.meta as any).claudeCode.options.tools).toBeUndefined();
+    expect(claudeAcpPolicy.sessionSettings?.(request({ executionMode: "safe" }), {})?.modeId).toBe("default");
+    expect(claudeAcpPolicy.sessionSettings?.(request({ executionMode: "trusted" }), {})?.modeId).toBe("default");
+    expect(() => claudeAcpPolicy.sessionSettings?.(request({ readOnlySideQuestion: true, executionMode: "trusted" }), {})).toThrow(/fresh, safe/);
+    expect(() => claudeAcpPolicy.sessionSettings?.(request({ readOnlySideQuestion: true, sessionId: "existing" }), {})).toThrow(/fresh, safe/);
+    expect(() => claudeAcpPolicy.sessionSettings?.(request({ readOnlySideQuestion: true, toolMode: "none" }), {})).toThrow(/fresh, safe/);
+  });
+
   it("preserves Bridge-managed MCP tools for ordinary safe and trusted Runs", () => {
     const home = mkdtempSync(join(tmpdir(), "claude-managed-mcp-"));
     writeFileSync(join(home, ".claude.json"), JSON.stringify({

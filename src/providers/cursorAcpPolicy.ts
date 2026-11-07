@@ -63,8 +63,7 @@ function sessionSettings(
   });
   return {
     // Request "ask" for safe Runs and "agent" for trusted Runs. The ACP
-    // client refuses an unavailable mode; verify that the locked Cursor build
-    // actually prevents writes in "ask" before rollout (issue #989).
+    // client refuses an unavailable mode; Cursor documents "ask" as read-only.
     modeId: request.executionMode === "trusted" ? "agent" : "ask",
     ...(config.length > 0 ? { config } : {}),
   };
@@ -91,6 +90,7 @@ export const cursorAcpPolicy: AcpProviderPolicy = {
   providerId: "cursor",
   registryAgentId: "cursor",
   toolFree: false,
+  readOnlyBtw: true,
   // Issue #748: do not enable steering from advertisement. Cursor ACP has not
   // been independently qualified for a host-owned idle contract.
   steeringSupported: false,

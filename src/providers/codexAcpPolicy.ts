@@ -162,6 +162,7 @@ export const codexAcpPolicy: AcpProviderPolicy = {
   providerId: "codex",
   registryAgentId: "codex-acp",
   toolFree: false,
+  readOnlyBtw: true,
   // Issue #748: steeringSupported intentionally omitted. The pinned
   // Codex ACP steering can race natural turn completion and return
   // `startedNewTurn` after already starting a detached provider turn, which

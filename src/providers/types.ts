@@ -64,6 +64,8 @@ export interface ProviderInvocationRequest {
   outputDir: string | null;
   effort: import("../effort.js").EffortLevel | null;
   toolMode: "default" | "none";
+  /** Fresh side-question operation: request the provider documented read-only mode. */
+  readOnlySideQuestion?: boolean;
 }
 
 export interface ProviderInvocation {

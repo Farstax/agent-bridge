@@ -6,7 +6,7 @@ import { applyModelSelection } from "../bridge.js";
 import { handleCommand, normalizeCommand } from "../commands.js";
 import { buildBusyMessageModeKeyboard, isBusyMessageModeSelection, resolveLaneBusyMessageMode, setLaneBusyMessageMode } from "../busyMessageMode.js";
 import type { BridgeDb } from "../db.js";
-import { supportsToolFreeMode } from "../providers/registry.js";
+import { supportsReadOnlyBtw } from "../providers/registry.js";
 import type { OutwardAcpSessionRecord } from "../repositories/outwardAcpSessionRepository.js";
 import type { BotKind, BridgeConfig, RouteableBotKind } from "../types.js";
 import { OUTWARD_ACP_SURFACE, type OutwardStopResult, type OutwardWorkstreamControl } from "./execution.js";
@@ -112,8 +112,8 @@ const DEFINITIONS: readonly Definition[] = [
     argument: "prompt",
     unavailable: (provider, options) => !options.control.btw
       ? "not configured on this outward agent"
-      : provider === "antigravity" || !supportsToolFreeMode(provider)
-        ? `isolated read-only execution cannot be proven for ${provider}`
+      : !supportsReadOnlyBtw(provider)
+        ? `read-only side execution is unsupported for ${provider}`
         : null,
   },
   {
