@@ -124,6 +124,12 @@ export function applyProviderChildEnvPolicy(
   return out;
 }
 
+/** Side questions use documented provider read-only modes, independent of tool-free support. */
+export function supportsReadOnlyBtw(bot: string): boolean {
+  const id = providerIdForBotName(bot);
+  return id !== null && getAcpProviderPolicy(id)?.readOnlyBtw === true;
+}
+
 export function supportsToolFreeMode(bot: string): boolean {
   const id = providerIdForBotName(bot);
   if (!id) return false;

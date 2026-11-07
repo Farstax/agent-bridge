@@ -91,6 +91,7 @@ export const cursorAcpPolicy: AcpProviderPolicy = {
   providerId: "cursor",
   registryAgentId: "cursor",
   toolFree: false,
+  readOnlyBtw: true,
   // Issue #748: do not enable steering from advertisement. Cursor ACP has not
   // been independently qualified for a host-owned idle contract.
   steeringSupported: false,

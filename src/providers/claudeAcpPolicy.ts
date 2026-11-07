@@ -200,6 +200,7 @@ export const claudeAcpPolicy: AcpProviderPolicy = {
   providerId: "claude",
   registryAgentId: "claude-acp",
   toolFree: true,
+  readOnlyBtw: true,
   // Issue #748: claude-agent-acp@0.89.1+ carries the host-owned idle fallback
   // (upstream fix agentclientprotocol/claude-agent-acp#919) — on an idle
   // session with `idleBehavior: "promptRequired"` it returns `promptRequired`

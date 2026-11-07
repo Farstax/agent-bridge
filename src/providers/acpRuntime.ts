@@ -72,6 +72,8 @@ export interface AcpProviderPolicy {
   readonly providerId: string;
   readonly registryAgentId: string | null;
   readonly toolFree?: boolean;
+  /** Explicit provider policy for a documented read-only, fresh side-question mode. */
+  readonly readOnlyBtw?: boolean;
   /**
    * Bridge-owned qualification gate for ACP mid-turn steering (issue #748):
    * a live agent may advertise `_meta.steering.supported`, but Bridge only
