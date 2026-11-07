@@ -357,13 +357,15 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
     else if (run?.status === "cancelled") state = "cancelled";
     // Attention comes only from an explicit recorded provider disposition.
     else if (run?.outcome_status === "blocked") state = "attention";
-    const selectedProvider = this.selectedProvider(session);
+    const storedProvider = getStoredCliPreference(db, this.identity(session));
+    const selectedProvider = storedProvider && providerChain.includes(storedProvider as BotKind)
+      ? storedProvider as BotKind : providerChain[0];
     const cached = this.routers.get(session.conversationId);
     return {
       state,
       queued,
       selectedProvider,
-      hasProviderPreference: getStoredCliPreference(db, this.identity(session)) !== null,
+      hasProviderPreference: storedProvider !== null,
       nextProvider: cached?.provider === selectedProvider ? cached.router.activeProvider(session.conversationId)
         : [selectedProvider, ...providerChain.filter((provider) => provider !== selectedProvider)]
           .find(providerIsAvailable) ?? null,
