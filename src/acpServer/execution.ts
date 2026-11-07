@@ -289,7 +289,10 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
     const { db, providerChain, createEngine, isProviderAvailable } = this.options;
     const router = createSurfaceNeutralProviderRouter({
       db,
-      isProviderAvailable,
+      // A durably selected provider is attempted first. Local credential
+      // observations cannot silently redirect a Connected Desk subscription;
+      // actual execution failures still use the normal fallback router.
+      isProviderAvailable: (candidate) => candidate === initialProvider || isProviderAvailable?.(candidate) !== false,
       surfaceIdentity: OUTWARD_ACP_SURFACE,
       initialProvider,
       providerChain,
@@ -367,8 +370,9 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
       selectedProvider,
       hasProviderPreference: storedProvider !== null,
       nextProvider: cached?.provider === selectedProvider ? cached.router.activeProvider(session.conversationId)
-        : [selectedProvider, ...providerChain.filter((provider) => provider !== selectedProvider)]
-          .find(providerIsAvailable) ?? null,
+        : storedProvider ? selectedProvider
+          : [selectedProvider, ...providerChain.filter((provider) => provider !== selectedProvider)]
+            .find(providerIsAvailable) ?? null,
       providers: providerChain.map((id) => ({ id, available: providerIsAvailable(id) })),
       lastRun: run ? {
         runId: run.run_id,
