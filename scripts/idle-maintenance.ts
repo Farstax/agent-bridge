@@ -1,35 +1,49 @@
 #!/usr/bin/env tsx
 /**
- * Generic one-role admission entry point for a maintenance owner. Never probes
- * or mutates a missing database. The owner must carry the returned token across
- * its guarded operation and release it after successful activation or rollback.
+ * Generic admission boundary for an existing maintenance owner, not a deployer.
+ * Pass every existing Bridge role before service containment. The caller must
+ * supply its own LIVE PID; this short-lived CLI must not own a durable fence.
+ * A deferred/unknown outcome never authorises a service stop.
  */
-import { readIdleUpgradeState, releaseIdleUpgrade, tryAdmitIdleUpgrade } from "../src/idleUpgradeAdmission.js";
+import {
+  readIdleUpgradeRolesState, releaseIdleUpgrade, tryAdmitIdleUpgradeRoles,
+} from "../src/idleUpgradeAdmission.js";
 
 const args = process.argv.slice(2);
 const action = args[0];
-const value = (flag: string): string | undefined => {
-  const index = args.indexOf(flag);
-  return index === -1 ? undefined : args[index + 1];
-};
-const dbPath = value("--db");
-if (!dbPath || !["status", "acquire", "release"].includes(action ?? "")) {
-  console.error("Usage: idle-maintenance <status|acquire|release> --db <existing-db> [--token <uuid>]");
+function values(flag: string): string[] {
+  const result: string[] = [];
+  for (let index = 0; index < args.length; index++) {
+    if (args[index] === flag && index + 1 < args.length) result.push(args[++index]);
+  }
+  return result;
+}
+const dbPaths = values("--db");
+if (dbPaths.length === 0 || !["status", "acquire", "release"].includes(action ?? "")) {
+  console.error("Usage: idle-maintenance <status|acquire|release> --db <existing-db> [--db <next-db> ...] [--owner-pid <live-maintenance-pid> (acquire)] [--token <exact-token> ... (release)]");
   process.exit(2);
 }
 try {
   if (action === "status") {
-    const state = readIdleUpgradeState(dbPath);
+    const state = readIdleUpgradeRolesState(dbPaths);
     console.log(JSON.stringify({ state }));
-    if (state === "unknown") process.exitCode = 2;
+    if (state !== "idle") process.exitCode = state === "deferred_busy" ? 75 : 2;
   } else if (action === "acquire") {
-    const result = tryAdmitIdleUpgrade(dbPath);
+    const rawOwner = values("--owner-pid");
+    if (rawOwner.length !== 1 || !/^[1-9]\d*$/.test(rawOwner[0])) throw new Error("live maintenance --owner-pid is required");
+    const result = tryAdmitIdleUpgradeRoles(dbPaths, Number(rawOwner[0]));
     console.log(JSON.stringify(result));
-    if (result.state === "unknown") process.exitCode = 2;
+    if (result.state !== "admitted") process.exitCode = result.state === "deferred_busy" ? 75 : 2;
   } else {
-    const token = value("--token");
-    if (!token || !/^[0-9a-f-]{36}$/.test(token)) throw new Error("an exact owner token is required");
-    const released = releaseIdleUpgrade(dbPath, token);
+    const tokens = values("--token");
+    if (dbPaths.length !== tokens.length || tokens.some((token) => !/^[0-9a-f-]{36}$/.test(token))) {
+      throw new Error("one exact --token for each --db role is required");
+    }
+    // Attempt every release even if an earlier role cannot be released.
+    let released = true;
+    for (let index = 0; index < dbPaths.length; index++) {
+      if (!releaseIdleUpgrade(dbPaths[index], tokens[index])) released = false;
+    }
     console.log(JSON.stringify({ released }));
     if (!released) process.exitCode = 2;
   }
