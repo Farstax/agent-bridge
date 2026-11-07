@@ -1,5 +1,6 @@
 import * as acp from "@agentclientprotocol/sdk/unstable";
 import { resolveAcpTelegramConfigCallback } from "../acp/telegramConfigCallback.js";
+import { getAcpSessionConfigOption } from "../acp/sessionConfig.js";
 import { applyEffortSelection, storeEffortPreference } from "../effort.js";
 import { applyModelSelection } from "../bridge.js";
 import { handleCommand, normalizeCommand } from "../commands.js";
@@ -47,6 +48,8 @@ export interface AcpCommandResult {
   command: string;
   text: string;
   options?: AcpCommandOption[];
+  /** Effective model/effort from the existing ACP settings snapshot, when known. */
+  effectiveValue?: string;
   /** `/stop` only: `pending` means Stop was requested but the Run is not yet confirmed ended. */
   stop?: OutwardStopResult;
 }
@@ -305,7 +308,14 @@ export class AcpCommands {
     const view = () => {
       const result = handleCommand(provider, `/${name}`, { db, chatId: session.conversationId, config, surfaceIdentity: OUTWARD_ACP_SURFACE });
       if (!result || result.kind !== "keyboard_message") throw new Error(`/${name} returned no options`);
-      return { command: name, text: result.text, options: keyboardOptions(result.reply_markup) };
+      const options = keyboardOptions(result.reply_markup);
+      const selected = options.find((option) => option.selected && !/^(?:use provider default|reset to default)$/i.test(option.label));
+      const snapshot = getAcpSessionConfigOption(provider, name === "models" ? "model" : "thought_level");
+      const observed = typeof snapshot?.currentValue === "string" ? snapshot.currentValue.trim() : "";
+      return {
+        command: name, text: result.text, options,
+        ...(selected?.label || observed ? { effectiveValue: selected?.label || observed } : {}),
+      };
     };
     if (select === undefined) return view();
     // Validate and mutate under the existing Run lane; never change settings

@@ -341,7 +341,7 @@ describe("outward ACP Workstreams (#1101)", () => {
     expect(restarted.at(-1)?.provider).toBe("claude");
   });
 
-  it("rejects unconfigured or unavailable providers and never retargets an in-flight Run", async () => {
+  it("rejects unconfigured providers, permits durable selection before runtime availability, and never retargets an in-flight Run", async () => {
     const f = fixture();
     f.repo.create({ sessionId: "s1", conversationId: "acp:c1", cwd: f.root });
     const attempts: Attempt[] = [];
@@ -350,8 +350,13 @@ describe("outward ACP Workstreams (#1101)", () => {
 
     await expect(call(app, WORKSTREAM_METHODS.selectProvider, { sessionId: "s1", cwd: f.root, provider: "grok" }))
       .rejects.toMatchObject({ code: -32602 });
-    await expect(call(app, WORKSTREAM_METHODS.selectProvider, { sessionId: "s1", cwd: f.root, provider: "claude" }))
-      .rejects.toMatchObject({ code: -32602 });
+    const first = exec.status(f.repo.get("s1")!);
+    expect(first.hasProviderPreference).toBe(false);
+    const selected = await call<{ status: { selectedProvider: string; hasProviderPreference: boolean } }>(
+      app, WORKSTREAM_METHODS.selectProvider, { sessionId: "s1", cwd: f.root, provider: "claude" });
+    expect(selected.status).toMatchObject({ selectedProvider: "claude", hasProviderPreference: true });
+    // Restoring Codex while idle preserves the in-flight provider-lock test below.
+    await call(app, WORKSTREAM_METHODS.selectProvider, { sessionId: "s1", cwd: f.root, provider: "codex" });
 
     let release!: () => void;
     pendingGates = [new Promise<void>((resolve) => { release = resolve; })];
@@ -511,6 +516,9 @@ describe("outward ACP Workstreams (#1101)", () => {
     expect(degraded.providers).toEqual([{ id: "codex", available: false }, { id: "claude", available: true }]);
     await prompt();
     expect(attempts.map((a) => a.provider)).toEqual(["codex", "claude"]);
+    expect(exec.status(f.repo.get("s1")!)).toMatchObject({ selectedProvider: "claude", nextProvider: "claude", hasProviderPreference: true });
+    const restarted = executor(f.db, []);
+    expect(restarted.status(f.repo.get("s1")!)).toMatchObject({ selectedProvider: "claude", nextProvider: "claude" });
 
     // An explicit selection resets the head; status and execution agree.
     codexUp = true;
