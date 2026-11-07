@@ -399,8 +399,15 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
     // Desk has already authorised a Connected provider. Runtime availability
     // remains an execution-time concern, never a second selection gate.
     this.withIdleLane(session, () => {
-      if (getStoredCliPreference(db, this.identity(session)) !== target) {
-        applyManualCliSwitchHandoff(db, this.identity(session), target as CliKind);
+      const identity = this.identity(session);
+      const stored = getStoredCliPreference(db, identity);
+      if (stored !== target) {
+        // First-use selection is not a manual handoff from another provider.
+        if (!stored && !db.getLatestRunForConversation(identity)) {
+          setUserCliPreference(db, identity, target as CliKind);
+        } else {
+          applyManualCliSwitchHandoff(db, identity, target as CliKind);
+        }
         this.routers.delete(session.conversationId);
       }
     });
