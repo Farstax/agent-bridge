@@ -6,7 +6,7 @@ import { openDb, type BridgeDb } from "../src/db.js";
 import {
   IDLE_UPGRADE_FENCE_KEY, readIdleUpgradeState, recoverIdleUpgrade,
   releaseIdleUpgrade, tryAdmitIdleUpgrade,
-  readIdleUpgradeRolesState, releaseIdleUpgradeRoles, tryAdmitIdleUpgradeRoles,
+  readIdleUpgradeRolesState, releaseIdleUpgradeRoles, tryAdmitIdleUpgradeRoles, recoverIdleUpgradeRoles,
 } from "../src/idleUpgradeAdmission.js";
 
 let dir: string;
@@ -177,9 +177,10 @@ describe("atomic generic idle-only upgrade admission (#1161)", () => {
         expect(recoverIdleUpgrade(role.dbPath, () => false)).toBe(false);
       }
       expect(readIdleUpgradeRolesState([path, workerPath])).toBe("deferred_busy");
-      for (const role of admitted.roles) {
-        expect(recoverIdleUpgrade(role.dbPath, () => true)).toBe(true);
-      }
+      expect(recoverIdleUpgradeRoles([path, workerPath], () => false)).toBe(false);
+      expect(readIdleUpgradeRolesState([path, workerPath])).toBe("deferred_busy");
+      expect(recoverIdleUpgradeRoles([path, workerPath], () => true)).toBe(true);
+      expect(recoverIdleUpgradeRoles([path, workerPath], () => true)).toBe(true);
       expect(readIdleUpgradeRolesState([path, workerPath])).toBe("idle");
       expect(() => worker.insertRun("after-recovery", identity, "claude")).not.toThrow();
     } finally { worker.close(); }
