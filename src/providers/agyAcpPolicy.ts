@@ -14,8 +14,8 @@ function sessionSettings(
   env: Record<string, string | undefined>,
 ): AcpProviderSessionSettings {
   const config = acpSessionConfigIntents("antigravity", request, {
-    model: splitPreference(env.ANTIGRAVITY_MODEL_PREFERENCE),
-    thoughtLevel: env.ANTIGRAVITY_EFFORT?.trim() ? [env.ANTIGRAVITY_EFFORT.trim()] : [],
+    model: request.preferProviderDefaults ? [] : splitPreference(env.ANTIGRAVITY_MODEL_PREFERENCE),
+    thoughtLevel: !request.preferProviderDefaults && env.ANTIGRAVITY_EFFORT?.trim() ? [env.ANTIGRAVITY_EFFORT.trim()] : [],
   });
   return config.length > 0 ? { config } : {};
 }
