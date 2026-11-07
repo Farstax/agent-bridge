@@ -235,7 +235,7 @@ export function tryAdmitIdleUpgradeRoles(dbPaths: readonly string[], ownerPid = 
     }
   } catch { state = "unknown"; }
   try {
-    if (!owned.every(({ dbPath, fence }) => releaseIdleUpgrade(dbPath, fence.token))) return { state: "unknown" };
+    if (!releaseIdleUpgradeRoles(owned)) return { state: "unknown" };
   } catch { return { state: "unknown" }; }
   return { state };
 }
