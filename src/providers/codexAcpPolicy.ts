@@ -70,8 +70,8 @@ function sessionSettings(
   env: Record<string, string | undefined>,
 ): AcpProviderSessionSettings {
   const config = acpSessionConfigIntents("codex", request, {
-    model: splitPreference(env.CODEX_MODEL_PREFERENCE),
-    thoughtLevel: env.CODEX_EFFORT?.trim() ? [env.CODEX_EFFORT.trim()] : [],
+    model: request.preferProviderDefaults ? [] : splitPreference(env.CODEX_MODEL_PREFERENCE),
+    thoughtLevel: !request.preferProviderDefaults && env.CODEX_EFFORT?.trim() ? [env.CODEX_EFFORT.trim()] : [],
   });
   return config.length > 0 ? { config } : {};
 }

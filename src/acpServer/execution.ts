@@ -15,7 +15,7 @@ import { lookupProviderSession, persistProviderSession } from "../providers/sess
 import type { OutwardAcpSessionRecord } from "../repositories/outwardAcpSessionRepository.js";
 import { createSurfaceNeutralProviderRouter, type SurfaceNeutralProviderRouter } from "../surfaceNeutralProviderRouter.js";
 import { getCachedAvailableCliKinds } from "../interactiveCliAuth.js";
-import { applyManualCliSwitchHandoff, getStoredCliPreference, type CliKind } from "../interactiveBot.js";
+import { applyManualCliSwitchHandoff, getStoredCliPreference, setUserCliPreference, type CliKind } from "../interactiveBot.js";
 import type { BotKind, BridgeConfig, CliResult, RouteableBotKind } from "../types.js";
 import { QUEUED_ATTACHMENT_MARKER, readRetainedOutwardAcpAttachments, retainOutwardAcpAttachmentsForWait, releaseRetainedOutwardAcpAttachments } from "./attachments.js";
 import { resolveLaneBusyMessageMode } from "../busyMessageMode.js";
@@ -111,6 +111,8 @@ export interface OutwardWorkstreamStatus {
   queued: number;
   /** Durable per-Workstream selection (the chain head when none was chosen). */
   selectedProvider: BotKind;
+  /** True once this Workstream has a durable provider choice. */
+  hasProviderPreference: boolean;
   /**
    * Provider the next Run starts with. Differs from the selection after an
    * in-process fallback; a restart returns to the selection.
@@ -285,9 +287,13 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
     const existing = this.routers.get(session.conversationId);
     if (existing?.provider === initialProvider) return existing.router;
     const { db, providerChain, createEngine, isProviderAvailable } = this.options;
+    const durablySelected = getStoredCliPreference(db, this.identity(session)) === initialProvider;
     const router = createSurfaceNeutralProviderRouter({
       db,
-      isProviderAvailable,
+      // A durably selected provider is attempted first. Local credential
+      // observations cannot silently redirect a Connected Desk subscription;
+      // actual execution failures still use the normal fallback router.
+      isProviderAvailable: (candidate) => (durablySelected && candidate === initialProvider) || isProviderAvailable?.(candidate) !== false,
       surfaceIdentity: OUTWARD_ACP_SURFACE,
       initialProvider,
       providerChain,
@@ -355,15 +361,19 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
     else if (run?.status === "cancelled") state = "cancelled";
     // Attention comes only from an explicit recorded provider disposition.
     else if (run?.outcome_status === "blocked") state = "attention";
-    const selectedProvider = this.selectedProvider(session);
+    const storedProvider = getStoredCliPreference(db, this.identity(session));
+    const selectedProvider = storedProvider && providerChain.includes(storedProvider as BotKind)
+      ? storedProvider as BotKind : providerChain[0];
     const cached = this.routers.get(session.conversationId);
     return {
       state,
       queued,
       selectedProvider,
+      hasProviderPreference: storedProvider !== null,
       nextProvider: cached?.provider === selectedProvider ? cached.router.activeProvider(session.conversationId)
-        : [selectedProvider, ...providerChain.filter((provider) => provider !== selectedProvider)]
-          .find(providerIsAvailable) ?? null,
+        : storedProvider ? selectedProvider
+          : [selectedProvider, ...providerChain.filter((provider) => provider !== selectedProvider)]
+            .find(providerIsAvailable) ?? null,
       providers: providerChain.map((id) => ({ id, available: providerIsAvailable(id) })),
       lastRun: run ? {
         runId: run.run_id,
@@ -386,17 +396,23 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
    * fails transparently and the caller may retry after the Run settles.
    */
   selectProvider(session: OutwardAcpSessionRecord, provider: string): OutwardWorkstreamStatus {
-    const { db, providerChain, isProviderAvailable } = this.options;
+    const { db, providerChain } = this.options;
     const target = providerChain.find((candidate) => candidate === provider);
     if (!target) {
       throw acp.RequestError.invalidParams({ field: "provider" }, "provider is not configured for this workspace");
     }
-    if (isProviderAvailable && !isProviderAvailable(target)) {
-      throw acp.RequestError.invalidParams({ field: "provider" }, "provider is not installed or authenticated");
-    }
+    // Desk has already authorised a Connected provider. Runtime availability
+    // remains an execution-time concern, never a second selection gate.
     this.withIdleLane(session, () => {
-      if (this.selectedProvider(session) !== target) {
-        applyManualCliSwitchHandoff(db, this.identity(session), target as CliKind);
+      const identity = this.identity(session);
+      const stored = getStoredCliPreference(db, identity);
+      if (stored !== target) {
+        // First-use selection is not a manual handoff from another provider.
+        if (!stored && !db.getLatestRunForConversation(identity)) {
+          setUserCliPreference(db, identity, target as CliKind);
+        } else {
+          applyManualCliSwitchHandoff(db, identity, target as CliKind);
+        }
         this.routers.delete(session.conversationId);
       }
     });
@@ -902,12 +918,16 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
           db.addConvTurn(input.session.conversationId, "assistant", result.text, actualProvider, {
             surfaceIdentity: OUTWARD_ACP_SURFACE,
           });
+          // A successful fallback becomes the next turn's durable provider,
+          // including after ACP process restarts. Never persist a failed attempt.
+          if (actualProvider !== provider) setUserCliPreference(db, this.identity(input.session), actualProvider as CliKind);
         }
         eventStore!.finalize();
         if (db.getRun(runId)?.status !== (cancelled ? "cancelled" : "done")) {
           throw new Error("outward ACP terminal Run state was not persisted");
         }
       }));
+      if (!cancelled && result.text && actualProvider !== provider) this.routers.delete(input.session.conversationId);
       if (!cancelled && result.text && !previewEmitted) {
         await input.onUpdate({
           sessionUpdate: "agent_message_chunk",

@@ -2092,6 +2092,7 @@ export class BridgeEngine {
       outputDir: string | null;
       effort: EffortLevel | null;
       toolMode?: "default" | "none";
+      preferProviderDefaults?: boolean;
     },
     identities: { conversationId: string; runId: string },
   ): Promise<{ stdout: string; parsed: CliResult | null }> {
@@ -2109,6 +2110,7 @@ export class BridgeEngine {
         outputDir: acpRequest.outputDir,
         effort: acpRequest.effort,
         toolMode: acpRequest.toolMode ?? "default",
+        preferProviderDefaults: acpRequest.preferProviderDefaults,
       }, identities);
       registerProviderOutput(identities.runId, executionKind, parsed.text);
       captureParsedProviderOutput(executionKind, parsed.text, parsed.telemetry);
@@ -2266,6 +2268,7 @@ export class BridgeEngine {
             attachments,
             outputDir: outDir,
             effort: resolveEffort(executionKind, this.db),
+            preferProviderDefaults: this.opts.surfaceIdentity === "acp:outward",
           },
           { conversationId: chatKey, runId: runId ?? randomUUID() },
         ));
@@ -2393,6 +2396,7 @@ export class BridgeEngine {
                 includeResponseContract: followup.includeResponseContract,
                 attachments: [], outputDir: outDir,
                 effort: resolveEffort(executionKind, this.db),
+                preferProviderDefaults: this.opts.surfaceIdentity === "acp:outward",
               },
               { conversationId: chatKey, runId: runId! },
             ),
