@@ -79,8 +79,8 @@ function sessionSettings(
   cwd?: string,
 ): AcpProviderSessionSettings {
   const config = acpSessionConfigIntents("claude", request, {
-    model: splitPreference(env.CLAUDE_MODEL_PREFERENCE),
-    thoughtLevel: env.CLAUDE_EFFORT?.trim() ? [env.CLAUDE_EFFORT.trim()] : [],
+    model: request.preferProviderDefaults ? [] : splitPreference(env.CLAUDE_MODEL_PREFERENCE),
+    thoughtLevel: !request.preferProviderDefaults && env.CLAUDE_EFFORT?.trim() ? [env.CLAUDE_EFFORT.trim()] : [],
   });
   return {
     // Keep Claude in manual permission mode. Agent Bridge remains the authority
