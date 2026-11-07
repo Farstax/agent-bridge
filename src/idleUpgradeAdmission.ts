@@ -13,7 +13,7 @@
  */
 import Database from "better-sqlite3";
 import { randomUUID } from "node:crypto";
-import { realpathSync } from "node:fs";
+import { readFileSync, realpathSync } from "node:fs";
 import { readProcessStartTicks } from "./cliSupervisor.js";
 
 export const IDLE_UPGRADE_FENCE_KEY = "agent-bridge:idle-maintenance:v1";
@@ -23,11 +23,20 @@ export interface IdleUpgradeFence {
   token: string;
   pid: number;
   startTicks: string;
+  /** Distinguishes the same PID/ticks after a machine restart. */
+  bootId: string;
   acquiredAt: string;
 }
 export type IdleUpgradeAdmission =
   | { state: "admitted"; fence: IdleUpgradeFence }
   | { state: IdleUpgradeState };
+
+function currentBootId(): string | null {
+  try {
+    const value = readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim().toLowerCase();
+    return /^[0-9a-f-]{36}$/.test(value) ? value : null;
+  } catch { return null; }
+}
 
 const TRIGGER_PREFIX = "ab_idle_maintenance_";
 /**
@@ -75,6 +84,7 @@ function parseFence(value: string | null): IdleUpgradeFence | null {
       && /^[0-9a-f-]{36}$/.test(record.token)
       && Number.isSafeInteger(record.pid) && record.pid! > 0
       && typeof record.startTicks === "string" && /^\d+$/.test(record.startTicks)
+      && typeof record.bootId === "string" && /^[0-9a-f-]{36}$/.test(record.bootId)
       && typeof record.acquiredAt === "string" && Number.isFinite(Date.parse(record.acquiredAt))
       ? record as IdleUpgradeFence : null;
   } catch { return null; }
@@ -149,14 +159,15 @@ export function tryAdmitIdleUpgrade(dbPath: string, ownerPid = process.pid): Idl
   try {
     if (!Number.isSafeInteger(ownerPid) || ownerPid <= 0) return { state: "unknown" };
     const startTicks = readProcessStartTicks(ownerPid);
-    if (!startTicks) return { state: "unknown" };
+    const bootId = currentBootId();
+    if (!startTicks || !bootId) return { state: "unknown" };
     db = openExisting(dbPath, false);
     return withImmediate(db, () => {
       const state = idleState(db!);
       if (state !== "idle") return { state };
       const fence: IdleUpgradeFence = {
         version: 1, token: randomUUID(), pid: ownerPid,
-        startTicks, acquiredAt: new Date().toISOString(),
+        startTicks, bootId, acquiredAt: new Date().toISOString(),
       };
       installGuard(db!);
       db!.prepare("INSERT INTO settings (key, value) VALUES (?, ?)")
@@ -229,7 +240,9 @@ export function tryAdmitIdleUpgradeRoles(dbPaths: readonly string[], ownerPid = 
     if (owned.length === paths.length) {
       // A dead/reused maintenance owner cannot receive a fresh all-roles fence.
       const ticks = readProcessStartTicks(ownerPid);
-      if (ticks && owned.every((entry) => entry.fence.startTicks === ticks)) {
+      const bootId = currentBootId();
+      if (ticks && bootId && owned.every((entry) =>
+        entry.fence.startTicks === ticks && entry.fence.bootId === bootId)) {
         return { state: "admitted", roles: owned };
       }
     }
@@ -264,13 +277,19 @@ export function recoverIdleUpgrade(dbPath: string, containmentEnded: (fence: Idl
       const record = storedFence(db);
       if (!record.fence) return false; // malformed owner stays unknown/fenced
       const fence = record.fence;
-      const ticks = readProcessStartTicks(fence.pid);
-      if (ticks === fence.startTicks) return false;
-      if (ticks === null) {
+      const bootId = currentBootId();
+      if (!bootId) return false;
+      // PID/start-ticks can be recycled after a reboot. An old boot owner
+      // is conclusively dead; clearing still requires containment proof.
+      if (bootId === fence.bootId) {
+        const ticks = readProcessStartTicks(fence.pid);
+        if (ticks === fence.startTicks) return false;
+        if (ticks === null) {
         // An unreadable /proc record is not proof of death. ESRCH is; EPERM
         // or a transient /proc read remains ambiguous and fenced.
         try { process.kill(fence.pid, 0); return false; }
         catch (error) { if ((error as NodeJS.ErrnoException).code !== "ESRCH") return false; }
+        }
       }
       if (!containmentEnded(fence)) return false;
       db.prepare("DELETE FROM settings WHERE key = ?").run(IDLE_UPGRADE_FENCE_KEY);
