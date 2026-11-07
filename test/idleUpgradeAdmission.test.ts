@@ -58,6 +58,23 @@ describe("atomic generic idle-only upgrade admission (#1161)", () => {
     expect(db.raw.prepare("SELECT name FROM sqlite_master WHERE type='trigger' AND name LIKE 'ab_idle_maintenance_%'").all()).toEqual([]);
   });
 
+  it("does not mistake a concurrent SQLite writer for idle admission", () => {
+    // A writer holding SQLite's reserved write lock has not yet committed its
+    // Run. Admission must not read a stale idle snapshot and grant a fence.
+    db.raw.exec("BEGIN IMMEDIATE");
+    try {
+      db.insertRun("uncommitted-run", identity, "claude");
+      expect(tryAdmitIdleUpgrade(path).state).toBe("unknown");
+      expect(db.getSetting(IDLE_UPGRADE_FENCE_KEY)).toBeNull();
+    } finally {
+      db.raw.exec("COMMIT");
+    }
+    expect(tryAdmitIdleUpgrade(path)).toEqual({ state: "deferred_busy" });
+    db.updateRunCompleted("uncommitted-run", "done", null);
+    const fence = admit();
+    expect(releaseIdleUpgrade(path, fence.token)).toBe(true);
+  });
+
   it("defers while active Runs or locks are present, without installing triggers", () => {
     db.insertRun("active", identity, "claude");
     expect(tryAdmitIdleUpgrade(path).state).toBe("deferred_busy");
