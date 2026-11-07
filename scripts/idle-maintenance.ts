@@ -6,7 +6,7 @@
  * A deferred/unknown outcome never authorises a service stop.
  */
 import {
-  readIdleUpgradeRolesState, releaseIdleUpgrade, tryAdmitIdleUpgradeRoles,
+  readIdleUpgradeRolesState, releaseIdleUpgrade, recoverIdleUpgradeRoles, tryAdmitIdleUpgradeRoles,
 } from "../src/idleUpgradeAdmission.js";
 
 const args = process.argv.slice(2);
@@ -19,8 +19,8 @@ function values(flag: string): string[] {
   return result;
 }
 const dbPaths = values("--db");
-if (dbPaths.length === 0 || !["status", "acquire", "release"].includes(action ?? "")) {
-  console.error("Usage: idle-maintenance <status|acquire|release> --db <existing-db> [--db <next-db> ...] [--owner-pid <live-maintenance-pid> (acquire)] [--token <exact-token> ... (release)]");
+if (dbPaths.length === 0 || !["status", "acquire", "release", "recover"].includes(action ?? "")) {
+  console.error("Usage: idle-maintenance <status|acquire|release|recover> --db <existing-db> [--db <next-db> ...] [--owner-pid <live-maintenance-pid> (acquire)] [--token <exact-token> ... (release)] [--containment-verified (root-only recover)]");
   process.exit(2);
 }
 try {
@@ -34,6 +34,16 @@ try {
     const result = tryAdmitIdleUpgradeRoles(dbPaths, Number(rawOwner[0]));
     console.log(JSON.stringify(result));
     if (result.state !== "admitted") process.exitCode = result.state === "deferred_busy" ? 75 : 2;
+  } else if (action === "recover") {
+    // Only the privileged release transaction may assert proof that rollback
+    // or activation ended and all originally contained services were restored.
+    // Never infer that proof from a dead PID or elapsed lease alone.
+    if (process.getuid?.() !== 0 || !args.includes("--containment-verified")) {
+      throw new Error("root-owned containment verification is required");
+    }
+    const recovered = recoverIdleUpgradeRoles(dbPaths, () => true);
+    console.log(JSON.stringify({ recovered }));
+    if (!recovered) process.exitCode = 2;
   } else {
     const tokens = values("--token");
     if (dbPaths.length !== tokens.length || tokens.some((token) => !/^[0-9a-f-]{36}$/.test(token))) {
