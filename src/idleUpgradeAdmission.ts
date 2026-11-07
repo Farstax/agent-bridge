@@ -189,7 +189,13 @@ export function recoverIdleUpgrade(dbPath: string, containmentEnded: (fence: Idl
       if (!record.fence) return false; // malformed owner stays unknown/fenced
       const fence = record.fence;
       const ticks = readProcessStartTicks(fence.pid);
-      if (ticks === fence.startTicks || ticks === null) return false; // live or ambiguous
+      if (ticks === fence.startTicks) return false;
+      if (ticks === null) {
+        // An unreadable /proc record is not proof of death. ESRCH is; EPERM
+        // or a transient /proc read remains ambiguous and fenced.
+        try { process.kill(fence.pid, 0); return false; }
+        catch (error) { if ((error as NodeJS.ErrnoException).code !== "ESRCH") return false; }
+      }
       if (!containmentEnded(fence)) return false;
       db.prepare("DELETE FROM settings WHERE key = ?").run(IDLE_UPGRADE_FENCE_KEY);
       uninstallGuard(db);
