@@ -700,7 +700,8 @@ export async function runResolvedAcpProviderTurn(
   const flushed = liveRedactor.flush();
   if (flushed) options.onProgress?.(flushed);
   answerPreview?.finish(result.stopReason);
-  replaceAcpSessionConfigSnapshot(providerBotKind(providerId), result.configOptions, result.staleSessionConfig);
+  // A side question must not replace the active provider model/effort discovery snapshot.
+  if (!request.readOnlySideQuestion) replaceAcpSessionConfigSnapshot(providerBotKind(providerId), result.configOptions, result.staleSessionConfig);
   let parsed: CliResult;
   try {
     // Final-output selection is part of provider settlement.  Keep it in the
