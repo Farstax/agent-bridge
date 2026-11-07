@@ -50,8 +50,8 @@ const ACTIVE_QUERIES = [
   "SELECT 1 FROM execution_locks LIMIT 1",
   "SELECT 1 FROM pending_messages LIMIT 1",
   "SELECT 1 FROM execution_capacity_claims LIMIT 1",
-  "SELECT 1 FROM event_receipts WHERE status IN ('received', 'dispatching', 'run_created', 'ambiguous') LIMIT 1",
-  "SELECT 1 FROM settings WHERE key LIKE 'outward-queue-reservation:%' AND value IS NOT NULL LIMIT 1",
+  // Ambiguous is already a terminal receipt state, not an active dispatch.
+  "SELECT 1 FROM event_receipts WHERE status IN ('received', 'dispatching', 'run_created') LIMIT 1",
 ] as const;
 
 function openExisting(path: string, readonly: boolean): Database.Database {
