@@ -147,8 +147,8 @@ export interface CliOptions {
   processWatch?: CliProcessWatch;
   /**
    * Narrowly scoped opt-out of the exclusive worktree flock (Issue #177
-   * /btw) for verified fresh, read-only, tool-free invocations only — never
-   * set this for a normal writable execution.
+   * /btw) for fresh side questions using provider-enforced read-only modes;
+   * never set this for a normal writable execution.
    */
   bypassWorkspaceLock?: boolean;
   /** Optional provider-owned shared credential-store lock, acquired by the supervisor. */

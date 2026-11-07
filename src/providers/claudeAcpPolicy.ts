@@ -82,10 +82,12 @@ function sessionSettings(
     model: request.preferProviderDefaults ? [] : splitPreference(env.CLAUDE_MODEL_PREFERENCE),
     thoughtLevel: !request.preferProviderDefaults && env.CLAUDE_EFFORT?.trim() ? [env.CLAUDE_EFFORT.trim()] : [],
   });
+  if (request.readOnlySideQuestion && (request.executionMode !== "safe" || request.sessionId !== null || request.toolMode !== "default")) {
+    throw new Error("Claude read-only side questions require a fresh, safe, tool-enabled session");
+  }
   return {
-    // Keep Claude in manual permission mode. Agent Bridge remains the authority
-    // that approves/denies each ACP permission request for safe/trusted Runs.
-    modeId: "default",
+    // Only fresh side questions use documented Plan mode; normal Runs retain Manual.
+    modeId: request.readOnlySideQuestion ? "plan" : "default",
     ...(config.length > 0 ? { config } : {}),
     meta: {
       ...(request.toolMode === "none"
@@ -100,7 +102,8 @@ function sessionSettings(
           // strictMcpConfig keeps Claude from merging those files' MCP servers.
           settingSources: [],
           strictMcpConfig: true,
-          mcpServers: request.toolMode === "none"
+          ...(request.readOnlySideQuestion ? { allowDangerouslySkipPermissions: false } : {}),
+          mcpServers: request.toolMode === "none" || request.readOnlySideQuestion
             ? {}
             : loadProjectedClaudeMcpServers(env, { cwd, executionMode: request.executionMode }),
         },

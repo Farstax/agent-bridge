@@ -34,7 +34,7 @@ import {
   ProviderStallError,
 } from "./cli.js";
 import { supportsProvisionalAnswers } from "./providers/acpRuntime.js";
-import { isAcpBackedBot, providerIdForBotName, supportsToolFreeMode } from "./providers/registry.js";
+import { isAcpBackedBot, providerIdForBotName, supportsReadOnlyBtw } from "./providers/registry.js";
 import { decideProviderRecovery, type ProviderFallbackReason } from "./providers/recoveryVerdict.js";
 import {
   attachProviderFailureEvidence,
@@ -564,16 +564,9 @@ export class BridgeEngine {
 
   private async _executeBtw(prompt: string, chatId: number | string, chatKey: string, threadId?: number | string, userId?: number | string): Promise<void> {
     const executionKind = this._executionKind();
-    if (executionKind === "antigravity") {
+    if (!supportsReadOnlyBtw(executionKind)) {
       await this.sendText(chatId, {
-        text: "/btw is unavailable for antigravity: isolated read-only execution cannot be proven without changing shared provider state.",
-        message_thread_id: threadId,
-      });
-      return;
-    }
-    if (!supportsToolFreeMode(executionKind)) {
-      await this.sendText(chatId, {
-        text: `/btw is unavailable for ${executionKind}: isolated read-only execution cannot be proven without changing shared provider state.`,
+        text: `/btw is unavailable for ${executionKind}: no documented read-only side mode.`,
         message_thread_id: threadId,
       });
       return;
@@ -602,20 +595,21 @@ export class BridgeEngine {
   }
 
   /**
-   * Non-messaging /btw (#1101): the same fresh, safe, tool-free side
-   * execution, returning its text. Throws when isolation cannot be proven or
+   * Non-messaging /btw (#1101): the same fresh, safe, read-only side
+   * execution, returning its text. Throws when the provider is unsupported or
    * no capacity slot is free; it never queues or touches the main session.
    */
   async executeSurfaceNeutralBtw(prompt: string, chatKey: string): Promise<string> {
     const executionKind = this._executionKind();
-    if (executionKind === "antigravity" || !supportsToolFreeMode(executionKind)) {
-      throw new Error(`/btw is unavailable for ${executionKind}: isolated read-only execution cannot be proven without changing shared provider state.`);
+    if (!supportsReadOnlyBtw(executionKind)) {
+      throw new Error(`/btw is unavailable for ${executionKind}: no documented read-only side mode.`);
     }
     return this._btwText(prompt, chatKey);
   }
 
   private async _btwText(prompt: string, chatKey: string): Promise<string> {
     const executionKind = this._executionKind();
+    if (!supportsReadOnlyBtw(executionKind)) throw new Error(`/btw is unavailable for ${executionKind}`);
     const model = isRouteableKind(this.kind)
       ? (this.db.getSetting(this.kind) || this.opts.botConfig.modelPreference[0] || null)
       : (this.opts.botConfig.modelPreference[0] || null);
@@ -639,7 +633,7 @@ export class BridgeEngine {
       soulContext: this.opts.soulContext,
       attachments: [],
       outputDir: null,
-      toolMode: "none",
+      toolMode: "default",
     });
     const sideExecutionId = `${this._executionLane(chatKey)}:btw:${randomUUID()}`;
 
@@ -662,7 +656,8 @@ export class BridgeEngine {
           attachments: [],
           outputDir: null,
           effort: resolveEffort(executionKind, this.db),
-          toolMode: "none",
+          toolMode: "default",
+          readOnlySideQuestion: true,
         },
         { conversationId: `${chatKey}:btw`, runId: sideExecutionId },
     ));
@@ -2092,6 +2087,7 @@ export class BridgeEngine {
       outputDir: string | null;
       effort: EffortLevel | null;
       toolMode?: "default" | "none";
+      readOnlySideQuestion?: boolean;
       preferProviderDefaults?: boolean;
     },
     identities: { conversationId: string; runId: string },
@@ -2110,6 +2106,7 @@ export class BridgeEngine {
         outputDir: acpRequest.outputDir,
         effort: acpRequest.effort,
         toolMode: acpRequest.toolMode ?? "default",
+        readOnlySideQuestion: acpRequest.readOnlySideQuestion,
         preferProviderDefaults: acpRequest.preferProviderDefaults,
       }, identities);
       registerProviderOutput(identities.runId, executionKind, parsed.text);
