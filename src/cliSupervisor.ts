@@ -182,8 +182,18 @@ async function reapRunOwnedProcesses(runId: string, graceMs: number): Promise<vo
       try { process.kill(pid, sig); } catch { /* already gone */ }
     }
   };
+  // A killed tool that nobody has reaped yet is a zombie: still listed in /proc, but dead.
+  const live = ({ pid, startTicks }: { pid: number; startTicks: string }) => {
+    try {
+      const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+      const fields = stat.slice(stat.lastIndexOf(")") + 2).split(" ");
+      return fields[19] === startTicks && fields[0] !== "Z" && fields[0] !== "X";
+    } catch {
+      return false;
+    }
+  };
   const prune = () => {
-    remaining = remaining.filter(({ pid, startTicks }) => readProcessStartTicks(pid) === startTicks);
+    remaining = remaining.filter(live);
   };
   signalAll("SIGTERM");
   const escalateAt = Date.now() + graceMs;

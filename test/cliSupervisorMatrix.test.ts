@@ -461,7 +461,10 @@ describe("12. abort and shutdown wait for the full process tree, not just the le
     expect(isAlive(toolPid)).toBe(true);
 
     await expect(abortCliProcessAndWait("detached-tool")).resolves.toBe(true);
-    const toolAlive = isAlive(toolPid);
+    // An unreaped tool is a zombie: dead, but still signalable by pid.
+    const toolAlive = isAlive(toolPid) && (() => {
+      try { return !readFileSync(`/proc/${toolPid}/stat`, "utf8").split(") ")[1]?.startsWith("Z"); } catch { return false; }
+    })();
     const bystanderAlive = isAlive(bystander.pid!);
     for (const pid of [toolPid, bystander.pid!]) { try { process.kill(pid, "SIGKILL"); } catch { /* cleanup */ } }
     expect(toolAlive, "Run-owned detached tool should be dead when Stop resolves").toBe(false);
