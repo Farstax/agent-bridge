@@ -355,6 +355,7 @@ describe("outward ACP Workstreams (#1101)", () => {
     const selected = await call<{ status: { selectedProvider: string; hasProviderPreference: boolean } }>(
       app, WORKSTREAM_METHODS.selectProvider, { sessionId: "s1", cwd: f.root, provider: "claude" });
     expect(selected.status).toMatchObject({ selectedProvider: "claude", hasProviderPreference: true });
+    expect(getHandoffReason(f.db, OUTWARD_ACP_SURFACE, "acp:c1", "claude")).toBeNull();
     // Restoring Codex while idle preserves the in-flight provider-lock test below.
     await call(app, WORKSTREAM_METHODS.selectProvider, { sessionId: "s1", cwd: f.root, provider: "codex" });
 
