@@ -42,7 +42,8 @@ try {
     // Attempt every release even if an earlier role cannot be released.
     let released = true;
     for (let index = 0; index < dbPaths.length; index++) {
-      if (!releaseIdleUpgrade(dbPaths[index], tokens[index])) released = false;
+      try { if (!releaseIdleUpgrade(dbPaths[index], tokens[index])) released = false; }
+      catch { released = false; }
     }
     console.log(JSON.stringify({ released }));
     if (!released) process.exitCode = 2;
