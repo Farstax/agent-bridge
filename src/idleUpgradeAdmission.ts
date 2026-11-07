@@ -312,14 +312,39 @@ export function recoverIdleUpgradeRoles(
 ): boolean {
   let paths: string[];
   try { paths = distinctRolePaths(dbPaths); } catch { return false; }
-  let fullyRecovered = true;
+
+  // Preflight the entire cohort before changing a single marker. A live owner
+  // or unproved containment in one role must not open admission in another.
+  const recoverable: IdleUpgradeRoleFence[] = [];
+  const bootId = currentBootId();
+  if (!bootId) return false;
   for (const dbPath of paths) {
     try {
       const db = openExisting(dbPath, true);
       let record: { exists: boolean; fence: IdleUpgradeFence | null };
       try { record = storedFence(db); } finally { db.close(); }
       if (!record.exists) continue;
-      if (!record.fence || !recoverIdleUpgrade(dbPath, (fence) => containmentEnded(dbPath, fence))) fullyRecovered = false;
+      if (!record.fence) return false;
+      const { fence } = record;
+      if (fence.bootId === bootId) {
+        const ticks = readProcessStartTicks(fence.pid);
+        if (ticks === fence.startTicks) return false;
+        if (ticks === null) {
+          try { process.kill(fence.pid, 0); return false; }
+          catch (error) { if ((error as NodeJS.ErrnoException).code !== "ESRCH") return false; }
+        }
+      }
+      if (!containmentEnded(dbPath, fence)) return false;
+      recoverable.push({ dbPath, fence });
+    } catch { return false; }
+  }
+
+  // Each role is re-checked under its IMMEDIATE transaction and by its exact
+  // token. An intervening owner cannot be released by this recovery pass.
+  let fullyRecovered = true;
+  for (const { dbPath, fence } of recoverable) {
+    try {
+      if (!recoverIdleUpgrade(dbPath, (current) => current.token === fence.token)) fullyRecovered = false;
     } catch { fullyRecovered = false; }
   }
   return fullyRecovered;
