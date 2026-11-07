@@ -50,8 +50,8 @@ function sessionSettings(
   env: Record<string, string | undefined>,
 ): AcpProviderSessionSettings {
   const config = acpSessionConfigIntents("grok", request, {
-    model: splitPreference(env.GROK_MODEL_PREFERENCE),
-    thoughtLevel: env.GROK_EFFORT?.trim() ? [env.GROK_EFFORT.trim()] : [],
+    model: request.preferProviderDefaults ? [] : splitPreference(env.GROK_MODEL_PREFERENCE),
+    thoughtLevel: !request.preferProviderDefaults && env.GROK_EFFORT?.trim() ? [env.GROK_EFFORT.trim()] : [],
   });
   return config.length > 0 ? { config } : {};
 }
