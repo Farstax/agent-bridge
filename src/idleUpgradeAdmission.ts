@@ -234,6 +234,7 @@ export function tryAdmitIdleUpgradeRoles(dbPaths: readonly string[], ownerPid = 
       }
     }
   } catch { state = "unknown"; }
+  if (owned.length === 0) return { state };
   try {
     if (!releaseIdleUpgradeRoles(owned)) return { state: "unknown" };
   } catch { return { state: "unknown" }; }
