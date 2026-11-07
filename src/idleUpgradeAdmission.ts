@@ -6,11 +6,14 @@
  * not yet know about this API. The fence remains until an exact-token release
  * or proof-based orphan recovery; its lifetime is NOT a wall-clock lease.
  *
- * A release owner that manages several database roles must admit EVERY role
- * before containing services and release its partial acquisitions on deferral.
+ * Multi-role acquisition fences every existing role before service containment;
+ * if any role is busy or unknown, it releases only its own partial fences.
+ * This is a serial acquisition protocol, not an assertion that SQLite can
+ * atomically commit transactions spanning independent database connections.
  */
 import Database from "better-sqlite3";
 import { randomUUID } from "node:crypto";
+import { realpathSync } from "node:fs";
 import { readProcessStartTicks } from "./cliSupervisor.js";
 
 export const IDLE_UPGRADE_FENCE_KEY = "agent-bridge:idle-maintenance:v1";
@@ -50,6 +53,7 @@ const ACTIVE_QUERIES = [
   "SELECT 1 FROM execution_locks LIMIT 1",
   "SELECT 1 FROM pending_messages LIMIT 1",
   "SELECT 1 FROM execution_capacity_claims LIMIT 1",
+  "SELECT 1 FROM settings WHERE key LIKE 'outward-queue-reservation:%' LIMIT 1",
   // Ambiguous is already a terminal receipt state, not an active dispatch.
   "SELECT 1 FROM event_receipts WHERE status IN ('received', 'dispatching', 'run_created') LIMIT 1",
 ] as const;
@@ -140,17 +144,18 @@ export function readIdleUpgradeState(dbPath: string): IdleUpgradeState {
 }
 
 /** Atomically install one durable owner fence, or return a retryable busy state. */
-export function tryAdmitIdleUpgrade(dbPath: string): IdleUpgradeAdmission {
+export function tryAdmitIdleUpgrade(dbPath: string, ownerPid = process.pid): IdleUpgradeAdmission {
   let db: Database.Database | undefined;
   try {
-    const startTicks = readProcessStartTicks(process.pid);
+    if (!Number.isSafeInteger(ownerPid) || ownerPid <= 0) return { state: "unknown" };
+    const startTicks = readProcessStartTicks(ownerPid);
     if (!startTicks) return { state: "unknown" };
     db = openExisting(dbPath, false);
     return withImmediate(db, () => {
       const state = idleState(db!);
       if (state !== "idle") return { state };
       const fence: IdleUpgradeFence = {
-        version: 1, token: randomUUID(), pid: process.pid,
+        version: 1, token: randomUUID(), pid: ownerPid,
         startTicks, acquiredAt: new Date().toISOString(),
       };
       installGuard(db!);
@@ -174,6 +179,76 @@ export function releaseIdleUpgrade(dbPath: string, token: string): boolean {
       return true;
     });
   } finally { db.close(); }
+}
+
+
+/**
+ * An upgrade owner must fence the entire known database cohort before it may
+ * contain any service. There is no "idle" success for an empty/duplicate role
+ * list or for missing or unreadable databases. Each BEGIN IMMEDIATE blocks
+ * concurrent writes in that role; a Run winning in any not-yet-fenced role
+ * forces deferral and exact-token rollback of previously acquired roles.
+ */
+export interface IdleUpgradeRoleFence {
+  dbPath: string;
+  fence: IdleUpgradeFence;
+}
+export type IdleUpgradeRolesAdmission =
+  | { state: "admitted"; roles: IdleUpgradeRoleFence[] }
+  | { state: IdleUpgradeState };
+
+function distinctRolePaths(dbPaths: readonly string[]): string[] {
+  if (dbPaths.length === 0) throw new Error("at least one database role is required");
+  const paths = dbPaths.map((path) => realpathSync(path));
+  if (new Set(paths).size !== paths.length) throw new Error("duplicate database role");
+  return paths.sort();
+}
+
+export function readIdleUpgradeRolesState(dbPaths: readonly string[]): IdleUpgradeState {
+  try {
+    const states = distinctRolePaths(dbPaths).map(readIdleUpgradeState);
+    if (states.includes("unknown")) return "unknown";
+    return states.includes("deferred_busy") ? "deferred_busy" : "idle";
+  } catch { return "unknown"; }
+}
+
+/** All-or-none admission. On failed partial release, return unknown (fail closed). */
+export function tryAdmitIdleUpgradeRoles(dbPaths: readonly string[], ownerPid = process.pid): IdleUpgradeRolesAdmission {
+  const owned: IdleUpgradeRoleFence[] = [];
+  let state: IdleUpgradeState = "unknown";
+  try {
+    const paths = distinctRolePaths(dbPaths);
+    for (const dbPath of paths) {
+      const result = tryAdmitIdleUpgrade(dbPath, ownerPid);
+      if (result.state !== "admitted") {
+        state = result.state;
+        break;
+      }
+      owned.push({ dbPath, fence: result.fence });
+    }
+    if (owned.length === paths.length) {
+      // A dead/reused maintenance owner cannot receive a fresh all-roles fence.
+      const ticks = readProcessStartTicks(ownerPid);
+      if (ticks && owned.every((entry) => entry.fence.startTicks === ticks)) {
+        return { state: "admitted", roles: owned };
+      }
+    }
+  } catch { state = "unknown"; }
+  try {
+    if (!owned.every(({ dbPath, fence }) => releaseIdleUpgrade(dbPath, fence.token))) return { state: "unknown" };
+  } catch { return { state: "unknown" }; }
+  return { state };
+}
+
+/** Token-bound release after activation, rollback or an aborted pre-stop attempt. */
+export function releaseIdleUpgradeRoles(roles: readonly IdleUpgradeRoleFence[]): boolean {
+  if (roles.length === 0) return false;
+  let allReleased = true;
+  for (const { dbPath, fence } of roles) {
+    try { if (!releaseIdleUpgrade(dbPath, fence.token)) allReleased = false; }
+    catch { allReleased = false; }
+  }
+  return allReleased;
 }
 
 /**
