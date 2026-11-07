@@ -12,6 +12,7 @@ import {
   assertProviderId,
   PROVIDER_IDS,
   supportsToolFreeMode,
+  supportsReadOnlyBtw,
   resolveProviderExecutable,
 } from "../src/providers/registry.js";
 import type { ProviderId } from "../src/providers/types.js";
@@ -126,6 +127,13 @@ describe("provider registry", () => {
     expect(supportsToolFreeMode("codex")).toBe(false);
     expect(supportsToolFreeMode("claude")).toBe(true);
     expect(supportsToolFreeMode("custom-acp")).toBe(false);
+  });
+
+  it("qualifies only explicitly opted-in documented read-only side modes, not tool-free mode", () => {
+    for (const provider of ["codex", "cursor", "claude"]) expect(supportsReadOnlyBtw(provider)).toBe(true);
+    for (const provider of ["grok", "antigravity", "agy", "custom-acp", "missing"]) expect(supportsReadOnlyBtw(provider)).toBe(false);
+    expect(supportsToolFreeMode("codex")).toBe(false);
+    expect(supportsToolFreeMode("claude")).toBe(true);
   });
 
   it("derives provisional-answer eligibility from the resolved ACP presentation policy, not a provider-name branch", () => {

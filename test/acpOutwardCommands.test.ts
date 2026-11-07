@@ -360,17 +360,36 @@ describe("outward ACP commands", () => {
 
   it("runs /btw as an isolated side call without touching the main session", async () => {
     const { run, prompts, btwCalls, exec, repo, list } = setup();
-    // Codex cannot prove tool-free isolation, exactly as on Telegram.
-    expect((await list()).commands.find((c) => c.name === "btw")).toMatchObject({ available: false });
+    expect((await list()).commands.find((c) => c.name === "btw")).toMatchObject({ available: true });
+    expect((await run({ command: "btw", argument: "read code" })).text).toBe("side answer: read code");
     exec.selectProvider(repo.get("s1")!, "claude");
     expect((await run({ command: "btw", argument: "what is 2+2?" })).text).toBe("side answer: what is 2+2?");
-    expect(btwCalls).toEqual([["claude", "what is 2+2?"]]);
+    expect(btwCalls).toEqual([["codex", "read code"], ["claude", "what is 2+2?"]]);
     expect(prompts).toEqual([]);
     await expect(run({ command: "btw" })).rejects.toMatchObject({ code: -32602 });
 
     const unwired = setup({ btw: false });
     unwired.exec.selectProvider(unwired.repo.get("s1")!, "claude");
     await expect(unwired.run({ command: "btw", argument: "x" })).rejects.toMatchObject({ code: -32602 });
+  });
+
+  it("advertises read-only /btw only for an available, supported provider and rejects direct calls otherwise", async () => {
+    const cursor = setup({ chain: ["cursor"] });
+    expect((await cursor.list()).commands.find((c) => c.name === "btw")).toMatchObject({ available: true });
+    expect((await cursor.run({ command: "btw", argument: "inspect" })).text).toBe("side answer: inspect");
+    expect(cursor.btwCalls).toEqual([["cursor", "inspect"]]);
+
+    for (const provider of ["grok", "antigravity"] as const) {
+      const unsupported = setup({ chain: [provider] });
+      expect((await unsupported.list()).commands.find((c) => c.name === "btw")).toMatchObject({ available: false });
+      await expect(unsupported.run({ command: "btw", argument: "inspect" })).rejects.toMatchObject({ code: -32602 });
+      expect(unsupported.btwCalls).toEqual([]);
+    }
+
+    const disconnected = setup({ chain: ["codex"], available: [] });
+    expect((await disconnected.list()).commands.find((c) => c.name === "btw")).toMatchObject({ available: false });
+    await expect(disconnected.run({ command: "btw", argument: "inspect" })).rejects.toMatchObject({ code: -32602 });
+    expect(disconnected.btwCalls).toEqual([]);
   });
 
   it("/stop cancels the active Run through ACP cancellation", async () => {

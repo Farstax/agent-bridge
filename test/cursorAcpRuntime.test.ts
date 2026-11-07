@@ -164,6 +164,7 @@ describe("Cursor ACP provider", () => {
 
   it("maps safe and trusted execution to Cursor's advertised ACP modes", () => {
     expect(cursorAcpPolicy.sessionSettings?.(request({ executionMode: "safe" }), {} )?.modeId).toBe("ask");
+    expect(cursorAcpPolicy.sessionSettings?.(request({ readOnlySideQuestion: true }), {} )?.modeId).toBe("ask");
     expect(cursorAcpPolicy.sessionSettings?.(request({ executionMode: "trusted" }), {} )?.modeId).toBe("agent");
   });
 
