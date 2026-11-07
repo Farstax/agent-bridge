@@ -278,3 +278,29 @@ export function recoverIdleUpgrade(dbPath: string, containmentEnded: (fence: Idl
     });
   } finally { db.close(); }
 }
+
+
+/**
+ * A trusted release owner may recover an abandoned cohort only after checking
+ * its own service-containment transaction. Every DB is checked against the
+ * original kernel process instance, never a wall-clock timeout. Unknown or
+ * still-owned roles remain fenced and the aggregate result stays false.
+ */
+export function recoverIdleUpgradeRoles(
+  dbPaths: readonly string[],
+  containmentEnded: (dbPath: string, fence: IdleUpgradeFence) => boolean,
+): boolean {
+  let paths: string[];
+  try { paths = distinctRolePaths(dbPaths); } catch { return false; }
+  let fullyRecovered = true;
+  for (const dbPath of paths) {
+    try {
+      const db = openExisting(dbPath, true);
+      let record: { exists: boolean; fence: IdleUpgradeFence | null };
+      try { record = storedFence(db); } finally { db.close(); }
+      if (!record.exists) continue;
+      if (!record.fence || !recoverIdleUpgrade(dbPath, (fence) => containmentEnded(dbPath, fence))) fullyRecovered = false;
+    } catch { fullyRecovered = false; }
+  }
+  return fullyRecovered;
+}
