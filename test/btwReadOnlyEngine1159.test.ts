@@ -7,7 +7,7 @@ import type { BotKind } from "../src/types.js";
 describe("isolated read-only /btw invocation (#1159)", () => {
   it.each(["codex", "cursor", "claude"] as const)("uses fresh safe ACP read-only intent for %s without mutating the main conversation", async (kind) => {
     const db = openDb(":memory:");
-    const invocation = vi.fn(async () => ({ text: "read answer", sessionId: "side-session", stopReason: "end_turn" }));
+    const invocation = vi.fn(async (..._args: any[]) => ({ text: "read answer", sessionId: "side-session", stopReason: "end_turn" }));
     const client = { capabilities: TELEGRAM_SURFACE_CAPABILITIES } as any;
     const engine = new BridgeEngine({
       surfaceIdentity: "test:btw",
