@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { runAcpTurn } from "../src/acp/client.js";
+import { getAcpProviderPolicy } from "../src/providers/registry.js";
 import {
   ACP_REGISTRY_SCHEMA_VERSION,
   getLockedAcpRegistryEntry,
@@ -49,6 +50,20 @@ function fixtureRequest(prompt: string) {
 }
 
 describe("declarative ACP provider runtime", () => {
+  it("uses native model and effort defaults for Desk, preserving explicit user choices (#1489)", () => {
+    for (const [providerId, prefix] of [["codex", "CODEX"], ["claude", "CLAUDE"], ["grok", "GROK"], ["agy", "ANTIGRAVITY"], ["cursor", "CURSOR"]] as const) {
+      const policy = getAcpProviderPolicy(providerId);
+      const env = { [`${prefix}_MODEL_PREFERENCE`]: "forced-model", [`${prefix}_EFFORT`]: "high" };
+      const defaults = policy?.sessionSettings?.({ ...fixtureRequest("hello"), preferProviderDefaults: true }, env);
+      expect(defaults?.config ?? []).toEqual([]);
+      const selected = policy?.sessionSettings?.({ ...fixtureRequest("hello"), preferProviderDefaults: true, model: "chosen-model", effort: "low" }, env);
+      expect(selected?.config).toEqual(expect.arrayContaining([
+        expect.objectContaining({ category: "model", explicitValue: "chosen-model" }),
+        expect.objectContaining({ category: "thought_level", explicitValue: "low" }),
+      ]));
+    }
+  });
+
   it("keeps the qualified Codex registry distribution release-owned and pinned", () => {
     expect(ACP_REGISTRY_SCHEMA_VERSION).toBe("1.0.0");
     expect(getLockedAcpRegistryEntry("codex")).toEqual(expect.objectContaining({
