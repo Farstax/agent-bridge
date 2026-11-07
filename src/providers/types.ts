@@ -54,6 +54,8 @@ export interface ProviderInvocationRequest {
    * interactive user override.
    */
   modelRequired?: boolean;
+  /** Outward Desk ACP uses the provider-native default absent an explicit user choice. */
+  preferProviderDefaults?: boolean;
   executionMode: "safe" | "trusted";
   outputFormat: "json" | "stream-json" | "streaming-json" | null;
   soulContext: string | null;
