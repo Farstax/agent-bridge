@@ -69,7 +69,7 @@ import type { ExecutionCapacityClaim } from "./repositories/executionCapacityRep
 import { DEFAULT_CONTEXT_MAX_CHARS } from "./db.js";
 import { linkScheduledOccurrenceRun, markScheduledOccurrenceFailed, SCHEDULED_OCCURRENCE_PREFIX } from "./scheduledRunCorrelation.js";
 import { resolveTimeoutsForKind } from "./timeouts.js";
-import { SCRATCHPAD_GUIDANCE, prependHandoffModel, prependProviderFallbackContinuation } from "./promptWrapping.js";
+import { SCRATCHPAD_GUIDANCE, prependDeskPresentationContract, prependHandoffModel, prependProviderFallbackContinuation } from "./promptWrapping.js";
 import {
   executionLaneCoordinator,
   type ExecutionLaneCoordinator,
@@ -621,11 +621,11 @@ export class BridgeEngine {
       : (this.opts.botConfig.modelPreference[0] || null);
     const cwd = this._workingDir(executionKind);
 
-    const btwPrompt = prependWorkspaceContext([
+    const btwPrompt = prependDeskPresentationContract(prependWorkspaceContext([
       "This is a fresh, read-only side question.",
       "Do not modify files, run write-capable operations, or persist session state.",
       prompt,
-    ].join("\n\n"));
+    ].join("\n\n")), this.surfaceIdentity);
     const invocation = buildCliInvocation({
       bot: executionKind,
       command: this.opts.botConfig.command,
@@ -1986,8 +1986,9 @@ export class BridgeEngine {
       ? prependProviderFallbackContinuation(workspacePrompt)
       : workspacePrompt;
     const handoffPrompt = includeFreshContext ? prependHandoffModel(fallbackPrompt, model) : fallbackPrompt;
+    const presentationPrompt = includeFreshContext ? prependDeskPresentationContract(handoffPrompt, this.surfaceIdentity) : handoffPrompt;
     const soulContext = includeFreshContext ? this.opts.soulContext ?? null : null;
-    if (!access) return { prompt: handoffPrompt, soulContext, includeResponseContract: includeFreshContext };
+    if (!access) return { prompt: presentationPrompt, soulContext, includeResponseContract: includeFreshContext };
     // #972: the helper signpost on every Run, plus the full notes once per fresh
     // native session. Autonomous Runs get no execution contract, so their fresh
     // session carries the scratchpad guidance here.
@@ -2002,8 +2003,8 @@ export class BridgeEngine {
     ].join("");
     return {
       prompt: includeFreshContext
-        ? `${access.prompt}${access.continuationPrompt}${scratchPrompt}${handoffPrompt}`
-        : `${access.continuationPrompt}${scratchPrompt}${handoffPrompt}`,
+        ? `${access.prompt}${access.continuationPrompt}${scratchPrompt}${presentationPrompt}`
+        : `${access.continuationPrompt}${scratchPrompt}${presentationPrompt}`,
       contextEnv: access.env,
       soulContext,
       includeResponseContract: includeFreshContext,
