@@ -102,6 +102,20 @@ describe("atomic generic idle-only upgrade admission (#1161)", () => {
     expect(readIdleUpgradeState(path)).toBe("idle");
   });
 
+  it("requires containment proof to recover a prior-boot owner even if the PID was reused", () => {
+    const fence = admit();
+    const oldBootId = fence.bootId === "00000000-0000-0000-0000-000000000001"
+      ? "00000000-0000-0000-0000-000000000002"
+      : "00000000-0000-0000-0000-000000000001";
+    // Keep the live test process PID and start ticks. On reboot they can be
+    // recycled: only boot identity distinguishes the original owner.
+    db.setSetting(IDLE_UPGRADE_FENCE_KEY, JSON.stringify({ ...fence, bootId: oldBootId }));
+    expect(recoverIdleUpgrade(path, () => false)).toBe(false);
+    expect(readIdleUpgradeState(path)).toBe("deferred_busy");
+    expect(recoverIdleUpgrade(path, () => true)).toBe(true);
+    expect(readIdleUpgradeState(path)).toBe("idle");
+  });
+
   it("never releases an apparently live owner based only on an external assertion", () => {
     admit();
     expect(recoverIdleUpgrade(path, () => true)).toBe(false);
