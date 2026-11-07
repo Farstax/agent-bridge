@@ -54,8 +54,10 @@ type Attempt = { provider: BotKind; release?: Promise<void>; fail?: boolean };
 function executor(db: BridgeDb, attempts: Attempt[], options: {
   available?: (p: BotKind) => boolean;
   availableProviders?: () => ReadonlySet<BotKind>;
+  failCapacityOnce?: BotKind;
 } = {}) {
   let n = 0;
+  let capacityPending = options.failCapacityOnce;
   const prefix = `run-${++executors}`;
   return new BridgeOutwardAcpPromptExecutor({
     db,
@@ -81,6 +83,10 @@ function executor(db: BridgeDb, attempts: Attempt[], options: {
         if (failNext) {
           failNext = false;
           throw new Error("provider failed");
+        }
+        if (capacityPending === attemptProvider) {
+          capacityPending = undefined;
+          throw new Error("MODEL_CAPACITY_EXHAUSTED");
         }
         return { text: `answer from ${attemptProvider}`, sessionId: `${attemptProvider}-session`, stopReason: "end_turn" };
       },
@@ -499,34 +505,46 @@ describe("outward ACP Workstreams (#1101)", () => {
     expect(exec.status(session)).toMatchObject({ selectedProvider: "codex", nextProvider: null });
   });
 
-  it("reports the provider the next Run actually uses after fallback", async () => {
+  it("attempts a durably selected provider despite stale runtime availability (#1489)", async () => {
+    const f = fixture();
+    const session = f.repo.create({ sessionId: "s1", conversationId: "acp:c1", cwd: f.root });
+    const attempts: Attempt[] = [];
+    const exec = executor(f.db, attempts, { available: (provider) => provider === "codex" });
+    exec.selectProvider(session, "claude");
+    expect(exec.status(session)).toMatchObject({ selectedProvider: "claude", nextProvider: "claude" });
+    const app = agent(f, { promptExecutor: exec, workstreams: exec });
+    await connectWithAcpInitialization(acp.client({ name: "t" }), app, (client) =>
+      client.request(acp.methods.agent.session.prompt, { sessionId: "s1", prompt: [{ type: "text", text: "hi" }] }));
+    expect(attempts.map((attempt) => attempt.provider)).toEqual(["claude"]);
+  });
+
+  it("persists a successful capacity fallback for subsequent Runs and restarts (#1489)", async () => {
     const f = fixture();
     f.repo.create({ sessionId: "s1", conversationId: "acp:c1", cwd: f.root });
     const attempts: Attempt[] = [];
     let codexUp = true;
-    const exec = executor(f.db, attempts, { available: (p) => p === "claude" || codexUp });
+    const exec = executor(f.db, attempts, { available: (p) => p === "claude" || codexUp, failCapacityOnce: "codex" });
     const app = agent(f, { promptExecutor: exec, workstreams: exec });
-    const prompt = () => connectWithAcpInitialization(acp.client({ name: "t" }), app, (agent) =>
-      agent.request(acp.methods.agent.session.prompt, { sessionId: "s1", prompt: [{ type: "text", text: "hi" }] }));
+    const prompt = () => connectWithAcpInitialization(acp.client({ name: "t" }), app, (client) =>
+      client.request(acp.methods.agent.session.prompt, { sessionId: "s1", prompt: [{ type: "text", text: "hi" }] }));
 
     expect(exec.status(f.repo.get("s1")!)).toMatchObject({ selectedProvider: "codex", nextProvider: "codex" });
     await prompt();
-    codexUp = false;
-    const degraded = exec.status(f.repo.get("s1")!);
-    expect(degraded).toMatchObject({ selectedProvider: "codex", nextProvider: "claude" });
-    expect(degraded.providers).toEqual([{ id: "codex", available: false }, { id: "claude", available: true }]);
-    await prompt();
     expect(attempts.map((a) => a.provider)).toEqual(["codex", "claude"]);
     expect(exec.status(f.repo.get("s1")!)).toMatchObject({ selectedProvider: "claude", nextProvider: "claude", hasProviderPreference: true });
+
+    codexUp = false;
+    const degraded = exec.status(f.repo.get("s1")!);
+    expect(degraded).toMatchObject({ selectedProvider: "claude", nextProvider: "claude" });
+    expect(degraded.providers).toEqual([{ id: "codex", available: false }, { id: "claude", available: true }]);
+
     const restarted = executor(f.db, []);
     expect(restarted.status(f.repo.get("s1")!)).toMatchObject({ selectedProvider: "claude", nextProvider: "claude" });
-
-    // An explicit selection resets the head; status and execution agree.
     codexUp = true;
-    exec.selectProvider(f.repo.get("s1")!, "claude");
-    expect(exec.status(f.repo.get("s1")!)).toMatchObject({ selectedProvider: "claude", nextProvider: "claude" });
+    exec.selectProvider(f.repo.get("s1")!, "codex");
+    expect(exec.status(f.repo.get("s1")!)).toMatchObject({ selectedProvider: "codex", nextProvider: "codex" });
     await prompt();
-    expect(attempts.at(-1)?.provider).toBe("claude");
+    expect(attempts.at(-1)?.provider).toBe("codex");
   });
 
   it("reports failed and attention states only from durable Run records", async () => {
