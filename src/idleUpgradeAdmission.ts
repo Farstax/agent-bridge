@@ -285,10 +285,10 @@ export function recoverIdleUpgrade(dbPath: string, containmentEnded: (fence: Idl
         const ticks = readProcessStartTicks(fence.pid);
         if (ticks === fence.startTicks) return false;
         if (ticks === null) {
-        // An unreadable /proc record is not proof of death. ESRCH is; EPERM
-        // or a transient /proc read remains ambiguous and fenced.
-        try { process.kill(fence.pid, 0); return false; }
-        catch (error) { if ((error as NodeJS.ErrnoException).code !== "ESRCH") return false; }
+          // An unreadable /proc record is not proof of death. ESRCH is; EPERM
+          // or a transient /proc read remains ambiguous and fenced.
+          try { process.kill(fence.pid, 0); return false; }
+          catch (error) { if ((error as NodeJS.ErrnoException).code !== "ESRCH") return false; }
         }
       }
       if (!containmentEnded(fence)) return false;
