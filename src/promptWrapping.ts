@@ -26,20 +26,6 @@ export function wrapPromptContext(
   ].join("\n");
 }
 
-// Desk renders Markdown text, not arbitrary agent-authored UI components.
-// Keep this provider-neutral, scoped to the outward ACP surface, and seed it
-// only for a fresh native provider session (or an isolated fresh side question).
-export const DESK_PRESENTATION_CONTRACT = [
-  "[Desk presentation capabilities]",
-  "- This client displays GitHub-flavoured Markdown (including tables and checklists), fenced code with a Copy button, Mermaid diagrams, KaTeX mathematics, and safe Markdown images.",
-  "- Put prompts, commands, scripts, configuration, reusable templates, and other text users are likely to copy/paste in fenced code blocks. Choose the correct language tag, or `text` for plain prompts. Put only copyable content inside the block; keep explanations outside.",
-  "- When a diagram helps, use a fenced `mermaid` block. Prefer clear prose when a diagram adds no value.",
-  "- Do not rely on raw HTML, inline SVG, JavaScript, interactive UI widgets, or local file paths rendering as inline content. Rendering support does not imply image-generation or file-delivery tools.",
-].join("\n");
-
-export function prependDeskPresentationContract(prompt: string, surfaceIdentity: string): string {
-  return surfaceIdentity === "acp:outward" ? `${DESK_PRESENTATION_CONTRACT}\n\n${prompt}` : prompt;
-}
 export function prependProviderFallbackContinuation(prompt: string): string {
   return [
     "[Agent Bridge provider fallback]",
