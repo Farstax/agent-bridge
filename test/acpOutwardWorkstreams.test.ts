@@ -505,6 +505,23 @@ describe("outward ACP Workstreams (#1101)", () => {
     expect(exec.status(session)).toMatchObject({ selectedProvider: "codex", nextProvider: null });
   });
 
+  it("uses the available chain member when no Workstream provider has been selected (#1489)", async () => {
+    const f = fixture();
+    const session = f.repo.create({ sessionId: "s1", conversationId: "acp:c1", cwd: f.root });
+    const attempts: Attempt[] = [];
+    const exec = executor(f.db, attempts, { available: (provider) => provider === "claude" });
+    expect(exec.status(session)).toMatchObject({
+      selectedProvider: "codex", nextProvider: "claude", hasProviderPreference: false,
+    });
+    const app = agent(f, { promptExecutor: exec, workstreams: exec });
+    await connectWithAcpInitialization(acp.client({ name: "t" }), app, (client) =>
+      client.request(acp.methods.agent.session.prompt, { sessionId: "s1", prompt: [{ type: "text", text: "hi" }] }));
+    expect(attempts.map((attempt) => attempt.provider)).toEqual(["claude"]);
+    expect(exec.status(session)).toMatchObject({
+      selectedProvider: "claude", nextProvider: "claude", hasProviderPreference: true,
+    });
+  });
+
   it("attempts a durably selected provider despite stale runtime availability (#1489)", async () => {
     const f = fixture();
     const session = f.repo.create({ sessionId: "s1", conversationId: "acp:c1", cwd: f.root });
