@@ -512,19 +512,21 @@ describe("execution lane correctness", { timeout: 30_000 }, () => {
     db.close(); rmSync(path, { force: true }); rmSync(childReady, { force: true });
   }, 12_000);
 
-  it("fails closed for Codex ACP /btw instead of claiming tool-free execution", async () => {
+  it("runs Codex ACP /btw in an independent read-only side invocation", async () => {
     const path = join(tmpdir(), `btw-acp-${Date.now()}-${Math.random()}.sqlite`);
     const db = openDb(path);
     const c = client();
-    const runCli = vi.fn().mockResolvedValue("must not run");
+    const runCli = vi.fn().mockResolvedValue(JSON.stringify({ type: "result", result: "side answer", session_id: "isolated-side" }));
     const engine = new BridgeEngine({
       surfaceIdentity: "telegram:interactive", kind: "codex", botConfig: { command: "codex", modelPreference: ["gpt-5.6-luna"] },
       allowedUserIds: new Set(["42"]), executionMode: "safe", pollIntervalMs: 1000, workingDir: process.cwd(),
     }, db, c, cliExec({ runCli }));
     try {
       await engine.handleMessages([message("/btw inspect without changing anything", 7)]);
-      expect(runCli).not.toHaveBeenCalled();
-      expect(c.sendMessage.mock.calls.some((call: any[]) => /unavailable/i.test(call[0]?.text))).toBe(true);
+      expect(runCli).toHaveBeenCalledOnce();
+      expect(runCli.mock.calls[0]?.[3]).toMatchObject({ bypassWorkspaceLock: true });
+      expect(c.sendMessage.mock.calls.some((call: any[]) => call[0]?.text === "side answer")).toBe(true);
+      expect(db.getAcpSessionBinding({ surfaceIdentity: "telegram:interactive", chatKey: "100:7" }, "codex")).toBeNull();
     } finally {
       db.close(); rmSync(path, { force: true });
     }
