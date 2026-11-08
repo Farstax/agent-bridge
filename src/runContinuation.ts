@@ -83,7 +83,7 @@ export interface RunContinuation {
   /** An ACP-v1 deferred Workstream payload. The existing settings-backed
    * continuation record owns the original admitted input; no second queue or
    * transcript database is introduced. */
-  outward?: { sessionId: string; prompt: string; attachmentCount: number; receiptKey?: string };
+  outward?: { sessionId: string; prompt: string; attachmentCount: number; receiptKey?: string; ordinaryContinuations?: true };
   /** Authorised ordinary Desk wake binds this persisted Workstream, never chatKey guessing. */
   outwardSessionId?: string;
   /** The task was retired due to capacity expiry and awaits final notification. */
@@ -106,7 +106,7 @@ export interface RequestRunContinuationInput {
   delivery?: { chatId: string | number; chatType: string; threadId?: string | number };
   capacityWait?: boolean;
   retainedPendingMessageIds?: number[];
-  outward?: { sessionId: string; prompt: string; attachmentCount: number; receiptKey?: string };
+  outward?: { sessionId: string; prompt: string; attachmentCount: number; receiptKey?: string; ordinaryContinuations?: true };
   /** Authoritative Workstream binding for ordinary outward ACP continuations. */
   outwardSessionId?: string;
 }
@@ -171,6 +171,7 @@ function parse(value: string): RunContinuation | null {
       !Number.isSafeInteger(candidate.outward.attachmentCount) ||
       candidate.outward.attachmentCount < 0 || candidate.outward.attachmentCount > 8 ||
       (candidate.outward.receiptKey !== undefined && (typeof candidate.outward.receiptKey !== "string" || candidate.outward.receiptKey.length > 512))
+      || (candidate.outward.ordinaryContinuations !== undefined && candidate.outward.ordinaryContinuations !== true)
     )) return null;
     if (candidate.rolloutProvenance) {
       const p = candidate.rolloutProvenance;
@@ -234,6 +235,7 @@ export function requestRunContinuation(
     !Number.isSafeInteger(input.outward.attachmentCount) || input.outward.attachmentCount < 0 ||
     input.outward.attachmentCount > 8 ||
     (input.outward.receiptKey !== undefined && (typeof input.outward.receiptKey !== "string" || input.outward.receiptKey.length > 512))
+    || (input.outward.ordinaryContinuations !== undefined && input.outward.ordinaryContinuations !== true)
   )) throw new Error("invalid outward ACP continuation payload");
   if (input.outwardSessionId !== undefined && (
     input.surfaceIdentity !== "acp:outward" || input.capacityWait || input.outward ||
