@@ -3,6 +3,7 @@ import type { BridgeEngine, SurfaceNeutralTurnInput } from "./engine.js";
 import type { BridgeEvent } from "./events/types.js";
 import { ProviderFallbackChain } from "./providerFallback.js";
 import { RunRepository } from "./repositories/runRepository.js";
+import { resetAbandonedRunDisposition } from "./runOutcome.js";
 import { providerIdForBotName } from "./providers/registry.js";
 import { decideProviderRecovery } from "./providers/recoveryVerdict.js";
 import { markHandoffRequired } from "./handoffState.js";
@@ -143,6 +144,14 @@ export function createSurfaceNeutralProviderRouter(
           if (!next) {
             for (const event of attemptEvents) input.collect(event);
             throw error;
+          }
+          // The failed provider's disposition and pending ordinary wake
+          // cannot be carried into a different provider's attempt. Reuse the
+          // exact same fenced Core owner as messaging's provider retries.
+          if (options.db.getRun(input.runId)?.status === "running") {
+            options.db.runWithLockFence(input.laneHandle, () => {
+              resetAbandonedRunDisposition(options.db, input.runId);
+            });
           }
           // This route has no chat-specific presentation layer, but uses the
           // same durable inspection-first handoff context as interactive
