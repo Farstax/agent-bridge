@@ -10,7 +10,7 @@ import {
   type ProviderApiKeyProbeExecutor,
   type VerifyProviderApiKeyOptions,
 } from "./providers/apiKeyAuth.js";
-import { hasAgyRuntimePrerequisites, resolveAgyAcpAuthPaths } from "./providers/agyAvailability.js";
+import { resolveAgyAcpAuthPaths } from "./providers/agyAvailability.js";
 import { getProviderRuntimeAuthDegradedProviders } from "./providers/runtimeAvailability.js";
 import {
   isCursorRouteable,
@@ -135,7 +135,7 @@ export function getAvailableCliKinds(options: AvailableCliOptions = {}): Set<Cli
 
   const agyAuthenticated = paths.antigravity.some(exists)
     || (isProviderApiKeyConfigured("agy", env) && verifyApiKey("agy"));
-  const agyRuntimeReady = options.agyRuntimeReady?.() ?? hasAgyRuntimePrerequisites({ env });
+  const agyRuntimeReady = options.agyRuntimeReady?.() ?? true; // hasRuntime already checks the official CLI executable
   if (agyAuthenticated && hasRuntime("agy") && agyRuntimeReady && !failedProviders.has("agy")) {
     available.add("antigravity");
   }
