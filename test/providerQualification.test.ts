@@ -178,7 +178,7 @@ exit 7
         AGY_ACP_ARGS: "--uid=",
       }).runtimeIdentity);
       expect(result.providerVersion).toBe("1.5.2");
-      expect(result.checks.find((check) => check.name === "version")?.diagnostic).toMatch(/agy_acp_server 1\.4\.5/);
+      expect(result.checks.find((check) => check.name === "version")?.diagnostic).toMatch(/agy_acp_server 1\.5\.2/);
     } finally {
       if (previousCommand === undefined) delete process.env.AGY_ACP_COMMAND;
       else process.env.AGY_ACP_COMMAND = previousCommand;
