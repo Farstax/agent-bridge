@@ -1254,6 +1254,16 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
     if (mode === "interrupt") await this.cancelRun(session);
     else if (mode === "augment") steered = await this.trySteerQueued(session, queueId);
     this.scheduleDrain(session);
+    // A late injected result after claim loss is uncertain, not a new queue
+    // admission. Surface the durable verdict instead of claiming it is queued.
+    const terminal = db.getSetting(queueReceiptKey(key));
+    if (terminal) {
+      try {
+        if (["cancelled", "uncertain"].includes(String((JSON.parse(terminal) as { status?: string }).status))) {
+          return this.storedQueueReceipt(terminal, input.requestId);
+        }
+      } catch { /* recovery owns malformed receipts */ }
+    }
     if (steered) {
       // Stop may retire the row between steering and this acknowledgement.
       const current = db.getSetting(queueReceiptKey(key));
