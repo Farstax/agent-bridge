@@ -145,6 +145,37 @@ describe("ordinary Run continuation", () => {
   });
 
 
+  it("reclaims a lost ordinary Workstream claim before successor admission, fencing the stale worker", () => {
+    const { db } = setup();
+    const identity = { surfaceIdentity: "acp:outward", chatKey: "acp:resume-after-crash" };
+    db.insertRun("origin-restart", identity, "claude");
+    const now = Date.now();
+    const wake = requestRunContinuation(db, {
+      originRunId: "origin-restart", ...identity, provider: "claude",
+      reason: "resume after worker crash", afterSeconds: 5, outwardSessionId: "ws-restart",
+    }, now);
+    persistProviderSession(db, identity, "claude", "original-provider-session", "origin-restart");
+    db.updateRunCompleted("origin-restart", "pending", "original-provider-session");
+    const first = claimDueRunContinuation(db, wake.id, now + 5_001, {
+      runId: "worker-one", claimToken: "claim-one", leaseMs: 50,
+    });
+    expect(first?.state).toBe("claimed");
+    // No successor row was admitted before worker death; this is the only
+    // provably replay-safe recovery case. The existing token must be retired.
+    reconcileRunContinuations(db, identity.surfaceIdentity, now + 5_100);
+    expect(listRunContinuations(db, identity.surfaceIdentity)).toEqual([
+      expect.objectContaining({ id: wake.id, state: "pending" }),
+    ]);
+    const second = claimDueRunContinuation(db, wake.id, now + 5_101, {
+      runId: "worker-two", claimToken: "claim-two", leaseMs: 500,
+    });
+    expect(second?.claimToken).toBe("claim-two");
+    db.insertRun("successor-after-restart", identity, "claude");
+    expect(linkRunContinuationRun(db, wake.id, "successor-after-restart", "claim-one")).toBe(false);
+    expect(linkRunContinuationRun(db, wake.id, "successor-after-restart", "claim-two")).toBe(true);
+    db.close();
+  });
+
   it("persists one bounded continuation for the originating Run", () => {
     const { db } = setup();
     const continuation = requestForActiveRun(db, {
