@@ -10,6 +10,7 @@ import { prepareInteractiveCliAuth } from "../interactiveCliAuth.js";
 import { getCodexUsageText } from "../codexUsage.js";
 import { outwardServiceId, recoverOutwardLanes } from "./recovery.js";
 import { AcpCommands } from "./commands.js";
+import { SensorRegistry } from "../sensors/registry.js";
 import { prepareInteractiveAcpConfigControl } from "../interactiveAcpConfig.js";
 import { resolveExecutionMode } from "../config.js";
 import {
@@ -88,6 +89,7 @@ try {
     config: outwardCommandConfig(dbPath),
     control: promptExecutor,
     codexUsage: getCodexUsageText,
+    sensors: new SensorRegistry({ db, dbPath }),
     prepareConfig: (session, provider, command) => prepareInteractiveAcpConfigControl({
       kind: provider, commandText: `/${command}`, surfaceIdentity: OUTWARD_ACP_SURFACE,
       chatKey: session.conversationId, db, executionMode: resolveExecutionMode(provider, process.env), cwd: session.cwd,
