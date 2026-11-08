@@ -1168,6 +1168,8 @@ def accept_handoff(
                 failed_others.append((other, other_receipt))
                 continue
             fail("another accepted deployment request is unresolved")
+        if len(failed_others) > 1:
+            fail("multiple unresolved handoff targets require a bounded recovery audit")
         for other, other_receipt in failed_others:
             retire_terminally_failed_handoff(other, other_receipt, production, superseded_by=identity)
         staging_root = Path(configured_value(config, "release_root")) if config else Path(

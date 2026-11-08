@@ -250,6 +250,36 @@ describe("terminally failed handoff retirement", () => {
     expect(result.stdout).toContain("protected");
   });
 
+  it("refuses to supersede when more than one failed receipt is present", () => {
+    const result = probe([
+      "module.accept_handoff(archive, None, None)",
+      "first = root / 'handoffs' / (commit + '-' + sha256)",
+      "module.update_handoff_result(first, 'failed', commit, sha256, 'action_required')",
+      "second_commit = 'c' * 40",
+      "second_sha = 'd' * 64",
+      "second = root / 'handoffs' / (second_commit + '-' + second_sha)",
+      "second.mkdir(mode=0o700)",
+      "(second / 'result.json').write_text(json.dumps({'status':'failed','targetCommit':second_commit,'archiveSha256':second_sha,'detail':'action_required'}) + '\\n')",
+      "(second / 'result.json').chmod(0o600)",
+      "other = root / 'other.tar.gz'",
+      "other.write_bytes(b'third release')",
+      "other_sha = hashlib.sha256(other.read_bytes()).hexdigest()",
+      "def fake_other_validate(path, *args):",
+      "    module.VERIFIED_MANIFESTS[other_sha] = {'commit': 'b' * 40, '_staging_footprint': (4096, 2, path.stat().st_size)}",
+      "    return ('b' * 40, other_sha, None)",
+      "module.validate_archive = fake_other_validate",
+      "try:",
+      "    module.accept_handoff(other, None, None, supersede_failed=True)",
+      "    raise AssertionError('two failed receipts were superseded')",
+      "except RuntimeError as error:",
+      "    assert 'bounded recovery audit' in str(error)",
+      "assert first.exists() and second.exists()",
+      "print('audit')",
+    ].join("\n"));
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout).toContain("audit");
+  });
+
   it("retires a failed handoff through --retire-failed without accepting a replacement", () => {
     const result = probe([
       "module.accept_handoff(archive, None, None)",
