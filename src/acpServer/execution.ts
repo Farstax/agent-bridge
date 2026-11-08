@@ -1699,9 +1699,6 @@ export function createProductionOutwardAcpPromptExecutor(
       pollIntervalMs: 1000,
       workingDir: session.cwd,
       fullConfig,
-      // Per-Run ACP authorisation is enforced by the neutral turn input,
-      // not by a process-global enable/disable switch.
-      allowRunContinuations: true,
       maxConcurrentExecutions: capacity.maxConcurrentExecutions,
       executionCapacityDb: executionCapacityDb ?? undefined,
       hooks: {
