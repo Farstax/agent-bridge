@@ -46,6 +46,7 @@ export async function resumeOutwardCapacityWait(
       signal: new AbortController().signal,
       onUpdate: () => undefined,
       capacityResume: { id: wait.id, claimToken: wait.claimToken },
+      ordinaryContinuations: wait.outward.ordinaryContinuations === true,
     });
     if (result.stopReason !== "end_turn") throw new Error("outward capacity successor did not complete");
     return true;
