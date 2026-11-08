@@ -2,6 +2,7 @@ import type { BridgeDb } from "./db.js";
 import type { BridgeEngine, SurfaceNeutralTurnInput } from "./engine.js";
 import type { BridgeEvent } from "./events/types.js";
 import { ProviderFallbackChain } from "./providerFallback.js";
+import { RunRepository } from "./repositories/runRepository.js";
 import { providerIdForBotName } from "./providers/registry.js";
 import { decideProviderRecovery } from "./providers/recoveryVerdict.js";
 import { markHandoffRequired } from "./handoffState.js";
@@ -70,6 +71,19 @@ export function createSurfaceNeutralProviderRouter(
         if (!probe(provider)) {
           console.error(`[surface-neutral-router] no available provider in chain ${ordered.join(",")} surface=${options.surfaceIdentity ?? "unknown"}`);
           throw new Error("no available provider in the configured chain");
+        }
+        // An outcome/continuation helper runs *inside* the native provider
+        // attempt, before buffered run.started events are published. Its
+        // provider fence must already match this attempt, including after a
+        // cross-provider fallback. Use the existing Run repository and lane
+        // fence rather than adding another ACP lifecycle/settlement owner.
+        const activeRun = options.db.getRun(input.runId);
+        if (activeRun?.status === "running" && activeRun.bot !== provider) {
+          options.db.runWithLockFence(input.laneHandle, () => {
+            if (!new RunRepository(options.db.raw).updateRunningRunBot(input.runId, provider)) {
+              throw new Error("outward Run provider attribution lost its active Run");
+            }
+          });
         }
         const engine = options.engineForProvider(provider);
         let attemptEvents: BridgeEvent[] = [];
