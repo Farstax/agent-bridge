@@ -1172,7 +1172,8 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
     const ordinaryResume = ordinaryWait?.state === "claimed" && ordinaryWait.claimToken &&
       ordinaryWait.outwardSessionId === session.sessionId && origin?.status === "done" &&
       origin.session_id && origin.session_id === providerSessionId &&
-      this.selectedProvider(session) === ordinaryWait.provider
+      this.selectedProvider(session) === ordinaryWait.provider &&
+      ordinaryWait.provider !== "custom-acp"
       ? { id: ordinaryWait.id, claimToken: ordinaryWait.claimToken, provider: ordinaryWait.provider,
           providerSessionId } : undefined;
     if (ordinaryId && !ordinaryResume) {
