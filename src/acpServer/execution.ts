@@ -45,6 +45,7 @@ type RunCancelledEvent = Extract<BridgeEvent, { type: "run.cancelled" }>;
 type ActiveOutwardExecution = {
   readonly session: OutwardAcpSessionRecord;
   cancelRequested: boolean;
+  cancelReason: "user" | "shutdown" | null;
   cancelPromise: Promise<void> | null;
   settled: boolean;
   readonly lane: ExecutionLaneHandle;
@@ -237,7 +238,7 @@ function cancelledEvent(
   runId: string,
   provider: RouteableBotKind,
   session: OutwardAcpSessionRecord,
-  reason: "user" | "provider",
+  reason: "user" | "provider" | "shutdown",
 ): RunCancelledEvent {
   return eventType.runCancelled({
     runId,
@@ -582,10 +583,12 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
   }
 
   /** Cancel only the active Run, wherever its owner process is; the queue is untouched. */
-  private async cancelRun(session: OutwardAcpSessionRecord): Promise<OutwardStopResult> {
+  private async cancelRun(session: OutwardAcpSessionRecord, reason: "user" | "shutdown" = "user"): Promise<OutwardStopResult> {
     const record = this.active.get(session.conversationId);
     if (!record) return this.requestRemoteStop(session);
     record.cancelRequested = true;
+    // An explicit Stop remains user-owned even if connection shutdown follows it.
+    record.cancelReason = reason === "user" ? "user" : (record.cancelReason ?? "shutdown");
     if (record.cancelPromise) return this.awaitBoundedLocalStop(record.cancelPromise);
 
     const lane = executionLane(session.conversationId);
@@ -636,7 +639,7 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
     this.closing = true;
     const records = [...this.active.values()];
     await Promise.all(records.map(async (record) => {
-      await this.cancelRun(record.session);
+      await this.cancelRun(record.session, "shutdown");
       await record.done;
     }));
   }
@@ -795,6 +798,7 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
       active = {
         session: input.session,
         cancelRequested: input.signal.aborted,
+        cancelReason: input.signal.aborted ? "shutdown" : null,
         cancelPromise: null,
         settled: false,
         lane,
@@ -804,7 +808,7 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
       };
       this.active.set(input.session.conversationId, active);
       signalAbort = () => {
-        void this.cancelRun(input.session).catch(() => {
+        void this.cancelRun(input.session, "shutdown").catch(() => {
           console.warn("[acp:outward] cancellation cleanup failed");
         });
       };
@@ -821,7 +825,7 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
       stopPoll.unref();
 
       if (active.cancelRequested) {
-        eventStore.collect(cancelledEvent(runId, provider, input.session, "user"));
+        eventStore.collect(cancelledEvent(runId, provider, input.session, active.cancelReason ?? "shutdown"));
         eventStore.finalize();
         return { stopReason: "cancelled" };
       }
@@ -909,7 +913,7 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
         });
         if (db.getRun(runId)?.status === "running") {
           eventStore.collect(active.cancelRequested
-            ? cancelledEvent(runId, actualProvider, input.session, "user")
+            ? cancelledEvent(runId, actualProvider, input.session, active.cancelReason ?? "shutdown")
             : providerCancelled ?? cancelledEvent(runId, actualProvider, input.session, "provider"));
         }
       } else if (completed) {
@@ -956,7 +960,7 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
       if (error instanceof QueuedMessageStopped) return { stopReason: "cancelled" };
       if (active?.cancelRequested) {
         if (eventStore && db.getRun(runId)?.status === "running") {
-          eventStore.collect(cancelledEvent(runId, activeProvider, input.session, "user"));
+          eventStore.collect(cancelledEvent(runId, activeProvider, input.session, active.cancelReason ?? "shutdown"));
           eventStore.finalize();
         }
         return { stopReason: "cancelled" };
