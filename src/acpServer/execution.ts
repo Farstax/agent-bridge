@@ -20,7 +20,7 @@ import type { BotKind, BridgeConfig, CliResult, RouteableBotKind } from "../type
 import { QUEUED_ATTACHMENT_MARKER, readRetainedOutwardAcpAttachments, retainOutwardAcpAttachmentsForWait, releaseRetainedOutwardAcpAttachments } from "./attachments.js";
 import { resolveLaneBusyMessageMode } from "../busyMessageMode.js";
 import { discardDeskRunArtifacts, retainDeskArtifacts } from "./artifacts.js";
-import { hasPendingCapacityWait, listRunContinuations, linkCapacityContinuationRun, requestRunContinuation, cancelPendingRunContinuation, settleRunContinuation, type RunContinuation } from "../runContinuation.js";
+import { hasPendingCapacityWait, listRunContinuations, linkCapacityContinuationRun, linkRunContinuationRun, requestRunContinuation, cancelPendingRunContinuation, settleRunContinuation, type RunContinuation } from "../runContinuation.js";
 
 
 import { OUTWARD_ACP_SURFACE, outwardServiceId, recoverOutwardLanes } from "./recovery.js";
@@ -1040,6 +1040,7 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
               sessionId: input.session.sessionId,
               prompt: input.prompt,
               attachmentCount: input.attachments?.length ?? 0,
+              ...(ordinaryWorkstreamId ? { ordinaryContinuations: true as const } : {}),
               ...(queued?.key ? { receiptKey: queued.key } : input.requestId ? { receiptKey: requestKey(input.session, input.requestId) } : {}),
             },
           });
@@ -1196,6 +1197,7 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
         onUpdate: () => undefined,
         deferCapacity: this.supportsDeferredCapacity,
         busyMessages: true,
+        ordinaryContinuations: this.options.db.getSetting(ordinaryConsentKey(key)) === "1",
       }, message.laneHandle, queued);
     } catch (error) {
       if (!queued.coreOutcome) throw error;
@@ -1255,13 +1257,21 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
     }
     let admission: ReturnType<BridgeDb["admitQueuedMessageOnce"]>;
     try {
-      admission = db.admitQueuedMessageOnce(OUTWARD_ACP_SURFACE, session.conversationId, {
-        prompt: input.prompt,
-        chatId: session.sessionId,
-        chatType: "acp",
-        attachments: attachments.length > 0 ? [`${RETAINED_ATTACHMENT_MARKER}${retainedId}`] : [],
-        scheduledOccurrenceKey: key,
-      }, MAX_QUEUE_DEPTH, queueReceiptKey(key), queueRunLinkKey(key), queueReservationKey(key), reservationToken ?? "", stopFenceKey(session.conversationId));
+      // Authorisation for a queued Run commits with its single queue admission;
+      // an independent worker cannot drain it between enqueue and consent.
+      admission = db.runInImmediateTransaction(() => {
+        const accepted = db.admitQueuedMessageOnce(OUTWARD_ACP_SURFACE, session.conversationId, {
+          prompt: input.prompt,
+          chatId: session.sessionId,
+          chatType: "acp",
+          attachments: attachments.length > 0 ? [`${RETAINED_ATTACHMENT_MARKER}${retainedId}`] : [],
+          scheduledOccurrenceKey: key,
+        }, MAX_QUEUE_DEPTH, queueReceiptKey(key), queueRunLinkKey(key), queueReservationKey(key), reservationToken ?? "", stopFenceKey(session.conversationId));
+        if (accepted.kind === "queued" && input.ordinaryContinuations && this.supportsOrdinaryContinuations) {
+          db.setSetting(ordinaryConsentKey(key), "1");
+        }
+        return accepted;
+      });
     } catch (error) {
       await releaseRetainedOutwardAcpAttachments(session.cwd, retainedId).catch(() => undefined);
       throw error;
@@ -1423,6 +1433,9 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
       }
       const now = Date.now();
       db.setSetting(queueReceiptKey(key), JSON.stringify({ ...receipt, at: new Date(now).toISOString() }));
+      if (["done", "failed", "cancelled", "steered", "uncertain"].includes(String(receipt.status))) {
+        clearSetting(db, ordinaryConsentKey(key));
+      }
       db.raw.prepare(`DELETE FROM settings WHERE key LIKE 'outward-queue-receipt:%'
         AND json_valid(value) AND json_extract(value, '$.at') < ?`).run(new Date(now - QUEUE_RECEIPT_RETENTION_MS).toISOString());
     });
@@ -1578,6 +1591,7 @@ function remoteStopKey(runId: string): string { return `outward-cancel:${runId}`
 function queueRunLinkKey(key: string): string { return `outward-queue-run:${key}`; }
 function queueReceiptKey(key: string): string { return `outward-queue-receipt:${key}`; }
 function queueReservationKey(key: string): string { return `outward-queue-reservation:${key}`; }
+function ordinaryConsentKey(key: string): string { return `outward-ordinary-consent:${key}`; }
 
 const NO_DELIVERY_PLATFORM: MessagingPlatform = {
   capabilities: SAFE_SURFACE_CAPABILITIES,
