@@ -464,4 +464,35 @@ describe("outward ACP busy-message admission over real stdio", () => {
     expect(ran.filter((p) => p === "after crash")).toHaveLength(1);
     expect(ran.indexOf("after crash")).toBeLessThan(ran.indexOf("fresh"));
   }, 90000);
+  it("keeps a remote Stop authoritative over a held injected steer from another real ACP process", async () => {
+    const a = agent(); await a.initialize();
+    const sid = await session(a);
+    await a.request("_agent-bridge/commands/run", {
+      sessionId: sid, cwd: root, command: "queue_mode", select: "queue_mode:augment",
+    });
+    const first = prompt(a, sid, "hold:steer");
+    await waitFor(() => executions().length === 1);
+    const requestId = "held-steering-remote-stop";
+    const followup = prompt(a, sid, "injected-after-stop", {
+      ...OPT_IN, "agent-bridge/request-id": requestId,
+    });
+    await waitFor(() => existsSync(join(control, "steering.log")));
+    expect(readFileSync(join(control, "steering.log"), "utf8")).toContain("injected-after-stop");
+
+    const b = agent(); await b.initialize();
+    const stop = await b.request("_agent-bridge/commands/run", { sessionId: sid, cwd: root, command: "stop" });
+    expect(stop.result.stop).toBe("confirmed");
+    expect((await first).result.stopReason).toBe("cancelled");
+
+    release("steering-rpc");
+    const receipt = await followup;
+    expect(receipt.result._meta["agent-bridge"]).toMatchObject({ outcome: "settled", status: "cancelled" });
+    const replay = await prompt(b, sid, "injected-after-stop", {
+      ...OPT_IN, "agent-bridge/request-id": requestId,
+    });
+    expect(replay.result._meta["agent-bridge"]).toMatchObject({ outcome: "settled", status: "cancelled" });
+    expect((await status(b, sid)).queued).toBe(0);
+    expect(executions().map((run) => run.prompt)).toEqual(["hold:steer"]);
+  }, 60000);
+
 });
