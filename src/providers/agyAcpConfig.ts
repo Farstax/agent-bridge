@@ -9,7 +9,10 @@ export const AGY_ACP_VERSION_TIMEOUT_MS = 30_000;
 export function resolveAgyAcpCommand(
   env: Record<string, string | undefined> = process.env,
 ): string {
-  return env.AGY_ACP_COMMAND?.trim() || env.AGENT_BRIDGE_AGY_ACP_LINK?.trim() || DEFAULT_AGY_ACP_COMMAND;
+  const configured = env.AGY_ACP_COMMAND?.trim();
+  // The legacy bare "agy" service setting must not route via an unqualified user PATH.
+  if (configured && configured !== "agy") return configured;
+  return env.AGENT_BRIDGE_AGY_ACP_LINK?.trim() || DEFAULT_AGY_ACP_COMMAND;
 }
 
 export function resolveAgyAcpArgs(
