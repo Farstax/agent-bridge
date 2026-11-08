@@ -365,6 +365,7 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
     else if (wait) state = "waiting";
     else if (lastWait?.state === "cancelled" && latest?.run_id === lastWait.originRunId) state = "cancelled";
     else if (lastWait?.state === "expired" && (latest?.run_id === lastWait.originRunId || latest?.run_id === lastWait.successorRunId)) state = "expired";
+    else if (lastWait?.state === "failed" && (latest?.run_id === lastWait.originRunId || latest?.run_id === lastWait.successorRunId)) state = "failed";
     else if (run?.status === "failed") state = "failed";
     else if (run?.status === "cancelled") state = "cancelled";
     // Attention comes only from an explicit recorded provider disposition.
