@@ -205,6 +205,7 @@ export function createOutwardAcpAgent(options: OutwardAcpAgentOptions = {}): Age
       workstreams: supportsWorkstreams,
       commands: supportsWorkstreams && Boolean(options.commands),
       deferredCapacity: supportsWorkstreams && options.promptExecutor?.supportsDeferredCapacity === true,
+      ordinaryContinuations: supportsWorkstreams && options.promptExecutor?.supportsOrdinaryContinuations === true,
       busyMessages: supportsWorkstreams && options.promptExecutor?.supportsBusyMessages === true,
       artifacts: supportsWorkstreams && Boolean(sessions?.isCompletedRun),
       historyPages: supportsWorkstreams && Boolean(sessions?.historyPage),
@@ -433,6 +434,8 @@ export function createOutwardAcpAgent(options: OutwardAcpAgentOptions = {}): Age
         ...(runId ? { runId } : {}),
         signal: ctx.signal,
         deferCapacity: ctx.params._meta?.["agent-bridge/defer-capacity"] === 1,
+        ordinaryContinuations: supportsWorkstreams && promptExecutor.supportsOrdinaryContinuations === true
+          && ctx.params._meta?.["agent-bridge/ordinary-continuations"] === 1,
         busyMessages,
         requestId,
         answerPreview: ctx.params._meta?.["agent-bridge/answer-preview"] === 1,
