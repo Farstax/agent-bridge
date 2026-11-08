@@ -80,7 +80,7 @@ export async function resumeOutwardOrdinaryContinuation(
   const origin = db.getRun(wake.originRunId);
   const providerSessionId = lookupProviderSession(db,
     { surfaceIdentity: OUTWARD_ACP_SURFACE, chatKey: wake.chatKey }, wake.provider);
-  if (!origin || origin.status !== "done" || !origin.session_id ||
+  if (!origin || origin.status !== "done" || !origin.session_id || !providerSessionId ||
       origin.surface_identity !== OUTWARD_ACP_SURFACE || origin.chat_id !== wake.chatKey ||
       origin.bot !== wake.provider || providerSessionId !== origin.session_id) {
     throw new Error("outward ordinary continuation provider-session authority changed");
