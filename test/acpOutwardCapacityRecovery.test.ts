@@ -26,12 +26,12 @@ describe("outward ACP durable capacity worker (#1114)", () => {
     const session = repo.create({ sessionId: "ordinary-workstream", conversationId: identity.chatKey, cwd: root });
     first.insertRun("ordinary-origin", identity, "codex");
     persistProviderSession(first, identity, "codex", "provider-session", "ordinary-origin");
-    expect(first.updateRunCompleted("ordinary-origin", "partial", "provider-session")).toBe(true);
     const now = Date.now();
     const wake = requestRunContinuation(first, {
       originRunId: "ordinary-origin", ...identity, provider: "codex",
       afterSeconds: 5, reason: "Verify the outstanding build", outwardSessionId: session.sessionId,
     }, now);
+    expect(first.updateRunCompleted("ordinary-origin", "partial", "provider-session")).toBe(true);
     first.close();
 
     const db = openDb(path, { databaseRole: "interactive" });
@@ -76,12 +76,12 @@ describe("outward ACP durable capacity worker (#1114)", () => {
     const identity = { surfaceIdentity: OUTWARD_ACP_SURFACE, chatKey: session.conversationId };
     db.insertRun("ordinary-stop-origin", identity, "codex");
     persistProviderSession(db, identity, "codex", "original-native-session", "ordinary-stop-origin");
-    expect(db.updateRunCompleted("ordinary-stop-origin", "pending operation", "original-native-session")).toBe(true);
     const now = Date.now();
     const wake = requestRunContinuation(db, {
       originRunId: "ordinary-stop-origin", ...identity, provider: "codex",
       reason: "continue after delay", afterSeconds: 5, outwardSessionId: session.sessionId,
     }, now);
+    expect(db.updateRunCompleted("ordinary-stop-origin", "pending operation", "original-native-session")).toBe(true);
     const claimed = claimDueRunContinuation(db, wake.id, now + 5_001, {
       runId: "worker", claimToken: "stop-race-claim",
     });
