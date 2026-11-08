@@ -984,7 +984,7 @@ export function buildRunContinuationInstruction(continuation: RunContinuation): 
     "Work quietly: scratchpad and clock checks, polling, retries, and continuation scheduling are internal activity, not user progress updates.",
     "Only report meaningful new results or blockers in concise user-facing language; do not repeat unchanged status or expose internal identifiers or timestamps unless needed.",
     `Pending reason: ${continuation.reason}`,
-  ].join("\\n");
+  ].join("\n");
 }
 
 /** Surfaces with native thread coordinates (Telegram topics, Slack threads) share this builder. */
