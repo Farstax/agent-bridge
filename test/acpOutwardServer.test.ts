@@ -561,7 +561,7 @@ describe("outward ACP stdio boundary", { timeout: 30_000 }, () => {
       const outwardSessionId = created.result?.sessionId;
       expect(outwardSessionId).toEqual(expect.any(String));
 
-      const firstTurn = await promptSession(first, 3, outwardSessionId!, "PHASED first wire prompt");
+      const firstTurn = await promptSession(first, 3, outwardSessionId!, "PHASED first wire prompt CTX_FACT_V1=ORCHID47");
       expect(firstTurn.response).toMatchObject({
         jsonrpc: "2.0",
         id: 3,
@@ -591,7 +591,7 @@ describe("outward ACP stdio boundary", { timeout: 30_000 }, () => {
 
       second = startOutwardAcpProcess(dbPath, env);
       await initialize(second, 4);
-      const secondTurn = await promptSession(second, 5, outwardSessionId!, "PHASED second wire prompt");
+      const secondTurn = await promptSession(second, 5, outwardSessionId!, "PHASED second wire prompt CTX_RECALL_V1");
       expect(secondTurn.response).toMatchObject({
         jsonrpc: "2.0",
         id: 5,
@@ -619,6 +619,9 @@ describe("outward ACP stdio boundary", { timeout: 30_000 }, () => {
         sessionUpdate: "agent_message_chunk",
         content: { type: "text", text: expect.stringContaining("PHASED second wire prompt") },
       });
+      // Only native provider-session resume can supply the earlier-turn fact:
+      // no second prompt or outward replay contains ORCHID47.
+      expect(JSON.stringify(secondAnswers[0]?.params?.update)).toContain("recalled:ORCHID47");
 
       await stopProcess(second);
       second = null;
