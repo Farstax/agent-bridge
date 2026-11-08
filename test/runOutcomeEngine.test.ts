@@ -97,7 +97,9 @@ describe("ordinary Run objective settlement", () => {
   });
 
   it("exposes the existing outcome/wait helpers only to authorised ordinary Desk Runs", async () => {
-    const options = { publishArtifacts: false, onOutputArtifacts: async () => ({ retained: 0, discarded: 0 }) };
+    // This is the actual outward ACP pipeline: it does not supply the optional
+    // generated-artifact callback, but opted-in Runs still require outcomes.
+    const options = { publishArtifacts: false };
     const eligible = fixture("continue-after-retry", "acp:outward");
     const result = await eligible.engine.executePromptAsync(
       "Continue verified work", null, "chat",
