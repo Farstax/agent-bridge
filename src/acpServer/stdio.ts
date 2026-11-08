@@ -79,7 +79,11 @@ try {
   } catch (error) {
     console.error("[outward-acp] provider API-key verification failed", error);
   }
-  promptExecutor = createProductionOutwardAcpPromptExecutor(db, dbPath);
+  // Resolve ordinary background wakes through the persisted Workstream owner.
+  // Without this lookup a transient ACP client cannot negotiate the already
+  // supervised continuation capability even when the worker is installed.
+  promptExecutor = createProductionOutwardAcpPromptExecutor(db, dbPath, process.env,
+    (sessionId) => sessionRepo.get(sessionId));
   const stream = acp.ndJsonStream(
     Writable.toWeb(process.stdout),
     Readable.toWeb(process.stdin) as ReadableStream<Uint8Array>,
