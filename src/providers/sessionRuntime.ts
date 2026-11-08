@@ -9,6 +9,12 @@ function acpSessionBindingKey(
 ): string | null {
   const runtime = resolveRuntime(kind, process.env);
   if (!runtime || runtime.transport !== "acp-stdio") return null;
+  // The legacy .par runtime accepts CLI session/load IDs without replaying
+  // history. Keep its original binding for rollback, but never silently load
+  // that session into a new official CLI. Bridge conversation history is retained.
+  if (runtime.providerId === "agy" && runtime.selectedVersion !== "1.4.5") {
+    return `agy@cli:${runtime.selectedVersion}`;
+  }
   return runtime.providerId === "custom-acp" ? runtime.runtimeIdentity : runtime.providerId;
 }
 

@@ -7,11 +7,11 @@ describe("Agy ACP invocation and parsing contract", () => {
       bot: "antigravity",
       prompt: "hello",
       sessionId: null,
-      command: "agy_acp_server.par",
+      command: "agy",
       model: null,
     });
     expect(invocation.transport).toBe("acp-stdio");
-    expect(invocation.args).toEqual(["--uid="]);
+    expect(invocation.args).toEqual(["acp"]);
     expect(invocation.args).not.toContain("--print");
     expect(invocation.args).not.toContain("--output-format");
   });

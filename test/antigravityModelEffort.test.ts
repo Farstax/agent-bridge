@@ -69,22 +69,22 @@ describe("Antigravity model families and effort", () => {
   });
 
   it("keeps Agy effort out of ACP argv and expresses it as session config", () => {
-    const args = ["--uid="];
-    expect(appendEffortArgs("agy_acp_server.par", args, "high")).toBe(args);
+    const args = ["acp"];
+    expect(appendEffortArgs("agy", args, "high")).toBe(args);
     const invocation = buildCliInvocation({
       bot: "antigravity",
       prompt: "hi",
       sessionId: null,
-      command: "agy_acp_server.par",
+      command: "agy",
       model: "gemini-3.8-flash",
       effort: "high",
     });
     expect(invocation.transport).toBe("acp-stdio");
-    expect(invocation.args).toEqual(["--uid="]);
+    expect(invocation.args).toEqual(["acp"]);
     const request: ProviderInvocationRequest = {
       prompt: "hi",
       sessionId: null,
-      command: "agy_acp_server.par",
+      command: "agy",
       model: "gemini-3.8-flash",
       executionMode: "safe",
       outputFormat: "json",

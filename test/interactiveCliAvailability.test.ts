@@ -84,15 +84,15 @@ describe("interactive CLI availability filtering", () => {
       commandExists: () => true,
     });
 
-    expect(available).toEqual(new Set<CliKind>(["codex", "claude"]));
+    expect(available).toEqual(new Set<CliKind>(["codex", "claude", "antigravity"]));
     expect(paths.codex).toBe("/home/tester/.codex/auth.json");
     expect(paths.claude).toBe("/home/tester/.claude/.credentials.json");
     expect(paths.antigravity).toEqual([
-      "/home/tester/.gemini/antigravity-acp/acp_token.json",
+      "/home/tester/.gemini/oauth_creds.json",
     ]);
   });
 
-  it("detects the Agy ACP OAuth token path when the runtime exists", () => {
+  it("permits the installed official Agy CLI to use its native credential store", () => {
     const homeDir = "/home/tester";
     const paths = resolveInteractiveCliAuthPaths(homeDir);
     const available = getAvailableCliKinds({
@@ -119,12 +119,12 @@ describe("interactive CLI availability filtering", () => {
     });
 
     expect(paths.antigravity).toEqual([
-      "/srv/gemini/antigravity-acp/acp_token.json",
+      "/srv/gemini/oauth_creds.json",
     ]);
     expect(available).toEqual(new Set<CliKind>(["antigravity"]));
   });
 
-  it("does not treat retired native Agy credentials as ACP authentication", () => {
+  it("does not require or inspect retired ACP auth files to start the official CLI", () => {
     const legacyPaths = new Set([
       "/home/tester/.gemini/antigravity-cli/antigravity-oauth-token",
       "/home/tester/.gemini/oauth_creds.json",
@@ -139,14 +139,14 @@ describe("interactive CLI availability filtering", () => {
       verifyApiKey: () => false,
     });
 
-    expect(available.has("antigravity")).toBe(false);
+    expect(available.has("antigravity")).toBe(true);
   });
 
   it("treats authenticated Grok as available without qualification evidence when the runtime exists", () => {
     const homeDir = "/home/tester";
     const paths = resolveInteractiveCliAuthPaths(homeDir);
     const available = getAvailableCliKinds({
-      agyRuntimeReady: () => true,
+      agyRuntimeReady: () => false,
       homeDir,
       exists: (path) => path === paths.grok[0],
       commandExists: () => true,
@@ -165,7 +165,7 @@ describe("interactive CLI availability filtering", () => {
     const homeDir = "/home/tester";
     const paths = resolveInteractiveCliAuthPaths(homeDir);
     const available = getAvailableCliKinds({
-      agyRuntimeReady: () => true,
+      agyRuntimeReady: () => false,
       homeDir,
       exists: (path) => path === paths.grok[0],
       commandExists: () => true,
@@ -184,7 +184,7 @@ describe("interactive CLI availability filtering", () => {
   ] as const)("accepts only a verified %s API key when its runtime exists", (provider, cliKind, envVar) => {
     const env = { [envVar]: `candidate-${provider}-key` };
     const verified = getAvailableCliKinds({
-      agyRuntimeReady: () => true,
+      agyRuntimeReady: () => provider === "agy",
       homeDir: "/home/tester",
       exists: () => false,
       commandExists: () => true,
@@ -193,7 +193,7 @@ describe("interactive CLI availability filtering", () => {
       verifyApiKey: (candidate: ProviderId) => candidate === provider,
     });
     const rejected = getAvailableCliKinds({
-      agyRuntimeReady: () => true,
+      agyRuntimeReady: () => provider === "agy",
       homeDir: "/home/tester",
       exists: () => false,
       commandExists: () => true,
@@ -203,7 +203,7 @@ describe("interactive CLI availability filtering", () => {
     });
 
     expect(verified).toEqual(new Set<CliKind>([cliKind]));
-    expect(rejected).toEqual(new Set<CliKind>());
+    expect(rejected).toEqual(provider === "agy" ? new Set<CliKind>(["antigravity"]) : new Set<CliKind>());
   });
 
   it.each([
@@ -226,9 +226,9 @@ describe("interactive CLI availability filtering", () => {
     expect(available).toEqual(new Set<CliKind>());
   });
 
-  it("does not advertise executable providers without valid authentication", () => {
+  it("does not advertise other executable providers without valid authentication", () => {
     const available = getAvailableCliKinds({
-      agyRuntimeReady: () => true,
+      agyRuntimeReady: () => false,
       homeDir: "/home/tester",
       exists: () => false,
       commandExists: () => true,
@@ -333,6 +333,7 @@ describe("interactive CLI availability filtering", () => {
 
   it("keeps an existing Cursor account available when its optional key is invalid", () => {
     const available = getAvailableCliKinds({
+      agyRuntimeReady: () => false,
       homeDir: "/home/tester",
       exists: (path) => path === "/home/tester/.config/cursor/auth.json",
       commandExists: () => true,
@@ -345,6 +346,7 @@ describe("interactive CLI availability filtering", () => {
 
   it("routes Cursor from local login prerequisites without running native status", () => {
     const available = getAvailableCliKinds({
+      agyRuntimeReady: () => false,
       homeDir: "/home/tester",
       exists: (path) => path === "/home/tester/.cursor/auth.json",
       commandExists: () => true,
@@ -352,6 +354,7 @@ describe("interactive CLI availability filtering", () => {
     });
     expect(available).toEqual(new Set<CliKind>(["cursor"]));
     const unavailable = getAvailableCliKinds({
+      agyRuntimeReady: () => false,
       homeDir: "/home/tester",
       exists: () => false,
       commandExists: () => true,

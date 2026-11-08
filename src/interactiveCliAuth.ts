@@ -10,7 +10,7 @@ import {
   type ProviderApiKeyProbeExecutor,
   type VerifyProviderApiKeyOptions,
 } from "./providers/apiKeyAuth.js";
-import { hasAgyRuntimePrerequisites, resolveAgyAcpAuthPaths } from "./providers/agyAvailability.js";
+import { resolveAgyAcpAuthPaths } from "./providers/agyAvailability.js";
 import { getProviderRuntimeAuthDegradedProviders } from "./providers/runtimeAvailability.js";
 import {
   isCursorRouteable,
@@ -133,10 +133,12 @@ export function getAvailableCliKinds(options: AvailableCliOptions = {}): Set<Cli
     || (isProviderApiKeyConfigured("claude", env) && verifyApiKey("claude"));
   if (claudeAuthenticated && hasRuntime("claude") && !failedProviders.has("claude")) available.add("claude");
 
-  const agyAuthenticated = paths.antigravity.some(exists)
-    || (isProviderApiKeyConfigured("agy", env) && verifyApiKey("agy"));
-  const agyRuntimeReady = options.agyRuntimeReady?.() ?? hasAgyRuntimePrerequisites({ env });
-  if (agyAuthenticated && hasRuntime("agy") && agyRuntimeReady && !failedProviders.has("agy")) {
+  // Official Agy sign-in is cached in Google's native secure keyring, not
+  // necessarily a readable file. No status-path probe or false-negative OAuth
+  // file requirement: attempt ACP when the locked CLI is installed and let
+  // its native runtime report authentication failure if disconnected.
+  const agyRuntimeReady = options.agyRuntimeReady?.() ?? true;
+  if (hasRuntime("agy") && agyRuntimeReady && !failedProviders.has("agy")) {
     available.add("antigravity");
   }
 

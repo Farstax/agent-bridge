@@ -57,6 +57,45 @@ function linkCurrent(paths: ReturnType<typeof installVersions>, version: string)
 }
 
 describe("provider binary retention after accepted rollout", () => {
+
+  for (const legacyVersion of ["2.0.0", "1.0.0"]) {
+    it(`only prunes obsolete versions when official Agy is active and the legacy pair targets rollback (${legacyVersion})`, () => {
+      const fixture = createFixture();
+      prepareImmutableRelease(fixture, fixture.previousCommit);
+      pinRelease(fixture, fixture.expectedCommit, { agy: "3.0.0", cursor: "3.0.0" });
+      pinRelease(fixture, fixture.previousCommit, { agy: "2.0.0", cursor: "2.0.0" });
+      const paths = installVersions(fixture, ["1.0.0", "2.0.0", "3.0.0"]);
+      linkCurrent(paths, "3.0.0");
+      const officialDirectory = join(paths.agyRoot, "3.0.0", "linux-x86_64");
+      writeFileSync(join(officialDirectory, "agy"), "official");
+      writeFileSync(join(officialDirectory, "manifest.json"), JSON.stringify({
+        schemaVersion: 3, version: "3.0.0", binaryName: "agy", archiveSha256: "a".repeat(64),
+      }));
+      rmSync(paths.agyLink);
+      rmSync(paths.harnessLink);
+      symlinkSync(join(officialDirectory, "agy"), paths.agyLink);
+      const legacyLink = join(fixture.root, "agy_legacy.par");
+      symlinkSync(join(paths.agyRoot, legacyVersion, "linux-x86_64", "agy_acp_server.par"), legacyLink);
+      symlinkSync(join(paths.agyRoot, legacyVersion, "linux-x86_64", "localharness_external"), paths.harnessLink);
+
+      const result = runRollout(fixture, undefined, undefined, {
+        ...paths.env, AGENT_BRIDGE_AGY_LEGACY_LINK: legacyLink,
+      });
+      const output = `${result.stdout}\\n${result.stderr}`;
+      expect(result.status, output).toBe(0);
+      expect(existsSync(join(paths.agyRoot, "2.0.0"))).toBe(true);
+      expect(existsSync(join(paths.agyRoot, "3.0.0"))).toBe(true);
+      if (legacyVersion === "2.0.0") {
+        expect(output).toContain("host component retention provider=agy pruned=1");
+        expect(existsSync(join(paths.agyRoot, "1.0.0"))).toBe(false);
+      } else {
+        expect(output).toContain("host component retention skipped provider=agy reason=legacy_link_not_rollback");
+        expect(existsSync(join(paths.agyRoot, "1.0.0"))).toBe(true);
+      }
+      expect(existsSync(join(paths.cursorRoot, "1.0.0"))).toBe(false);
+    }, 20_000);
+  }
+
   it("keeps only the current and rollback pinned versions", () => {
     const fixture = createFixture();
     prepareImmutableRelease(fixture, fixture.previousCommit);
