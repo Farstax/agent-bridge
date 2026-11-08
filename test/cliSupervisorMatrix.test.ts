@@ -1,4 +1,4 @@
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -425,6 +425,51 @@ describe("12. abort and shutdown wait for the full process tree, not just the le
     const alive = isAlive(descendantPid);
     if (alive) { try { process.kill(descendantPid, "SIGKILL"); } catch { /* cleanup */ } }
     expect(alive, "descendant should already be confirmed dead when abortCliProcessAndWait resolves").toBe(false);
+    await p.catch(() => "rejected");
+  }, 8_000);
+
+  // Agy's shell tool runs in its own session, so the provider's process group
+  // never contains it. Stop must still end every process that carries the Run's
+  // ownership marker, and nothing else.
+  function detachedToolScript(toolPidFile: string, readyFile: string): string {
+    return [
+      "const { spawn } = require('node:child_process');",
+      "const fs = require('node:fs');",
+      "process.on('SIGTERM', () => {});",
+      "const t = spawn(process.execPath, ['-e', 'setTimeout(()=>{},10000)'], { detached: true, stdio: 'ignore' });",
+      "t.unref();",
+      `fs.writeFileSync(${JSON.stringify(toolPidFile)}, String(t.pid));`,
+      `fs.writeFileSync(${JSON.stringify(readyFile)}, 'ready');`,
+      "setTimeout(() => {}, 10000);",
+    ].join("\n");
+  }
+
+  it("Stop also ends a Run-owned tool that left the provider's process group, and spares unrelated processes", async () => {
+    const toolPidFile = join(cliTestCwd, "detached-tool.pid");
+    const ready = join(cliTestCwd, "detached-leader-ready");
+    const runId = `detached-tool-${Date.now()}-${Math.random()}`;
+    const bystander = spawn(process.execPath, ["-e", "setTimeout(()=>{},10000)"], { detached: true, stdio: "ignore" });
+    bystander.unref();
+    const p = runCliAsync(process.execPath, ["-e", detachedToolScript(toolPidFile, ready)], cliTestCwd, {
+      chatId: "detached-tool",
+      killGraceMs: 150,
+      eventContext: { runId, bot: "codex", chatId: "chat-1" },
+    });
+    await waitForFile(ready);
+    await waitForFile(toolPidFile);
+    const toolPid = parseInt(readFileSync(toolPidFile, "utf8").trim(), 10);
+    expect(isAlive(toolPid)).toBe(true);
+
+    await expect(abortCliProcessAndWait("detached-tool")).resolves.toBe(true);
+    // An unreaped tool is a zombie: dead, but still signalable by pid.
+    const toolAlive = isAlive(toolPid) && (() => {
+      try { return !readFileSync(`/proc/${toolPid}/stat`, "utf8").split(") ")[1]?.startsWith("Z"); } catch { return false; }
+    })();
+    const bystanderAlive = isAlive(bystander.pid!);
+    for (const pid of [toolPid, bystander.pid!]) { try { process.kill(pid, "SIGKILL"); } catch { /* cleanup */ } }
+    expect(toolAlive, "Run-owned detached tool should be dead when Stop resolves").toBe(false);
+    expect(bystanderAlive, "a process without the Run marker must not be touched").toBe(true);
+    expect(getExecutionProcessState(runId)).toBe("absent");
     await p.catch(() => "rejected");
   }, 8_000);
 
