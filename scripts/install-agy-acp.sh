@@ -103,7 +103,7 @@ if ! valid_component; then
     | tr -d '\r' | awk 'tolower($1) == "content-length:" {size=$2} END {print size}')" \
     || fail "unable to determine Agy CLI archive size"
   [[ "$remote_length" =~ ^[0-9]+$ ]] || fail "Agy CLI archive did not report numeric Content-Length"
-  safety_factor="${AGENT_BRIDGE_AGY_ACP_DISK_SAFETY_FACTOR:-4}"
+  safety_factor="${AGENT_BRIDGE_AGY_ACP_DISK_SAFETY_FACTOR:-5}"
   [[ "$safety_factor" =~ ^[1-9][0-9]*$ ]] || fail "invalid disk safety factor"
   required_bytes=$((remote_length * safety_factor))
   if (( print_required_bytes == 1 )); then printf '%s\n' "$required_bytes"; exit 0; fi
