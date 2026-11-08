@@ -69,7 +69,7 @@ export interface OutwardAcpPromptExecutionInput {
   /** Explicit extension opt-in for ordinary objective outcomes and unattended wakes. */
   ordinaryContinuations?: boolean;
   /** Claimed and bound by the existing supervised worker, never ACP client input. */
-  ordinaryResume?: { id: string; claimToken: string; provider: BotKind };
+  ordinaryResume?: { id: string; claimToken: string; provider: BotKind; providerSessionId: string };
   /** ACP v1 caller opted into busy-message admission; otherwise a busy Workstream fails fast. */
   busyMessages?: boolean;
   /** Client idempotency token; a repeated submission never creates a second queue row or Run. */
@@ -789,7 +789,8 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
         if (input.ordinaryResume) {
           const current = this.options.lookupSession?.(input.session.sessionId);
           if (!current || current.conversationId !== input.session.conversationId ||
-              current.cwd !== input.session.cwd || this.selectedProvider(current) !== provider) {
+              current.cwd !== input.session.cwd || this.selectedProvider(current) !== provider ||
+              lookupProviderSession(db, identity, provider) !== input.ordinaryResume.providerSessionId) {
             throw new Error("outward ordinary continuation Workstream or provider authority changed");
           }
         }
