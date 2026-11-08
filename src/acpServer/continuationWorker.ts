@@ -63,7 +63,7 @@ export async function resumeOutwardOrdinaryContinuation(
   lookup: (id: string) => OutwardAcpSessionRecord | null,
   executor: OutwardAcpPromptExecutor,
   wake: RunContinuation,
-): Promise<boolean> {
+): Promise<boolean | "queued"> {
   if (wake.capacityWait || !wake.outwardSessionId || !wake.claimToken ||
       wake.state !== "claimed" || wake.surfaceIdentity !== OUTWARD_ACP_SURFACE) {
     throw new Error("outward ordinary continuation is not an authorised claimed wake");
@@ -93,7 +93,13 @@ export async function resumeOutwardOrdinaryContinuation(
       id: wake.id, claimToken: wake.claimToken, provider: wake.provider,
       providerSessionId,
     },
+    // A busy Workstream is admitted to the existing durable Core queue;
+    // its correlation is the same claimed continuation, not a fresh user Run.
+    busyMessages: true,
   });
+  const responseMeta = (result._meta as Record<string, unknown> | undefined)?.["agent-bridge"];
+  if (responseMeta && typeof responseMeta === "object" &&
+      (responseMeta as { outcome?: unknown }).outcome === "queued") return "queued";
   // ACP end_turn alone cannot prove durable Run/outcome settlement.
   const current = listRunContinuations(db, OUTWARD_ACP_SURFACE).find((item) => item.id === wake.id);
   const successor = current?.successorRunId ? db.getRun(current.successorRunId) : null;
