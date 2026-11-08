@@ -310,7 +310,7 @@ export function createOutwardAcpAgent(options: OutwardAcpAgentOptions = {}): Age
           const session = getKnown(ctx.params);
           if (control.status(session).state === "waiting") {
             const command = stringParam(ctx.params, "command", 64);
-            if (command !== "help" && command !== "status" && command !== "sensors") {
+            if (!["help", "status", "sensors", "stop", "reset"].includes(command)) {
               throw new acp.RequestError(-32002, "deferred Workstream is waiting; cancel it before modifying");
             }
           }
