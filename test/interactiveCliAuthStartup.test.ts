@@ -29,6 +29,7 @@ describe("interactive API-key startup", () => {
       env,
       exists: () => false,
       commandExists: () => true,
+      agyRuntimeReady: () => false,
       failedProviders: new Set(),
     });
 
@@ -58,6 +59,7 @@ describe("interactive API-key startup", () => {
         env,
         exists: () => false,
         commandExists: () => true,
+      agyRuntimeReady: () => false,
         failedProviders: new Set(),
       });
 

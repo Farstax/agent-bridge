@@ -78,9 +78,7 @@ type QueuedExecution = {
   laneHandle: ExecutionLaneHandle;
   key: string;
   retainedId: string | null;
-  requeued: boolean;
   settled?: boolean;
-  coreManaged?: boolean;
   coreOutcome?: "committed" | "deferred" | "settled";
 };
 
@@ -1054,20 +1052,17 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
         this.active.delete(input.session.conversationId);
       }
       try {
-        // Settle the durable queue row while this process still owns the lane.
-        if (queued?.coreManaged) {
+        // Core owns queued claim/retirement. Direct requests still release their own lane.
+        if (queued) {
           queued.coreOutcome = await this.settleQueuedThroughCore(input.session, queued, runId, queueCapacityRequeue);
           if ((queued.coreOutcome === "committed" || queued.settled) && queued.retainedId) {
             await releaseRetainedOutwardAcpAttachments(input.session.cwd, queued.retainedId).catch(() => undefined);
           }
-        } else if (queued?.settled) {
-          if (queued.retainedId) await releaseRetainedOutwardAcpAttachments(input.session.cwd, queued.retainedId);
-        } else if (queued) await this.settleQueued(lane, input.session, queued, runId, queueCapacityRequeue);
-        else if (idempotencyKey) this.settleDirect(idempotencyKey, runId);
+        } else if (idempotencyKey) this.settleDirect(idempotencyKey, runId);
       } catch (error) {
         console.error("[acp:outward] queued message settlement failed", error);
       }
-      if (!queued?.coreManaged) {
+      if (!queued) {
         try {
           db.unlock(lane);
         } finally {
@@ -1077,13 +1072,11 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
           }
           // Run the next accepted message once the lane is free; a closing
           // process leaves it durable for the supervised owner or next client.
-          if (!this.closing && !queued?.requeued) this.scheduleDrain(input.session);
+          if (!this.closing) this.scheduleDrain(input.session);
         }
-      } else {
-        if (active) {
-          active.settled = true;
-          active.finishDone();
-        }
+      } else if (active) {
+        active.settled = true;
+        active.finishDone();
       }
     }
   }
@@ -1135,7 +1128,13 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
     if (existingReceipt) {
       try {
         const receipt = JSON.parse(existingReceipt) as { status?: unknown };
-        if (["done", "failed", "cancelled", "steered"].includes(String(receipt.status))) return "committed";
+        if (receipt.status === "steering") {
+          // A provider steering RPC crossed its submission boundary. Recovery
+          // must not execute this row again, even if the original claim expired.
+          this.writeQueueReceipt(key, { status: "uncertain", reason: "steering_interrupted" });
+          return "committed";
+        }
+        if (["done", "failed", "cancelled", "steered", "uncertain"].includes(String(receipt.status))) return "committed";
       } catch { /* corrupt receipts fail closed through the Run link below */ }
     }
     const linkedRun = this.options.db.getSetting(queueRunLinkKey(key));
@@ -1157,7 +1156,7 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
         return "committed";
       }
     }
-    const queued: QueuedExecution = { id: message.id, laneHandle: message.laneHandle!, key, retainedId, requeued: false, coreManaged: true };
+    const queued: QueuedExecution = { id: message.id, laneHandle: message.laneHandle!, key, retainedId };
     try {
       await this.runOnLane({
         session,
@@ -1261,7 +1260,28 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
     if (mode === "interrupt") await this.cancelRun(session);
     else if (mode === "augment") steered = await this.trySteerQueued(session, queueId);
     this.scheduleDrain(session);
-    if (steered) return this.queueReceipt("steered", { queueId, mode, requestId: input.requestId });
+    // A late injected result after claim loss is uncertain, not a new queue
+    // admission. Surface the durable verdict instead of claiming it is queued.
+    const terminal = db.getSetting(queueReceiptKey(key));
+    if (terminal) {
+      try {
+        if (["cancelled", "uncertain"].includes(String((JSON.parse(terminal) as { status?: string }).status))) {
+          return this.storedQueueReceipt(terminal, input.requestId);
+        }
+      } catch { /* recovery owns malformed receipts */ }
+    }
+    if (steered) {
+      // Stop may retire the row between steering and this acknowledgement.
+      const current = db.getSetting(queueReceiptKey(key));
+      if (current) {
+        try {
+          if ((JSON.parse(current) as { status?: string }).status === "cancelled") {
+            return this.storedQueueReceipt(current, input.requestId);
+          }
+        } catch { /* malformed receipt is handled by replay/recovery */ }
+      }
+      return this.queueReceipt("steered", { queueId, mode, requestId: input.requestId });
+    }
     // The queue row may already be running or settled by the time we answer;
     // the receipt still reports acceptance, and status/history report progress.
     const position = db.pendingMessagePosition(OUTWARD_ACP_SURFACE, session.conversationId, queueId);
@@ -1296,27 +1316,86 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
       db.releasePendingClaim(record.lane, row.id);
       return false;
     }
+    // Mark the provider-submission boundary *before* awaiting its response.
+    // If a lease expires, Core will retire this row as uncertain instead of
+    // starting a duplicate Run while a side effect may already be live.
+    const started = db.runInImmediateTransaction(() => {
+      if (record.cancelRequested || db.getSetting(stopFenceKey(session.conversationId)) ||
+          !db.ownsLock(record.lane) || !db.ownsPendingClaim(record.lane, row.id)) return false;
+      db.setSetting(queueReceiptKey(row.scheduledOccurrenceKey!), JSON.stringify({
+        outcome: "queued", status: "steering", at: new Date().toISOString(),
+      }));
+      return true;
+    });
+    if (!started) return false;
     let outcome: { outcome: string } | null = null;
     try { outcome = await steer(row.prompt); } catch { outcome = null; }
     if (outcome?.outcome !== "injected") {
-      db.releasePendingClaim(record.lane, row.id);
+      db.runInImmediateTransaction(() => {
+        const key = row.scheduledOccurrenceKey!;
+        const previous = db.getSetting(queueReceiptKey(key));
+        if (!previous) return; // Stop already owns the receipt.
+        let status: string;
+        try { status = String((JSON.parse(previous) as { status?: string }).status); }
+        catch { return; }
+        if (status !== "steering") return; // Stop/recovery made it terminal.
+        if (outcome?.outcome === "promptRequired" &&
+            db.ownsLock(record.lane) && db.ownsPendingClaim(record.lane, row.id) &&
+            !record.cancelRequested && !db.getSetting(stopFenceKey(session.conversationId))) {
+          clearSetting(db, queueReceiptKey(key));
+          db.releasePendingClaim(record.lane, row.id);
+        } else {
+          // Unknown/failed steering may have injected side effects. Refuse
+          // automatic replay even though completion could not be confirmed.
+          this.writeQueueReceipt(key, { status: "uncertain", reason: "steering_unconfirmed", runId: record.lane.runId });
+        }
+      });
       return false;
     }
-    // Delivered to the live turn: the row must never become claimable again.
-    db.runInTransaction(() => {
+    // Injection is irreversible, but Stop and the Bridge claim fence decide
+    // whether ACP can record it as steered. Never delete a row after losing its
+    // claim, nor replace Stop's cancelled receipt with a late provider result.
+    return db.runInImmediateTransaction(() => {
+      const key = row.scheduledOccurrenceKey!;
+      if (db.getSetting(stopFenceKey(session.conversationId))) return false;
+      const previous = db.getSetting(queueReceiptKey(key));
+      if (previous) {
+        try {
+          if (["cancelled", "done", "failed", "steered", "uncertain"].includes(
+            String((JSON.parse(previous) as { status?: string }).status),
+          )) return false;
+        } catch { /* corrupt receipts fail closed in replay/recovery */ }
+      }
+      if (record.cancelRequested || !db.completePendingMsg(record.lane, row.id)) {
+        // The provider may have consumed the prompt, so a lost claim or
+        // request-scoped cancellation cannot safely put it back on the queue.
+        // Core will retire this receipt-marked row without executing it.
+        this.writeQueueReceipt(key, { status: "uncertain", reason: "steering_claim_lost", runId: record.lane.runId });
+        return false;
+      }
       db.addConvTurn(session.conversationId, "user", row.prompt, record.provider, { surfaceIdentity: OUTWARD_ACP_SURFACE });
-      db.deletePendingMsg(row.id);
-      this.writeQueueReceipt(row.scheduledOccurrenceKey!, { status: "steered", runId: record.lane.runId });
+      this.writeQueueReceipt(key, { status: "steered", runId: record.lane.runId });
+      return true;
     });
-    return true;
   }
 
   private writeQueueReceipt(key: string, receipt: Record<string, unknown>): void {
     const { db } = this.options;
-    const now = Date.now();
-    db.setSetting(queueReceiptKey(key), JSON.stringify({ ...receipt, at: new Date(now).toISOString() }));
-    db.raw.prepare(`DELETE FROM settings WHERE key LIKE 'outward-queue-receipt:%'
-      AND json_valid(value) AND json_extract(value, '$.at') < ?`).run(new Date(now - QUEUE_RECEIPT_RETENTION_MS).toISOString());
+    db.runInImmediateTransaction(() => {
+      // Stop's terminal receipt is authoritative, including across ACP processes.
+      if (receipt.status !== "cancelled") {
+        const previous = db.getSetting(queueReceiptKey(key));
+        if (previous) {
+          try {
+            if ((JSON.parse(previous) as { status?: string }).status === "cancelled") return;
+          } catch { /* a corrupt previous receipt does not grant Stop authority */ }
+        }
+      }
+      const now = Date.now();
+      db.setSetting(queueReceiptKey(key), JSON.stringify({ ...receipt, at: new Date(now).toISOString() }));
+      db.raw.prepare(`DELETE FROM settings WHERE key LIKE 'outward-queue-receipt:%'
+        AND json_valid(value) AND json_extract(value, '$.at') < ?`).run(new Date(now - QUEUE_RECEIPT_RETENTION_MS).toISOString());
+    });
   }
 
   /**
@@ -1380,41 +1459,6 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
       }
       clearSetting(db, queueRunLinkKey(key));
     });
-  }
-
-  private async settleQueued(
-    lane: ExecutionLaneHandle,
-    session: OutwardAcpSessionRecord,
-    queued: QueuedExecution,
-    runId: string,
-    capacityRequeue: boolean,
-  ): Promise<void> {
-    const { db } = this.options;
-    if (capacityRequeue) {
-      // A verified capacity rejection means the provider did not execute the
-      // prompt, so retrying the same durable row is safe -- within a bound.
-      const attemptsKey = `outward-queue-attempts:${queued.key}`;
-      const attempts = Number(db.getSetting(attemptsKey) ?? "0") + 1;
-      if (attempts < QUEUE_CAPACITY_RETRIES) {
-        db.runInTransaction(() => {
-          db.setSetting(attemptsKey, String(attempts));
-          clearSetting(db, queueRunLinkKey(queued.key));
-          db.releasePendingClaim(lane, queued.id);
-        });
-        queued.requeued = true;
-        return;
-      }
-    }
-    const run = db.getRun(runId);
-    if (!run || run.status === "running") return; // link stays: the next claim fails closed
-    db.runInTransaction(() => {
-      // A user Stop deletes the claimed row and writes the cancelled receipt itself.
-      if (!db.completePendingMsg(lane, queued.id)) return;
-      this.writeQueueReceipt(queued.key, { status: run.status, runId });
-      clearSetting(db, queueRunLinkKey(queued.key));
-      clearSetting(db, `outward-queue-attempts:${queued.key}`);
-    });
-    if (queued.retainedId) await releaseRetainedOutwardAcpAttachments(session.cwd, queued.retainedId);
   }
 
   private scheduleDrain(session: OutwardAcpSessionRecord): void {

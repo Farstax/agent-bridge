@@ -1,8 +1,6 @@
-import { homedir } from "node:os";
 import { acpSessionConfigIntents } from "../acp/sessionConfig.js";
 import type { AcpProviderPolicy, AcpProviderSessionSettings } from "./acpRuntime.js";
 import { assertAgyAcpVersion, resolveAgyAcpArgs, resolveAgyAcpCommand } from "./agyAcpConfig.js";
-import { assertAgyRuntimePrerequisites, hasAgyAcpCachedAuth, resolveAgyHarnessPath } from "./agyAvailability.js";
 import type { ProviderInvocationRequest } from "./types.js";
 
 function splitPreference(raw: string | undefined): string[] {
@@ -24,7 +22,6 @@ const AGY_QUALIFICATION_ENV_KEYS = [
   "AGY_ACP_COMMAND",
   "AGY_ACP_ARGS",
   "GEMINI_HOME",
-  "ANTIGRAVITY_HARNESS_PATH",
   "ANTIGRAVITY_MODEL_PREFERENCE",
   "ANTIGRAVITY_EFFORT",
   "BRIDGE_CURRENT_RELEASE_DIR",
@@ -44,21 +41,10 @@ export const agyAcpPolicy: AcpProviderPolicy = {
   resolveExecutable: resolveAgyAcpCommand,
   resolveArgs: (env, entry) => resolveAgyAcpArgs(env, entry),
   validateRuntime: (runtime, env) => {
-    assertAgyRuntimePrerequisites(env);
     assertAgyAcpVersion(runtime.executable, runtime.selectedVersion);
   },
-  buildChildEnv: (_request, env) => ({
-    ANTIGRAVITY_HARNESS_PATH: resolveAgyHarnessPath(env),
-  }),
   qualificationEnvKeys: AGY_QUALIFICATION_ENV_KEYS,
-  // `authenticate({ methodId: "oauth-personal" })` launches an interactive
-  // Google OAuth browser flow when no cached antigravity-acp credential
-  // exists. Only request it when a cached exchange is already on disk, so an
-  // ordinary Run never hangs waiting on a browser login; an unauthenticated
-  // environment instead surfaces as a normal not_authenticated failure from
-  // session/new/prompt.
-  authenticateMethodId: (env) => (
-    hasAgyAcpCachedAuth({ homeDir: env.HOME?.trim() || homedir(), env }) ? "oauth-personal" : undefined
-  ),
+  // The official CLI reuses its own cached sign-in during session/new.
+  // Never start interactive OAuth from an ordinary Run; Desk owns sign-in.
   sessionSettings,
 };

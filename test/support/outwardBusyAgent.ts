@@ -52,15 +52,30 @@ executor = new BridgeOutwardAcpPromptExecutor({
       }));
       const name = input.prompt.startsWith("hold:") ? input.prompt.slice(5).split(/\s/)[0] : null;
       const coordinator = executionLaneCoordinator(db, OUTWARD_ACP_SURFACE);
-      while (name && !existsSync(join(controlDir, `release-${name}`))) {
-        if (coordinator.isAborted(lane)) return { text: "", sessionId: "fake", stopReason: "cancelled" };
-        await new Promise((resolve) => setTimeout(resolve, 20));
+      if (name === "steer") {
+        coordinator.setSteerHandle(lane, async (text) => {
+          appendFileSync(join(controlDir, "steering.log"), `${JSON.stringify({ prompt: text, pid: process.pid })}\n`);
+          // Hold the RPC after the provider received the text. A different
+          // ACP process can now durably Stop while the response is in flight.
+          while (!existsSync(join(controlDir, "release-steering-rpc"))) {
+            await new Promise((resolve) => setTimeout(resolve, 20));
+          }
+          return { outcome: "injected" };
+        });
       }
-      input.collect(eventType.runCompleted({
-        runId: input.runId, bot: "codex", chatId: String(input.chatId), chatKey: input.chatKey,
-        text: `done:${input.prompt}`, sessionId: "fake",
-      }));
-      return { text: `done:${input.prompt}`, sessionId: "fake", stopReason: "end_turn" };
+      try {
+        while (name && !existsSync(join(controlDir, `release-${name}`))) {
+          if (coordinator.isAborted(lane)) return { text: "", sessionId: "fake", stopReason: "cancelled" };
+          await new Promise((resolve) => setTimeout(resolve, 20));
+        }
+        input.collect(eventType.runCompleted({
+          runId: input.runId, bot: "codex", chatId: String(input.chatId), chatKey: input.chatKey,
+          text: `done:${input.prompt}`, sessionId: "fake",
+        }));
+        return { text: `done:${input.prompt}`, sessionId: "fake", stopReason: "end_turn" };
+      } finally {
+        if (name === "steer") coordinator.clearSteerHandle(lane);
+      }
     },
     recoverPendingQueue: (chatKey) => queueCore.recoverPendingQueue(chatKey),
   }),

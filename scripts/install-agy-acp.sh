@@ -1,279 +1,165 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-fail() {
-  echo "install-agy-acp: $*" >&2
-  exit 1
-}
-
+fail() { echo "install-agy-acp: $*" >&2; exit 1; }
 print_required_bytes=0
-if [[ "${1:-}" == "--print-required-bytes" ]]; then
-  print_required_bytes=1
-fi
+[[ "${1:-}" != "--print-required-bytes" ]] || print_required_bytes=1
 phase="${AGENT_BRIDGE_HOST_COMPONENT_PHASE:-converge}"
-[[ "$phase" == prepare || "$phase" == commit || "$phase" == converge || "$phase" == verify ]] || fail "invalid host component phase"
+[[ "$phase" == prepare || "$phase" == commit || "$phase" == converge || "$phase" == verify ]] || fail "invalid phase"
 if (( print_required_bytes == 0 )) && [[ "$phase" != verify ]]; then
-  [[ "$(id -u)" == "0" ]] || fail "must run as root"
+  [[ "$(id -u)" == 0 ]] || fail "must run as root"
 fi
-[[ "$(uname -s)" == "Linux" ]] || fail "Agy ACP managed host component is supported only on Linux"
-
+[[ "$(uname -s)" == Linux ]] || fail "Agy CLI is supported only on Linux"
 case "$(uname -m)" in
-  x86_64|amd64) registry_platform="linux-x86_64" ;;
-  aarch64|arm64) registry_platform="linux-aarch64" ;;
-  *) fail "unsupported architecture: $(uname -m)" ;;
+  x86_64|amd64) registry_platform=linux-x86_64 ;;
+  aarch64|arm64) registry_platform=linux-aarch64 ;;
+  *) fail "unsupported architecture" ;;
 esac
-
-for command in curl python3 sha256sum readlink stat; do
-  command -v "${command}" >/dev/null 2>&1 || fail "required command is missing: ${command}"
-done
+for cmd in curl python3 sha256sum readlink stat; do command -v "$cmd" >/dev/null || fail "missing $cmd"; done
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-RELEASE_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
-REGISTRY_DATA="${RELEASE_DIR}/dist/providers/acpRegistry.locked.json"
-[[ -f "${REGISTRY_DATA}" && ! -L "${REGISTRY_DATA}" ]] || fail "release-locked ACP registry data is unavailable: ${REGISTRY_DATA}"
-registry_row="$(python3 - "${REGISTRY_DATA}" "${registry_platform}" <<'PY'
-import json
-import sys
-
-with open(sys.argv[1], encoding="utf-8") as source:
-    document = json.load(source)
+RELEASE_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+REGISTRY_DATA="$RELEASE_DIR/dist/providers/acpRegistry.locked.json"
+[[ -f "$REGISTRY_DATA" && ! -L "$REGISTRY_DATA" ]] || fail "release-locked ACP registry unavailable"
+registry_row="$(python3 - "$REGISTRY_DATA" "$registry_platform" <<'PY'
+import json, sys
+with open(sys.argv[1], encoding="utf-8") as f:
+    document = json.load(f)
 entry = document.get("providers", {}).get("agy")
 binary = (entry or {}).get("distribution", {}).get("binary", {}).get(sys.argv[2])
-if document.get("schema_version") != 1 or not entry or not binary:
-    raise SystemExit(2)
+if document.get("schema_version") != 1 or not entry or not binary: raise SystemExit(2)
 print("\t".join((entry["version"], binary["archive"], binary["cmd"], binary.get("sha256") or "-")))
 PY
-)" || fail "release-locked Agy ACP binary metadata is unavailable for ${registry_platform}"
-IFS=$'\t' read -r VERSION ARCHIVE_URL REGISTRY_CMD ARCHIVE_SHA <<<"${registry_row}"
-[[ -n "${VERSION}" && -n "${ARCHIVE_URL}" && -n "${REGISTRY_CMD}" ]] || fail "invalid release-locked Agy ACP metadata"
-if [[ "${ARCHIVE_SHA}" == "-" ]]; then ARCHIVE_SHA=""; fi
-if [[ -n "${ARCHIVE_SHA}" && ! "${ARCHIVE_SHA}" =~ ^[0-9a-f]{64}$ ]]; then
-  fail "invalid release-locked Agy ACP archive checksum"
-fi
+)" || fail "missing release-locked Agy CLI metadata for $registry_platform"
+IFS=$'\t' read -r VERSION ARCHIVE_URL REGISTRY_CMD ARCHIVE_SHA <<<"$registry_row"
+[[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || fail "invalid version"
+[[ "$REGISTRY_CMD" == "./agy" ]] || fail "expected official CLI executable"
+[[ "$ARCHIVE_URL" == "https://github.com/google-antigravity/antigravity-cli/releases/download/$VERSION/"*".tar.gz" ]] || fail "expected exact-version official release asset"
+[[ "$ARCHIVE_SHA" =~ ^[0-9a-f]{64}$ ]] || fail "release lock requires SHA-256"
 
 ROOT="${AGENT_BRIDGE_AGY_ACP_ROOT:-/opt/agent-bridge/host-components/agy-acp}"
-LINK="${AGENT_BRIDGE_AGY_ACP_LINK:-/usr/local/bin/agy_acp_server.par}"
-HARNESS_LINK="${AGENT_BRIDGE_AGY_HARNESS_LINK:-/usr/local/bin/agy_localharness_external}"
-VERSION_DIR="${ROOT}/components/${VERSION}"
-COMPONENT_DIR="${VERSION_DIR}/${registry_platform}"
-BINARY="${COMPONENT_DIR}/agy_acp_server.par"
-HARNESS="${COMPONENT_DIR}/localharness_external"
-MANIFEST="${COMPONENT_DIR}/manifest.json"
+LINK="${AGENT_BRIDGE_AGY_ACP_LINK:-/usr/local/bin/agy}"
+VERSION_DIR="$ROOT/components/$VERSION"
+COMPONENT_DIR="$VERSION_DIR/$registry_platform"
+BINARY="$COMPONENT_DIR/agy"
+MANIFEST="$COMPONENT_DIR/manifest.json"
 CHANGED=0
-
-[[ "${ROOT}" == /* && "${LINK}" == /* && "${HARNESS_LINK}" == /* ]] || fail "managed paths must be absolute"
-[[ ! -L "${ROOT}" ]] || fail "Agy ACP root must not be a symlink"
+[[ "$ROOT" == /* && "$LINK" == /* && ! -L "$ROOT" ]] || fail "unsafe managed paths"
 normalize_runtime_dir() {
   local path="$1"
-  [[ -d "${path}" && ! -L "${path}" ]] || fail "managed Agy ACP directory is invalid: ${path}"
-  if [[ "$(stat -c '%u:%g:%a' "${path}")" != "0:0:755" ]]; then
-    chown root:root "${path}"
-    chmod 0755 "${path}"
-    CHANGED=1
+  [[ -d "$path" && ! -L "$path" ]] || fail "managed component directory invalid"
+  if [[ "$(stat -c '%u:%g:%a' "$path")" != "0:0:755" ]]; then
+    chown root:root "$path"; chmod 0755 "$path"; CHANGED=1
   fi
 }
-
-if (( print_required_bytes == 0 )) && [[ "$phase" != verify ]]; then
-  mkdir -p "${ROOT}/components"
-  chown root:root "${ROOT}" "${ROOT}/components"
-  chmod 0755 "${ROOT}" "${ROOT}/components"
-  if [[ ! -e "${VERSION_DIR}" ]]; then
-    mkdir -p "${VERSION_DIR}"
-    CHANGED=1
-  fi
-  normalize_runtime_dir "${VERSION_DIR}"
-  if [[ -e "${COMPONENT_DIR}" ]]; then
-    normalize_runtime_dir "${COMPONENT_DIR}"
-  fi
-fi
-
 valid_component() {
-  [[ -d "${COMPONENT_DIR}" && ! -L "${COMPONENT_DIR}" && -x "${BINARY}" && -x "${HARNESS}" && -f "${MANIFEST}" && ! -L "${MANIFEST}" ]] || return 1
-  [[ "$(stat -c '%u:%g:%a' "${VERSION_DIR}")" == "0:0:755" ]] || return 1
-  [[ "$(stat -c '%u:%g:%a' "${COMPONENT_DIR}")" == "0:0:755" ]] || return 1
-  python3 - "${MANIFEST}" "${BINARY}" "${HARNESS}" "${VERSION}" "${ARCHIVE_URL}" "${registry_platform}" "${ARCHIVE_SHA}" <<'PY'
+  [[ -d "$VERSION_DIR" && ! -L "$VERSION_DIR" && -d "$COMPONENT_DIR" && ! -L "$COMPONENT_DIR" \
+    && -x "$BINARY" && ! -L "$BINARY" && -f "$MANIFEST" && ! -L "$MANIFEST" ]] || return 1
+  [[ "$(stat -c '%u:%g:%a' "$VERSION_DIR")" == "0:0:755" ]] || return 1
+  [[ "$(stat -c '%u:%g:%a' "$COMPONENT_DIR")" == "0:0:755" ]] || return 1
+  python3 - "$MANIFEST" "$BINARY" "$VERSION" "$ARCHIVE_URL" "$registry_platform" "$ARCHIVE_SHA" <<'PY'
 import hashlib, json, pathlib, stat, sys
-manifest_path = pathlib.Path(sys.argv[1])
-binary = pathlib.Path(sys.argv[2])
-harness = pathlib.Path(sys.argv[3])
-version, archive_url, platform, archive_sha = sys.argv[4:8]
-
+manifest_path, binary = map(pathlib.Path, sys.argv[1:3])
+version, url, platform, archive_sha = sys.argv[3:7]
 def sha256_file(path):
-    hasher = hashlib.sha256()
+    digest = hashlib.sha256()
     with path.open("rb") as stream:
         for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-            hasher.update(chunk)
-    return hasher.hexdigest()
-
+            digest.update(chunk)
+    return digest.hexdigest()
 try:
-    manifest_stat = manifest_path.lstat()
-    binary_stat = binary.lstat()
-    harness_stat = harness.lstat()
-    if not stat.S_ISREG(manifest_stat.st_mode) or not stat.S_ISREG(binary_stat.st_mode) or not stat.S_ISREG(harness_stat.st_mode):
-        raise ValueError("managed files must be regular")
-    if manifest_stat.st_uid != 0 or binary_stat.st_uid != 0 or harness_stat.st_uid != 0:
-        raise ValueError("managed files must be root-owned")
-    if manifest_stat.st_mode & 0o022 or binary_stat.st_mode & 0o022 or harness_stat.st_mode & 0o022:
-        raise ValueError("managed files must not be group/world writable")
-    if not binary_stat.st_mode & 0o111 or not harness_stat.st_mode & 0o111:
-        raise ValueError("managed runtime executable is not executable")
+    mstat, bstat = manifest_path.lstat(), binary.lstat()
+    if not stat.S_ISREG(mstat.st_mode) or not stat.S_ISREG(bstat.st_mode): raise ValueError("not regular")
+    if mstat.st_uid != 0 or bstat.st_uid != 0 or mstat.st_mode & 0o022 or bstat.st_mode & 0o022:
+        raise ValueError("unsafe ownership or permissions")
+    if not bstat.st_mode & 0o111: raise ValueError("not executable")
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    expected = {
-        "schemaVersion": 2,
-        "version": version,
-        "archiveUrl": archive_url,
-        "platform": platform,
-        "harnessName": "localharness_external",
-        "harnessVersion": version,
-        "harnessArchiveUrl": archive_url,
-        "harnessPath": str(harness),
-    }
-    if any(manifest.get(key) != value for key, value in expected.items()):
-        raise ValueError("manifest identity mismatch")
-    if archive_sha and manifest.get("archiveSha256") != archive_sha:
-        raise ValueError("archive checksum identity mismatch")
-    digest = sha256_file(binary)
-    if manifest.get("binarySha256") != digest:
-        raise ValueError("binary checksum mismatch")
-    harness_digest = sha256_file(harness)
-    if manifest.get("harnessSha256") != harness_digest:
-        raise ValueError("harness checksum mismatch")
-except Exception:
-    raise SystemExit(1)
+    expected = {"schemaVersion": 3, "version": version, "archiveUrl": url,
+                "platform": platform, "binaryName": "agy", "archiveSha256": archive_sha}
+    if any(manifest.get(k) != v for k,v in expected.items()): raise ValueError("identity")
+    if manifest.get("binarySha256") != sha256_file(binary): raise ValueError("binary checksum")
+except Exception: raise SystemExit(1)
 PY
 }
-
 if [[ "$phase" == verify ]]; then
-  valid_component || fail "installed Agy ACP component failed identity/checksum validation"
-  [[ -x "${LINK}" && "$(readlink -f "${LINK}")" == "${BINARY}" ]] \
-    || fail "managed Agy ACP link does not select the verified component"
-  [[ -x "${HARNESS_LINK}" && "$(readlink -f "${HARNESS_LINK}")" == "${HARNESS}" ]] \
-    || fail "managed Agy harness link does not select the verified component"
+  valid_component || fail "component identity/checksum invalid"
+  [[ -x "$LINK" && "$(readlink -f "$LINK")" == "$BINARY" ]] || fail "managed link does not select verified CLI"
   printf 'host_component_health=healthy\n'
   exit 0
 fi
-
-if ! valid_component; then
-  [[ "$phase" != commit ]] || fail "prepared Agy ACP payload is missing or invalid"
-  # Fail before downloading or disturbing anything if there is not enough
-  # headroom for the archive plus its extracted binary and harness to
-  # coexist during staging. Content-Length is a remote-reported estimate,
-  # so the required threshold applies a safety multiplier rather than
-  # trusting it exactly.
-  remote_length="$(curl --fail --location --silent --show-error --head "${ARCHIVE_URL}" \
-    | tr -d '\r' | awk 'tolower($1) == "content-length:" {print $2; exit}')" \
-    || fail "unable to determine Agy ACP archive size before download"
-  [[ "${remote_length}" =~ ^[0-9]+$ ]] || fail "Agy ACP archive did not report a numeric Content-Length"
-  safety_factor="${AGENT_BRIDGE_AGY_ACP_DISK_SAFETY_FACTOR:-4}"
-  required_bytes=$(( remote_length * safety_factor ))
-  if (( print_required_bytes == 1 )); then
-    printf '%s\n' "${required_bytes}"
-    exit 0
-  fi
-  available_bytes="$(df --output=avail -B1 "${ROOT}" 2>/dev/null | tail -1 | tr -d '[:space:]')"
-  [[ "${available_bytes}" =~ ^[0-9]+$ ]] || fail "unable to determine available disk space at ${ROOT}"
-  if (( available_bytes < required_bytes )); then
-    fail "insufficient disk space to stage Agy ACP component: need ~${required_bytes} bytes (archive ${remote_length} bytes x${safety_factor} safety factor), have ${available_bytes} bytes available at ${ROOT}"
-  fi
-
-  work="$(mktemp -d "${ROOT}/.install-${VERSION}.XXXXXX")"
-  trap 'rm -rf -- "${work:-}"' EXIT
-  archive="${work}/agy-acp.zip"
-  staging="${work}/component"
-  mkdir -p "${staging}"
-  curl --fail --location --silent --show-error --retry 3 --output "${archive}" "${ARCHIVE_URL}"
-  downloaded_archive_sha="$(sha256sum "${archive}" | awk '{print $1}')"
-  if [[ -n "${ARCHIVE_SHA}" && "${downloaded_archive_sha}" != "${ARCHIVE_SHA}" ]]; then
-    fail "release-locked Agy ACP archive checksum mismatch"
-  fi
-  python3 - "${archive}" "${staging}/agy_acp_server.par" "${staging}/localharness_external" "${REGISTRY_CMD}" <<'PY'
-import pathlib, shutil, sys, zipfile
-archive = pathlib.Path(sys.argv[1])
-destination = pathlib.Path(sys.argv[2])
-harness_destination = pathlib.Path(sys.argv[3])
-registry_cmd = pathlib.PurePosixPath(sys.argv[4]).name
-
-def extract_member(bundle, member, destination):
-    with bundle.open(member, "r") as source, destination.open("xb") as output:
-        shutil.copyfileobj(source, output, length=1024 * 1024)
-
-with zipfile.ZipFile(archive) as bundle:
-    files = [item for item in bundle.infolist() if not item.is_dir()]
-    matches = [item for item in files if pathlib.PurePosixPath(item.filename).name == registry_cmd]
-    harness_matches = [item for item in files if pathlib.PurePosixPath(item.filename).name == "localharness_external"]
-    if len(matches) != 1:
-        raise SystemExit(f"expected exactly one {registry_cmd} in Agy ACP archive, found {len(matches)}")
-    if len(harness_matches) != 1:
-        raise SystemExit(f"expected exactly one localharness_external in Agy ACP archive, found {len(harness_matches)}")
-    extract_member(bundle, matches[0], destination)
-    extract_member(bundle, harness_matches[0], harness_destination)
-PY
-  chmod 0555 "${staging}/agy_acp_server.par" "${staging}/localharness_external"
-  chown root:root "${staging}/agy_acp_server.par" "${staging}/localharness_external"
-  binary_sha="$(sha256sum "${staging}/agy_acp_server.par" | awk '{print $1}')"
-  harness_sha="$(sha256sum "${staging}/localharness_external" | awk '{print $1}')"
-  python3 - "${staging}/manifest.json" "${VERSION}" "${ARCHIVE_URL}" "${registry_platform}" "${binary_sha}" "${harness_sha}" "${downloaded_archive_sha}" "${ARCHIVE_SHA}" "${HARNESS}" <<'PY'
-import json, pathlib, sys
-path = pathlib.Path(sys.argv[1])
-manifest = {
-    "schemaVersion": 2,
-    "version": sys.argv[2],
-    "archiveUrl": sys.argv[3],
-    "platform": sys.argv[4],
-    "binarySha256": sys.argv[5],
-    "harnessName": "localharness_external",
-    "harnessVersion": sys.argv[2],
-    "harnessArchiveUrl": sys.argv[3],
-    "harnessPath": sys.argv[9],
-    "harnessSha256": sys.argv[6],
-    "archiveSha256": sys.argv[7],
-}
-if sys.argv[8] and sys.argv[8] != sys.argv[7]:
-    raise SystemExit("downloaded archive checksum does not match release lock")
-path.write_text(json.dumps(manifest, sort_keys=True, separators=(",", ":")) + "\n", encoding="utf-8")
-PY
-  chmod 0444 "${staging}/manifest.json"
-  chown root:root "${staging}/manifest.json"
-  rm -rf -- "${COMPONENT_DIR}.new"
-  mv "${staging}" "${COMPONENT_DIR}.new"
-  rm -rf -- "${COMPONENT_DIR}"
-  mv "${COMPONENT_DIR}.new" "${COMPONENT_DIR}"
-  normalize_runtime_dir "${COMPONENT_DIR}"
-  CHANGED=1
+if (( print_required_bytes == 0 )); then
+  mkdir -p "$ROOT/components"
+  chown root:root "$ROOT" "$ROOT/components"
+  chmod 0755 "$ROOT" "$ROOT/components"
+  if [[ ! -e "$VERSION_DIR" ]]; then mkdir -p "$VERSION_DIR"; CHANGED=1; fi
+  normalize_runtime_dir "$VERSION_DIR"
+  if [[ -e "$COMPONENT_DIR" ]]; then normalize_runtime_dir "$COMPONENT_DIR"; fi
 fi
 
+if ! valid_component; then
+  [[ "$phase" != commit ]] || fail "prepared Agy CLI payload missing or invalid"
+  # Retain only the last Content-Length after following the immutable asset redirect.
+  remote_length="$(curl --fail --location --silent --show-error --head "$ARCHIVE_URL" \
+    | tr -d '\r' | awk 'tolower($1) == "content-length:" {size=$2} END {print size}')" \
+    || fail "unable to determine Agy CLI archive size"
+  [[ "$remote_length" =~ ^[0-9]+$ ]] || fail "Agy CLI archive did not report numeric Content-Length"
+  safety_factor="${AGENT_BRIDGE_AGY_ACP_DISK_SAFETY_FACTOR:-5}"
+  [[ "$safety_factor" =~ ^[1-9][0-9]*$ ]] || fail "invalid disk safety factor"
+  required_bytes=$((remote_length * safety_factor))
+  if (( print_required_bytes == 1 )); then printf '%s\n' "$required_bytes"; exit 0; fi
+  available_bytes="$(df --output=avail -B1 "$ROOT" | tail -1 | tr -d '[:space:]')"
+  [[ "$available_bytes" =~ ^[0-9]+$ ]] || fail "unable to determine available disk space"
+  (( available_bytes >= required_bytes )) || fail "insufficient disk space to stage Agy CLI component: need ~$required_bytes bytes, have $available_bytes"
+  work="$(mktemp -d "$ROOT/.install-$VERSION.XXXXXX")"
+  trap 'rm -rf -- "${work:-}"' EXIT
+  archive="$work/agy-cli.tar.gz"
+  staging="$work/component"
+  mkdir -p "$staging"
+  curl --fail --location --silent --show-error --retry 3 --output "$archive" "$ARCHIVE_URL"
+  downloaded_archive_sha="$(sha256sum "$archive" | awk '{print $1}')"
+  [[ "$downloaded_archive_sha" == "$ARCHIVE_SHA" ]] || fail "release-locked Agy CLI archive checksum mismatch"
+  python3 - "$archive" "$staging/agy" <<'PY'
+import pathlib, shutil, sys, tarfile
+archive, destination = map(pathlib.Path, sys.argv[1:3])
+with tarfile.open(archive, "r:gz") as bundle:
+    matches = [m for m in bundle.getmembers() if m.isfile() and pathlib.PurePosixPath(m.name).name == "agy"]
+    if len(matches) != 1: raise SystemExit("expected one official agy executable")
+    source = bundle.extractfile(matches[0])
+    if source is None: raise SystemExit("binary unreadable")
+    with source, destination.open("xb") as output:
+        shutil.copyfileobj(source, output, length=1024 * 1024)
+PY
+  chmod 0555 "$staging/agy"; chown root:root "$staging/agy"
+  binary_sha="$(sha256sum "$staging/agy" | awk '{print $1}')"
+  python3 - "$staging/manifest.json" "$VERSION" "$ARCHIVE_URL" "$registry_platform" "$binary_sha" "$ARCHIVE_SHA" <<'PY'
+import json, pathlib, sys
+path = pathlib.Path(sys.argv[1])
+path.write_text(json.dumps({
+    "schemaVersion": 3, "version": sys.argv[2], "archiveUrl": sys.argv[3],
+    "platform": sys.argv[4], "binaryName": "agy", "binarySha256": sys.argv[5],
+    "archiveSha256": sys.argv[6],
+}, sort_keys=True, separators=(",", ":")) + "\n", encoding="utf-8")
+PY
+  chmod 0444 "$staging/manifest.json"; chown root:root "$staging/manifest.json"
+  rm -rf -- "$COMPONENT_DIR.new"
+  mv "$staging" "$COMPONENT_DIR.new"
+  rm -rf -- "$COMPONENT_DIR"
+  mv "$COMPONENT_DIR.new" "$COMPONENT_DIR"
+  normalize_runtime_dir "$COMPONENT_DIR"
+  CHANGED=1
+fi
 if (( print_required_bytes == 1 )); then
-  valid_component || fail "unable to measure Agy ACP component bytes"
+  valid_component || fail "unable to measure installed Agy CLI"
   printf '0\n'
   exit 0
 fi
-
-valid_component || fail "installed Agy ACP component failed identity/checksum validation"
-if [[ "$phase" == prepare ]]; then
-  echo "host_component_status=converged"
-  exit 0
-fi
-mkdir -p "$(dirname "${LINK}")" "$(dirname "${HARNESS_LINK}")"
-current_target="$(readlink -f "${LINK}" 2>/dev/null || true)"
-if [[ "${current_target}" != "${BINARY}" ]]; then
-  ln -sfn "${BINARY}" "${LINK}.new"
-  mv -Tf "${LINK}.new" "${LINK}"
+valid_component || fail "Agy CLI component identity/checksum invalid"
+if [[ "$phase" == prepare ]]; then echo host_component_status=converged; exit 0; fi
+mkdir -p "$(dirname "$LINK")"
+if [[ "$(readlink -f "$LINK" 2>/dev/null || true)" != "$BINARY" ]]; then
+  ln -sfn "$BINARY" "$LINK.new"
+  mv -Tf "$LINK.new" "$LINK"
   CHANGED=1
 fi
-[[ -x "${LINK}" ]] || fail "managed Agy ACP link is not executable"
-[[ "$(readlink -f "${LINK}")" == "${BINARY}" ]] || fail "managed Agy ACP link points outside the release-locked component"
-
-current_harness_target="$(readlink -f "${HARNESS_LINK}" 2>/dev/null || true)"
-if [[ "${current_harness_target}" != "${HARNESS}" ]]; then
-  ln -sfn "${HARNESS}" "${HARNESS_LINK}.new"
-  mv -Tf "${HARNESS_LINK}.new" "${HARNESS_LINK}"
-  CHANGED=1
-fi
-[[ -x "${HARNESS_LINK}" ]] || fail "managed Agy harness link is not executable"
-[[ "$(readlink -f "${HARNESS_LINK}")" == "${HARNESS}" ]] || fail "managed Agy harness link points outside the release-locked component"
-
-if (( CHANGED )); then
-  echo "host_component_status=converged"
-else
-  echo "host_component_status=no_op"
-fi
+[[ -x "$LINK" && "$(readlink -f "$LINK")" == "$BINARY" ]] || fail "managed CLI link incorrect"
+if (( CHANGED )); then echo host_component_status=converged; else echo host_component_status=no_op; fi

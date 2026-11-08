@@ -1,6 +1,5 @@
 import * as acp from "@agentclientprotocol/sdk/unstable";
-import { createHash } from "node:crypto";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -16,167 +15,81 @@ import {
 } from "../src/acp/sessionConfig.js";
 import { openDb } from "../src/db.js";
 import { agyAcpPolicy } from "../src/providers/agyAcpPolicy.js";
-import { hasAgyRuntimePrerequisites, resolveAgyHarnessPath } from "../src/providers/agyAvailability.js";
+import { resolveAgyAcpAuthPaths } from "../src/providers/agyAvailability.js";
 import { getAcpProviderPolicy, isAcpBackedBot, supportsToolFreeMode } from "../src/providers/registry.js";
 import type { ProviderInvocationRequest } from "../src/providers/types.js";
 
 function request(overrides: Partial<ProviderInvocationRequest> = {}): ProviderInvocationRequest {
   return {
-    prompt: "hello",
-    sessionId: null,
-    command: "agy_acp_server.par",
-    model: null,
-    executionMode: "safe",
-    outputFormat: "json",
-    soulContext: null,
-    attachments: [],
-    outputDir: null,
-    effort: null,
-    toolMode: "default",
+    prompt: "hello", sessionId: null, command: "agy", model: null,
+    executionMode: "safe", outputFormat: "json", soulContext: null,
+    attachments: [], outputDir: null, effort: null, toolMode: "default",
     ...overrides,
   };
 }
 
 describe("Agy ACP provider", () => {
-  it("locks the official Registry distribution and selects it for execution", () => {
+  it("locks the official Google 1.5.2 archive and launches agy acp in the generic ACP runtime", () => {
     expect(getLockedAcpRegistryEntry("agy")).toEqual(expect.objectContaining({
       id: "antigravity-acp",
-      version: "1.4.5",
-      distribution: {
-        binary: expect.objectContaining({
-          "linux-x86_64": {
-            archive: "https://dl.google.com/agy-extensions/releases/linux/agy-acp-server-1.4.5-linux-x86_64.zip",
-            sha256: "923923a0d7dc8073f66cc6f78647a3107e3a7ee2b7e1a24df8b3927b5188013b",
-            cmd: "./agy_acp_server.par",
-            args: ["--uid="],
-          },
-        }),
-      },
+      version: "1.5.2",
+      distribution: { binary: expect.objectContaining({
+        "linux-x86_64": {
+          archive: "https://github.com/google-antigravity/antigravity-cli/releases/download/1.5.2/agy_cli_linux_x64.tar.gz",
+          sha256: "da696a8dc6122a63d5ffbdd21b02c8a62d5361fba0ed7d3bc2d2619889e62711",
+          cmd: "./agy", args: ["acp"],
+        },
+      }) },
     }));
     expect(getAcpProviderPolicy("agy")).toBe(agyAcpPolicy);
-    expect(resolveProviderRuntime("agy", { AGY_ACP_COMMAND: "/opt/agy/agy_acp_server.par" })).toEqual(expect.objectContaining({
-      providerId: "agy",
-      transport: "acp-stdio",
-      executable: "/opt/agy/agy_acp_server.par",
-      args: ["--uid="],
-      versionArgs: ["--version"],
-      runtimeIdentity: expect.stringMatching(/^acp:antigravity-acp@1\.4\.5:[a-f0-9]{64}$/),
-      toolFree: true,
-      provisionalAnswers: true,
+    expect(resolveProviderRuntime("agy", { AGY_ACP_COMMAND: "/opt/agy/agy" })).toEqual(expect.objectContaining({
+      providerId: "agy", transport: "acp-stdio", executable: "/opt/agy/agy",
+      args: ["acp"], versionArgs: ["--version"],
+      runtimeIdentity: expect.stringMatching(/^acp:antigravity-acp@1\.5\.2:[a-f0-9]{64}$/),
+      toolFree: true, provisionalAnswers: true,
     }));
-
     const invocation = buildCliInvocation({
-      bot: "antigravity",
-      prompt: "hello",
-      sessionId: null,
-      command: "agy_acp_server.par",
-      model: null,
+      bot: "antigravity", prompt: "hello", sessionId: null, command: "agy", model: null,
     });
-    // Issue #903: the delegation/execution contract is an explicit opt-in
-    // (includeExecutionContract), so a plain buildCliInvocation call keeps
-    // the bare prompt.
     expect(invocation).toEqual({
-      command: expect.stringMatching(/agy_acp_server\.par$/),
-      args: ["--uid="],
-      nativeSessionMode: "fresh",
-      prompt: "hello",
-      transport: "acp-stdio",
+      command: expect.stringMatching(/agy$/), args: ["acp"],
+      nativeSessionMode: "fresh", prompt: "hello", transport: "acp-stdio",
     });
-    expect(invocation.args).not.toContain("--print");
   });
 
-  it("uses the bounded Agy-specific version verification timeout", () => {
+  it("uses bounded version verification and fails closed on an unexpected CLI", () => {
     let options: { timeout?: number } | undefined;
-    expect(readAgyAcpVersion("agy_acp_server.par", ((command, args, received) => {
-      expect(command).toBe("agy_acp_server.par");
+    expect(readAgyAcpVersion("agy", ((command, args, received) => {
+      expect(command).toBe("agy");
       expect(args).toEqual(["--version"]);
       options = received as { timeout?: number };
-      return "agy_acp_server.par 1.4.5";
-    }) as never)).toContain("1.4.5");
+      return "agy 1.5.2";
+    }) as never)).toContain("1.5.2");
     expect(options?.timeout).toBe(AGY_ACP_VERSION_TIMEOUT_MS);
-    expect(AGY_ACP_VERSION_TIMEOUT_MS).toBeGreaterThan(10_000);
-  });
-
-  it("refuses a stale, malformed, or missing Agy executable before submission", () => {
-    expect(() => assertAgyAcpVersion("agy_acp_server.par", "1.4.5", () => "agy_acp_server.par 1.2.1"))
-      .toThrow(/expects 1\.4\.5, observed 1\.2\.1/);
-    expect(() => assertAgyAcpVersion("agy_acp_server.par", "1.4.5", () => "unknown"))
+    expect(() => assertAgyAcpVersion("agy", "1.5.2", () => "agy 1.2.1"))
+      .toThrow(/expects 1\.5\.2, observed 1\.2\.1/);
+    expect(() => assertAgyAcpVersion("agy", "1.5.2", () => "unknown"))
       .toThrow(/observed unknown/);
-    expect(() => assertAgyAcpVersion("agy_acp_server.par", "1.4.5", () => { throw new Error("not installed"); }))
+    expect(() => assertAgyAcpVersion("agy", "1.5.2", () => { throw new Error("not installed"); }))
       .toThrow(/could not be version-verified: not installed/);
-    expect(() => assertAgyAcpVersion("agy_acp_server.par", "1.4.5", () => "agy_acp_server.par 1.4.5"))
-      .not.toThrow();
+    expect(() => assertAgyAcpVersion("agy", "1.5.2", () => "agy version 1.5.2")).not.toThrow();
+    expect(() => assertAgyAcpVersion("agy", "1.5.2", () => "agy v1.5.2")).not.toThrow();
+    for (const displayed of ["agy 1.5.2.1", "agy 1.5.20", "agy 11.5.2", "agy 1.5.2-rc1"]) {
+      expect(() => assertAgyAcpVersion("agy", "1.5.2", () => displayed)).toThrow(/version mismatch|observed unknown/);
+    }
   });
 
-  it("honors AGY_ACP_COMMAND and empty AGY_ACP_ARGS overrides", () => {
+  it("honours explicit command and argument overrides and needs no external harness", () => {
     expect(resolveProviderRuntime("agy", {
-      AGY_ACP_COMMAND: "/opt/agy/bin/agy_acp_server.par",
-      AGY_ACP_ARGS: "",
+      AGY_ACP_COMMAND: "/opt/agy/bin/agy", AGY_ACP_ARGS: "",
     })).toEqual(expect.objectContaining({
-      executable: "/opt/agy/bin/agy_acp_server.par",
-      args: [],
-      transport: "acp-stdio",
+      executable: "/opt/agy/bin/agy", args: [], transport: "acp-stdio",
     }));
     expect(resolveProviderRuntime("agy", {})).toEqual(expect.objectContaining({
-      executable: "agy_acp_server.par",
-      args: ["--uid="],
-      transport: "acp-stdio",
+      executable: "agy", args: ["acp"], transport: "acp-stdio",
     }));
-  });
-
-  it("fails closed when the required local harness is missing or non-executable and injects its absolute path", () => {
-    const root = mkdtempSync(join(tmpdir(), "agy-runtime-helper-"));
-    const harness = join(root, "localharness_external");
-    try {
-      expect(hasAgyRuntimePrerequisites({
-        env: { ANTIGRAVITY_HARNESS_PATH: harness },
-        exists: () => false,
-        isExecutable: () => false,
-      })).toBe(false);
-      writeFileSync(harness, "#!/bin/sh\n", "utf8");
-      chmodSync(harness, 0o644);
-      expect(hasAgyRuntimePrerequisites({
-        env: { ANTIGRAVITY_HARNESS_PATH: harness },
-        exists: existsSync,
-        isExecutable: () => false,
-      })).toBe(false);
-      chmodSync(harness, 0o755);
-      const harnessSha256 = createHash("sha256").update(readFileSync(harness)).digest("hex");
-      writeFileSync(join(root, "manifest.json"), JSON.stringify({
-        schemaVersion: 2,
-        harnessName: "localharness_external",
-        harnessSha256,
-      }) + "\n", "utf8");
-      expect(hasAgyRuntimePrerequisites({
-        env: { ANTIGRAVITY_HARNESS_PATH: harness },
-        exists: existsSync,
-        isExecutable: () => true,
-      })).toBe(true);
-      expect(hasAgyRuntimePrerequisites({
-        env: {},
-        exists: () => true,
-        isExecutable: () => true,
-        isValid: () => false,
-      })).toBe(false);
-      const installedAgy = join(root, "agy_acp_server.par");
-      writeFileSync(installedAgy, "#!/bin/sh\necho 'agy_acp_server.par 1.2.1'\n", "utf8");
-      chmodSync(installedAgy, 0o755);
-      const runtime = resolveProviderRuntime("agy", { AGY_ACP_COMMAND: installedAgy });
-      expect(() => agyAcpPolicy.validateRuntime?.(runtime, { ANTIGRAVITY_HARNESS_PATH: harness }))
-        .toThrow(/expects 1\.4\.5, observed 1\.2\.1/);
-      writeFileSync(installedAgy, "#!/bin/sh\necho 'agy_acp_server.par 1.4.5'\n", "utf8");
-      expect(() => agyAcpPolicy.validateRuntime?.(runtime, { ANTIGRAVITY_HARNESS_PATH: harness }))
-        .not.toThrow();
-      expect(resolveAgyHarnessPath({ ANTIGRAVITY_HARNESS_PATH: harness })).toBe(harness);
-      expect(agyAcpPolicy.buildChildEnv?.(request(), { ANTIGRAVITY_HARNESS_PATH: harness }))
-        .toEqual({ ANTIGRAVITY_HARNESS_PATH: harness });
-      expect(() => agyAcpPolicy.validateRuntime?.(
-        resolveProviderRuntime("agy", { AGY_ACP_COMMAND: "/opt/agy/agy_acp_server.par" }),
-        { ANTIGRAVITY_HARNESS_PATH: join(root, "missing") },
-      )).toThrow(/localharness_external/);
-    } finally {
-      rmSync(root, { recursive: true, force: true });
-    }
+    expect(agyAcpPolicy.buildChildEnv).toBeUndefined();
+    expect(agyAcpPolicy.authenticateMethodId).toBeUndefined();
   });
 
   it("expresses model and effort as semantic ACP intents without provider-id translation", () => {
@@ -202,17 +115,17 @@ describe("Agy ACP provider", () => {
     expect(agyAcpPolicy.steeringSupported).toBe(false);
   });
 
-  it("only requests oauth-personal authenticate when a cached antigravity-acp credential exists", () => {
+  it("prefers official CLI cached sign-in and never invokes interactive OAuth during a Run", () => {
     const root = mkdtempSync(join(tmpdir(), "agy-acp-auth-precedence-"));
     try {
-      // No cached credential yet: must not request the interactive OAuth
-      // method, or an ordinary Run would hang waiting on a browser login.
-      expect(agyAcpPolicy.authenticateMethodId?.({ HOME: root })).toBeUndefined();
-
-      const acpAuthDir = join(root, ".gemini", "antigravity-acp");
-      mkdirSync(acpAuthDir, { recursive: true });
-      writeFileSync(join(acpAuthDir, "acp_token.json"), "{}\n", "utf8");
-      expect(agyAcpPolicy.authenticateMethodId?.({ HOME: root })).toBe("oauth-personal");
+      expect(agyAcpPolicy.authenticateMethodId).toBeUndefined();
+      const authPaths = resolveAgyAcpAuthPaths(root, { HOME: root });
+      expect(authPaths).toContain(join(root, ".gemini", "oauth_creds.json"));
+      const dir = join(root, ".gemini");
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(join(dir, "oauth_creds.json"), "{}\n", "utf8");
+      expect(authPaths.some(existsSync)).toBe(true);
+      expect(agyAcpPolicy.authenticateMethodId).toBeUndefined();
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

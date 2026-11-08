@@ -328,7 +328,7 @@ describe("BridgeEngine", () => {
       });
       const client = makeMockClient();
       const engine = new BridgeEngine(
-        { surfaceIdentity: "test", kind: "antigravity", botConfig: { command: "agy_acp_server.par", modelPreference: [] }, allowedUserIds: new Set(["42"]), executionMode: "safe", pollIntervalMs: 1000, workingDir: process.cwd() },
+        { surfaceIdentity: "test", kind: "antigravity", botConfig: { command: "agy", modelPreference: [] }, allowedUserIds: new Set(["42"]), executionMode: "safe", pollIntervalMs: 1000, workingDir: process.cwd() },
         db, client, { runProviderInvocation },
       );
 
@@ -584,7 +584,7 @@ describe("BridgeEngine", () => {
           surfaceIdentity: "test",
           kind: "health",
           executionKind: "antigravity",
-          botConfig: { command: "agy_acp_server.par", modelPreference: [] },
+          botConfig: { command: "agy", modelPreference: [] },
           allowedUserIds: new Set(["42"]),
           executionMode: "safe",
           pollIntervalMs: 1000, workingDir: process.cwd(),
@@ -602,7 +602,7 @@ describe("BridgeEngine", () => {
       expect(runProviderInvocation).toHaveBeenCalledOnce();
       expect(runProviderInvocation.mock.calls[0][1]).toEqual(expect.objectContaining({
         transport: "acp-stdio",
-        args: ["--uid="],
+        args: ["acp"],
       }));
       expect(runProviderInvocation.mock.calls[0][1].args).not.toContain("--print");
       expect(client.sendMessage).toHaveBeenCalledOnce();
@@ -621,7 +621,7 @@ describe("BridgeEngine", () => {
         {
           surfaceIdentity: "test",
           kind: "antigravity",
-          botConfig: { command: "agy_acp_server.par", modelPreference: [] },
+          botConfig: { command: "agy", modelPreference: [] },
           allowedUserIds: new Set(["42"]),
           executionMode: "safe",
           pollIntervalMs: 1000, workingDir: process.cwd(),
@@ -648,7 +648,7 @@ describe("BridgeEngine", () => {
         {
           surfaceIdentity: "test",
           kind: "antigravity",
-          botConfig: { command: "agy_acp_server.par", modelPreference: [] },
+          botConfig: { command: "agy", modelPreference: [] },
           allowedUserIds: new Set(["42"]),
           executionMode: "safe",
           pollIntervalMs: 1000, workingDir: process.cwd(),
@@ -683,7 +683,7 @@ describe("BridgeEngine", () => {
       });
       const client = makeMockClient();
       const engine = new BridgeEngine(
-        { surfaceIdentity: "test", kind: "antigravity", botConfig: { command: "agy_acp_server.par", modelPreference: ["primary", "fallback"] }, allowedUserIds: new Set(["42"]), executionMode: "safe", pollIntervalMs: 1000, workingDir: process.cwd() },
+        { surfaceIdentity: "test", kind: "antigravity", botConfig: { command: "agy", modelPreference: ["primary", "fallback"] }, allowedUserIds: new Set(["42"]), executionMode: "safe", pollIntervalMs: 1000, workingDir: process.cwd() },
         db,
         client,
         { runProviderInvocation },
@@ -709,7 +709,7 @@ describe("BridgeEngine", () => {
         {
           surfaceIdentity: "test",
           kind: "antigravity",
-          botConfig: { command: "agy_acp_server.par", modelPreference: [] },
+          botConfig: { command: "agy", modelPreference: [] },
           allowedUserIds: new Set(["42"]),
           executionMode: "safe",
           pollIntervalMs: 1000, workingDir: process.cwd(),
@@ -1528,7 +1528,7 @@ describe("BridgeEngine", () => {
   });
 
   describe("thread vs non-thread parity", () => {
-    it("replaces a stale Agy conversation only under the originating topic key", async () => {
+    it("replaces a current Agy CLI conversation only under the originating topic key", async () => {
       const { BridgeEngine } = await import("../src/engine.js");
       const client = makeMockClient();
       const staleId = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
@@ -1537,7 +1537,7 @@ describe("BridgeEngine", () => {
       db.putAcpSessionBinding({
         surfaceIdentity: "test",
         conversationId: topicKey,
-        providerId: "agy",
+        providerId: "agy@cli:1.5.2",
         acpSessionId: staleId,
         runId: null,
       });
@@ -1549,7 +1549,7 @@ describe("BridgeEngine", () => {
         {
           surfaceIdentity: "test",
           kind: "antigravity",
-          botConfig: { command: "agy_acp_server.par", modelPreference: [] },
+          botConfig: { command: "agy", modelPreference: [] },
           allowedUserIds: new Set(["42"]),
           executionMode: "safe",
           pollIntervalMs: 1000, workingDir: process.cwd(),
@@ -1561,8 +1561,8 @@ describe("BridgeEngine", () => {
 
       await engine.handleMessages([makePrivateTopicMessage("resume topic", 7)]);
       expect(runProviderInvocation.mock.calls[0][4].sessionId).toBe(staleId);
-      expect(db.getAcpSessionBinding({ surfaceIdentity: "test", chatKey: topicKey }, "agy")?.acpSessionId).toBe(replacementId);
-      expect(db.getAcpSessionBinding({ surfaceIdentity: "test", chatKey: "100" }, "agy")).toBeNull();
+      expect(db.getAcpSessionBinding({ surfaceIdentity: "test", chatKey: topicKey }, "agy@cli:1.5.2")?.acpSessionId).toBe(replacementId);
+      expect(db.getAcpSessionBinding({ surfaceIdentity: "test", chatKey: "100" }, "agy@cli:1.5.2")).toBeNull();
       expect(client.sendMessage).toHaveBeenCalledWith(expect.objectContaining({
         chat_id: 100,
         message_thread_id: "7",

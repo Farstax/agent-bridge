@@ -125,12 +125,12 @@ describe("agent bridge MVP", () => {
       bot: "antigravity",
       prompt: "hello",
       sessionId: null,
-      command: "agy_acp_server.par",
+      command: "agy",
       model: "antigravity-pro",
       executionMode: "trusted",
     });
     expect(invocation.transport).toBe("acp-stdio");
-    expect(invocation.args).toEqual(["--uid="]);
+    expect(invocation.args).toEqual(["acp"]);
     expect(invocation.args).not.toContain("--print");
     expect(invocation.prompt).toContain("hello");
   });
@@ -140,7 +140,7 @@ describe("agent bridge MVP", () => {
       bot: "antigravity",
       prompt: "hello",
       sessionId: null,
-      command: "agy_acp_server.par",
+      command: "agy",
       model: null,
       includeResponseContract: false,
       includeExecutionContract: true,
@@ -158,7 +158,7 @@ describe("agent bridge MVP", () => {
       bot: "antigravity",
       prompt: "hello",
       sessionId: null,
-      command: "agy_acp_server.par",
+      command: "agy",
       model: null,
       soulContext: "Identity: Chas",
       includeResponseContract: false,
@@ -173,7 +173,7 @@ describe("agent bridge MVP", () => {
       bot: "antigravity",
       prompt: "hello",
       sessionId: "4229bce3-5009-429e-a3cb-d1bdaa8cfeed",
-      command: "agy_acp_server.par",
+      command: "agy",
       model: null,
     });
     expect(invocation.transport).toBe("acp-stdio");
@@ -187,7 +187,7 @@ describe("agent bridge MVP", () => {
       bot: "antigravity",
       prompt: "hello",
       sessionId: null,
-      command: "agy_acp_server.par",
+      command: "agy",
       model: null,
       executionMode: "trusted",
     });

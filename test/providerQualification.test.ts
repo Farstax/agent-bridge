@@ -150,13 +150,13 @@ describe("provider qualification contract", () => {
     const root = mkdtempSync(join(tmpdir(), "provider-qualification-agy-acp-version-"));
     const previousCommand = process.env.AGY_ACP_COMMAND;
     const previousArgs = process.env.AGY_ACP_ARGS;
-    const acp = executable(join(root, "agy_acp_server.par"), `
-if [[ "\${1:-}" == "--version" ]]; then echo "agy_acp_server 1.4.5"; exit 0; fi
+    const acp = executable(join(root, "agy"), `
+if [[ "\${1:-}" == "--version" ]]; then echo "agy 1.5.2"; exit 0; fi
 echo "acp should not be oneshot-parsed" >&2
 exit 7
 `);
     process.env.AGY_ACP_COMMAND = acp;
-    process.env.AGY_ACP_ARGS = "--uid=";
+    process.env.AGY_ACP_ARGS = "acp";
     try {
       const result = await qualifyProvider({
         providerId: "agy",
@@ -169,16 +169,16 @@ exit 7
         env: {
           ...process.env,
           AGY_ACP_COMMAND: acp,
-          AGY_ACP_ARGS: "--uid=",
+          AGY_ACP_ARGS: "acp",
         },
       });
       expect(result.executionRuntime).toBe(resolveProviderRuntime("agy", {
         ...process.env,
         AGY_ACP_COMMAND: acp,
-        AGY_ACP_ARGS: "--uid=",
+        AGY_ACP_ARGS: "acp",
       }).runtimeIdentity);
-      expect(result.providerVersion).toBe("1.4.5");
-      expect(result.checks.find((check) => check.name === "version")?.diagnostic).toMatch(/agy_acp_server 1\.4\.5/);
+      expect(result.providerVersion).toBe("1.5.2");
+      expect(result.checks.find((check) => check.name === "version")?.diagnostic).toMatch(/agy 1\.5\.2/);
     } finally {
       if (previousCommand === undefined) delete process.env.AGY_ACP_COMMAND;
       else process.env.AGY_ACP_COMMAND = previousCommand;
@@ -189,7 +189,7 @@ exit 7
 
   describe("candidate binding (issue 997)", () => {
     const agyScript = `
-if [[ "\${1:-}" == "--version" ]]; then echo "agy_acp_server 1.4.5"; exit 0; fi
+if [[ "\${1:-}" == "--version" ]]; then echo "agy 1.5.2"; exit 0; fi
 exit 7
 `;
 
@@ -198,7 +198,7 @@ exit 7
       const previousCommand = process.env.AGY_ACP_COMMAND;
       const previousArgs = process.env.AGY_ACP_ARGS;
       process.env.AGY_ACP_COMMAND = command;
-      process.env.AGY_ACP_ARGS = "--uid=";
+      process.env.AGY_ACP_ARGS = "acp";
       try {
         return await qualifyProvider({
           providerId: "agy",
@@ -209,7 +209,7 @@ exit 7
           cwd: root,
           homeDir: root,
           timeoutMs: 5_000,
-          env: { ...process.env, AGY_ACP_COMMAND: command, AGY_ACP_ARGS: "--uid=" },
+          env: { ...process.env, AGY_ACP_COMMAND: command, AGY_ACP_ARGS: "acp" },
         });
       } finally {
         if (previousCommand === undefined) delete process.env.AGY_ACP_COMMAND;
@@ -221,7 +221,7 @@ exit 7
 
     it("records the exact executable digest that was qualified", async () => {
       const root = mkdtempSync(join(tmpdir(), "provider-qualification-candidate-"));
-      const acp = executable(join(root, "agy_acp_server.par"), agyScript);
+      const acp = executable(join(root, "agy"), agyScript);
       const record = await qualifyAgy(acp, acp, false);
       const expectedDigest = createHash("sha256").update(readFileSync(acp)).digest("hex");
       expect(record.candidate).toEqual({ executable: realpathSync(acp), sha256: expectedDigest, staged: false });
@@ -229,10 +229,10 @@ exit 7
 
     it("binds evidence to an explicitly staged executable selected by the runtime environment", async () => {
       const root = mkdtempSync(join(tmpdir(), "provider-qualification-staged-"));
-      const deployed = executable(join(root, "deployed_agy_acp_server.par"), agyScript);
-      const staged = executable(join(root, "staged_agy_acp_server.par"), `${agyScript}\n# staged candidate\n`);
+      const deployed = executable(join(root, "deployed_agy"), agyScript);
+      const staged = executable(join(root, "staged_agy"), `${agyScript}\n# staged candidate\n`);
       const record = await qualifyAgy(staged, staged, true);
-      expect(record.providerVersion).toBe("1.4.5");
+      expect(record.providerVersion).toBe("1.5.2");
       expect(record.candidate).toMatchObject({ executable: realpathSync(staged), staged: true });
       expect(record.candidate?.sha256).toBe(createHash("sha256").update(readFileSync(staged)).digest("hex"));
       expect(record.candidate?.sha256).not.toBe(createHash("sha256").update(readFileSync(deployed)).digest("hex"));
@@ -240,15 +240,15 @@ exit 7
 
     it("refuses a staged executable that the runtime would not launch", async () => {
       const root = mkdtempSync(join(tmpdir(), "provider-qualification-staged-mismatch-"));
-      const deployed = executable(join(root, "deployed_agy_acp_server.par"), agyScript);
-      const staged = executable(join(root, "staged_agy_acp_server.par"), `${agyScript}\n# staged candidate\n`);
+      const deployed = executable(join(root, "deployed_agy"), agyScript);
+      const staged = executable(join(root, "staged_agy"), `${agyScript}\n# staged candidate\n`);
       await expect(qualifyAgy(deployed, staged, true))
         .rejects.toThrow(/is not the executable the runtime environment selects/);
     });
 
     it("fails qualification for a staged executable that is not the release-locked version", async () => {
       const root = mkdtempSync(join(tmpdir(), "provider-qualification-stale-agy-"));
-      const stale = executable(join(root, "agy_acp_server.par"), `
+      const stale = executable(join(root, "agy"), `
 if [[ "\${1:-}" == "--version" ]]; then echo "agy_acp_server 1.2.1"; exit 0; fi
 exit 7
 `);
@@ -260,7 +260,7 @@ exit 7
 
     it("records an unreadable executable as unbound instead of failing qualification", async () => {
       const root = mkdtempSync(join(tmpdir(), "provider-qualification-unreadable-"));
-      const acp = executable(join(root, "agy_acp_server.par"), agyScript);
+      const acp = executable(join(root, "agy"), agyScript);
       chmodSync(acp, 0o111);
       const record = await qualifyAgy(acp, acp, false);
       if (process.getuid?.() === 0) return; // root can read any file
@@ -269,19 +269,19 @@ exit 7
 
     it("never records an argument executable the ACP runtime did not exercise", async () => {
       const root = mkdtempSync(join(tmpdir(), "provider-qualification-unflagged-"));
-      const deployed = executable(join(root, "deployed_agy_acp_server.par"), agyScript);
-      const other = executable(join(root, "other_agy_acp_server.par"), `${agyScript}\n# other\n`);
+      const deployed = executable(join(root, "deployed_agy"), agyScript);
+      const other = executable(join(root, "other_agy"), `${agyScript}\n# other\n`);
       const record = await qualifyAgy(deployed, other, false);
       expect(record.candidate).toMatchObject({ executable: realpathSync(deployed), staged: false });
     });
 
     it("invalidates current qualification when executable bytes change without release or version changing", async () => {
       const root = mkdtempSync(join(tmpdir(), "provider-qualification-byte-drift-"));
-      const acp = executable(join(root, "agy_acp_server.par"), agyScript);
+      const acp = executable(join(root, "agy"), agyScript);
       const previousCommand = process.env.AGY_ACP_COMMAND;
       const previousArgs = process.env.AGY_ACP_ARGS;
       process.env.AGY_ACP_COMMAND = acp;
-      process.env.AGY_ACP_ARGS = "--uid=";
+      process.env.AGY_ACP_ARGS = "acp";
       try {
         const evidencePath = join(root, "qualification.json");
         const initial = await qualifyProvider({
@@ -292,13 +292,13 @@ exit 7
           cwd: root,
           homeDir: root,
           timeoutMs: 5_000,
-          env: { ...process.env, AGY_ACP_COMMAND: acp, AGY_ACP_ARGS: "--uid=" },
+          env: { ...process.env, AGY_ACP_COMMAND: acp, AGY_ACP_ARGS: "acp" },
         });
-        expect(isQualificationCurrent(initial, "agy", "1.4.5", process.env)).toBe(true);
+        expect(isQualificationCurrent(initial, "agy", "1.5.2", process.env)).toBe(true);
 
         // Mutate the executable bytes while keeping the reported version identical
         writeFileSync(acp, `${agyScript}\n# modified binary bytes\n`, { encoding: "utf8", mode: 0o755 });
-        expect(isQualificationCurrent(initial, "agy", "1.4.5", process.env)).toBe(false);
+        expect(isQualificationCurrent(initial, "agy", "1.5.2", process.env)).toBe(false);
 
         // qualifyProviderIfNeeded must not reuse the stale record when bytes changed
         const recheck = await qualifyProviderIfNeeded({
@@ -306,7 +306,7 @@ exit 7
           executable: acp,
           evidencePath,
           homeDir: root,
-          env: { ...process.env, AGY_ACP_COMMAND: acp, AGY_ACP_ARGS: "--uid=" },
+          env: { ...process.env, AGY_ACP_COMMAND: acp, AGY_ACP_ARGS: "acp" },
         });
         expect(recheck.ran).toBe(true);
         expect(recheck.record.candidate?.sha256).not.toBe(initial.candidate?.sha256);
@@ -320,12 +320,12 @@ exit 7
 
     it("refuses to overwrite active production qualification evidence with staged candidate qualification", async () => {
       const root = mkdtempSync(join(tmpdir(), "provider-qualification-staged-prod-"));
-      const staged = executable(join(root, "staged_agy_acp_server.par"), `${agyScript}\n# staged\n`);
+      const staged = executable(join(root, "staged_agy"), `${agyScript}\n# staged\n`);
       const prodPath = qualificationEvidencePath(root);
       const previousCommand = process.env.AGY_ACP_COMMAND;
       const previousArgs = process.env.AGY_ACP_ARGS;
       process.env.AGY_ACP_COMMAND = staged;
-      process.env.AGY_ACP_ARGS = "--uid=";
+      process.env.AGY_ACP_ARGS = "acp";
       try {
         await expect(qualifyProvider({
           providerId: "agy",
@@ -336,7 +336,7 @@ exit 7
           cwd: root,
           homeDir: root,
           timeoutMs: 5_000,
-          env: { ...process.env, AGY_ACP_COMMAND: staged, AGY_ACP_ARGS: "--uid=" },
+          env: { ...process.env, AGY_ACP_COMMAND: staged, AGY_ACP_ARGS: "acp" },
         })).rejects.toThrow(/staged qualification cannot overwrite active production qualification evidence/);
       } finally {
         if (previousCommand === undefined) delete process.env.AGY_ACP_COMMAND;
@@ -350,11 +350,11 @@ exit 7
       const runtimeIdentity = currentQualificationRuntime("agy");
       const record = passingRecord({
         provider: "agy",
-        providerVersion: "1.4.5",
+        providerVersion: "1.5.2",
         executionRuntime: runtimeIdentity,
         candidate: { executable: "/usr/bin/agy", sha256: "abc", staged: true },
       });
-      expect(isQualificationCurrent(record, "agy", "1.4.5")).toBe(false);
+      expect(isQualificationCurrent(record, "agy", "1.5.2")).toBe(false);
     });
   });
 

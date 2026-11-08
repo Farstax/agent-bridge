@@ -74,10 +74,10 @@ describe("provider registry", () => {
       displayName: "Cursor",
     });
     expect(getProviderAdapter("cursor").executable).toBeUndefined();
-    expect(resolveProviderRuntime("agy", { AGY_ACP_COMMAND: "/opt/agy/agy_acp_server.par" })).toMatchObject({
+    expect(resolveProviderRuntime("agy", { AGY_ACP_COMMAND: "/opt/agy/agy" })).toMatchObject({
       transport: "acp-stdio",
-      executable: "/opt/agy/agy_acp_server.par",
-      args: ["--uid="],
+      executable: "/opt/agy/agy",
+      args: ["acp"],
     });
     expect(resolveProviderRuntime("grok", {
       GROK_ACP_COMMAND: "/opt/xai/bin/grok",
