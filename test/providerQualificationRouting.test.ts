@@ -16,7 +16,7 @@ describe("provider qualification routing", () => {
     writeQualificationRecord({
       provider: "agy",
       executionRuntime: resolveProviderRuntime("agy", {}).runtimeIdentity,
-      providerVersion: "1.4.5",
+      providerVersion: "1.5.2",
       previousVersion: null,
       bridgeCommit: "e".repeat(40),
       contractVersion: PROVIDER_CONTRACT_VERSION,
@@ -47,7 +47,7 @@ describe("provider qualification routing", () => {
     }, evidencePath);
 
     expect([...getQualificationFailedProviders(evidencePath, {
-      agy: "1.4.5",
+      agy: "1.5.2",
       claude: "2.3.4",
     })]).toEqual(["agy"]);
   });
@@ -280,7 +280,7 @@ describe("provider qualification routing", () => {
     expect([...available]).toEqual(["claude"]);
   });
 
-  it("uses canonical interactive availability to exclude Agy from fallback when its managed harness is unavailable", () => {
+  it("does not require a retired harness to select the official Agy CLI", () => {
     vi.stubEnv("ANTIGRAVITY_HARNESS_PATH", "/definitely/missing/agy_localharness_external");
     try {
       const db = openDb(":memory:");
@@ -297,8 +297,8 @@ describe("provider qualification routing", () => {
         
         (cli) => available.has(cli as any),
       );
-      expect(available.has("antigravity")).toBe(false);
-      expect(chain.getChain()).toEqual([]);
+      expect(available.has("antigravity")).toBe(true);
+      expect(chain.getChain()).toEqual(["antigravity"]);
     } finally {
       vi.unstubAllEnvs();
     }
