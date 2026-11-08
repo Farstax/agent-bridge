@@ -21,7 +21,7 @@ describe("loadBotsConfig", () => {
     expect(bots.claude.command).toContain("node_modules/.bin/claude-agent-acp");
     expect(bots.codex.modelPreference).toEqual([]);
     expect(bots.claude.modelPreference).toEqual([]);
-    expect(bots.antigravity.command).toBe("agy_acp_server.par");
+    expect(bots.antigravity.command).toBe("agy");
     expect(bots.antigravity.modelPreference).toEqual([]);
     expect(bots.grok.command).toContain("node_modules/.bin/grok");
     expect(bots.cursor.command).toBe("cursor-agent");
@@ -36,20 +36,20 @@ describe("loadBotsConfig", () => {
       CLAUDE_MODEL_PREFERENCE: "sonnet,opus",
       CURSOR_MODEL_PREFERENCE: "composer-2.5,auto",
       ANTIGRAVITY_MODEL_PREFERENCE: "m1, m2 ,m3",
-      AGY_ACP_COMMAND: "/opt/agy/agy_acp_server.par",
+      AGY_ACP_COMMAND: "/opt/agy/agy",
     });
     expect(bots.codex.command).toBe("/opt/bin/codex-acp");
     expect(bots.claude.command).toBe("/opt/bin/claude-agent-acp");
     expect(bots.codex.modelPreference).toEqual([]);
     expect(bots.claude.modelPreference).toEqual([]);
-    expect(bots.antigravity.command).toBe("/opt/agy/agy_acp_server.par");
+    expect(bots.antigravity.command).toBe("/opt/agy/agy");
     expect(bots.antigravity.modelPreference).toEqual([]);
     expect(bots.cursor.modelPreference).toEqual([]);
   });
 
   it("honours legacy GEMINI token fallbacks for antigravity without native command fallback", () => {
     const bots = loadBotsConfig({ GEMINI_COMMAND: "gem", TELEGRAM_BOT_TOKEN_GEMINI: "t1" }, { withTokens: true });
-    expect(bots.antigravity.command).toBe("agy_acp_server.par");
+    expect(bots.antigravity.command).toBe("agy");
     expect(bots.antigravity.token).toBe("t1");
   });
 
