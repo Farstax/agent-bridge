@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { openDb } from "../src/db.js";
 import { createSurfaceNeutralProviderRouter } from "../src/surfaceNeutralProviderRouter.js";
 import { recordRunOutcome } from "../src/runOutcome.js";
+import { listRunContinuations, requestRunContinuation } from "../src/runContinuation.js";
 import type { BotKind } from "../src/types.js";
 
 function event(input: any, type: string, extra: Record<string, unknown> = {}) {
@@ -125,7 +126,18 @@ describe("surface-neutral provider attempt isolation", () => {
         executeSurfaceNeutralTurn: vi.fn(async (input: any) => {
           seen.push(provider);
           expect(db.getRun(input.runId).bot).toBe(provider);
-          if (provider === "claude") throw new Error("usage limit reached");
+          if (provider === "claude") {
+            recordRunOutcome(db, {
+              runId: input.runId, surfaceIdentity: identity.surfaceIdentity,
+              chatKey, provider, status: "continue", detail: "stale capacity wait",
+              lock: { serviceId: lane!.serviceId, runId: lane!.runId, acquisitionId: lane!.acquisitionId },
+            });
+            requestRunContinuation(db, {
+              originRunId: input.runId, ...identity, provider,
+              reason: "stale capacity wait", afterSeconds: 5, outwardSessionId: "workstream",
+            });
+            throw new Error("usage limit reached");
+          }
           recordRunOutcome(db, {
             runId: input.runId, surfaceIdentity: identity.surfaceIdentity,
             chatKey, provider, status: "complete", detail: "verified",
@@ -142,6 +154,9 @@ describe("surface-neutral provider attempt isolation", () => {
       expect(db.getRun("fenced-run")).toMatchObject({
         bot: "codex", outcome_status: "complete", outcome_detail: "verified",
       });
+      expect(listRunContinuations(db, identity.surfaceIdentity)).toEqual([
+        expect.objectContaining({ state: "cancelled", reason: "stale capacity wait" }),
+      ]);
     } finally {
       db.unlock(lane!);
       db.close();
