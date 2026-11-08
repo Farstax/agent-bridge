@@ -2,6 +2,8 @@ import type { BridgeDb } from "./db.js";
 import type { BridgeEngine, SurfaceNeutralTurnInput } from "./engine.js";
 import type { BridgeEvent } from "./events/types.js";
 import { ProviderFallbackChain } from "./providerFallback.js";
+import { RunRepository } from "./repositories/runRepository.js";
+import { resetAbandonedRunDisposition } from "./runOutcome.js";
 import { providerIdForBotName } from "./providers/registry.js";
 import { decideProviderRecovery } from "./providers/recoveryVerdict.js";
 import { markHandoffRequired } from "./handoffState.js";
@@ -71,6 +73,19 @@ export function createSurfaceNeutralProviderRouter(
           console.error(`[surface-neutral-router] no available provider in chain ${ordered.join(",")} surface=${options.surfaceIdentity ?? "unknown"}`);
           throw new Error("no available provider in the configured chain");
         }
+        // An outcome/continuation helper runs *inside* the native provider
+        // attempt, before buffered run.started events are published. Its
+        // provider fence must already match this attempt, including after a
+        // cross-provider fallback. Use the existing Run repository and lane
+        // fence rather than adding another ACP lifecycle/settlement owner.
+        const activeRun = options.db.getRun(input.runId);
+        if (activeRun?.status === "running" && activeRun.bot !== provider) {
+          options.db.runWithLockFence(input.laneHandle, () => {
+            if (!new RunRepository(options.db.raw).updateRunningRunBot(input.runId, provider)) {
+              throw new Error("outward Run provider attribution lost its active Run");
+            }
+          });
+        }
         const engine = options.engineForProvider(provider);
         let attemptEvents: BridgeEvent[] = [];
         const providerInput: SurfaceNeutralTurnInput = {
@@ -129,6 +144,14 @@ export function createSurfaceNeutralProviderRouter(
           if (!next) {
             for (const event of attemptEvents) input.collect(event);
             throw error;
+          }
+          // The failed provider's disposition and pending ordinary wake
+          // cannot be carried into a different provider's attempt. Reuse the
+          // exact same fenced Core owner as messaging's provider retries.
+          if (options.db.getRun(input.runId)?.status === "running") {
+            options.db.runWithLockFence(input.laneHandle, () => {
+              resetAbandonedRunDisposition(options.db, input.runId);
+            });
           }
           // This route has no chat-specific presentation layer, but uses the
           // same durable inspection-first handoff context as interactive

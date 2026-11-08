@@ -205,6 +205,7 @@ export function createOutwardAcpAgent(options: OutwardAcpAgentOptions = {}): Age
       workstreams: supportsWorkstreams,
       commands: supportsWorkstreams && Boolean(options.commands),
       deferredCapacity: supportsWorkstreams && options.promptExecutor?.supportsDeferredCapacity === true,
+      ordinaryContinuations: supportsWorkstreams && options.promptExecutor?.supportsOrdinaryContinuations === true,
       busyMessages: supportsWorkstreams && options.promptExecutor?.supportsBusyMessages === true,
       artifacts: supportsWorkstreams && Boolean(sessions?.isCompletedRun),
       historyPages: supportsWorkstreams && Boolean(sessions?.historyPage),
@@ -309,7 +310,7 @@ export function createOutwardAcpAgent(options: OutwardAcpAgentOptions = {}): Age
           const session = getKnown(ctx.params);
           if (control.status(session).state === "waiting") {
             const command = stringParam(ctx.params, "command", 64);
-            if (command !== "help" && command !== "status" && command !== "sensors") {
+            if (!["help", "status", "sensors", "stop", "reset"].includes(command)) {
               throw new acp.RequestError(-32002, "deferred Workstream is waiting; cancel it before modifying");
             }
           }
@@ -433,6 +434,8 @@ export function createOutwardAcpAgent(options: OutwardAcpAgentOptions = {}): Age
         ...(runId ? { runId } : {}),
         signal: ctx.signal,
         deferCapacity: ctx.params._meta?.["agent-bridge/defer-capacity"] === 1,
+        ordinaryContinuations: supportsWorkstreams && promptExecutor.supportsOrdinaryContinuations === true
+          && ctx.params._meta?.["agent-bridge/ordinary-continuations"] === 1,
         busyMessages,
         requestId,
         answerPreview: ctx.params._meta?.["agent-bridge/answer-preview"] === 1,

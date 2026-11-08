@@ -1,6 +1,6 @@
 import Database from "better-sqlite3";
 import { BridgeDb } from "./db.js";
-import { RunContinuationLimitError, recordContinuationLimitNotice, requestRunContinuation } from "./runContinuation.js";
+import { RunContinuationLimitError, cancelPendingRunContinuation, recordContinuationLimitNotice, requestRunContinuation } from "./runContinuation.js";
 import type { RouteableBotKind } from "./types.js";
 
 /** Original provider turn may already have executed side effects. Never replay it merely because reconciliation failed. */
@@ -104,6 +104,17 @@ export function clearRunOutcomeForProviderRetry(db: BridgeDb, runId: string): vo
   if (change.changes !== 1) throw new Error("cannot clear outcome of an inactive Run");
 }
 
+/** Reconcile a superseded provider attempt before the next invocation. This
+ * is the existing Bridge Run outcome/continuation policy for both messaging
+ * and outward ACP; callers must hold their execution-lane fence. */
+export function resetAbandonedRunDisposition(
+  db: BridgeDb, runId: string, reason = "provider attempt failed before terminal settlement",
+): void {
+  if (db.getRun(runId)?.status !== "running") return;
+  cancelPendingRunContinuation(db, runId, reason);
+  clearRunOutcomeForProviderRetry(db, runId);
+}
+
 /** Shared owner for the new command and the legacy wait alias. */
 export function requestAgentBridgeOutcome(args: string[], env: EnvLike = process.env): string {
   const [requestedStatus, ...flags] = args;
@@ -114,6 +125,8 @@ export function requestAgentBridgeOutcome(args: string[], env: EnvLike = process
   const dbPath = required(env, "AGENT_BRIDGE_CONTEXT_DB");
   const runId = required(env, "AGENT_BRIDGE_RUN_ID");
   const surfaceIdentity = required(env, "AGENT_BRIDGE_SURFACE_IDENTITY");
+  const outwardSessionId = surfaceIdentity === "acp:outward"
+    ? required(env, "AGENT_BRIDGE_OUTWARD_SESSION_ID") : undefined;
   const chatKey = required(env, "AGENT_BRIDGE_CHAT_KEY");
   const provider = required(env, "AGENT_BRIDGE_PROVIDER") as RouteableBotKind;
   const lock = {
@@ -178,6 +191,7 @@ export function requestAgentBridgeOutcome(args: string[], env: EnvLike = process
         const c = requestRunContinuation(db, {
           originRunId: runId, surfaceIdentity, chatKey, provider, reason: detail,
           ...(dueAtMs === undefined ? { afterSeconds: Number(secondsRaw) } : { dueAtMs }), delivery,
+          ...(outwardSessionId ? { outwardSessionId } : {}),
         });
         return `Continuation scheduled for ${c.dueAt}. Finish this Run without promising the user to check manually.`;
       }

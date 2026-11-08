@@ -8,7 +8,7 @@
  */
 
 import { SCRATCH_SIGNPOST, readScratch, renderFreshScratch } from "./scratchpad.js";
-import { MissingRunOutcomeError, RunOutcomeReconciliationError, readRunOutcome, missingOutcomeRetries, clearRunOutcomeForProviderRetry } from "./runOutcome.js";
+import { MissingRunOutcomeError, RunOutcomeReconciliationError, readRunOutcome, missingOutcomeRetries, resetAbandonedRunDisposition } from "./runOutcome.js";
 import { EVENT_RECEIPT_CORRELATION_PREFIX } from "./interactiveIngress.js";
 import { randomUUID } from "node:crypto";
 import { basename, dirname, join } from "node:path";
@@ -183,6 +183,10 @@ export interface SurfaceNeutralTurnInput {
   onOutputArtifacts?: (outDir: string) => Promise<{ retained: number; discarded: number }>;
   /** Per-Run provider recovery evidence for durable capacity decisions. */
   onProviderRecoveryDecision?: (reason: ProviderFallbackReason | null, exhausted: boolean) => void;
+  /** Trusted, request-authorised Desk Workstream for ordinary outcomes/continuations. */
+  ordinaryWorkstreamId?: string;
+  /** A claimed ordinary wake must not silently abandon its bound native session. */
+  requireBoundProviderSession?: boolean;
 }
 
 export const MAX_QUEUE_DEPTH = 5;
@@ -959,8 +963,7 @@ export class BridgeEngine {
           // A failed provider attempt is not the terminal answer for this Run.
           // Its outcome (and any requested wake) must not survive a fresh
           // attempt that may make a different final determination.
-          cancelPendingRunContinuation(this.db, runId, "provider attempt failed before terminal settlement");
-          clearRunOutcomeForProviderRetry(this.db, runId);
+          resetAbandonedRunDisposition(this.db, runId);
           persistEngineProviderSession(this.db, { surfaceIdentity: this.surfaceIdentity, chatKey }, sourceKind, null);
         });
         markHandoffRequired(this.db, this.surfaceIdentity, chatKey, sourceKind, `fallback_from_${sourceKind}`);
@@ -1845,8 +1848,7 @@ export class BridgeEngine {
     if (!runId) return;
     this._runWithFence(laneHandle, () => {
       if (this.db.getRun(runId)?.status !== "running") return;
-      cancelPendingRunContinuation(this.db, runId, "provider attempt failed before terminal settlement");
-      clearRunOutcomeForProviderRetry(this.db, runId);
+      resetAbandonedRunDisposition(this.db, runId);
     });
   }
 
@@ -1884,14 +1886,15 @@ export class BridgeEngine {
     return ctx ? `${ctx}${prompt}` : prompt;
   }
 
-  private _buildContextAccess(chatKey: string, runId: string | null, executionKind: RouteableBotKind, chatId?: number | string, threadId?: number | string, laneHandle?: ExecutionLaneHandle, outcomeEligible = false): { prompt: string; continuationPrompt: string; env: Record<string, string> } | null {
+  private _buildContextAccess(chatKey: string, runId: string | null, executionKind: RouteableBotKind, chatId?: number | string, threadId?: number | string, laneHandle?: ExecutionLaneHandle, outcomeEligible = false, ordinaryWorkstreamId?: string): { prompt: string; continuationPrompt: string; env: Record<string, string> } | null {
     const dbPath = this.opts.fullConfig?.dbPath;
     const status = this.db.getConvStatus(chatKey, this.surfaceIdentity);
     const hasContext = !!dbPath && status.turnCount > 0;
     const commandPath = join(process.cwd(), "bin", "agent-bridge-context");
     const waitCommandPath = join(process.cwd(), "bin", "agent-bridge-wait");
     const outcomeCommandPath = join(process.cwd(), "bin", "agent-bridge-outcome");
-    const canContinue = Boolean(dbPath && runId && this.kind !== "autonomous" && this.opts.allowRunContinuations !== false);
+    const canContinue = Boolean(dbPath && runId && this.kind !== "autonomous" && this.opts.allowRunContinuations !== false
+      && (this.surfaceIdentity !== "acp:outward" || ordinaryWorkstreamId));
     const canOutcome = canContinue && outcomeEligible;
     const canScratch = Boolean(dbPath && runId && laneHandle);
     const scratchCommandPath = join(process.cwd(), "bin", "agent-bridge-scratch");
@@ -1962,16 +1965,19 @@ export class BridgeEngine {
             ...(threadId !== undefined ? { AGENT_BRIDGE_DELIVERY_THREAD_ID: String(threadId) } : {}),
           } : {}),
         } : {}),
-        ...(canOutcome ? { AGENT_BRIDGE_OUTCOME_COMMAND: outcomeCommandPath } : {}),
+        ...(canOutcome ? { AGENT_BRIDGE_OUTCOME_COMMAND: outcomeCommandPath,
+          ...(ordinaryWorkstreamId && this.surfaceIdentity === "acp:outward"
+            ? { AGENT_BRIDGE_OUTWARD_SESSION_ID: ordinaryWorkstreamId } : {}),
+        } : {}),
       },
     };
   }
 
-  private async _buildPromptForCli(chatKey: string, prompt: string, nativeSessionMode: "fresh" | "resume", model: string | null, runId: string | null, executionKind: RouteableBotKind, chatId?: number | string, threadId?: number | string, laneHandle?: ExecutionLaneHandle, outcomeEligible = false): Promise<{ prompt: string; contextEnv?: Record<string, string>; soulContext: string | null; includeResponseContract: boolean }> {
+  private async _buildPromptForCli(chatKey: string, prompt: string, nativeSessionMode: "fresh" | "resume", model: string | null, runId: string | null, executionKind: RouteableBotKind, chatId?: number | string, threadId?: number | string, laneHandle?: ExecutionLaneHandle, outcomeEligible = false, ordinaryWorkstreamId?: string): Promise<{ prompt: string; contextEnv?: Record<string, string>; soulContext: string | null; includeResponseContract: boolean }> {
     const contextMode = this._contextMode(chatKey, nativeSessionMode);
     const includeFreshContext = contextMode !== "resume";
     const contextPrompt = this._buildRecentContextPrompt(chatKey, prompt, contextMode);
-    const access = this._buildContextAccess(chatKey, runId, executionKind, chatId, threadId, laneHandle, outcomeEligible);
+    const access = this._buildContextAccess(chatKey, runId, executionKind, chatId, threadId, laneHandle, outcomeEligible, ordinaryWorkstreamId);
     const workspacePrompt = this.opts.workspaceContext === undefined
       ? prependWorkspaceContext(contextPrompt, process.env, { includeManagedContext: includeFreshContext })
       : (includeFreshContext && this.opts.workspaceContext
@@ -2056,7 +2062,9 @@ export class BridgeEngine {
         // supply a fenced, durable artifact owner instead of discarding output.
         { onProviderExecutionStarted: input.onProviderExecutionStarted,
           onAnswerDelta: input.onAnswerDelta, publishArtifacts: false,
-          onOutputArtifacts: input.onOutputArtifacts },
+          onOutputArtifacts: input.onOutputArtifacts,
+          ordinaryWorkstreamId: input.ordinaryWorkstreamId,
+          requireBoundProviderSession: input.requireBoundProviderSession === true },
         () => {},
         input.attachments ?? [],
         input.eventContext,
@@ -2183,6 +2191,12 @@ export class BridgeEngine {
     const logFile: string | null = null;
     const executionMode = (body as { executionMode?: "safe" | "trusted" }).executionMode ?? this.opts.executionMode;
     const isVerificationOnly = (body as { verificationOnly?: boolean }).verificationOnly === true;
+    const ordinaryWorkstreamId = this.surfaceIdentity === "acp:outward"
+      ? (body as { ordinaryWorkstreamId?: string }).ordinaryWorkstreamId : undefined;
+    const authorisedOutcome = this.surfaceIdentity !== "acp:outward" || Boolean(ordinaryWorkstreamId);
+    // A negotiated ordinary Desk Run has a durable objective owner even when
+    // the ACP adapter does not provide a generated-artifact callback.
+    const dispositionEligible = publishArtifacts || Boolean(body.onOutputArtifacts) || Boolean(ordinaryWorkstreamId);
 
     const fileSendOptions = threadId != null ? { message_thread_id: threadId } : undefined;
     const outDir = await prepareOutputDir(chatKey, this.kind, runId ?? randomUUID());
@@ -2203,7 +2217,7 @@ export class BridgeEngine {
       outputDir: null,
     }).nativeSessionMode;
     // Read-only verification turns get no scratch helper: its write and clear are mutations.
-    const promptForCli = await this._buildPromptForCli(chatKey, prompt, nativeSessionMode, model, runId, executionKind, chatId, threadId, isVerificationOnly ? undefined : laneHandle, !isVerificationOnly && this.kind !== "autonomous" && (publishArtifacts || Boolean(body.onOutputArtifacts)) && Boolean(this.opts.fullConfig?.dbPath));
+    const promptForCli = await this._buildPromptForCli(chatKey, prompt, nativeSessionMode, model, runId, executionKind, chatId, threadId, isVerificationOnly ? undefined : laneHandle, authorisedOutcome && !isVerificationOnly && this.kind !== "autonomous" && dispositionEligible && Boolean(this.opts.fullConfig?.dbPath), ordinaryWorkstreamId);
     const invocation = buildCliInvocation({
       bot: executionKind,
       command: this.opts.botConfig.command,
@@ -2322,7 +2336,7 @@ export class BridgeEngine {
       // admitted Run/session*. Reuse this output directory: re-entering the
       // entire execute/deliver path would lose files and the original answer.
       const eligibleOutcome = runId !== null && !isVerificationOnly && this.kind !== "autonomous"
-        && publishArtifacts && Boolean(this.opts.fullConfig?.dbPath);
+        && authorisedOutcome && dispositionEligible && Boolean(this.opts.fullConfig?.dbPath);
       // A structural ACP refusal is an actual provider safety boundary, not
       // a forgotten helper invocation. Never prompt a refusing provider a
       // second time simply to obtain a shell-command disposition.
@@ -2341,7 +2355,7 @@ export class BridgeEngine {
         ].join("\n");
         const followup = await this._buildPromptForCli(
           chatKey, reconcilePrompt, "resume", model, runId, executionKind,
-          chatId, threadId, laneHandle, true,
+          chatId, threadId, laneHandle, true, ordinaryWorkstreamId,
         );
         const followupInvocation = buildCliInvocation({
           bot: executionKind,
@@ -2523,7 +2537,7 @@ export class BridgeEngine {
       } else if (canPublish) {
         await uploadOutputFiles(outDir, chatId, this.client, fileSendOptions, () => this._canPublish(laneHandle)).catch(() => {});
       }
-      if (sessionId && isInvalidProviderSessionError(error)) {
+      if (!(body as { requireBoundProviderSession?: boolean }).requireBoundProviderSession && sessionId && isInvalidProviderSessionError(error)) {
         console.warn(`[${this.kind}] session ID invalid, retrying with fresh session...`);
         const kind = this.kind;
         this._discardAbandonedAttemptOutcome(laneHandle, runId);
@@ -2532,7 +2546,7 @@ export class BridgeEngine {
       }
       // One bounded same-provider alternate-model attempt; the alternate attempt
       // never falls back again.
-      if (!modelFallback && isCapacityExhaustedError(error as Error) && this.opts.botConfig.modelPreference.length > 1) {
+      if (!(body as { requireBoundProviderSession?: boolean }).requireBoundProviderSession && !modelFallback && isCapacityExhaustedError(error as Error) && this.opts.botConfig.modelPreference.length > 1) {
         const fallbackModel = getNextFallbackModel(model, this.opts.botConfig.modelPreference);
         if (fallbackModel) {
           this._discardAbandonedAttemptOutcome(laneHandle, runId);

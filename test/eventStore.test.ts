@@ -41,6 +41,24 @@ describe("EventStore", () => {
     expect(events[0].type).toBe("run.started");
   });
 
+  it("admits a fenced outward Run through the same shared EventStore used by messaging", async () => {
+    const { EventStore } = await import("../src/events/store.js");
+    const { type } = await import("../src/events/types.js");
+    const identity = { surfaceIdentity: "acp:outward", chatKey: "workstream-conversation" };
+    const store = new EventStore(db, identity);
+    db.runInTransaction(() => {
+      store.admitRun("r-acp", identity.chatKey, "claude");
+      expect(db.getRun("r-acp")).toMatchObject({
+        run_id: "r-acp", surface_identity: "acp:outward", chat_id: identity.chatKey,
+      });
+    });
+    store.collect(type.runStarted({ runId: "r-acp", bot: "claude", chatId: "workstream-id", chatKey: identity.chatKey, command: "claude", cwd: "/", model: null }));
+    store.queueCompleted(type.runCompleted({ runId: "r-acp", bot: "claude", chatId: "workstream-id", chatKey: identity.chatKey, text: "done", sessionId: "native-session" }));
+    store.finalize();
+    expect(db.getRun("r-acp")).toMatchObject({ status: "done", session_id: "native-session" });
+    expect(db.getEventsForRun("r-acp").map((event) => event.type)).toEqual(["run.completed"]);
+  });
+
   it("keeps each spawned provider process attributable after the run row exists", async () => {
     const { EventStore } = await import("../src/events/store.js");
     const store = new EventStore(db);

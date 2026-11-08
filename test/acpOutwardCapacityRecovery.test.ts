@@ -4,9 +4,10 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { openDb } from "../src/db.js";
 import { OutwardAcpSessionRepository } from "../src/repositories/outwardAcpSessionRepository.js";
-import { claimDueRunContinuation, listRunContinuations, linkCapacityContinuationRun, requestRunContinuation } from "../src/runContinuation.js";
+import { claimDueRunContinuation, listRunContinuations, linkCapacityContinuationRun, linkRunContinuationRun, requestRunContinuation, settleRunContinuation } from "../src/runContinuation.js";
+import { persistProviderSession } from "../src/providers/sessionRuntime.js";
 import { stageOutwardAcpAttachments, retainOutwardAcpAttachmentsForWait } from "../src/acpServer/attachments.js";
-import { outwardCapacityCompletionProven, resumeOutwardCapacityWait } from "../src/acpServer/continuationWorker.js";
+import { outwardCapacityCompletionProven, resumeOutwardCapacityWait, resumeOutwardOrdinaryContinuation } from "../src/acpServer/continuationWorker.js";
 import { BridgeOutwardAcpPromptExecutor, OUTWARD_ACP_SURFACE, type OutwardAcpPromptExecutor } from "../src/acpServer/execution.js";
 import { executionLaneCoordinator } from "../src/executionLaneCoordinator.js";
 import { type as eventType } from "../src/events/types.js";
@@ -15,6 +16,92 @@ const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
 
 describe("outward ACP durable capacity worker (#1114)", () => {
+  it("resumes an ordinary bound objective after database restart with no ACP client", async () => {
+    const root = mkdtempSync(join(tmpdir(), "bridge-acp-ordinary-wake-"));
+    roots.push(root);
+    const path = join(root, "state.sqlite");
+    const first = openDb(path, { databaseRole: "interactive" });
+    const identity = { surfaceIdentity: OUTWARD_ACP_SURFACE, chatKey: "acp:ordinary-c1" };
+    const repo = new OutwardAcpSessionRepository(first.raw);
+    const session = repo.create({ sessionId: "ordinary-workstream", conversationId: identity.chatKey, cwd: root });
+    first.insertRun("ordinary-origin", identity, "codex");
+    persistProviderSession(first, identity, "codex", "provider-session", "ordinary-origin");
+    const now = Date.now();
+    const wake = requestRunContinuation(first, {
+      originRunId: "ordinary-origin", ...identity, provider: "codex",
+      afterSeconds: 5, reason: "Verify the outstanding build", outwardSessionId: session.sessionId,
+    }, now);
+    expect(first.updateRunCompleted("ordinary-origin", "partial", "provider-session")).toBe(true);
+    first.close();
+
+    const db = openDb(path, { databaseRole: "interactive" });
+    try {
+      const claimed = claimDueRunContinuation(db, wake.id, now + 5_001, {
+        runId: "supervised-worker", claimToken: "exact-worker-claim",
+      })!;
+      const execute = vi.fn(async (input: any) => {
+        expect(input.session.sessionId).toBe(session.sessionId);
+        expect(input.prompt).toContain("Re-check current external state");
+        expect(input.prompt).not.toContain("partial"); // never replay original user input
+        expect(input.ordinaryResume).toEqual({
+          id: wake.id, claimToken: claimed.claimToken, provider: "codex",
+          providerSessionId: "provider-session",
+        });
+        db.insertRun("ordinary-successor", identity, "codex");
+        expect(linkRunContinuationRun(db, wake.id, "ordinary-successor", claimed.claimToken)).toBe(true);
+        db.raw.prepare("UPDATE bridge_runs SET outcome_status = ?, outcome_detail = ? WHERE run_id = ?")
+          .run("complete", "verified", "ordinary-successor");
+        db.updateRunCompleted("ordinary-successor", "verified result", "provider-session");
+        return { stopReason: "end_turn" as const };
+      });
+      expect(await resumeOutwardOrdinaryContinuation(db, (id) => new OutwardAcpSessionRepository(db.raw).get(id),
+        { execute } as unknown as OutwardAcpPromptExecutor, claimed)).toBe(true);
+      settleRunContinuation(db, wake.id, "completed", undefined, Date.now(), claimed.claimToken);
+      expect(db.getRun("ordinary-successor").status).toBe("done");
+      expect(db.getRun("ordinary-successor").outcome_status).toBe("complete");
+      expect(listRunContinuations(db, OUTWARD_ACP_SURFACE)).toEqual([
+        expect.objectContaining({ id: wake.id, state: "completed", successorRunId: "ordinary-successor" }),
+      ]);
+    } finally { db.close(); }
+  });
+
+
+  it("Stop cancels a claimed ordinary wake before successor Run admission", async () => {
+    const root = mkdtempSync(join(tmpdir(), "bridge-acp-ordinary-stop-"));
+    roots.push(root);
+    const db = openDb(join(root, "state.sqlite"), { databaseRole: "interactive" });
+    const session = new OutwardAcpSessionRepository(db.raw).create({
+      sessionId: "ordinary-stop-ws", conversationId: "acp:ordinary-stop", cwd: root,
+    });
+    const identity = { surfaceIdentity: OUTWARD_ACP_SURFACE, chatKey: session.conversationId };
+    db.insertRun("ordinary-stop-origin", identity, "codex");
+    persistProviderSession(db, identity, "codex", "original-native-session", "ordinary-stop-origin");
+    const now = Date.now();
+    const wake = requestRunContinuation(db, {
+      originRunId: "ordinary-stop-origin", ...identity, provider: "codex",
+      reason: "continue after delay", afterSeconds: 5, outwardSessionId: session.sessionId,
+    }, now);
+    expect(db.updateRunCompleted("ordinary-stop-origin", "pending operation", "original-native-session")).toBe(true);
+    const claimed = claimDueRunContinuation(db, wake.id, now + 5_001, {
+      runId: "worker", claimToken: "stop-race-claim",
+    });
+    expect(claimed?.state).toBe("claimed");
+    const engine = { executeSurfaceNeutralTurn: vi.fn() };
+    const executor = new BridgeOutwardAcpPromptExecutor({
+      db, providerChain: ["codex"], createEngine: () => engine,
+      lookupSession: (id) => new OutwardAcpSessionRepository(db.raw).get(id),
+    });
+    try {
+      expect(await executor.cancel(session)).toBe("confirmed");
+      expect(listRunContinuations(db, OUTWARD_ACP_SURFACE)).toEqual([
+        expect.objectContaining({ id: wake.id, state: "cancelled" }),
+      ]);
+      db.insertRun("would-be-successor", identity, "codex");
+      expect(linkRunContinuationRun(db, wake.id, "would-be-successor", "stop-race-claim")).toBe(false);
+      expect(engine.executeSurfaceNeutralTurn).not.toHaveBeenCalled();
+    } finally { await executor.shutdown(); db.close(); }
+  });
+
   it("rejects a Workstream root replaced by a symlink before background wake", async () => {
     const root = mkdtempSync(join(tmpdir(), "bridge-acp-root-switch-"));
     roots.push(root);

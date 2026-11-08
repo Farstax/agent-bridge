@@ -455,8 +455,14 @@ describe("outward ACP stdio boundary", { timeout: 30_000 }, () => {
     let first: RunningOutwardAcp | null = null;
     let second: RunningOutwardAcp | null = null;
     try {
-      first = startOutwardAcpProcess(dbPath);
+      first = startOutwardAcpProcess(dbPath, { BRIDGE_OUTWARD_DEFERRED_CAPACITY_ENABLED: "1" });
       const initialized = await initialize(first, 1);
+      // The real stdio entrypoint (not a fake executor) must advertise
+      // unattended ordinary continuations only with its supervised worker.
+      expect((initialized.result?.agentCapabilities?._meta as
+        Record<string, Record<string, unknown>> | undefined)?.["agent-bridge"]).toMatchObject({
+          deferredCapacity: 1, ordinaryContinuations: 1,
+        });
       expect(existsSync(staleAttachments)).toBe(true);
       expect(existsSync(nestedStaleAttachments)).toBe(true);
       const recoveredDb = openDb(dbPath, { databaseRole: "interactive" });

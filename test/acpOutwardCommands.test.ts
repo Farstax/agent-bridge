@@ -8,6 +8,7 @@ import { openDb, type BridgeDb } from "../src/db.js";
 import { effortSettingKey } from "../src/effort.js";
 import { clearAcpSessionConfigSnapshot, replaceAcpSessionConfigSnapshot } from "../src/acp/sessionConfig.js";
 import { OutwardAcpSessionRepository } from "../src/repositories/outwardAcpSessionRepository.js";
+import { listRunContinuations, requestRunContinuation } from "../src/runContinuation.js";
 import { createOutwardAcpAgent, WORKSTREAM_METHODS, type OutwardAcpSessionStore } from "../src/acpServer/app.js";
 import { AcpCommands, type AcpCommandOptions } from "../src/acpServer/commands.js";
 import { BridgeOutwardAcpPromptExecutor, OUTWARD_ACP_SURFACE } from "../src/acpServer/execution.js";
@@ -246,6 +247,28 @@ describe("outward ACP commands", () => {
     expect((await done).stopReason).toBe("cancelled");
     expect(paths.every((path) => !existsSync(path))).toBe(true);
   });
+
+
+  for (const command of ["stop", "reset"] as const) {
+    it(`allows /${command} to cancel a waiting ordinary Desk continuation through real ACP command dispatch`, async () => {
+      const { run, exec, repo, db } = setup();
+      const identity = { surfaceIdentity: OUTWARD_ACP_SURFACE, chatKey: "acp:c1" };
+      db.insertRun("ordinary-wait-origin", identity, "codex");
+      const pending = requestRunContinuation(db, {
+        originRunId: "ordinary-wait-origin", ...identity, provider: "codex",
+        afterSeconds: 60, reason: "Finish safely later", outwardSessionId: "s1",
+      });
+      expect(db.updateRunCompleted("ordinary-wait-origin", "waiting", "provider-session")).toBe(true);
+      expect(exec.status(repo.get("s1")!).state).toBe("waiting");
+
+      const result = await run({ command, ...(command === "reset" ? { confirm: true } : {}) });
+      expect(result.command).toBe(command);
+      const outstanding = listRunContinuations(db, OUTWARD_ACP_SURFACE)
+        .filter((item) => item.id === pending.id && (item.state === "pending" || item.state === "claimed"));
+      expect(outstanding).toHaveLength(0);
+      expect(exec.status(repo.get("s1")!).state).not.toBe("waiting");
+    });
+  }
 
   it("requires confirmation for /reset and clears history under the lane", async () => {
     const { run, app, db } = setup();

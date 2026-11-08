@@ -1,6 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
 import { openDb } from "../src/db.js";
 import { createSurfaceNeutralProviderRouter } from "../src/surfaceNeutralProviderRouter.js";
+import { recordRunOutcome } from "../src/runOutcome.js";
+import { listRunContinuations, requestRunContinuation } from "../src/runContinuation.js";
 import type { BotKind } from "../src/types.js";
 
 function event(input: any, type: string, extra: Record<string, unknown> = {}) {
@@ -105,6 +107,58 @@ describe("surface-neutral provider attempt isolation", () => {
       expect(collected[0].bot).toBe("codex");
       expect(collected[1]).toMatchObject({ bot: "codex", text: "authoritative codex answer", sessionId: "codex-session" });
     } finally {
+      db.close();
+    }
+  });
+
+  it("fences the durable provider before a native fallback outcome helper runs", async () => {
+    const db = openDb(":memory:");
+    const chatKey = "acp:fallback-provider-fence";
+    const identity = { surfaceIdentity: "acp:outward", chatKey };
+    db.insertRun("fenced-run", identity, "claude");
+    const lane = db.acquireLock(identity.surfaceIdentity, chatKey, false);
+    expect(lane).not.toBeNull();
+    const seen: string[] = [];
+    const router = createSurfaceNeutralProviderRouter({
+      db, surfaceIdentity: identity.surfaceIdentity,
+      initialProvider: "claude", providerChain: ["claude", "codex"],
+      engineForProvider: (provider) => ({
+        executeSurfaceNeutralTurn: vi.fn(async (input: any) => {
+          seen.push(provider);
+          expect(db.getRun(input.runId).bot).toBe(provider);
+          if (provider === "claude") {
+            recordRunOutcome(db, {
+              runId: input.runId, surfaceIdentity: identity.surfaceIdentity,
+              chatKey, provider, status: "continue", detail: "stale capacity wait",
+              lock: { serviceId: lane!.serviceId, runId: lane!.runId, acquisitionId: lane!.acquisitionId },
+            });
+            requestRunContinuation(db, {
+              originRunId: input.runId, ...identity, provider,
+              reason: "stale capacity wait", afterSeconds: 5, outwardSessionId: "workstream",
+            });
+            throw new Error("usage limit reached");
+          }
+          recordRunOutcome(db, {
+            runId: input.runId, surfaceIdentity: identity.surfaceIdentity,
+            chatKey, provider, status: "complete", detail: "verified",
+            lock: { serviceId: lane!.serviceId, runId: lane!.runId, acquisitionId: lane!.acquisitionId },
+          });
+          return { text: "finished with native outcome", sessionId: "codex-session", stopReason: "end_turn" };
+        }),
+      }) as any,
+    });
+    try {
+      const input = { ...turnInput(vi.fn()), chatKey, runId: "fenced-run", laneHandle: lane! };
+      await router.executeSurfaceNeutralTurn(input);
+      expect(seen).toEqual(["claude", "codex"]);
+      expect(db.getRun("fenced-run")).toMatchObject({
+        bot: "codex", outcome_status: "complete", outcome_detail: "verified",
+      });
+      expect(listRunContinuations(db, identity.surfaceIdentity)).toEqual([
+        expect.objectContaining({ state: "cancelled", reason: "stale capacity wait" }),
+      ]);
+    } finally {
+      db.unlock(lane!);
       db.close();
     }
   });
