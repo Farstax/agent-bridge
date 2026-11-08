@@ -1,8 +1,8 @@
 import { execFileSync } from "node:child_process";
 import type { AcpRegistryAgentEntry } from "./acpRegistry.js";
 
-const DEFAULT_AGY_ACP_COMMAND = "agy_acp_server.par";
-const DEFAULT_AGY_ACP_ARGS = ["--uid="];
+const DEFAULT_AGY_ACP_COMMAND = "agy";
+const DEFAULT_AGY_ACP_ARGS = ["acp"];
 export const AGY_ACP_VERSION_TIMEOUT_MS = 30_000;
 
 export function resolveAgyAcpCommand(
