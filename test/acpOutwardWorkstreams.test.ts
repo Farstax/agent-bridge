@@ -611,7 +611,7 @@ describe("outward ACP Workstreams (#1101)", () => {
     const restarted = executor(f.db, []);
     expect(restarted.status(f.repo.get("s1")!)).toMatchObject({
       state: "failed",
-      lastRun: { status: "failed", error: expect.stringContaining("outward ACP") },
+      lastRun: { status: "failed", error: "provider failed" },
     });
     expect(f.sessions.history!("acp:c1")).toEqual([{ role: "user", text: "accepted before failure" }]);
   });
