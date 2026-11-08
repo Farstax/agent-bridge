@@ -2322,7 +2322,7 @@ export class BridgeEngine {
       // admitted Run/session*. Reuse this output directory: re-entering the
       // entire execute/deliver path would lose files and the original answer.
       const eligibleOutcome = runId !== null && !isVerificationOnly && this.kind !== "autonomous"
-        && publishArtifacts && Boolean(this.opts.fullConfig?.dbPath);
+        && (publishArtifacts || Boolean(body.onOutputArtifacts)) && Boolean(this.opts.fullConfig?.dbPath);
       // A structural ACP refusal is an actual provider safety boundary, not
       // a forgotten helper invocation. Never prompt a refusing provider a
       // second time simply to obtain a shell-command disposition.
