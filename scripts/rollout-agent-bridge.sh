@@ -1625,15 +1625,13 @@ prune_host_component_retention() {
     echo "host component retention skipped reason=release_pins_ambiguous"
     return 0
   fi
-  # The official CLI owns only /usr/local/bin/agy. Legacy .par releases
-  # still own both old links, which are retained for controlled rollback.
-  local agy_link="${AGENT_BRIDGE_AGY_ACP_LINK:-/usr/local/bin/agy}"
-  if [[ "${agy_link##*/}" == agy ]]; then
-    prune_host_component_versions agy "$(agy_component_root)/components" remove_named_child_directory agy_version_dir_is_managed "$agy_link"
-  else
-    prune_host_component_versions agy "$(agy_component_root)/components" remove_named_child_directory agy_version_dir_is_managed \
-      "$agy_link" "${AGENT_BRIDGE_AGY_HARNESS_LINK:-/usr/local/bin/agy_localharness_external}"
-  fi
+  # Protect the selected official CLI AND the retained legacy .par pair.
+  # Even after the new link is activated, the old pair remains a verified
+  # rollback candidate until explicitly retired in a later release.
+  prune_host_component_versions agy "$(agy_component_root)/components" remove_named_child_directory agy_version_dir_is_managed \
+    "${AGENT_BRIDGE_AGY_ACP_LINK:-/usr/local/bin/agy}" \
+    /usr/local/bin/agy_acp_server.par \
+    "${AGENT_BRIDGE_AGY_HARNESS_LINK:-/usr/local/bin/agy_localharness_external}"
   local runtime_home
   runtime_home="$(resolve_runtime_home 2>/dev/null)" || { echo "host component retention skipped provider=cursor reason=runtime_home_unavailable"; return 0; }
   prune_host_component_versions cursor "$runtime_home/.local/share/agent-bridge/cursor-acp/versions" remove_runtime_child_directory cursor_version_dir_is_managed \
