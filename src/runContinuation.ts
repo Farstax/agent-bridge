@@ -84,6 +84,8 @@ export interface RunContinuation {
    * continuation record owns the original admitted input; no second queue or
    * transcript database is introduced. */
   outward?: { sessionId: string; prompt: string; attachmentCount: number; receiptKey?: string };
+  /** Authorised ordinary Desk wake binds this persisted Workstream, never chatKey guessing. */
+  outwardSessionId?: string;
   /** The task was retired due to capacity expiry and awaits final notification. */
   expiryDeliveryPending?: true;
 }
@@ -105,6 +107,8 @@ export interface RequestRunContinuationInput {
   capacityWait?: boolean;
   retainedPendingMessageIds?: number[];
   outward?: { sessionId: string; prompt: string; attachmentCount: number; receiptKey?: string };
+  /** Authoritative Workstream binding for ordinary outward ACP continuations. */
+  outwardSessionId?: string;
 }
 
 function key(id: string): string {
@@ -154,6 +158,11 @@ function parse(value: string): RunContinuation | null {
     if (candidate.claimToken !== undefined && (typeof candidate.claimToken !== "string" || !candidate.claimToken)) return null;
     if (candidate.retainedPendingMessageIds !== undefined && (!Array.isArray(candidate.retainedPendingMessageIds) || candidate.retainedPendingMessageIds.some((id) => !Number.isSafeInteger(id) || id < 1))) return null;
     if (candidate.successorRunId !== undefined && typeof candidate.successorRunId !== "string") return null;
+    if (candidate.outwardSessionId !== undefined && (
+      candidate.surfaceIdentity !== "acp:outward" || candidate.capacityWait === true ||
+      typeof candidate.outwardSessionId !== "string" || !candidate.outwardSessionId ||
+      candidate.outwardSessionId.length > 256
+    )) return null;
     if (candidate.outward !== undefined && (
       candidate.surfaceIdentity !== "acp:outward" || candidate.capacityWait !== true ||
       typeof candidate.outward.sessionId !== "string" || !candidate.outward.sessionId ||
@@ -176,7 +185,7 @@ function parse(value: string): RunContinuation | null {
         || typeof p.provider !== "string"
       ) return null;
     }
-    if (candidate.outward && candidate.surfaceIdentity === "acp:outward") return candidate;
+    if ((candidate.outward || candidate.outwardSessionId) && candidate.surfaceIdentity === "acp:outward") return candidate;
     if (candidate.delivery) return candidate;
     if (candidate.surfaceIdentity.startsWith("telegram:")) {
       const match = /^(-?\d+)(?::(\d+))?$/.exec(candidate.chatKey);
@@ -226,6 +235,10 @@ export function requestRunContinuation(
     input.outward.attachmentCount > 8 ||
     (input.outward.receiptKey !== undefined && (typeof input.outward.receiptKey !== "string" || input.outward.receiptKey.length > 512))
   )) throw new Error("invalid outward ACP continuation payload");
+  if (input.outwardSessionId !== undefined && (
+    input.surfaceIdentity !== "acp:outward" || input.capacityWait || input.outward ||
+    !input.outwardSessionId || input.outwardSessionId.length > 256
+  )) throw new Error("invalid outward ordinary Workstream binding");
   const originRunId = bounded(input.originRunId, "origin run id", 200);
   const surfaceIdentity = bounded(input.surfaceIdentity, "surface identity", 160);
   const chatKey = bounded(input.chatKey, "chat key", 200);
@@ -278,6 +291,7 @@ export function requestRunContinuation(
       ...(input.delivery ? { delivery: input.delivery } : {}),
       ...(input.capacityWait ? { capacityWait: true as const } : {}),
       ...(input.outward ? { outward: input.outward } : existing?.outward ? { outward: existing.outward } : {}),
+      ...(input.outwardSessionId ? { outwardSessionId: input.outwardSessionId } : {}),
       ...(existing?.capacityNoticeSent ? { capacityNoticeSent: true as const } : {}),
       ...(input.capacityWait && (input.retainedPendingMessageIds?.length || existing?.retainedPendingMessageIds?.length)
         ? { retainedPendingMessageIds: input.retainedPendingMessageIds ?? existing!.retainedPendingMessageIds! }
@@ -594,7 +608,15 @@ export function claimDueRunContinuation(
       );
     }
     if (Date.parse(current.dueAt) > nowMs) return null;
-    const claimed = { ...current, state: "claimed" as const, claimedAt: new Date(nowMs).toISOString() };
+    const claimed = {
+      ...current, state: "claimed" as const, claimedAt: new Date(nowMs).toISOString(),
+      // ACP wakes must prove exact runner claim before the provider boundary.
+      ...(current.outwardSessionId ? {
+        claimRunId: options?.runId ?? (db as any).runId,
+        claimToken: options?.claimToken ?? randomUUID(),
+        claimExpiresAt: new Date(nowMs + (options?.leaseMs ?? (db as any).lockLeaseMs ?? 90_000)).toISOString(),
+      } : {}),
+    };
     db.raw.prepare("UPDATE settings SET value = ? WHERE key = ?").run(JSON.stringify(claimed), key(id));
     return claimed;
   });
@@ -675,11 +697,18 @@ export function settleRunContinuation(
   });
 }
 
-export function linkRunContinuationRun(db: BridgeDb, id: string, runId: string): boolean {
+export function linkRunContinuationRun(db: BridgeDb, id: string, runId: string, claimantToken?: string): boolean {
   return db.runInTransaction(() => {
     const row = db.raw.prepare("SELECT value FROM settings WHERE key = ?").get(key(id)) as { value: string } | undefined;
     const current = row ? parse(row.value) : null;
     if (!current || current.capacityWait) return false;
+    if (current.outwardSessionId) {
+      const successor = db.getRun(runId);
+      if (current.state !== "claimed" || !claimantToken || current.claimToken !== claimantToken ||
+          (current.successorRunId && current.successorRunId !== runId) ||
+          !successor || successor.surface_identity !== current.surfaceIdentity ||
+          successor.chat_id !== current.chatKey || successor.bot !== current.provider) return false;
+    }
     if (current.successorRunId === runId) return true;
     db.raw.prepare("UPDATE settings SET value = ? WHERE key = ?")
       .run(JSON.stringify({ ...current, successorRunId: runId }), key(id));
@@ -709,6 +738,9 @@ export function linkCapacityContinuationRun(db: BridgeDb, id: string, claimToken
 export function reconcileRunContinuations(db: BridgeDb, surfaceIdentity: string, nowMs = Date.now()): void {
   for (const continuation of listRunContinuations(db, surfaceIdentity)) {
     if (continuation.capacityWait || continuation.state !== "claimed") continue;
+    // A live outward worker may hold its claim before atomic successor admission.
+    if (continuation.outwardSessionId && !continuation.successorRunId &&
+        continuation.claimExpiresAt && Date.parse(continuation.claimExpiresAt) > nowMs) continue;
     const correlationKey = `${PREFIX}${continuation.id}`;
     if (db.hasPendingMessageForCorrelationKey(continuation.surfaceIdentity, correlationKey)) continue;
     if (continuation.successorRunId) {
@@ -883,7 +915,7 @@ export async function scanRunContinuations(
       }
       settleRunContinuation(db, claimed.id, "completed", undefined, nowMs, claimed.claimToken);
     } catch (error) {
-      if (claimed.outward) {
+      if (claimed.outward || claimed.outwardSessionId) {
         // Never retry a thrown/ambiguous provider outcome just because the
         // continuation callback failed. Preserve the task for inspection.
         settleRunContinuation(db, claimed.id, "failed", error instanceof Error ? error.message : "outward ACP resume failed", nowMs, claimed.claimToken);
@@ -942,6 +974,19 @@ export function buildPostRolloutVerificationTurnText(reason: string): string {
   ].join("\n");
 }
 
+/** Shared instruction for unfinished objectives; never replay the original user request. */
+export function buildRunContinuationInstruction(continuation: RunContinuation): string {
+  return [
+    "[Agent Bridge continuation]",
+    "A required bounded operation was still pending in the previous Run.",
+    "Re-check current external state and continue the original objective from where you left off.",
+    "Do not repeat completed side effects. If the operation is still pending and keeping this Run open is impractical, request another bounded continuation.",
+    "Work quietly: scratchpad and clock checks, polling, retries, and continuation scheduling are internal activity, not user progress updates.",
+    "Only report meaningful new results or blockers in concise user-facing language; do not repeat unchanged status or expose internal identifiers or timestamps unless needed.",
+    `Pending reason: ${continuation.reason}`,
+  ].join("\\n");
+}
+
 /** Surfaces with native thread coordinates (Telegram topics, Slack threads) share this builder. */
 export function buildTelegramRunContinuationTurn(
   continuation: RunContinuation,
@@ -961,15 +1006,7 @@ export function buildTelegramRunContinuationTurn(
     scheduledOccurrenceKey: `${PREFIX}${continuation.id}`,
     text: isRollout
       ? buildPostRolloutVerificationTurnText(continuation.reason)
-      : [
-          "[Agent Bridge continuation]",
-          "A required bounded operation was still pending in the previous Run.",
-          "Re-check current external state and continue the original objective from where you left off.",
-          "Do not repeat completed side effects. If the operation is still pending and keeping this Run open is impractical, request another bounded continuation.",
-          "Work quietly: scratchpad and clock checks, polling, retries, and continuation scheduling are internal activity, not user progress updates.",
-          "Only report meaningful new results or blockers in concise user-facing language; do not repeat unchanged status or expose internal identifiers or timestamps unless needed.",
-          `Pending reason: ${continuation.reason}`,
-        ].join("\n"),
+      : buildRunContinuationInstruction(continuation),
     ...(delivery.threadId === undefined ? {} : { threadId: String(delivery.threadId) }),
     delivery,
     queueOnly: true,
@@ -994,15 +1031,7 @@ export function buildDiscordRunContinuationTurn(
     scheduledOccurrenceKey: `${PREFIX}${continuation.id}`,
     text: isRollout
       ? buildPostRolloutVerificationTurnText(continuation.reason)
-      : [
-          "[Agent Bridge continuation]",
-          "A required bounded operation was still pending in the previous Run.",
-          "Re-check current external state and continue the original objective from where you left off.",
-          "Do not repeat completed side effects. If the operation is still pending and keeping this Run open is impractical, request another bounded continuation.",
-          "Work quietly: scratchpad and clock checks, polling, retries, and continuation scheduling are internal activity, not user progress updates.",
-          "Only report meaningful new results or blockers in concise user-facing language; do not repeat unchanged status or expose internal identifiers or timestamps unless needed.",
-          `Pending reason: ${continuation.reason}`,
-        ].join("\n"),
+      : buildRunContinuationInstruction(continuation),
     delivery,
     surroundingContext: [],
     queueOnly: true,
