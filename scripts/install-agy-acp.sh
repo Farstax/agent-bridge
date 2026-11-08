@@ -84,7 +84,7 @@ PY
 if [[ "$phase" == verify ]]; then
   valid_component || fail "component identity/checksum invalid"
   [[ -x "$LINK" && "$(readlink -f "$LINK")" == "$BINARY" ]] || fail "managed link does not select verified CLI"
-  echo host_component_health=healthy
+  printf 'host_component_health=healthy\n'
   exit 0
 fi
 if (( print_required_bytes == 0 )); then
