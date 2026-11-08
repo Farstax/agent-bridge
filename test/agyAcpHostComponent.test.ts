@@ -19,19 +19,19 @@ describe("Agy ACP managed host component", () => {
     });
   });
 
-  it("installs from the release-locked ACP registry entry rather than a duplicated version constant", () => {
+  it("installs only the pinned official CLI binary without the legacy .par/harness", () => {
     const installer = readFileSync(resolve(repoRoot, "scripts/install-agy-acp.sh"), "utf8");
     expect(installer).toContain("dist/providers/acpRegistry.locked.json");
     expect(installer).toContain('get("agy")');
     expect(installer).toContain('binary.get("sha256")');
     expect(installer).toContain("host_component_status=");
-    expect(installer).toContain("localharness_external");
-    expect(installer).toContain("harnessSha256");
-    expect(installer).toContain("harnessPath");
-    expect(installer).toContain("harnessVersion");
-    expect(installer).toContain("harnessArchiveUrl");
+    expect(installer).toContain("binarySha256");
     expect(installer).toContain("archiveSha256");
-    expect(installer).toContain("AGENT_BRIDGE_AGY_HARNESS_LINK");
+    expect(installer).toContain("release-locked Agy CLI archive checksum mismatch");
+    expect(installer).toContain("expected one official agy executable");
+    expect(installer).toContain("tarfile.open");
+    expect(installer).not.toContain("localharness_external");
+    expect(installer).not.toContain("agy_acp_server.par");
     expect(installer).not.toMatch(/antigravity-acp@\d/);
   });
 
@@ -76,9 +76,9 @@ describe("Agy ACP managed host component", () => {
     const installer = readFileSync(resolve(repoRoot, "scripts/install-agy-acp.sh"), "utf8");
     expect(installer).toContain("shutil.copyfileobj");
     expect(installer).toContain("stream.read(1024 * 1024)");
-    expect(installer).toContain("bundle.open(member");
+    expect(installer).toContain("bundle.extractfile(matches[0])");
     expect(installer).not.toContain(".read_bytes()");
-    expect(installer).not.toContain("bundle.read(");
+    expect(installer).not.toContain("bundle.extractall(");
   });
 
   it("checks disk headroom against the remote archive size before downloading or staging", () => {
@@ -94,9 +94,9 @@ describe("Agy ACP managed host component", () => {
     // material behind and never races a doomed download.
     expect(preflightIndex).toBeLessThan(workDirIndex);
     expect(preflightIndex).toBeLessThan(curlDownloadIndex);
-    expect(installer).toContain('--head "${ARCHIVE_URL}"');
+    expect(installer).toContain('--head "$ARCHIVE_URL"');
     expect(installer).toContain("df --output=avail -B1");
-    expect(installer).toContain("insufficient disk space to stage Agy ACP component");
+    expect(installer).toContain("insufficient disk space to stage Agy CLI component");
     expect(installer).toContain("AGENT_BRIDGE_AGY_ACP_DISK_SAFETY_FACTOR");
     expect(installer).toContain("--print-required-bytes");
     expect(installer.indexOf('printf \'%s\\n\' "${required_bytes}"')).toBeLessThan(workDirIndex);
@@ -104,12 +104,12 @@ describe("Agy ACP managed host component", () => {
 
   it("keeps the installed binary path traversable by the unprivileged runtime user", () => {
     const installer = readFileSync(resolve(repoRoot, "scripts/install-agy-acp.sh"), "utf8");
-    expect(installer).toContain('VERSION_DIR="${ROOT}/components/${VERSION}"');
-    expect(installer).toContain('normalize_runtime_dir "${VERSION_DIR}"');
-    expect(installer).toContain('normalize_runtime_dir "${COMPONENT_DIR}"');
-    expect(installer).toContain('chmod 0755 "${path}"');
-    expect(installer).toContain('stat -c \'%u:%g:%a\' "${VERSION_DIR}"');
-    expect(installer).toContain('stat -c \'%u:%g:%a\' "${COMPONENT_DIR}"');
+    expect(installer).toContain('VERSION_DIR="$ROOT/components/$VERSION"');
+    expect(installer).toContain('normalize_runtime_dir "$VERSION_DIR"');
+    expect(installer).toContain('normalize_runtime_dir "$COMPONENT_DIR"');
+    expect(installer).toContain('chmod 0755 "$path"');
+    expect(installer).toContain('stat -c \'%u:%g:%a\' "$VERSION_DIR"');
+    expect(installer).toContain('stat -c \'%u:%g:%a\' "$COMPONENT_DIR"');
   });
 
   it("packages the installer and verifies every declared host component generically", () => {
