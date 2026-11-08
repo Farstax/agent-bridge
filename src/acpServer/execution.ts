@@ -1255,7 +1255,9 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
   private async queueBehindActive(input: OutwardAcpPromptExecutionInput, reservationToken?: string): Promise<acp.PromptResponse> {
     const { db } = this.options;
     const { session } = input;
-    const mode = this.busyMode(session);
+    // A supervised continuation must never interrupt or steer an unrelated
+    // in-flight user Run, regardless of the user-selected busy-message mode.
+    const mode = input.ordinaryResume ? "queue" : this.busyMode(session);
     const key = input.ordinaryResume ? `${RUN_CONTINUATION_PREFIX}${input.ordinaryResume.id}`
       : input.requestId ? requestKey(session, input.requestId) : `acp-queue:${randomUUID()}`;
     const settled = db.getSetting(queueReceiptKey(key));
@@ -1328,8 +1330,8 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
     }
     const queueId = admission.id;
     let steered = false;
-    if (mode === "interrupt") await this.cancelRun(session);
-    else if (mode === "augment") steered = await this.trySteerQueued(session, queueId);
+    if (!input.ordinaryResume && mode === "interrupt") await this.cancelRun(session);
+    else if (!input.ordinaryResume && mode === "augment") steered = await this.trySteerQueued(session, queueId);
     this.scheduleDrain(session);
     // A late injected result after claim loss is uncertain, not a new queue
     // admission. Surface the durable verdict instead of claiming it is queued.
