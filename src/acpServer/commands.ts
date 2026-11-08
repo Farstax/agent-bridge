@@ -6,6 +6,9 @@ import { applyModelSelection } from "../bridge.js";
 import { handleCommand, normalizeCommand } from "../commands.js";
 import { buildBusyMessageModeKeyboard, isBusyMessageModeSelection, resolveLaneBusyMessageMode, setLaneBusyMessageMode } from "../busyMessageMode.js";
 import type { BridgeDb } from "../db.js";
+import type { SensorRegistry } from "../sensors/registry.js";
+import type { SensorReport } from "../sensors/types.js";
+import { formatSensorReports } from "../sensors/telegram.js";
 import { supportsReadOnlyBtw } from "../providers/registry.js";
 import type { OutwardAcpSessionRecord } from "../repositories/outwardAcpSessionRepository.js";
 import type { BotKind, BridgeConfig, RouteableBotKind } from "../types.js";
@@ -47,6 +50,8 @@ export interface AcpCommandOption {
 export interface AcpCommandResult {
   command: string;
   text: string;
+  /** Read-only sensor observations; display-only, not an ACP conversation turn. */
+  sensorReports?: SensorReport[];
   options?: AcpCommandOption[];
   /** Effective model/effort from the existing ACP settings snapshot, when known. */
   effectiveValue?: string;
@@ -67,6 +72,7 @@ export interface AcpCommandOptions {
   config: BridgeConfig;
   control: AcpCommandControl;
   codexUsage?: () => Promise<string>;
+  sensors?: Pick<SensorRegistry, "list" | "run" | "runAll">;
   /** Discover live provider-owned model/effort choices on demand, outside the prompt path. */
   prepareConfig?: (session: OutwardAcpSessionRecord, provider: BotKind, command: "models" | "effort") => Promise<unknown>;
 }
@@ -131,7 +137,10 @@ const DEFINITIONS: readonly Definition[] = [
     argument: "on|off|status",
     unavailable: (provider) => provider === "antigravity" ? null : "only available on Antigravity",
   },
-  { name: "sensors", description: "Sensor controls", route: "run", unavailable: () => NOT_ON_OUTWARD },
+  {
+    name: "sensors", description: "Run read-only sensor checks", route: "run", selectable: true,
+    unavailable: (_provider, options) => options.sensors ? null : "sensor observations unavailable on this runtime",
+  },
   { name: "autonomy", description: "Autonomy controls", route: "run", unavailable: () => NOT_ON_OUTWARD },
 ];
 
@@ -232,6 +241,8 @@ export class AcpCommands {
       }
       case "queue_mode":
         return this.selectBusyMode(session, request.select);
+      case "sensors":
+        return await this.runSensors(request.select);
       case "models":
       case "effort":
         await this.options.prepareConfig?.(session, provider, name);
@@ -260,6 +271,23 @@ export class AcpCommands {
         return { command: name, text: result.text };
       }
     }
+  }
+
+  /** Telegram-parity observations: no provider invocation, remediation or model context. */
+  private async runSensors(select: string | undefined): Promise<AcpCommandResult> {
+    const sensors = this.options.sensors!;
+    const available = sensors.list();
+    const options = [
+      ...available.map((sensor) => ({ label: sensor.label, selected: false, token: `sensor:${sensor.id}` })),
+      { label: "Run all sensors", selected: false, token: "sensor:all" },
+    ];
+    if (select === undefined) return { command: "sensors", text: "Choose a sensor to run.", options };
+    const target = select.startsWith("sensor:") ? select.slice("sensor:".length) : "";
+    if (target !== "all" && !available.some((sensor) => sensor.id === target)) {
+      throw acp.RequestError.invalidParams({ field: "select" }, "sensor is not registered in this workspace");
+    }
+    const sensorReports = target === "all" ? await sensors.runAll() : [await sensors.run(target)];
+    return { command: "sensors", text: formatSensorReports(sensorReports), sensorReports };
   }
 
   /**
