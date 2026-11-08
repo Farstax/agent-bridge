@@ -2191,6 +2191,9 @@ export class BridgeEngine {
     const ordinaryWorkstreamId = this.surfaceIdentity === "acp:outward"
       ? (body as { ordinaryWorkstreamId?: string }).ordinaryWorkstreamId : undefined;
     const authorisedOutcome = this.surfaceIdentity !== "acp:outward" || Boolean(ordinaryWorkstreamId);
+    // A negotiated ordinary Desk Run has a durable objective owner even when
+    // the ACP adapter does not provide a generated-artifact callback.
+    const dispositionEligible = publishArtifacts || Boolean(body.onOutputArtifacts) || Boolean(ordinaryWorkstreamId);
 
     const fileSendOptions = threadId != null ? { message_thread_id: threadId } : undefined;
     const outDir = await prepareOutputDir(chatKey, this.kind, runId ?? randomUUID());
@@ -2211,7 +2214,7 @@ export class BridgeEngine {
       outputDir: null,
     }).nativeSessionMode;
     // Read-only verification turns get no scratch helper: its write and clear are mutations.
-    const promptForCli = await this._buildPromptForCli(chatKey, prompt, nativeSessionMode, model, runId, executionKind, chatId, threadId, isVerificationOnly ? undefined : laneHandle, authorisedOutcome && !isVerificationOnly && this.kind !== "autonomous" && (publishArtifacts || Boolean(body.onOutputArtifacts)) && Boolean(this.opts.fullConfig?.dbPath), ordinaryWorkstreamId);
+    const promptForCli = await this._buildPromptForCli(chatKey, prompt, nativeSessionMode, model, runId, executionKind, chatId, threadId, isVerificationOnly ? undefined : laneHandle, authorisedOutcome && !isVerificationOnly && this.kind !== "autonomous" && dispositionEligible && Boolean(this.opts.fullConfig?.dbPath), ordinaryWorkstreamId);
     const invocation = buildCliInvocation({
       bot: executionKind,
       command: this.opts.botConfig.command,
@@ -2330,7 +2333,7 @@ export class BridgeEngine {
       // admitted Run/session*. Reuse this output directory: re-entering the
       // entire execute/deliver path would lose files and the original answer.
       const eligibleOutcome = runId !== null && !isVerificationOnly && this.kind !== "autonomous"
-        && authorisedOutcome && (publishArtifacts || Boolean(body.onOutputArtifacts)) && Boolean(this.opts.fullConfig?.dbPath);
+        && authorisedOutcome && dispositionEligible && Boolean(this.opts.fullConfig?.dbPath);
       // A structural ACP refusal is an actual provider safety boundary, not
       // a forgotten helper invocation. Never prompt a refusing provider a
       // second time simply to obtain a shell-command disposition.
