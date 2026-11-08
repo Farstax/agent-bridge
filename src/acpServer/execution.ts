@@ -1,5 +1,7 @@
 import * as acp from "@agentclientprotocol/sdk/unstable";
 import { randomUUID } from "node:crypto";
+import { realpathSync } from "node:fs";
+import { isAbsolute } from "node:path";
 import { abortCliProcessAndWait, toUserMessage } from "../cli.js";
 import { loadBotsConfig, resolveExecutionCapacityConfig, resolveExecutionMode } from "../config.js";
 import { openExecutionCapacityCoordinator } from "../executionCapacity.js";
@@ -790,7 +792,8 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
         if (input.ordinaryResume) {
           const current = this.options.lookupSession?.(input.session.sessionId);
           if (!current || current.conversationId !== input.session.conversationId ||
-              current.cwd !== input.session.cwd || this.selectedProvider(current) !== provider ||
+              current.cwd !== input.session.cwd || !isAbsolute(current.cwd) ||
+              realpathSync(current.cwd) !== current.cwd || this.selectedProvider(current) !== provider ||
               lookupProviderSession(db, identity, provider) !== input.ordinaryResume.providerSessionId) {
             throw new Error("outward ordinary continuation Workstream or provider authority changed");
           }
@@ -1170,11 +1173,16 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
       this.identity(session), ordinaryWait.provider) : null;
     const ordinaryResume = ordinaryWait?.state === "claimed" && ordinaryWait.claimToken &&
       ordinaryWait.outwardSessionId === session.sessionId && origin?.status === "done" &&
-      origin.session_id && origin.session_id === providerSessionId
+      origin.session_id && origin.session_id === providerSessionId &&
+      this.selectedProvider(session) === ordinaryWait.provider
       ? { id: ordinaryWait.id, claimToken: ordinaryWait.claimToken, provider: ordinaryWait.provider,
           providerSessionId } : undefined;
     if (ordinaryId && !ordinaryResume) {
-      this.writeQueueReceipt(key, { status: "cancelled", reason: "ordinary_continuation_authority_lost" });
+      if (ordinaryWait?.claimToken) {
+        settleRunContinuation(this.options.db, ordinaryWait.id, "failed",
+          "ordinary continuation Workstream or provider authority changed", Date.now(), ordinaryWait.claimToken);
+      }
+      this.writeQueueReceipt(key, { status: "failed", reason: "ordinary_continuation_authority_lost" });
       return "committed";
     }
     const existingReceipt = this.options.db.getSetting(queueReceiptKey(key));
