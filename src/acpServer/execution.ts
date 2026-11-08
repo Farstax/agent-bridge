@@ -66,6 +66,10 @@ export interface OutwardAcpPromptExecutionInput {
   deferCapacity?: boolean;
   /** Trusted, claimed continuation only; not supplied by an ACP client. */
   capacityResume?: { id: string; claimToken: string };
+  /** Explicit extension opt-in for ordinary objective outcomes and unattended wakes. */
+  ordinaryContinuations?: boolean;
+  /** Claimed and bound by the existing supervised worker, never ACP client input. */
+  ordinaryResume?: { id: string; claimToken: string; provider: BotKind };
   /** ACP v1 caller opted into busy-message admission; otherwise a busy Workstream fails fast. */
   busyMessages?: boolean;
   /** Client idempotency token; a repeated submission never creates a second queue row or Run. */
@@ -97,6 +101,7 @@ export interface OutwardAcpPromptExecutor {
   /** User-facing Bridge Stop: cancel the active Run and all accepted queued work. */
   cancel(session: OutwardAcpSessionRecord): Promise<OutwardStopResult>;
   readonly supportsDeferredCapacity?: boolean;
+  readonly supportsOrdinaryContinuations?: boolean;
   readonly supportsBusyMessages?: boolean;
 }
 
@@ -268,6 +273,9 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
   constructor(private readonly options: BridgeOutwardAcpPromptExecutorOptions) {}
 
   get supportsDeferredCapacity(): boolean { return this.options.enableDeferredCapacity === true; }
+  get supportsOrdinaryContinuations(): boolean {
+    return this.supportsDeferredCapacity && Boolean(this.options.lookupSession);
+  }
   readonly supportsBusyMessages = true;
   private closing = false;
 
@@ -281,9 +289,9 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
     return stored && this.options.providerChain.includes(stored as BotKind) ? stored as BotKind : this.options.providerChain[0];
   }
 
-  private routerFor(session: OutwardAcpSessionRecord, initialProvider: BotKind): SurfaceNeutralProviderRouter {
+  private routerFor(session: OutwardAcpSessionRecord, initialProvider: BotKind, originalProviderOnly = false): SurfaceNeutralProviderRouter {
     const existing = this.routers.get(session.conversationId);
-    if (existing?.provider === initialProvider) return existing.router;
+    if (!originalProviderOnly && existing?.provider === initialProvider) return existing.router;
     const { db, providerChain, createEngine, isProviderAvailable } = this.options;
     const durablySelected = getStoredCliPreference(db, this.identity(session)) === initialProvider;
     const router = createSurfaceNeutralProviderRouter({
@@ -294,16 +302,16 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
       isProviderAvailable: (candidate) => (durablySelected && candidate === initialProvider) || isProviderAvailable?.(candidate) !== false,
       surfaceIdentity: OUTWARD_ACP_SURFACE,
       initialProvider,
-      providerChain,
+      providerChain: originalProviderOnly ? [initialProvider] : providerChain,
       engineForProvider: (attemptProvider) => createEngine(session, attemptProvider),
     });
-    this.routers.set(session.conversationId, { provider: initialProvider, router });
+    if (!originalProviderOnly) this.routers.set(session.conversationId, { provider: initialProvider, router });
     return router;
   }
 
   status(session: OutwardAcpSessionRecord): OutwardWorkstreamStatus {
     const continuations = listRunContinuations(this.options.db, OUTWARD_ACP_SURFACE)
-      .filter((item) => item.chatKey === session.conversationId && item.outward?.sessionId === session.sessionId);
+      .filter((item) => item.chatKey === session.conversationId && (item.outward?.sessionId === session.sessionId || item.outwardSessionId === session.sessionId));
     return this.statusWithContinuations(session, continuations, this.availableProviderSnapshot(),
       this.options.db.pendingMsgQueuedCount(OUTWARD_ACP_SURFACE, session.conversationId));
   }
@@ -314,7 +322,7 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
     const queuedCounts = this.options.db.pendingMessageCounts(OUTWARD_ACP_SURFACE);
     const byWorkstream = new Map<string, RunContinuation[]>();
     for (const item of listRunContinuations(this.options.db, OUTWARD_ACP_SURFACE)) {
-      const sessionId = item.outward?.sessionId;
+      const sessionId = item.outward?.sessionId ?? item.outwardSessionId;
       if (!sessionId) continue;
       const key = `${item.chatKey}\0${sessionId}`;
       const group = byWorkstream.get(key);
@@ -500,6 +508,14 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
       // racing Stop is either admitted first and removed here, or observes the
       // fence and is rejected; it cannot slip into the queue after Stop.
       db.setSetting(stopFenceKey(session.conversationId), new Date().toISOString());
+      // The same durable Stop admission fence cancels ordinary pending and
+      // claimed wakes. Capacity waits retain their separate recovery proof.
+      for (const wait of listRunContinuations(db, OUTWARD_ACP_SURFACE)) {
+        if (!wait.capacityWait && wait.chatKey === session.conversationId &&
+            wait.outwardSessionId === session.sessionId) {
+          cancelPendingRunContinuation(db, wait.id, "cancelled_by_owner");
+        }
+      }
     };
     const afterDiscard = (rows: DiscardedPendingMessage[]) => {
       for (const row of rows) {
@@ -745,7 +761,9 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
     const { db } = this.options;
     const idempotencyKey = queued?.key
       ?? (input.busyMessages === true && input.requestId ? requestKey(input.session, input.requestId) : null);
-    const provider = this.selectedProvider(input.session);
+    const provider = input.ordinaryResume?.provider ?? this.selectedProvider(input.session);
+    const ordinaryWorkstreamId = input.ordinaryResume || (input.ordinaryContinuations && this.supportsOrdinaryContinuations)
+      ? input.session.sessionId : undefined;
     const runId = input.runId ?? this.options.runId?.() ?? randomUUID();
     let eventStore: EventStore | null = null;
     let active: ActiveOutwardExecution | null = null;
@@ -768,6 +786,13 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
           if (queued) throw new QueuedMessageStopped();
           throw new acp.RequestError(OUTWARD_ACP_BUSY_ERROR, "outward ACP Stop is still pending", { sessionId: input.session.sessionId });
         }
+        if (input.ordinaryResume) {
+          const current = this.options.lookupSession?.(input.session.sessionId);
+          if (!current || current.conversationId !== input.session.conversationId ||
+              current.cwd !== input.session.cwd || this.selectedProvider(current) !== provider) {
+            throw new Error("outward ordinary continuation Workstream or provider authority changed");
+          }
+        }
         db.insertRun(runId, identity, provider);
         // Persist the Run -> queued row link with the Run, so a crash after this
         // point can never replay a prompt whose execution may have started.
@@ -775,7 +800,11 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
           db.setSetting(queueRunLinkKey(idempotencyKey), runId);
           if (reservationToken) clearSetting(db, queueReservationKey(idempotencyKey));
         }
-        if (input.capacityResume) {
+        if (input.ordinaryResume) {
+          if (!linkRunContinuationRun(db, input.ordinaryResume.id, runId, input.ordinaryResume.claimToken)) {
+            throw new Error("outward ordinary continuation claim was lost");
+          }
+        } else if (input.capacityResume) {
           // Persist the exact continuation claim -> successor link before any
           // provider can execute, so a crash cannot lead to blind replay.
           if (!linkCapacityContinuationRun(db, input.capacityResume.id, input.capacityResume.claimToken, runId)) {
@@ -864,7 +893,7 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
         acquisitionId: lane.acquisitionId,
       };
 
-      const result: CliResult = await this.routerFor(input.session, provider).executeSurfaceNeutralTurn({
+      const result: CliResult = await this.routerFor(input.session, provider, Boolean(input.ordinaryResume)).executeSurfaceNeutralTurn({
         prompt: input.prompt,
         attachments: input.attachments ?? [],
         // Resolved per-attempt by createEngine's wrapper for whichever
@@ -877,6 +906,7 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
         runId,
         eventContext,
         collect,
+        ...(ordinaryWorkstreamId ? { ordinaryWorkstreamId } : {}),
         onProviderExecutionStarted: resetPreview,
         onAnswerDelta: input.answerPreview === true ? (delta) => {
           if (!delta || active?.cancelRequested || input.signal.aborted) return;
@@ -1654,7 +1684,9 @@ export function createProductionOutwardAcpPromptExecutor(
       pollIntervalMs: 1000,
       workingDir: session.cwd,
       fullConfig,
-      allowRunContinuations: false,
+      // Per-Run ACP authorisation is enforced by the neutral turn input,
+      // not by a process-global enable/disable switch.
+      allowRunContinuations: true,
       maxConcurrentExecutions: capacity.maxConcurrentExecutions,
       executionCapacityDb: executionCapacityDb ?? undefined,
       hooks: {
