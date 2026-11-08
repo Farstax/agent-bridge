@@ -65,7 +65,8 @@ export async function resumeOutwardOrdinaryContinuation(
   wake: RunContinuation,
 ): Promise<boolean | "queued"> {
   if (wake.capacityWait || !wake.outwardSessionId || !wake.claimToken ||
-      wake.state !== "claimed" || wake.surfaceIdentity !== OUTWARD_ACP_SURFACE) {
+      wake.state !== "claimed" || wake.surfaceIdentity !== OUTWARD_ACP_SURFACE ||
+      wake.provider === "custom-acp") {
     throw new Error("outward ordinary continuation is not an authorised claimed wake");
   }
   const session = lookup(wake.outwardSessionId);
