@@ -588,7 +588,7 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
     const record = this.active.get(session.conversationId);
     if (!record) return this.requestRemoteStop(session);
     record.cancelRequested = true;
-    if (record.cancelPromise) { await record.cancelPromise; return "confirmed"; }
+    if (record.cancelPromise) return this.awaitBoundedLocalStop(record.cancelPromise);
 
     const lane = executionLane(session.conversationId);
     const coordinator = executionLaneCoordinator(this.options.db, OUTWARD_ACP_SURFACE);
@@ -610,13 +610,27 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
       }
     })();
     record.cancelPromise = operation;
-    try {
-      await operation;
-    } finally {
+    void operation.finally(() => {
       if (record.cancelPromise === operation) record.cancelPromise = null;
+    }).catch(() => undefined);
+    // The owner may ignore SIGTERM or never return; keep its cancellation
+    // running, leave admission fenced, and report pending instead of hanging.
+    return this.awaitBoundedLocalStop(operation);
+  }
+
+  private async awaitBoundedLocalStop(operation: Promise<void>): Promise<OutwardStopResult> {
+    const waitMs = this.options.remoteStopWaitMs ?? 2 * 6_000;
+    let timer: NodeJS.Timeout | undefined;
+    try {
+      return await Promise.race([
+        operation.then(() => "confirmed" as const, () => "pending" as const),
+        new Promise<OutwardStopResult>((resolve) => {
+          timer = setTimeout(() => resolve("pending"), waitMs);
+        }),
+      ]);
+    } finally {
+      if (timer) clearTimeout(timer);
     }
-    // The loop above only ends once the owning outer Run has settled.
-    return "confirmed";
   }
 
   /** Cancel all active requests and wait until their outer Run persistence settles. */
