@@ -8,7 +8,7 @@
  */
 
 import { SCRATCH_SIGNPOST, readScratch, renderFreshScratch } from "./scratchpad.js";
-import { MissingRunOutcomeError, RunOutcomeReconciliationError, readRunOutcome, missingOutcomeRetries, clearRunOutcomeForProviderRetry } from "./runOutcome.js";
+import { MissingRunOutcomeError, RunOutcomeReconciliationError, readRunOutcome, missingOutcomeRetries, resetAbandonedRunDisposition } from "./runOutcome.js";
 import { EVENT_RECEIPT_CORRELATION_PREFIX } from "./interactiveIngress.js";
 import { randomUUID } from "node:crypto";
 import { basename, dirname, join } from "node:path";
@@ -961,8 +961,7 @@ export class BridgeEngine {
           // A failed provider attempt is not the terminal answer for this Run.
           // Its outcome (and any requested wake) must not survive a fresh
           // attempt that may make a different final determination.
-          cancelPendingRunContinuation(this.db, runId, "provider attempt failed before terminal settlement");
-          clearRunOutcomeForProviderRetry(this.db, runId);
+          resetAbandonedRunDisposition(this.db, runId);
           persistEngineProviderSession(this.db, { surfaceIdentity: this.surfaceIdentity, chatKey }, sourceKind, null);
         });
         markHandoffRequired(this.db, this.surfaceIdentity, chatKey, sourceKind, `fallback_from_${sourceKind}`);
@@ -1847,8 +1846,7 @@ export class BridgeEngine {
     if (!runId) return;
     this._runWithFence(laneHandle, () => {
       if (this.db.getRun(runId)?.status !== "running") return;
-      cancelPendingRunContinuation(this.db, runId, "provider attempt failed before terminal settlement");
-      clearRunOutcomeForProviderRetry(this.db, runId);
+      resetAbandonedRunDisposition(this.db, runId);
     });
   }
 
