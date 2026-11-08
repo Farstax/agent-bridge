@@ -131,13 +131,13 @@ describe("outward ACP durable queue ownership", () => {
     } finally { f.cleanup(); }
   });
 
-  it("preserves queued attachments through a verified capacity retry and replays as queued", async () => {
+  it("derives and persists a verifiable CSV tool result after queued capacity recovery, without replay", async () => {
     const f = fixture();
     try {
       const key = "acp-request:s1:capacity-attachment";
       const retainedId = "acp-queue-capacity-retry";
       await stageOutwardAcpAttachments(f.root, [
-        { type: "resource", resource: { uri: "file:///note.txt", mimeType: "text/plain", text: "keep me" } },
+        { type: "resource", resource: { uri: "file:///values.csv", mimeType: "text/csv", text: "value\\n12\\n7\\n" } },
       ], (paths) => retainOutwardAcpAttachmentsForWait(f.root, paths, retainedId));
       f.db.admitMessage(OUTWARD_ACP_SURFACE, f.session.conversationId, {
         prompt: "retry with attachment", chatId: f.session.sessionId, chatType: "acp",
@@ -158,8 +158,19 @@ describe("outward ACP durable queue ownership", () => {
               input.onProviderRecoveryDecision?.("capacity", true);
               throw new Error("MODEL_CAPACITY_EXHAUSTED");
             }
-            input.collect(eventType.runCompleted({ runId: input.runId, bot: "codex", chatId: String(input.chatId), chatKey: input.chatKey, text: "ok", sessionId: "fake" }));
-            return { text: "ok", sessionId: "fake", stopReason: "end_turn" };
+            // The fake provider consumes the staged CSV and a deterministic
+            // native-tool result to generate the answer; asserting only
+            // attachment presence would miss a broken content path.
+            const csv = seen.at(-1)!;
+            const parsed = csv.trim().split("\\n").slice(1).map(Number);
+            const toolOutput = { sum: parsed.reduce((total, value) => total + value, 0) };
+            input.collect(eventType.acpEvent({
+              runId: input.runId, bot: "codex", chatId: String(input.chatId), chatKey: input.chatKey,
+              sessionMode: "fresh", event: { sessionUpdate: "tool_call_update", toolCallId: "csv-sum", status: "completed", rawOutput: toolOutput },
+            }));
+            const answer = `csv_sum:${toolOutput.sum}`;
+            input.collect(eventType.runCompleted({ runId: input.runId, bot: "codex", chatId: String(input.chatId), chatKey: input.chatKey, text: answer, sessionId: "fake" }));
+            return { text: answer, sessionId: "fake", stopReason: "end_turn" };
           },
           recoverPendingQueue: (chatKey) => core.recoverPendingQueue(chatKey),
         }),
@@ -173,7 +184,12 @@ describe("outward ACP durable queue ownership", () => {
         await new Promise((resolve) => setTimeout(resolve, 25));
       }
       expect(attempts).toBe(2);
-      expect(seen).toEqual(["keep me", "keep me"]);
+      expect(seen).toEqual(["value\\n12\\n7\\n", "value\\n12\\n7\\n"]);
+      const latest = f.db.getLatestRunForConversation({ surfaceIdentity: OUTWARD_ACP_SURFACE, chatKey: f.session.conversationId });
+      expect(latest).toMatchObject({ status: "done", final_text_preview: "csv_sum:19" });
+      expect(f.db.getEventsForRun(latest.run_id)).toEqual(expect.arrayContaining([
+        expect.objectContaining({ type: "acp.event" }),
+      ]));
       expect(f.db.pendingMsgCount(OUTWARD_ACP_SURFACE, f.session.conversationId)).toBe(0);
       expect(JSON.parse(f.db.getSetting(`outward-queue-receipt:${key}`)!)).toMatchObject({ status: "done" });
       expect(readdirSync(f.root).some((name) => name.startsWith(".agent-bridge-queued-attachments-"))).toBe(false);
