@@ -43,7 +43,7 @@ export function assertAgyAcpVersion(
   let observedVersion = "unknown";
   try {
     const raw = readVersion();
-    observedVersion = raw.match(/\b\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?\b/)?.[0] ?? "unknown";
+    observedVersion = raw.match(/(?:^|[^0-9.])v?(\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?)(?![0-9.])/)?.[1] ?? "unknown";
   } catch (error) {
     throw new Error(`Agy ACP executable could not be version-verified: ${(error as Error).message}`);
   }
