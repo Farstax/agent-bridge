@@ -20,7 +20,7 @@ import type { BotKind, BridgeConfig, CliResult, RouteableBotKind } from "../type
 import { QUEUED_ATTACHMENT_MARKER, readRetainedOutwardAcpAttachments, retainOutwardAcpAttachmentsForWait, releaseRetainedOutwardAcpAttachments } from "./attachments.js";
 import { resolveLaneBusyMessageMode } from "../busyMessageMode.js";
 import { discardDeskRunArtifacts, retainDeskArtifacts } from "./artifacts.js";
-import { hasPendingCapacityWait, listRunContinuations, linkCapacityContinuationRun, linkRunContinuationRun, requestRunContinuation, cancelPendingRunContinuation, settleRunContinuation, type RunContinuation } from "../runContinuation.js";
+import { hasPendingCapacityWait, listRunContinuations, linkCapacityContinuationRun, linkRunContinuationRun, RUN_CONTINUATION_PREFIX, requestRunContinuation, cancelPendingRunContinuation, settleRunContinuation, type RunContinuation } from "../runContinuation.js";
 
 
 import { OUTWARD_ACP_SURFACE, outwardServiceId, recoverOutwardLanes } from "./recovery.js";
@@ -1161,6 +1161,22 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
   async executeQueuedMessage(session: OutwardAcpSessionRecord, message: PendingMessage): Promise<"committed" | "deferred" | "settled"> {
     const key = message.scheduledOccurrenceKey;
     if (!key || !message.laneHandle) return "committed";
+    const ordinaryId = key.startsWith(RUN_CONTINUATION_PREFIX)
+      ? key.slice(RUN_CONTINUATION_PREFIX.length) : null;
+    const ordinaryWait = ordinaryId
+      ? listRunContinuations(this.options.db, OUTWARD_ACP_SURFACE).find((item) => item.id === ordinaryId) : null;
+    const origin = ordinaryWait ? this.options.db.getRun(ordinaryWait.originRunId) : null;
+    const providerSessionId = ordinaryWait ? lookupProviderSession(this.options.db,
+      this.identity(session), ordinaryWait.provider) : null;
+    const ordinaryResume = ordinaryWait?.state === "claimed" && ordinaryWait.claimToken &&
+      ordinaryWait.outwardSessionId === session.sessionId && origin?.status === "done" &&
+      origin.session_id && origin.session_id === providerSessionId
+      ? { id: ordinaryWait.id, claimToken: ordinaryWait.claimToken, provider: ordinaryWait.provider,
+          providerSessionId } : undefined;
+    if (ordinaryId && !ordinaryResume) {
+      this.writeQueueReceipt(key, { status: "cancelled", reason: "ordinary_continuation_authority_lost" });
+      return "committed";
+    }
     const existingReceipt = this.options.db.getSetting(queueReceiptKey(key));
     if (existingReceipt) {
       try {
@@ -1203,7 +1219,8 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
         onUpdate: () => undefined,
         deferCapacity: this.supportsDeferredCapacity,
         busyMessages: true,
-        ordinaryContinuations: this.options.db.getSetting(ordinaryConsentKey(key)) === "1",
+        ordinaryContinuations: Boolean(ordinaryResume) || this.options.db.getSetting(ordinaryConsentKey(key)) === "1",
+        ...(ordinaryResume ? { ordinaryResume } : {}),
       }, message.laneHandle, queued);
     } catch (error) {
       if (!queued.coreOutcome) throw error;
@@ -1233,7 +1250,8 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
     const { db } = this.options;
     const { session } = input;
     const mode = this.busyMode(session);
-    const key = input.requestId ? requestKey(session, input.requestId) : `acp-queue:${randomUUID()}`;
+    const key = input.ordinaryResume ? `${RUN_CONTINUATION_PREFIX}${input.ordinaryResume.id}`
+      : input.requestId ? requestKey(session, input.requestId) : `acp-queue:${randomUUID()}`;
     const settled = db.getSetting(queueReceiptKey(key));
     if (settled) return this.storedQueueReceipt(settled, input.requestId);
     const existing = db.getPendingMessageIdByCorrelationKey(OUTWARD_ACP_SURFACE, key);
@@ -1273,7 +1291,8 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
           attachments: attachments.length > 0 ? [`${RETAINED_ATTACHMENT_MARKER}${retainedId}`] : [],
           scheduledOccurrenceKey: key,
         }, MAX_QUEUE_DEPTH, queueReceiptKey(key), queueRunLinkKey(key), queueReservationKey(key), reservationToken ?? "", stopFenceKey(session.conversationId));
-        if (accepted.kind === "queued" && input.ordinaryContinuations && this.supportsOrdinaryContinuations) {
+        if (accepted.kind === "queued" && (input.ordinaryResume ||
+            (input.ordinaryContinuations && this.supportsOrdinaryContinuations))) {
           db.setSetting(ordinaryConsentKey(key), "1");
         }
         return accepted;
