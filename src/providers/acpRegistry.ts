@@ -97,19 +97,19 @@ const RELEASE_LOCKED_ACP_REGISTRY_ENTRIES: Readonly<Partial<Record<ProviderId, A
   agy: {
     id: "antigravity-acp",
     name: "Google Antigravity",
-    version: "1.4.5",
-    description: "Google’s AI coding agent",
-    website: "https://antigravity.google/docs/ide/extensions",
+    version: "1.5.2",
+    description: "Official Google Antigravity CLI ACP",
+    website: "https://antigravity.google/docs/cli/acp",
     authors: ["Google LLC"],
     license: "proprietary",
     license_url: "https://antigravity.google/terms",
     distribution: {
       binary: {
         "linux-x86_64": {
-          archive: "https://dl.google.com/agy-extensions/releases/linux/agy-acp-server-1.4.5-linux-x86_64.zip",
-          sha256: "923923a0d7dc8073f66cc6f78647a3107e3a7ee2b7e1a24df8b3927b5188013b",
-          cmd: "./agy_acp_server.par",
-          args: ["--uid="],
+          archive: "https://github.com/google-antigravity/antigravity-cli/releases/download/1.5.2/agy_cli_linux_x64.tar.gz",
+          sha256: "da696a8dc6122a63d5ffbdd21b02c8a62d5361fba0ed7d3bc2d2619889e62711",
+          cmd: "./agy",
+          args: ["acp"],
         },
       },
     },
