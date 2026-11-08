@@ -13,11 +13,11 @@ afterEach(() => {
   for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
 });
 
-function fixture(mode: "complete-after-retry" | "continue-after-retry" | "blocked-after-retry" | "missing-twice" | "report-first" | "retry-throws" | "refusal" | "continue-then-invalid-session" | "continue-then-model-fallback" | "continue-then-internal-retry") {
+function fixture(mode: "complete-after-retry" | "continue-after-retry" | "blocked-after-retry" | "missing-twice" | "report-first" | "retry-throws" | "refusal" | "continue-then-invalid-session" | "continue-then-model-fallback" | "continue-then-internal-retry", surfaceIdentity = "telegram:interactive") {
   const dir = mkdtempSync(join(tmpdir(), "run-outcome-engine-")); dirs.push(dir);
   const path = join(dir, "bridge.sqlite");
   const db = openDb(path, { serviceId: "outcome-engine-test", runId: "process" });
-  const identity = { surfaceIdentity: "telegram:interactive", chatKey: "chat" };
+  const identity = { surfaceIdentity, chatKey: "chat" };
   const provider = mode === "continue-then-model-fallback" ? "codex" : "claude";
   db.insertRun("run-one", identity, provider);
   const handle = db.acquireLock(identity.surfaceIdentity, identity.chatKey);
@@ -94,6 +94,39 @@ describe("ordinary Run objective settlement", () => {
     expect(result.text).toBe("Reconciliation was recorded");
     expect(db.getRun("run-one").outcome_status).toBe("complete");
     db.close();
+  });
+
+  it("exposes the existing outcome/wait helpers only to authorised ordinary Desk Runs", async () => {
+    const options = { publishArtifacts: false, onOutputArtifacts: async () => ({ retained: 0, discarded: 0 }) };
+    const eligible = fixture("continue-after-retry", "acp:outward");
+    const result = await eligible.engine.executePromptAsync(
+      "Continue verified work", null, "chat",
+      { ...options, ordinaryWorkstreamId: "ws-trusted" },
+      () => {}, [], undefined, "run-one", null, "chat", eligible.handle,
+    );
+    expect(result.text).toBe("Reconciliation was recorded");
+    expect(eligible.invocation).toHaveBeenCalledTimes(2);
+    expect(eligible.invocation.mock.calls[0][3].contextEnv).toMatchObject({
+      AGENT_BRIDGE_OUTCOME_COMMAND: expect.any(String),
+      AGENT_BRIDGE_WAIT_COMMAND: expect.any(String),
+      AGENT_BRIDGE_OUTWARD_SESSION_ID: "ws-trusted",
+    });
+    expect(eligible.db.getRun("run-one").outcome_status).toBe("continue");
+    expect(listRunContinuations(eligible.db, "acp:outward")).toEqual([
+      expect.objectContaining({ outwardSessionId: "ws-trusted", state: "pending" }),
+    ]);
+    eligible.db.close();
+
+    const legacy = fixture("missing-twice", "acp:outward");
+    await legacy.engine.executePromptAsync(
+      "Legacy ACP response", null, "chat", options,
+      () => {}, [], undefined, "run-one", null, "chat", legacy.handle,
+    );
+    expect(legacy.invocation).toHaveBeenCalledTimes(1);
+    expect(legacy.invocation.mock.calls[0][3].contextEnv?.AGENT_BRIDGE_OUTCOME_COMMAND).toBeUndefined();
+    expect(legacy.invocation.mock.calls[0][3].contextEnv?.AGENT_BRIDGE_WAIT_COMMAND).toBeUndefined();
+    expect(listRunContinuations(legacy.db, "acp:outward")).toHaveLength(0);
+    legacy.db.close();
   });
 
   it("schedules unfinished work after one missing-outcome reconciliation", async () => {
