@@ -255,6 +255,22 @@ async function loadSession(
   return readThroughResponse(process, id);
 }
 
+async function selectWorkstreamProvider(
+  process: RunningOutwardAcp,
+  id: number,
+  sessionId: string,
+  cwd: string,
+  provider: "codex" | "claude",
+): Promise<JsonRpcResponse> {
+  process.child.stdin.write(`${JSON.stringify({
+    jsonrpc: "2.0",
+    id,
+    method: "_agent-bridge/workstreams/select_provider",
+    params: { sessionId, cwd, provider },
+  })}\n`);
+  return nextResponse(process);
+}
+
 function cancelSession(process: RunningOutwardAcp, sessionId: string): void {
   process.child.stdin.write(`${JSON.stringify({
     jsonrpc: "2.0",
@@ -545,7 +561,7 @@ describe("outward ACP stdio boundary", { timeout: 30_000 }, () => {
       const outwardSessionId = created.result?.sessionId;
       expect(outwardSessionId).toEqual(expect.any(String));
 
-      const firstTurn = await promptSession(first, 3, outwardSessionId!, "PHASED first wire prompt");
+      const firstTurn = await promptSession(first, 3, outwardSessionId!, "PHASED first wire prompt CTX_FACT_V1=ORCHID47");
       expect(firstTurn.response).toMatchObject({
         jsonrpc: "2.0",
         id: 3,
@@ -575,7 +591,7 @@ describe("outward ACP stdio boundary", { timeout: 30_000 }, () => {
 
       second = startOutwardAcpProcess(dbPath, env);
       await initialize(second, 4);
-      const secondTurn = await promptSession(second, 5, outwardSessionId!, "PHASED second wire prompt");
+      const secondTurn = await promptSession(second, 5, outwardSessionId!, "PHASED second wire prompt CTX_RECALL_V1");
       expect(secondTurn.response).toMatchObject({
         jsonrpc: "2.0",
         id: 5,
@@ -603,6 +619,9 @@ describe("outward ACP stdio boundary", { timeout: 30_000 }, () => {
         sessionUpdate: "agent_message_chunk",
         content: { type: "text", text: expect.stringContaining("PHASED second wire prompt") },
       });
+      // Only native provider-session resume can supply the earlier-turn fact:
+      // no second prompt or outward replay contains ORCHID47.
+      expect(JSON.stringify(secondAnswers[0]?.params?.update)).toContain("recalled:ORCHID47");
 
       await stopProcess(second);
       second = null;
@@ -826,6 +845,81 @@ describe("outward ACP stdio boundary", { timeout: 30_000 }, () => {
       rmSync(root, { recursive: true, force: true });
     }
   }, 15000);
+
+
+  it("preserves Workstream context while switching providers away and back across an ACP restart", async () => {
+    const root = mkdtempSync(join(tmpdir(), "agent-bridge-1075-provider-handoff-"));
+    const dbPath = join(root, "bridge.sqlite");
+    const providerStore = join(root, "provider-sessions.json");
+    openDb(dbPath, { databaseRole: "interactive" }).close();
+    let first: RunningOutwardAcp | null = null;
+    let second: RunningOutwardAcp | null = null;
+    try {
+      first = startOutwardAcpProcess(dbPath, fallbackProviderEnv(providerStore));
+      await initialize(first, 1);
+      const created = await newSession(first, 2, root);
+      const outwardSession = created.result?.sessionId!;
+      expect(outwardSession).toEqual(expect.any(String));
+      const conversation = conversationIdForSession(dbPath, outwardSession);
+      expect((await promptSession(first, 3, outwardSession, "first on codex")).response.result?.stopReason).toBe("end_turn");
+
+      let db = openDb(dbPath, { databaseRole: "interactive" });
+      const codexBefore = db.getAcpSessionBinding(
+        { surfaceIdentity: OUTWARD_ACP_SURFACE, chatKey: conversation }, "codex",
+      )?.acpSessionId;
+      expect(codexBefore).toEqual(expect.any(String));
+      db.close();
+
+      expect((await selectWorkstreamProvider(first, 4, outwardSession, root, "claude")).error).toBeUndefined();
+      expect((await promptSession(first, 5, outwardSession, "second on claude")).response.result?.stopReason).toBe("end_turn");
+
+      db = openDb(dbPath, { databaseRole: "interactive" });
+      const claudeBefore = db.getAcpSessionBinding(
+        { surfaceIdentity: OUTWARD_ACP_SURFACE, chatKey: conversation }, "claude",
+      )?.acpSessionId;
+      expect(claudeBefore).toEqual(expect.any(String));
+      expect(claudeBefore).not.toBe(codexBefore);
+      expect(db.getAcpSessionBinding(
+        { surfaceIdentity: OUTWARD_ACP_SURFACE, chatKey: conversation }, "codex",
+      )?.acpSessionId).toBe(codexBefore);
+      db.close();
+
+      await stopProcess(first);
+      first = null;
+      second = startOutwardAcpProcess(dbPath, fallbackProviderEnv(providerStore));
+      await initialize(second, 6);
+      expect((await selectWorkstreamProvider(second, 7, outwardSession, root, "codex")).error).toBeUndefined();
+
+      db = openDb(dbPath, { databaseRole: "interactive" });
+      // Switching back clears the *target* provider's stale native session
+      // and requires a fresh handoff; the other provider remains isolated.
+      expect(db.getAcpSessionBinding(
+        { surfaceIdentity: OUTWARD_ACP_SURFACE, chatKey: conversation }, "codex",
+      )).toBeNull();
+      expect(db.getAcpSessionBinding(
+        { surfaceIdentity: OUTWARD_ACP_SURFACE, chatKey: conversation }, "claude",
+      )?.acpSessionId).toBe(claudeBefore);
+      db.close();
+
+      expect((await promptSession(second, 8, outwardSession, "third on codex")).response.result?.stopReason).toBe("end_turn");
+      db = openDb(dbPath, { databaseRole: "interactive" });
+      const codexAfter = db.getAcpSessionBinding(
+        { surfaceIdentity: OUTWARD_ACP_SURFACE, chatKey: conversation }, "codex",
+      )?.acpSessionId;
+      expect(codexAfter).toEqual(expect.any(String));
+      expect(codexAfter).not.toBe(codexBefore);
+      expect(codexAfter).not.toBe(claudeBefore);
+      expect((db.raw.prepare(`SELECT COUNT(*) AS count FROM bridge_runs
+        WHERE surface_identity = ? AND chat_id = ? AND status = 'done'`)
+        .get(OUTWARD_ACP_SURFACE, conversation) as { count: number }).count).toBe(3);
+      expect(conversationIdForSession(dbPath, outwardSession)).toBe(conversation);
+      db.close();
+    } finally {
+      if (first) await stopProcess(first);
+      if (second) await stopProcess(second);
+      rmSync(root, { recursive: true, force: true });
+    }
+  }, 45000);
 
   it("routes session/cancel through Bridge execution ownership and settles the Run as cancelled", async () => {
     const root = mkdtempSync(join(tmpdir(), "agent-bridge-outward-acp-cancel-"));

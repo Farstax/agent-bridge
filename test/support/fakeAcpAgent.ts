@@ -290,6 +290,15 @@ export function createFakeAcpAgent(options: FakeAcpAgentOptions = {}): acp.Agent
         });
       }
       let reply = `live:${text}`;
+      if (text.includes("CTX_RECALL_V1")) {
+        // Deterministic session-continuity check: the answer must read a fact
+        // from the same provider's persisted earlier *user* turn, not from
+        // the current prompt, Bridge history replay or another Workstream.
+        const factTurn = session.history.slice(0, -1).reverse().find((turn) =>
+          turn.role === "user" && turn.text.includes("CTX_FACT_V1="));
+        const value = factTurn?.text.match(/CTX_FACT_V1=([A-Z0-9_-]+)/)?.[1] ?? "missing";
+        reply += `\nrecalled:${value}`;
+      }
       if (text.includes("repository-grounding qualification")) {
         const source = readFileSync("src/repositoryGroundingFixture.ts", "utf8");
         const instructions = readFileSync("AGENTS.md", "utf8");
