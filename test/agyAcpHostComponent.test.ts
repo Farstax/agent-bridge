@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { execFileSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { execFileSync, spawnSync } from "node:child_process";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { getLockedAcpRegistryEntry } from "../src/providers/acpRegistry.js";
@@ -16,6 +16,45 @@ describe("Agy ACP managed host component", () => {
       id: "agy-acp",
       installer: "scripts/install-agy-acp.sh",
       phase_protocol: 1,
+    });
+  });
+
+  describe("archive extraction (the snippet the installer actually runs)", () => {
+    const installer = readFileSync(resolve(repoRoot, "scripts/install-agy-acp.sh"), "utf8");
+    const snippet = /python3 - "\$archive" "\$staging\/agy" <<'PY'\n([\s\S]*?)\nPY\n/.exec(installer)?.[1];
+
+    function extract(members: string[]): { status: number | null; stderr: string; out: string } {
+      const dir = mkdtempSync(resolve(tmpdir(), "agy-extract-"));
+      try {
+        const src = resolve(dir, "src");
+        mkdirSync(src);
+        for (const name of members) {
+          const path = resolve(src, name);
+          mkdirSync(resolve(path, ".."), { recursive: true });
+          writeFileSync(path, `binary:${name}`);
+        }
+        const archive = resolve(dir, "a.tar.gz");
+        execFileSync("tar", ["czf", archive, "-C", src, ...members]);
+        const out = resolve(dir, "agy");
+        const result = spawnSync("python3", ["-", archive, out], { input: snippet, encoding: "utf8" });
+        return { status: result.status, stderr: result.stderr, out: existsSync(out) ? readFileSync(out, "utf8") : "" };
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    }
+
+    it("is present in the installer", () => { expect(snippet).toBeTruthy(); });
+    it("accepts the official 1.5.2 layout, where the executable is named `antigravity`", () => {
+      expect(extract(["antigravity"])).toMatchObject({ status: 0, out: "binary:antigravity" });
+    });
+    it("still accepts a single `agy` member", () => {
+      expect(extract(["agy"])).toMatchObject({ status: 0, out: "binary:agy" });
+    });
+    it("rejects an archive with no recognised executable", () => {
+      expect(extract(["README"]).stderr).toContain("expected one official agy executable");
+    });
+    it("rejects an ambiguous archive with more than one executable", () => {
+      expect(extract(["antigravity", "bin/agy"]).stderr).toContain("expected one official agy executable");
     });
   });
 
