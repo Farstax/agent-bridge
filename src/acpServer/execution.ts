@@ -915,6 +915,7 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
         eventContext,
         collect,
         ...(ordinaryWorkstreamId ? { ordinaryWorkstreamId } : {}),
+        ...(input.ordinaryResume ? { requireBoundProviderSession: true } : {}),
         onProviderExecutionStarted: resetPreview,
         onAnswerDelta: input.answerPreview === true ? (delta) => {
           if (!delta || active?.cancelRequested || input.signal.aborted) return;
