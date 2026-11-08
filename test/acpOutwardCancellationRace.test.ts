@@ -79,4 +79,43 @@ describe("outward ACP cancellation ownership", () => {
       rmSync(root, { recursive: true, force: true });
     }
   });
+
+  it("records shutdown cancellation without attributing it to the user", async () => {
+    const root = mkdtempSync(join(tmpdir(), "agent-bridge-outward-shutdown-reason-"));
+    const db = openDb(join(root, "bridge.sqlite"), { databaseRole: "interactive" });
+    try {
+      const session = new OutwardAcpSessionRepository(db.raw).create({
+        sessionId: "outward-shutdown", conversationId: "acp:shutdown", cwd: root,
+      });
+      let entered!: () => void;
+      const enteredEngine = new Promise<void>((resolve) => { entered = resolve; });
+      let resume!: () => void;
+      const settled = new Promise<void>((resolve) => { resume = resolve; });
+      const executor = new BridgeOutwardAcpPromptExecutor({
+        db,
+        providerChain: ["codex"] as const,
+        runId: () => "run-shutdown",
+        createEngine: () => ({
+          executeSurfaceNeutralTurn: async () => {
+            entered();
+            await settled;
+            return { text: "", sessionId: null, stopReason: "cancelled" as const };
+          },
+        }),
+      });
+      const running = executor.execute({
+        session, prompt: "work", signal: new AbortController().signal, onUpdate: () => undefined,
+      });
+      await enteredEngine;
+      const shutdown = executor.shutdown();
+      resume();
+      const [result] = await Promise.all([running, shutdown]);
+      expect(result.stopReason).toBe("cancelled");
+      expect(db.getRun("run-shutdown")).toMatchObject({ status: "cancelled", error: "shutdown" });
+      expect(executor.status(session).lastRun?.error).toBe("Run cancelled.");
+    } finally {
+      db.close();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
 });
