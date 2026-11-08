@@ -1625,7 +1625,7 @@ prune_host_component_retention() {
     echo "host component retention skipped reason=release_pins_ambiguous"
     return 0
   fi
-  local agy_versions_dir agy_current_version agy_previous_version legacy_binary_link legacy_harness_link legacy_link legacy_target
+  local agy_versions_dir agy_current_version agy_previous_version legacy_binary_link legacy_harness_link legacy_link legacy_target agy_legacy_links_safe=1
   agy_versions_dir="$(agy_component_root)/components"
   agy_current_version="$(locked_host_component_version "$release_root/$expected_commit" agy 2>/dev/null || true)"
   if [[ -n "$agy_current_version" && -f "$agy_versions_dir/$agy_current_version/linux-x86_64/agy" \
@@ -1634,23 +1634,27 @@ prune_host_component_retention() {
     # binary/harness pair may still serve the rollback pin, not the new pin.
     # Validate the pair before deleting anything it might still reference.
     agy_previous_version="$(locked_host_component_version "$release_root/$previous_pointer_target" agy 2>/dev/null || true)"
-    legacy_binary_link="/usr/local/bin/agy_acp_server.par"
+    legacy_binary_link="${AGENT_BRIDGE_AGY_LEGACY_LINK:-/usr/local/bin/agy_acp_server.par}"
     legacy_harness_link="${AGENT_BRIDGE_AGY_HARNESS_LINK:-/usr/local/bin/agy_localharness_external}"
     if [[ -e "$legacy_binary_link" || -L "$legacy_binary_link" || -e "$legacy_harness_link" || -L "$legacy_harness_link" ]]; then
       for legacy_link in "$legacy_binary_link" "$legacy_harness_link"; do
         if [[ ! -L "$legacy_link" || ! -e "$legacy_link" ]]; then
           echo "host component retention skipped provider=agy reason=legacy_link_not_managed"
-          return 0
+          agy_legacy_links_safe=0
+          break
         fi
-        legacy_target="$(/usr/bin/readlink -f -- "$legacy_link")" || return 0
+        legacy_target="$(/usr/bin/readlink -f -- "$legacy_link")" || { agy_legacy_links_safe=0; break; }
         if [[ -z "$agy_previous_version" || "$legacy_target" != "$agy_versions_dir/$agy_previous_version/"* ]]; then
           echo "host component retention skipped provider=agy reason=legacy_link_not_rollback"
-          return 0
+          agy_legacy_links_safe=0
+          break
         fi
       done
     fi
-    prune_host_component_versions agy "$agy_versions_dir" remove_named_child_directory agy_version_dir_is_managed \
-      "${AGENT_BRIDGE_AGY_ACP_LINK:-/usr/local/bin/agy}"
+    if (( agy_legacy_links_safe == 1 )); then
+      prune_host_component_versions agy "$agy_versions_dir" remove_named_child_directory agy_version_dir_is_managed \
+        "${AGENT_BRIDGE_AGY_ACP_LINK:-/usr/local/bin/agy}"
+    fi
   else
     # Pre-migration installs publish the .par/harness pair together. Retain
     # the existing fail-closed validation and pruning contract during rollback.
