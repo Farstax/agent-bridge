@@ -83,6 +83,19 @@ describe("ordinary Run objective settlement", () => {
     db.close();
   });
 
+  it("reconciles eligible neutral Run outcomes even when messaging artifact delivery is disabled", async () => {
+    const { db, engine, handle, invocation } = fixture("complete-after-retry");
+    const result = await engine.executePromptAsync(
+      "Complete the original task", null, "chat",
+      { publishArtifacts: false, onOutputArtifacts: async () => ({ retained: 0, discarded: 0 }) },
+      () => {}, [], undefined, "run-one", null, "chat", handle,
+    );
+    expect(invocation).toHaveBeenCalledTimes(2);
+    expect(result.text).toBe("Reconciliation was recorded");
+    expect(db.getRun("run-one").outcome_status).toBe("complete");
+    db.close();
+  });
+
   it("schedules unfinished work after one missing-outcome reconciliation", async () => {
     const { db, engine, handle, invocation } = fixture("continue-after-retry");
     const result = await engine.executePromptAsync("Ship both PRs", null, "chat", {}, () => {}, [], undefined, "run-one", null, "chat", handle);
