@@ -17,7 +17,7 @@ describe("Execution path contracts", () => {
 
     expect(config.antigravity).toMatchObject({
       token: "legacy-token",
-      command: "agy",
+      command: "/usr/local/bin/agy",
       modelPreference: [],
     });
   });
