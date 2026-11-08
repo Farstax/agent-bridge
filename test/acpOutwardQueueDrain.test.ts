@@ -332,4 +332,122 @@ describe("outward ACP durable queue ownership", () => {
       expect(f.ran).toEqual(["long task", "follow up 1"]);
     } finally { f.cleanup(); }
   });
+  it("keeps Stop authoritative when an injected steering reply arrives from a cancelled claim", async () => {
+    const f = fixture();
+    const stopperDb = openDb(join(f.root, "bridge.sqlite"), { databaseRole: "interactive" });
+    let releaseWork!: () => void;
+    let releaseSteer!: () => void;
+    let steerEntered!: () => void;
+    const workGate = new Promise<void>((resolve) => { releaseWork = resolve; });
+    const steerGate = new Promise<void>((resolve) => { releaseSteer = resolve; });
+    const entered = new Promise<void>((resolve) => { steerEntered = resolve; });
+    const lane = JSON.stringify([OUTWARD_ACP_SURFACE, f.session.conversationId]);
+    const coordinator = executionLaneCoordinator(f.db, OUTWARD_ACP_SURFACE);
+    const stopper = new BridgeOutwardAcpPromptExecutor({
+      db: stopperDb,
+      providerChain: ["codex"] as const,
+      remoteStopWaitMs: 250,
+      createEngine: () => ({
+        executeSurfaceNeutralTurn: async () => { throw new Error("Stop owner must not start a Run"); },
+        recoverPendingQueue: async () => true,
+      }),
+    });
+    try {
+      f.hold(workGate);
+      setLaneBusyMessageMode(f.db, OUTWARD_ACP_SURFACE, f.session.conversationId, "augment", "queue");
+      const active = f.executor.execute(base(f.session, "live turn"));
+      while (f.ran.length === 0) await new Promise((resolve) => setTimeout(resolve, 10));
+      coordinator.setSteerHandle(lane, async () => {
+        steerEntered();
+        await steerGate;
+        return { outcome: "injected" };
+      });
+      const key = "acp-request:s1:steering-stop";
+      const queued = f.executor.execute(base(f.session, "must not appear again", {
+        busyMessages: true, requestId: "steering-stop",
+      }));
+      await entered;
+      // A separate DB connection performs the same transactional Stop as
+      // another real ACP process, while the provider steering RPC is held.
+      const stop = stopper.cancel(f.session);
+      expect(JSON.parse(f.db.getSetting(`outward-queue-receipt:${key}`)!))
+        .toMatchObject({ status: "cancelled", reason: "stopped" });
+      releaseSteer();
+      releaseWork();
+      const receipt = await queued;
+      await Promise.all([active, stop]);
+      expect((receipt._meta as any)["agent-bridge"]).toMatchObject({
+        outcome: "settled", status: "cancelled",
+      });
+      expect(JSON.parse(f.db.getSetting(`outward-queue-receipt:${key}`)!))
+        .toMatchObject({ status: "cancelled", reason: "stopped" });
+      await f.executor.drainQueued(f.session);
+      expect(f.ran).toEqual(["live turn"]);
+      expect(f.db.pendingMsgCount(OUTWARD_ACP_SURFACE, f.session.conversationId)).toBe(0);
+    } finally {
+      releaseSteer();
+      releaseWork();
+      coordinator.clearSteerHandle(lane);
+      stopperDb.close();
+      f.cleanup();
+    }
+  }, 12_000);
+
+  it("fails closed after an injected steer loses its queue claim without a Stop", async () => {
+    const f = fixture();
+    let releaseWork!: () => void;
+    let releaseSteer!: () => void;
+    let steerEntered!: () => void;
+    const workGate = new Promise<void>((resolve) => { releaseWork = resolve; });
+    const steerGate = new Promise<void>((resolve) => { releaseSteer = resolve; });
+    const entered = new Promise<void>((resolve) => { steerEntered = resolve; });
+    const lane = JSON.stringify([OUTWARD_ACP_SURFACE, f.session.conversationId]);
+    const coordinator = executionLaneCoordinator(f.db, OUTWARD_ACP_SURFACE);
+    try {
+      f.hold(workGate);
+      setLaneBusyMessageMode(f.db, OUTWARD_ACP_SURFACE, f.session.conversationId, "augment", "queue");
+      const active = f.executor.execute(base(f.session, "live turn"));
+      while (f.ran.length === 0) await new Promise((resolve) => setTimeout(resolve, 10));
+      coordinator.setSteerHandle(lane, async () => {
+        steerEntered();
+        await steerGate;
+        return { outcome: "injected" };
+      });
+      const key = "acp-request:s1:steering-lease-lost";
+      const queued = f.executor.execute(base(f.session, "irreversible injection", {
+        busyMessages: true, requestId: "steering-lease-lost",
+      }));
+      await entered;
+      const id = f.db.getPendingMessageIdByCorrelationKey(OUTWARD_ACP_SURFACE, key);
+      expect(id).not.toBeNull();
+      // A lease/claim transition after the provider accepted content: the
+      // old claimant must neither delete an unowned row nor replay the text.
+      f.db.raw.prepare(`UPDATE pending_messages
+        SET state = 'queued', claim_run_id = NULL, claim_acquisition_id = NULL, claimed_at = NULL
+        WHERE id = ?`).run(id);
+      releaseSteer();
+      const receipt = await queued;
+      expect((receipt._meta as any)["agent-bridge"]).toMatchObject({
+        outcome: "settled", status: "uncertain", reason: "steering_claim_lost",
+      });
+      releaseWork();
+      await active;
+      await f.executor.drainQueued(f.session);
+      expect(f.ran).toEqual(["live turn"]);
+      expect(f.db.pendingMsgCount(OUTWARD_ACP_SURFACE, f.session.conversationId)).toBe(0);
+      const retry = await f.executor.execute(base(f.session, "irreversible injection", {
+        busyMessages: true, requestId: "steering-lease-lost",
+      }));
+      expect((retry._meta as any)["agent-bridge"]).toMatchObject({
+        outcome: "settled", status: "uncertain",
+      });
+      expect(f.ran).toEqual(["live turn"]);
+    } finally {
+      releaseSteer();
+      releaseWork();
+      coordinator.clearSteerHandle(lane);
+      f.cleanup();
+    }
+  }, 12_000);
+
 });
