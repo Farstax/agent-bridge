@@ -73,6 +73,10 @@ describe("Agy ACP provider", () => {
     expect(() => assertAgyAcpVersion("agy", "1.5.2", () => { throw new Error("not installed"); }))
       .toThrow(/could not be version-verified: not installed/);
     expect(() => assertAgyAcpVersion("agy", "1.5.2", () => "agy version 1.5.2")).not.toThrow();
+    expect(() => assertAgyAcpVersion("agy", "1.5.2", () => "agy v1.5.2")).not.toThrow();
+    for (const displayed of ["agy 1.5.2.1", "agy 1.5.20", "agy 11.5.2", "agy 1.5.2-rc1"]) {
+      expect(() => assertAgyAcpVersion("agy", "1.5.2", () => displayed)).toThrow(/version mismatch|observed unknown/);
+    }
   });
 
   it("honours explicit command and argument overrides and needs no external harness", () => {
