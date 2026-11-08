@@ -99,7 +99,7 @@ export async function resumeOutwardOrdinaryContinuation(
   });
   const responseMeta = (result._meta as Record<string, unknown> | undefined)?.["agent-bridge"];
   if (responseMeta && typeof responseMeta === "object" &&
-      (responseMeta as { outcome?: unknown }).outcome === "queued") return "queued";
+      ["queued", "running"].includes(String((responseMeta as { outcome?: unknown }).outcome))) return "queued";
   // ACP end_turn alone cannot prove durable Run/outcome settlement.
   const current = listRunContinuations(db, OUTWARD_ACP_SURFACE).find((item) => item.id === wake.id);
   const successor = current?.successorRunId ? db.getRun(current.successorRunId) : null;
