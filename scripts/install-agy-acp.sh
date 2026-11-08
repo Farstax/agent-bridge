@@ -122,7 +122,8 @@ if ! valid_component; then
 import pathlib, shutil, sys, tarfile
 archive, destination = map(pathlib.Path, sys.argv[1:3])
 with tarfile.open(archive, "r:gz") as bundle:
-    matches = [m for m in bundle.getmembers() if m.isfile() and pathlib.PurePosixPath(m.name).name == "agy"]
+    # The official 1.5.2 archive ships the executable as `antigravity`; it is installed as `agy`.
+    matches = [m for m in bundle.getmembers() if m.isfile() and pathlib.PurePosixPath(m.name).name in ("antigravity", "agy")]
     if len(matches) != 1: raise SystemExit("expected one official agy executable")
     source = bundle.extractfile(matches[0])
     if source is None: raise SystemExit("binary unreadable")
