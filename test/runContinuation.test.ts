@@ -126,12 +126,12 @@ describe("ordinary Run continuation", () => {
     const identity = { surfaceIdentity: "acp:outward", chatKey: "conversation" };
     db.insertRun("origin", identity, "claude");
     persistProviderSession(db, identity, "claude", "native-session", "origin");
-    db.updateRunCompleted("origin", "waiting", "native-session");
     const now = Date.now();
     const wait = requestRunContinuation(db, {
       originRunId: "origin", ...identity, provider: "claude",
       reason: "re-check", afterSeconds: 5, outwardSessionId: "workstream-1",
     }, now);
+    db.updateRunCompleted("origin", "waiting", "native-session");
     const claimed = claimDueRunContinuation(db, wait.id, now + 5_001, {
       runId: "worker", claimToken: "fenced-claim",
     });
