@@ -109,6 +109,37 @@ describe("surface-neutral provider attempt isolation", () => {
     }
   });
 
+  it("fences the durable provider before a native fallback outcome helper runs", async () => {
+    const db = openDb(":memory:");
+    const chatKey = "acp:fallback-provider-fence";
+    const identity = { surfaceIdentity: "acp:outward", chatKey };
+    db.insertRun("fenced-run", identity, "claude");
+    const lane = db.acquireLock(identity.surfaceIdentity, chatKey, false);
+    expect(lane).not.toBeNull();
+    const seen: string[] = [];
+    const router = createSurfaceNeutralProviderRouter({
+      db, surfaceIdentity: identity.surfaceIdentity,
+      initialProvider: "claude", providerChain: ["claude", "codex"],
+      engineForProvider: (provider) => ({
+        executeSurfaceNeutralTurn: vi.fn(async (input: any) => {
+          seen.push(provider);
+          expect(db.getRun(input.runId).bot).toBe(provider);
+          if (provider === "claude") throw new Error("usage limit reached");
+          return { text: "finished with native outcome", sessionId: "codex-session", stopReason: "end_turn" };
+        }),
+      }) as any,
+    });
+    try {
+      const input = { ...turnInput(vi.fn()), chatKey, runId: "fenced-run", laneHandle: lane! };
+      await router.executeSurfaceNeutralTurn(input);
+      expect(seen).toEqual(["claude", "codex"]);
+      expect(db.getRun("fenced-run").bot).toBe("codex");
+    } finally {
+      db.unlock(lane!);
+      db.close();
+    }
+  });
+
   it("preserves the final provider failure when no fallback remains", async () => {
     const db = openDb(":memory:");
     const collected: any[] = [];
