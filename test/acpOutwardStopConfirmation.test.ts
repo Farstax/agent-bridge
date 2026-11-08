@@ -81,6 +81,22 @@ describe("outward ACP Stop confirmation", () => {
     } finally { f.cleanup(); }
   });
 
+  it("returns pending promptly for a local owner whose provider ignores cancellation", async () => {
+    const f = fixture(150);
+    try {
+      const owner = f.make(f.db, false);
+      const first = f.prompt(owner);
+      await wait(() => running(f).length === 1);
+      const start = Date.now();
+      expect(await owner.cancel(f.session)).toBe("pending");
+      expect(Date.now() - start).toBeLessThan(2_000);
+      expect(running(f)).toHaveLength(1);
+      expect(f.db.getSetting(`outward-stop-fence:${f.session.conversationId}`)).toBeTruthy();
+      f.release();
+      await first;
+    } finally { f.cleanup(); }
+  });
+
   it("stays pending after the owner disconnects until proven-containment recovery ends the Run", async () => {
     const f = fixture(200);
     try {
