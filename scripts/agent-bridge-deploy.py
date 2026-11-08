@@ -35,6 +35,7 @@ DEPLOY_UNIT_ENV = "AGENT_BRIDGE_DEPLOY_UNIT"
 ROLLOUT_SAFETY_RESERVE_ENV = "AGENT_BRIDGE_ROLLOUT_SAFETY_RESERVE_BYTES"
 DEPLOY_LOCK = Path("/run/lock/agent-bridge-deploy.lock")
 HANDOFF_ROOT = Path("/etc/agent-bridge/deploy-requests")
+RETIRED_HANDOFF_ROOT = Path("/var/lib/agent-bridge-retired-handoffs")
 SYSTEMD_RUN = "/usr/bin/systemd-run"
 RUNUSER = "/usr/sbin/runuser"
 SUDO = "/usr/bin/sudo"
@@ -925,6 +926,86 @@ def handoff_root(production: bool) -> Path:
     return Path(os.environ.get("AGENT_BRIDGE_DEPLOY_TEST_HANDOFF_ROOT", "/tmp/agent-bridge-deploy-test-handoff"))
 
 
+def retired_handoff_root(production: bool) -> Path:
+    if production:
+        return RETIRED_HANDOFF_ROOT
+    return Path(os.environ.get("AGENT_BRIDGE_DEPLOY_TEST_RETIRED_HANDOFF_ROOT", "/tmp/agent-bridge-deploy-test-retired-handoff"))
+
+
+def handoff_unit_is_active(unit: str, production: bool) -> bool:
+    if not production:
+        return os.environ.get("AGENT_BRIDGE_DEPLOY_TEST_HANDOFF_UNIT_ACTIVE") == unit
+    return subprocess.run(["/usr/bin/systemctl", "is-active", "--quiet", unit], check=False).returncode == 0
+
+
+def retire_terminally_failed_handoff(
+    directory: Path, receipt: dict, production: bool, superseded_by: str | None = None,
+) -> Path:
+    identity = directory.name
+    try:
+        commit, sha256 = identity.split("-", 1)
+    except ValueError:
+        fail("failed handoff identity is invalid")
+    if handoff_identity(commit, sha256) != identity:
+        fail("failed handoff identity is invalid")
+    if receipt.get("status") != "failed":
+        fail("only a terminally failed handoff can be retired")
+    if receipt.get("targetCommit") != commit or receipt.get("archiveSha256") != sha256:
+        fail("failed handoff receipt identity does not match directory")
+    if handoff_unit_is_active(handoff_unit(commit, sha256), production):
+        fail("failed handoff worker is still active")
+    retired_root = retired_handoff_root(production)
+    secure_handoff_directory(retired_root, production)
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    destination = retired_root / f"{identity}-{stamp}"
+    if destination.exists() or destination.is_symlink():
+        fail("retired handoff destination already exists")
+    shutil.move(str(directory), str(destination))
+    persist_handoff_file(destination / "retirement.json", json.dumps({
+        "retiredAt": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "originalIdentity": identity,
+        "originalStatus": "failed",
+        "originalDetail": receipt.get("detail") or "",
+        "supersededBy": superseded_by,
+        "reason": "terminally_failed_handoff_superseded" if superseded_by else "terminally_failed_handoff_retired",
+    }, sort_keys=True).encode() + b"\n")
+    return destination
+
+
+def retire_failed_handoff() -> str:
+    reject_root_test_overrides()
+    production = os.geteuid() == 0 or os.environ.get("AGENT_BRIDGE_DEPLOY_TEST") != "1"
+    root = handoff_root(production)
+    if not root.exists():
+        fail("no terminally failed handoff is present")
+    secure_handoff_directory(root, production, create=False)
+    failed = []
+    with exclusive_deployment_lock(production):
+        for directory in root.iterdir():
+            if not directory.is_dir() or directory.is_symlink():
+                continue
+            try:
+                receipt = json.loads(secure_file(directory / "result.json", production))
+            except (OSError, ValueError, json.JSONDecodeError):
+                fail("existing deployment handoff cannot be safely inventoried")
+            status = receipt.get("status")
+            if status == "verified":
+                continue
+            if status == "failed":
+                failed.append((directory, receipt))
+            elif status in ("accepted", "activating", "deferred"):
+                fail("another accepted deployment request is unresolved")
+            else:
+                fail("pending handoff has an unknown terminal status")
+        if len(failed) > 1:
+            fail("multiple unresolved handoff targets require a bounded recovery audit")
+        if not failed:
+            fail("no terminally failed handoff is present")
+        directory, receipt = failed[0]
+        destination = retire_terminally_failed_handoff(directory, receipt, production)
+    return f"retired {directory.name} {destination}"
+
+
 def handoff_identity(commit: str, sha256: str) -> str:
     if not SHA.fullmatch(commit) or not SHA256.fullmatch(sha256):
         fail("invalid handoff identity")
@@ -1042,7 +1123,9 @@ def clean_verified_archive(path: Path) -> None:
         print("verified deployment archive cleanup deferred", file=sys.stderr)
 
 
-def accept_handoff(archive: Path, approval: Path | None, owner_request: Path | None) -> str:
+def accept_handoff(
+    archive: Path, approval: Path | None, owner_request: Path | None, supersede_failed: bool = False,
+) -> str:
     reject_root_test_overrides()
     production = os.geteuid() == 0 or os.environ.get("AGENT_BRIDGE_DEPLOY_TEST") != "1"
     config = Path("/etc/agent-bridge/rollout.conf") if production else None
@@ -1070,15 +1153,23 @@ def accept_handoff(archive: Path, approval: Path | None, owner_request: Path | N
             fail("deployment handoff identity is a symlink")
         # One accepted request at a time: a different release must not displace
         # or race a request whose authority was already durably accepted.
+        failed_others = []
         for other in root.iterdir() if root.exists() else ():
             if other.name == identity or other.is_symlink() or not other.is_dir():
                 continue
             try:
-                other_status = json.loads(secure_file(other / "result.json", production)).get("status")
-            except (OSError, ValueError):
+                other_receipt = json.loads(secure_file(other / "result.json", production))
+                other_status = other_receipt.get("status")
+            except (OSError, ValueError, json.JSONDecodeError):
                 fail("existing deployment handoff cannot be safely inventoried")
-            if other_status != "verified":
-                fail("another accepted deployment request is unresolved")
+            if other_status == "verified":
+                continue
+            if other_status == "failed" and supersede_failed:
+                failed_others.append((other, other_receipt))
+                continue
+            fail("another accepted deployment request is unresolved")
+        for other, other_receipt in failed_others:
+            retire_terminally_failed_handoff(other, other_receipt, production, superseded_by=identity)
         staging_root = Path(configured_value(config, "release_root")) if config else Path(
             os.environ.get("AGENT_BRIDGE_DEPLOY_TEST_RELEASE_ROOT") or tempfile.gettempdir())
         admit_staging(archive, commit, sha256, staging_root, production, directory)
@@ -1387,17 +1478,26 @@ def main() -> int:
     parser.add_argument("--handoff", action="store_true", help="Durably hand an authorised release to the independent systemd deployer")
     parser.add_argument("--handoff-id", help=argparse.SUPPRESS)
     parser.add_argument("--resume-pending", action="store_true", help="Resume an existing immutable deployment request")
+    parser.add_argument("--supersede-failed", action="store_true", help="Retire a terminally failed prior handoff before accepting a new one")
+    parser.add_argument("--retire-failed", action="store_true", help="Retire the single terminally failed handoff without accepting a replacement")
     args = parser.parse_args()
     if args.approval is not None and args.owner_request is not None:
         parser.error("provide at most one of --approval or --owner-request")
     reject_root_test_overrides()
+    if args.retire_failed:
+        if args.release or args.handoff or args.internal_worker or args.validate_only or args.approval or args.owner_request or args.handoff_id or args.resume_pending or args.supersede_failed:
+            parser.error("--retire-failed accepts no release or authority overrides")
+        print(retire_failed_handoff())
+        return 0
     if args.resume_pending:
-        if args.release or args.handoff or args.internal_worker or args.validate_only or args.approval or args.owner_request or args.handoff_id:
+        if args.release or args.handoff or args.internal_worker or args.validate_only or args.approval or args.owner_request or args.handoff_id or args.supersede_failed:
             parser.error("--resume-pending accepts no release or authority overrides")
         print(resume_pending_handoff())
         return 0
     if args.release is None:
-        parser.error("--release is required except for --resume-pending")
+        parser.error("--release is required except for --resume-pending or --retire-failed")
+    if args.supersede_failed and not args.handoff:
+        parser.error("--supersede-failed requires --handoff")
     if args.handoff and (args.internal_worker or args.validate_only or args.handoff_id):
         parser.error("--handoff is only valid for a new normal deployment request")
     if args.handoff_id and not args.internal_worker:
@@ -1405,7 +1505,7 @@ def main() -> int:
     if args.validate_only:
         os.environ["AGENT_BRIDGE_DEPLOY_VALIDATE_ONLY"] = "1"
     if args.handoff:
-        print(accept_handoff(args.release, args.approval, args.owner_request))
+        print(accept_handoff(args.release, args.approval, args.owner_request, supersede_failed=args.supersede_failed))
         return 0
     if os.geteuid() == 0 and not args.validate_only:
         unit = os.environ.get(DEPLOY_UNIT_ENV, "")

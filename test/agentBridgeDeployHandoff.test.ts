@@ -23,6 +23,7 @@ function probe(program: string) {
     "os.environ['AGENT_BRIDGE_DEPLOY_TEST'] = '1'",
     "os.environ['AGENT_BRIDGE_DEPLOY_TEST_LOCK_FILE'] = str(root / 'deploy.lock')",
     "os.environ['AGENT_BRIDGE_DEPLOY_TEST_HANDOFF_ROOT'] = str(root / 'handoffs')",
+    "os.environ['AGENT_BRIDGE_DEPLOY_TEST_RETIRED_HANDOFF_ROOT'] = str(root / 'retired')",
     "module.os.geteuid = lambda: 1000",
     "def fake_validate(path, *args):",
     "    module.VERIFIED_MANIFESTS[sha256] = {'commit': commit, '_staging_footprint': (4096, 2, path.stat().st_size)}",
@@ -160,6 +161,138 @@ describe("durable independent OSS deployer handoff (#1347)", () => {
     ].join("\n"));
     expect(result.status, result.stderr).toBe(0);
     expect(result.stdout).toContain("checked");
+  });
+});
+
+describe("terminally failed handoff retirement", () => {
+  it("refuses a replacement while a failed receipt remains unless explicitly superseded", () => {
+    const result = probe([
+      "module.accept_handoff(archive, None, None)",
+      "directory = root / 'handoffs' / (commit + '-' + sha256)",
+      "module.update_handoff_result(directory, 'failed', commit, sha256, 'action_required')",
+      "other = root / 'other.tar.gz'",
+      "other.write_bytes(b'second release')",
+      "other_sha = hashlib.sha256(other.read_bytes()).hexdigest()",
+      "module.validate_archive = lambda *args: ('b' * 40, other_sha, None)",
+      "try:",
+      "    module.accept_handoff(other, None, None)",
+      "    raise AssertionError('failed receipt was silently replaced')",
+      "except RuntimeError as error:",
+      "    assert 'unresolved' in str(error)",
+      "assert directory.exists()",
+      "print('blocked')",
+    ].join("\n"));
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout).toContain("blocked");
+  });
+
+  it("retires a terminally failed handoff with an audit record and then accepts the replacement", () => {
+    const result = probe([
+      "module.accept_handoff(archive, None, None)",
+      "directory = root / 'handoffs' / (commit + '-' + sha256)",
+      "module.update_handoff_result(directory, 'failed', commit, sha256, 'action_required')",
+      "other = root / 'other.tar.gz'",
+      "other.write_bytes(b'second release')",
+      "other_sha = hashlib.sha256(other.read_bytes()).hexdigest()",
+      "other_commit = 'b' * 40",
+      "def fake_other_validate(path, *args):",
+      "    module.VERIFIED_MANIFESTS[other_sha] = {'commit': other_commit, '_staging_footprint': (4096, 2, path.stat().st_size)}",
+      "    return (other_commit, other_sha, None)",
+      "module.validate_archive = fake_other_validate",
+      "receipt = module.accept_handoff(other, None, None, supersede_failed=True)",
+      "assert receipt.startswith('accepted ' + other_commit)",
+      "assert not directory.exists()",
+      "retired = list((root / 'retired').iterdir())",
+      "assert len(retired) == 1",
+      "audit = json.loads((retired[0] / 'retirement.json').read_text())",
+      "assert audit['originalIdentity'] == commit + '-' + sha256",
+      "assert audit['originalStatus'] == 'failed'",
+      "assert audit['originalDetail'] == 'action_required'",
+      "assert audit['supersededBy'] == other_commit + '-' + other_sha",
+      "assert audit['reason'] == 'terminally_failed_handoff_superseded'",
+      "assert (retired[0] / 'result.json').exists()",
+      "print('superseded')",
+    ].join("\n"));
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout).toContain("superseded");
+  });
+
+  it("refuses to supersede an accepted, deferred, or active failed handoff", () => {
+    const result = probe([
+      "module.accept_handoff(archive, None, None)",
+      "directory = root / 'handoffs' / (commit + '-' + sha256)",
+      "other = root / 'other.tar.gz'",
+      "other.write_bytes(b'second release')",
+      "other_sha = hashlib.sha256(other.read_bytes()).hexdigest()",
+      "module.validate_archive = lambda *args: ('b' * 40, other_sha, None)",
+      "try:",
+      "    module.accept_handoff(other, None, None, supersede_failed=True)",
+      "    raise AssertionError('accepted receipt was superseded')",
+      "except RuntimeError as error:",
+      "    assert 'unresolved' in str(error)",
+      "module.update_handoff_result(directory, 'deferred', commit, sha256, 'disk_headroom_insufficient')",
+      "try:",
+      "    module.accept_handoff(other, None, None, supersede_failed=True)",
+      "    raise AssertionError('deferred receipt was superseded')",
+      "except RuntimeError as error:",
+      "    assert 'unresolved' in str(error)",
+      "module.update_handoff_result(directory, 'failed', commit, sha256, 'action_required')",
+      "os.environ['AGENT_BRIDGE_DEPLOY_TEST_HANDOFF_UNIT_ACTIVE'] = module.handoff_unit(commit, sha256)",
+      "try:",
+      "    module.accept_handoff(other, None, None, supersede_failed=True)",
+      "    raise AssertionError('active failed worker was superseded')",
+      "except RuntimeError as error:",
+      "    assert 'still active' in str(error)",
+      "assert directory.exists()",
+      "print('protected')",
+    ].join("\n"));
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout).toContain("protected");
+  });
+
+  it("retires a failed handoff through --retire-failed without accepting a replacement", () => {
+    const result = probe([
+      "module.accept_handoff(archive, None, None)",
+      "directory = root / 'handoffs' / (commit + '-' + sha256)",
+      "module.update_handoff_result(directory, 'failed', commit, sha256, 'action_required')",
+      "outcome = module.retire_failed_handoff()",
+      "assert outcome.startswith('retired ' + commit + '-' + sha256)",
+      "assert not directory.exists()",
+      "retired = list((root / 'retired').iterdir())",
+      "assert len(retired) == 1",
+      "audit = json.loads((retired[0] / 'retirement.json').read_text())",
+      "assert audit['supersededBy'] is None",
+      "assert audit['reason'] == 'terminally_failed_handoff_retired'",
+      "print(outcome)",
+    ].join("\n"));
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout).toContain("retired ");
+  });
+
+  it("refuses to retire an ambiguous or live handoff through --retire-failed", () => {
+    const result = probe([
+      "try:",
+      "    module.retire_failed_handoff()",
+      "    raise AssertionError('empty spool was retired')",
+      "except RuntimeError as error:",
+      "    assert 'no terminally failed' in str(error)",
+      "module.accept_handoff(archive, None, None)",
+      "directory = root / 'handoffs' / (commit + '-' + sha256)",
+      "try:",
+      "    module.retire_failed_handoff()",
+      "    raise AssertionError('accepted receipt was retired')",
+      "except RuntimeError as error:",
+      "    assert 'unresolved' in str(error)",
+      "(directory / 'result.json').write_text('{')",
+      "try:",
+      "    module.retire_failed_handoff()",
+      "    raise AssertionError('ambiguous receipt was retired')",
+      "except RuntimeError as error:",
+      "    assert 'cannot be safely inventoried' in str(error) or 'invalid' in str(error).lower()",
+      "print('refused')",
+    ].join("\n"));
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout).toContain("refused");
   });
 });
 
