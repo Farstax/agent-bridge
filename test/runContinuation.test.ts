@@ -103,6 +103,48 @@ describe("outward ACP durable capacity continuations (#1114)", () => {
 });
 
 describe("ordinary Run continuation", () => {
+  it("persists a real Workstream binding for ordinary outward ACP wakes without a replay payload", () => {
+    const { db } = setup();
+    const originRunId = "outward-ordinary-origin";
+    db.insertRun(originRunId, { surfaceIdentity: "acp:outward", chatKey: "conversation" }, "claude");
+    const wait = requestRunContinuation(db, {
+      originRunId, surfaceIdentity: "acp:outward", chatKey: "conversation",
+      provider: "claude", reason: "finish after CI", afterSeconds: 5,
+      outwardSessionId: "workstream-1",
+    });
+    expect(wait.outwardSessionId).toBe("workstream-1");
+    expect(wait.capacityWait).toBeUndefined();
+    expect(wait.outward).toBeUndefined();
+    expect(listRunContinuations(db, "acp:outward")).toEqual([
+      expect.objectContaining({ id: wait.id, outwardSessionId: "workstream-1", state: "pending" }),
+    ]);
+    db.close();
+  });
+
+  it("fences ordinary outward successor linkage to its exact claimed wake", () => {
+    const { db } = setup();
+    const identity = { surfaceIdentity: "acp:outward", chatKey: "conversation" };
+    db.insertRun("origin", identity, "claude");
+    persistProviderSession(db, identity, "claude", "native-session", "origin");
+    db.updateRunCompleted("origin", "waiting", "native-session");
+    const now = Date.now();
+    const wait = requestRunContinuation(db, {
+      originRunId: "origin", ...identity, provider: "claude",
+      reason: "re-check", afterSeconds: 5, outwardSessionId: "workstream-1",
+    }, now);
+    const claimed = claimDueRunContinuation(db, wait.id, now + 5_001, {
+      runId: "worker", claimToken: "fenced-claim",
+    });
+    expect(claimed?.claimToken).toBe("fenced-claim");
+    db.insertRun("successor", identity, "claude");
+    expect(linkRunContinuationRun(db, wait.id, "successor", "stale-claim")).toBe(false);
+    expect(linkRunContinuationRun(db, wait.id, "successor")).toBe(false);
+    expect(linkRunContinuationRun(db, wait.id, "successor", "fenced-claim")).toBe(true);
+    expect(listRunContinuations(db, "acp:outward")[0].successorRunId).toBe("successor");
+    db.close();
+  });
+
+
   it("persists one bounded continuation for the originating Run", () => {
     const { db } = setup();
     const continuation = requestForActiveRun(db, {
