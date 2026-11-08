@@ -185,6 +185,8 @@ export interface SurfaceNeutralTurnInput {
   onProviderRecoveryDecision?: (reason: ProviderFallbackReason | null, exhausted: boolean) => void;
   /** Trusted, request-authorised Desk Workstream for ordinary outcomes/continuations. */
   ordinaryWorkstreamId?: string;
+  /** A claimed ordinary wake must not silently abandon its bound native session. */
+  requireBoundProviderSession?: boolean;
 }
 
 export const MAX_QUEUE_DEPTH = 5;
@@ -2061,7 +2063,8 @@ export class BridgeEngine {
         { onProviderExecutionStarted: input.onProviderExecutionStarted,
           onAnswerDelta: input.onAnswerDelta, publishArtifacts: false,
           onOutputArtifacts: input.onOutputArtifacts,
-          ordinaryWorkstreamId: input.ordinaryWorkstreamId },
+          ordinaryWorkstreamId: input.ordinaryWorkstreamId,
+          requireBoundProviderSession: input.requireBoundProviderSession === true },
         () => {},
         input.attachments ?? [],
         input.eventContext,
@@ -2534,7 +2537,7 @@ export class BridgeEngine {
       } else if (canPublish) {
         await uploadOutputFiles(outDir, chatId, this.client, fileSendOptions, () => this._canPublish(laneHandle)).catch(() => {});
       }
-      if (sessionId && isInvalidProviderSessionError(error)) {
+      if (!(body as { requireBoundProviderSession?: boolean }).requireBoundProviderSession && sessionId && isInvalidProviderSessionError(error)) {
         console.warn(`[${this.kind}] session ID invalid, retrying with fresh session...`);
         const kind = this.kind;
         this._discardAbandonedAttemptOutcome(laneHandle, runId);
@@ -2543,7 +2546,7 @@ export class BridgeEngine {
       }
       // One bounded same-provider alternate-model attempt; the alternate attempt
       // never falls back again.
-      if (!modelFallback && isCapacityExhaustedError(error as Error) && this.opts.botConfig.modelPreference.length > 1) {
+      if (!(body as { requireBoundProviderSession?: boolean }).requireBoundProviderSession && !modelFallback && isCapacityExhaustedError(error as Error) && this.opts.botConfig.modelPreference.length > 1) {
         const fallbackModel = getNextFallbackModel(model, this.opts.botConfig.modelPreference);
         if (fallbackModel) {
           this._discardAbandonedAttemptOutcome(laneHandle, runId);
