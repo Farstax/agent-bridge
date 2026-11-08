@@ -74,13 +74,13 @@ describe("provider invocation fixtures — antigravity ACP", () => {
       bot: "antigravity",
       prompt,
       sessionId: null,
-      command: "agy_acp_server.par",
+      command: "agy",
       executionMode: "safe",
       toolMode: "none",
     });
     expect(fresh).toMatchObject({
-      command: expect.stringMatching(/agy_acp_server\.par$/) as unknown as string,
-      args: ["--uid="],
+      command: expect.stringMatching(/agy$/) as unknown as string,
+      args: ["acp"],
       nativeSessionMode: "fresh",
       transport: "acp-stdio",
     });
@@ -92,11 +92,11 @@ describe("provider invocation fixtures — antigravity ACP", () => {
       bot: "antigravity",
       prompt: "hi",
       sessionId: "sess-9",
-      command: "agy_acp_server.par",
+      command: "agy",
       executionMode: "trusted",
     });
     expect(resumed).toMatchObject({
-      args: ["--uid="],
+      args: ["acp"],
       nativeSessionMode: "resume",
       transport: "acp-stdio",
     });
