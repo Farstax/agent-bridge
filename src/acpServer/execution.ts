@@ -781,8 +781,7 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
       const identity = { surfaceIdentity: OUTWARD_ACP_SURFACE, chatKey: input.session.conversationId };
       // Validate actual lane ownership inside the same transaction as Run
       // creation; a losing client must not insert an unfenced second Run.
-      let admittedStore: EventStore | null = null;
-      db.runWithLockFence(lane, () => {
+      eventStore = db.runWithLockFence(lane, () => {
         // A Stop that discarded this claimed row won: no Run may be created for it.
         if (queued && !db.ownsPendingClaim(lane, queued.id)) throw new QueuedMessageStopped();
         if (db.getSetting(stopFenceKey(input.session.conversationId))) {
@@ -800,7 +799,7 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
         }
         // Run persistence belongs to the existing shared EventStore. Keep
         // ACP receipt/claim correlation in this same fenced transaction.
-        admittedStore = new EventStore(db, identity);
+        const admittedStore = new EventStore(db, identity);
         admittedStore.admitRun(runId, input.session.conversationId, provider);
         // Persist the Run -> queued row link with the Run, so a crash after this
         // point can never replay a prompt whose execution may have started.
@@ -824,9 +823,8 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
             surfaceIdentity: OUTWARD_ACP_SURFACE,
           });
         }
+        return admittedStore;
       });
-      eventStore = admittedStore;
-      if (!eventStore) throw new Error("shared Run admission did not commit");
 
       let finishDone!: () => void;
       const done = new Promise<void>((resolve) => { finishDone = resolve; });
