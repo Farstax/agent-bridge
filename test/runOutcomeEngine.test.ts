@@ -190,6 +190,31 @@ describe("ordinary Run objective settlement", () => {
     db.close();
   });
 
+  it("does not replace a bound ordinary Desk wake's original native session after a rejected resume", async () => {
+    const { db, engine, handle, invocation } = fixture("continue-then-invalid-session", "acp:outward");
+    await expect(engine.executePromptAsync(
+      "Continue the existing objective", "bound-native-session", "chat",
+      { publishArtifacts: false, ordinaryWorkstreamId: "trusted-ws", requireBoundProviderSession: true },
+      () => {}, [], undefined, "run-one", null, "chat", handle,
+    )).rejects.toThrow("No conversation found with session ID");
+    expect(invocation).toHaveBeenCalledTimes(1);
+    expect(listRunContinuations(db, "acp:outward")).toEqual([
+      expect.objectContaining({ state: "pending", originRunId: "run-one" }),
+    ]);
+    db.close();
+  });
+
+  it("does not substitute a fresh native session via model fallback for a bound Desk wake", async () => {
+    const { db, engine, handle, invocation } = fixture("continue-then-model-fallback", "acp:outward");
+    await expect(engine.executePromptAsync(
+      "Check original task state", "bound-native-session", "chat",
+      { publishArtifacts: false, ordinaryWorkstreamId: "trusted-ws", requireBoundProviderSession: true },
+      () => {}, [], undefined, "run-one", null, "chat", handle,
+    )).rejects.toThrow("usage limit reached");
+    expect(invocation).toHaveBeenCalledTimes(1);
+    db.close();
+  });
+
   it("discards an abandoned attempt's continue disposition before retrying an invalid provider session", async () => {
     const { db, engine, handle, invocation } = fixture("continue-then-invalid-session");
     await engine.executePromptAsync("Finish release", "stale-session", "chat", {}, () => {}, [], undefined, "run-one", null, "chat", handle);
