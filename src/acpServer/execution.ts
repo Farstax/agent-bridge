@@ -223,13 +223,18 @@ function normalizeStopReason(value: string | undefined): acp.StopReason {
   }
 }
 
-function failedEvent(runId: string, provider: RouteableBotKind, session: OutwardAcpSessionRecord): BridgeEvent {
+function outwardFailureMessage(error: unknown): string {
+  // Use the existing bounded, credential-redacted provider error presentation.
+  return toUserMessage(error instanceof Error ? error : new Error(String(error)));
+}
+
+function failedEvent(runId: string, provider: RouteableBotKind, session: OutwardAcpSessionRecord, error: unknown): BridgeEvent {
   return eventType.runFailed({
     runId,
     bot: provider,
     chatId: session.sessionId,
     chatKey: session.conversationId,
-    error: "outward ACP prompt execution failed",
+    error: outwardFailureMessage(error),
     category: "unknown",
   });
 }
@@ -966,7 +971,7 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
         return { stopReason: "cancelled" };
       }
       if (eventStore && db.getRun(runId)?.status === "running") {
-        eventStore.collect(failedEvent(runId, activeProvider, input.session));
+        eventStore.collect(failedEvent(runId, activeProvider, input.session, error));
         eventStore.finalize();
       }
       // An idempotent contender can lose the race before its own Run is
@@ -1043,7 +1048,7 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
       if (error instanceof acp.RequestError) throw error;
       throw new acp.RequestError(
         OUTWARD_ACP_EXECUTION_ERROR,
-        "outward ACP prompt execution failed",
+        `outward ACP prompt execution failed: ${outwardFailureMessage(error)}`,
         { sessionId: input.session.sessionId, runId },
       );
     } finally {

@@ -94,15 +94,11 @@ describe("outward ACP Run provider attribution", () => {
               model: null,
             }));
             if (provider === "codex") throw new Error("usage limit");
-            input.collect(eventType.runFailed({
-              runId: input.runId,
-              bot: provider,
-              chatId: String(input.chatId),
-              chatKey: input.chatKey,
-              error: "fatal provider failure",
-              category: "unknown",
-            }));
-            throw new Error("fatal provider failure");
+            // The provider may fail before emitting its own terminal event.
+            // Outward ACP must preserve the actionable, sanitised provider cause.
+            throw Object.assign(new Error("Internal error"), {
+              data: { details: "Cursor ACP session setup rejected" },
+            });
           },
         }),
       });
@@ -112,11 +108,12 @@ describe("outward ACP Run provider attribution", () => {
         prompt: "fallback then fail",
         signal: new AbortController().signal,
         onUpdate: () => {},
-      })).rejects.toThrow(/outward ACP prompt execution failed/);
+      })).rejects.toThrow(/Cursor ACP session setup rejected/);
 
       expect(db.getRun("run-attribution-failure")).toMatchObject({
         bot: "claude",
         status: "failed",
+        error: "Cursor ACP session setup rejected",
       });
     } finally {
       db.close();
