@@ -106,7 +106,7 @@ describe("rollout disk admission", { timeout: 30_000 }, () => {
     expect(output).toMatch(/host_component=4096/);
     expect(actions(fixture)).not.toContain("systemctl:stop");
     expect(rollout).toContain("--print-required-bytes");
-    expect(agy).toContain("insufficient disk space to stage Agy ACP component");
+    expect(agy).toContain("insufficient disk space to stage Agy CLI component");
   });
 
   it("refuses on the database device even when the evidence device has space", () => {
