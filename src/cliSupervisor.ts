@@ -156,7 +156,7 @@ function runOwnedProcesses(runId: string): Array<{ pid: number; startTicks: stri
   const marker = `${RUN_MARKER_ENV}=${runId}`;
   const owned: Array<{ pid: number; startTicks: string }> = [];
   let entries: string[];
-  try { entries = readdirSync("/proc"); } catch { return owned; }
+  try { entries = readdirSync("/proc"); } catch { throw new Error("Stop cannot inspect Run-owned processes"); }
   for (const entry of entries) {
     if (!/^\d+$/.test(entry)) continue;
     const pid = Number(entry);
@@ -204,7 +204,9 @@ async function reapRunOwnedProcesses(runId: string, graceMs: number): Promise<vo
     if (remaining.length === 0) return;
     const now = Date.now();
     if (!escalated && now >= escalateAt) { escalated = true; signalAll("SIGKILL"); }
-    else if (escalated && now >= giveUpAt) return;
+    else if (escalated && now >= giveUpAt) {
+      throw new Error(`Stop cannot confirm termination of ${remaining.length} Run-owned processes`);
+    }
     await new Promise((resolve) => setTimeout(resolve, GROUP_EXIT_POLL_INTERVAL_MS));
   }
 }
