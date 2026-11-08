@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { openDb } from "../src/db.js";
 import { createSurfaceNeutralProviderRouter } from "../src/surfaceNeutralProviderRouter.js";
+import { recordRunOutcome } from "../src/runOutcome.js";
 import type { BotKind } from "../src/types.js";
 
 function event(input: any, type: string, extra: Record<string, unknown> = {}) {
@@ -125,6 +126,11 @@ describe("surface-neutral provider attempt isolation", () => {
           seen.push(provider);
           expect(db.getRun(input.runId).bot).toBe(provider);
           if (provider === "claude") throw new Error("usage limit reached");
+          recordRunOutcome(db, {
+            runId: input.runId, surfaceIdentity: identity.surfaceIdentity,
+            chatKey, provider, status: "complete", detail: "verified",
+            lock: { serviceId: lane!.serviceId, runId: lane!.runId, acquisitionId: lane!.acquisitionId },
+          });
           return { text: "finished with native outcome", sessionId: "codex-session", stopReason: "end_turn" };
         }),
       }) as any,
@@ -133,7 +139,9 @@ describe("surface-neutral provider attempt isolation", () => {
       const input = { ...turnInput(vi.fn()), chatKey, runId: "fenced-run", laneHandle: lane! };
       await router.executeSurfaceNeutralTurn(input);
       expect(seen).toEqual(["claude", "codex"]);
-      expect(db.getRun("fenced-run").bot).toBe("codex");
+      expect(db.getRun("fenced-run")).toMatchObject({
+        bot: "codex", outcome_status: "complete", outcome_detail: "verified",
+      });
     } finally {
       db.unlock(lane!);
       db.close();
