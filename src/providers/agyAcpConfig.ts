@@ -1,14 +1,18 @@
 import { execFileSync } from "node:child_process";
 import type { AcpRegistryAgentEntry } from "./acpRegistry.js";
 
-const DEFAULT_AGY_ACP_COMMAND = "agy";
+// The guarded host/guest installer owns this link; a user-local agy in PATH is not release-qualified.
+const DEFAULT_AGY_ACP_COMMAND = "/usr/local/bin/agy";
 const DEFAULT_AGY_ACP_ARGS = ["acp"];
 export const AGY_ACP_VERSION_TIMEOUT_MS = 30_000;
 
 export function resolveAgyAcpCommand(
   env: Record<string, string | undefined> = process.env,
 ): string {
-  return env.AGY_ACP_COMMAND?.trim() || DEFAULT_AGY_ACP_COMMAND;
+  const configured = env.AGY_ACP_COMMAND?.trim();
+  // The legacy bare "agy" service setting must not route via an unqualified user PATH.
+  if (configured && configured !== "agy") return configured;
+  return env.AGENT_BRIDGE_AGY_ACP_LINK?.trim() || DEFAULT_AGY_ACP_COMMAND;
 }
 
 export function resolveAgyAcpArgs(

@@ -21,7 +21,7 @@ describe("loadBotsConfig", () => {
     expect(bots.claude.command).toContain("node_modules/.bin/claude-agent-acp");
     expect(bots.codex.modelPreference).toEqual([]);
     expect(bots.claude.modelPreference).toEqual([]);
-    expect(bots.antigravity.command).toBe("agy");
+    expect(bots.antigravity.command).toBe("/usr/local/bin/agy");
     expect(bots.antigravity.modelPreference).toEqual([]);
     expect(bots.grok.command).toContain("node_modules/.bin/grok");
     expect(bots.cursor.command).toBe("cursor-agent");
@@ -49,7 +49,7 @@ describe("loadBotsConfig", () => {
 
   it("honours legacy GEMINI token fallbacks for antigravity without native command fallback", () => {
     const bots = loadBotsConfig({ GEMINI_COMMAND: "gem", TELEGRAM_BOT_TOKEN_GEMINI: "t1" }, { withTokens: true });
-    expect(bots.antigravity.command).toBe("agy");
+    expect(bots.antigravity.command).toBe("/usr/local/bin/agy");
     expect(bots.antigravity.token).toBe("t1");
   });
 

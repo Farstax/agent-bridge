@@ -86,8 +86,20 @@ describe("Agy ACP provider", () => {
       executable: "/opt/agy/bin/agy", args: [], transport: "acp-stdio",
     }));
     expect(resolveProviderRuntime("agy", {})).toEqual(expect.objectContaining({
-      executable: "agy", args: ["acp"], transport: "acp-stdio",
+      executable: "/usr/local/bin/agy", args: ["acp"], transport: "acp-stdio",
     }));
+    // A different, unqualified user installation must never shadow the managed binary.
+    expect(resolveProviderRuntime("agy", {
+      PATH: "/home/agentbridge/.local/bin:/usr/local/bin",
+    })).toEqual(expect.objectContaining({ executable: "/usr/local/bin/agy" }));
+    expect(resolveProviderRuntime("agy", {
+      PATH: "/home/agentbridge/.local/bin:/usr/local/bin",
+      AGY_ACP_COMMAND: "agy",
+    })).toEqual(expect.objectContaining({ executable: "/usr/local/bin/agy" }));
+    expect(resolveProviderRuntime("agy", {
+      PATH: "/home/agentbridge/.local/bin:/usr/local/bin",
+      AGENT_BRIDGE_AGY_ACP_LINK: "/opt/disposable/managed/agy",
+    })).toEqual(expect.objectContaining({ executable: "/opt/disposable/managed/agy" }));
     expect(agyAcpPolicy.buildChildEnv).toBeUndefined();
     expect(agyAcpPolicy.authenticateMethodId).toBeUndefined();
   });

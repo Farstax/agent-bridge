@@ -820,7 +820,7 @@ describe("runAutonomousGoalOperatorStandalone", () => {
       expect(standaloneBotConfig("claude").executionKind).toBe("claude");
       expect(standaloneBotConfig("claude").botConfig.command).toContain("node_modules/.bin/claude-agent-acp");
       expect(standaloneBotConfig("antigravity").executionKind).toBe("antigravity");
-      expect(standaloneBotConfig("antigravity").botConfig.command).toBe("agy");
+      expect(standaloneBotConfig("antigravity").botConfig.command).toBe("/usr/local/bin/agy");
     } finally {
       for (const key of overrideKeys) {
         if (previous[key] === undefined) delete process.env[key]; else process.env[key] = previous[key] as string;
