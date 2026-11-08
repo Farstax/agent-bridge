@@ -748,7 +748,13 @@ export function reconcileRunContinuations(db: BridgeDb, surfaceIdentity: string,
     if (continuation.successorRunId) {
       const run = db.getRun(continuation.successorRunId);
       if (run) {
-        if (run.status === "done") settleRunContinuation(db, continuation.id, "completed", undefined, nowMs);
+        if (run.status === "done") {
+          if (continuation.outwardSessionId && !run.outcome_status) {
+            // ACP end_turn proves only the technical exchange ended. A
+            // missing objective disposition must never be reported as done.
+            settleRunContinuation(db, continuation.id, "failed", "successor objective outcome unresolved", nowMs);
+          } else settleRunContinuation(db, continuation.id, "completed", undefined, nowMs);
+        }
         else if (run.status === "failed" || run.status === "cancelled") {
           settleRunContinuation(db, continuation.id, run.status === "cancelled" ? "cancelled" : "failed", run.error ?? `run ${run.status}`, nowMs);
         }
