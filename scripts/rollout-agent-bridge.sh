@@ -1560,7 +1560,7 @@ try:
     manifest = json.load(open(sys.argv[1], encoding="utf-8"))
 except Exception:
     raise SystemExit(1)
-raise SystemExit(0 if manifest.get("schemaVersion") == 2 and manifest.get("version") == sys.argv[2] else 1)
+raise SystemExit(0 if manifest.get("version") == sys.argv[2] and (manifest.get("schemaVersion") == 2 or (manifest.get("schemaVersion") == 3 and manifest.get("binaryName") == "agy" and manifest.get("archiveSha256"))) else 1)
 PY
   done < <(/usr/bin/find "$entry" -mindepth 2 -maxdepth 2 -name manifest.json -print)
   return 1
@@ -1625,9 +1625,15 @@ prune_host_component_retention() {
     echo "host component retention skipped reason=release_pins_ambiguous"
     return 0
   fi
-  prune_host_component_versions agy "$(agy_component_root)/components" remove_named_child_directory agy_version_dir_is_managed \
-    "${AGENT_BRIDGE_AGY_ACP_LINK:-/usr/local/bin/agy_acp_server.par}" \
-    "${AGENT_BRIDGE_AGY_HARNESS_LINK:-/usr/local/bin/agy_localharness_external}"
+  # The official CLI owns only /usr/local/bin/agy. Legacy .par releases
+  # still own both old links, which are retained for controlled rollback.
+  local agy_link="${AGENT_BRIDGE_AGY_ACP_LINK:-/usr/local/bin/agy}"
+  if [[ "${agy_link##*/}" == agy ]]; then
+    prune_host_component_versions agy "$(agy_component_root)/components" remove_named_child_directory agy_version_dir_is_managed "$agy_link"
+  else
+    prune_host_component_versions agy "$(agy_component_root)/components" remove_named_child_directory agy_version_dir_is_managed \
+      "$agy_link" "${AGENT_BRIDGE_AGY_HARNESS_LINK:-/usr/local/bin/agy_localharness_external}"
+  fi
   local runtime_home
   runtime_home="$(resolve_runtime_home 2>/dev/null)" || { echo "host component retention skipped provider=cursor reason=runtime_home_unavailable"; return 0; }
   prune_host_component_versions cursor "$runtime_home/.local/share/agent-bridge/cursor-acp/versions" remove_runtime_child_directory cursor_version_dir_is_managed \
