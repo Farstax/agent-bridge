@@ -27,7 +27,7 @@ describe("Issue #1385: provider availability hot path", () => {
     }
   });
 
-  it("re-checks official CLI executable and native sign-in without harness I/O", () => {
+  it("re-checks official CLI executable without guessing keyring state or reading a harness", () => {
     const root = mkdtempSync(join(tmpdir(), "abp-agy-"));
     try {
       const binary = join(root, "agy");
@@ -37,7 +37,8 @@ describe("Issue #1385: provider availability hot path", () => {
         homeDir: root, env: { AGY_ACP_COMMAND: binary, HOME: root }, failedProviders: new Set(),
         commandExists: (cmd) => cmd === binary && commandExistsOnPath(binary),
       }).has("antigravity");
-      expect(available()).toBe(false);
+      // Native Google keyring sessions need not create an OAuth JSON file.
+      expect(available()).toBe(true);
       mkdirSync(join(root, ".gemini"));
       writeFileSync(login, "{}\n");
       expect(available()).toBe(true);
