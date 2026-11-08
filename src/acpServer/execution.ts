@@ -1128,6 +1128,12 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
     if (existingReceipt) {
       try {
         const receipt = JSON.parse(existingReceipt) as { status?: unknown };
+        if (receipt.status === "steering") {
+          // A provider steering RPC crossed its submission boundary. Recovery
+          // must not execute this row again, even if the original claim expired.
+          this.writeQueueReceipt(key, { status: "uncertain", reason: "steering_interrupted" });
+          return "committed";
+        }
         if (["done", "failed", "cancelled", "steered", "uncertain"].includes(String(receipt.status))) return "committed";
       } catch { /* corrupt receipts fail closed through the Run link below */ }
     }
@@ -1310,10 +1316,40 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
       db.releasePendingClaim(record.lane, row.id);
       return false;
     }
+    // Mark the provider-submission boundary *before* awaiting its response.
+    // If a lease expires, Core will retire this row as uncertain instead of
+    // starting a duplicate Run while a side effect may already be live.
+    const started = db.runInImmediateTransaction(() => {
+      if (record.cancelRequested || db.getSetting(stopFenceKey(session.conversationId)) ||
+          !db.ownsLock(record.lane) || !db.ownsPendingClaim(record.lane, row.id)) return false;
+      db.setSetting(queueReceiptKey(row.scheduledOccurrenceKey!), JSON.stringify({
+        outcome: "queued", status: "steering", at: new Date().toISOString(),
+      }));
+      return true;
+    });
+    if (!started) return false;
     let outcome: { outcome: string } | null = null;
     try { outcome = await steer(row.prompt); } catch { outcome = null; }
     if (outcome?.outcome !== "injected") {
-      db.releasePendingClaim(record.lane, row.id);
+      db.runInImmediateTransaction(() => {
+        const key = row.scheduledOccurrenceKey!;
+        const previous = db.getSetting(queueReceiptKey(key));
+        if (!previous) return; // Stop already owns the receipt.
+        let status: string;
+        try { status = String((JSON.parse(previous) as { status?: string }).status); }
+        catch { return; }
+        if (status !== "steering") return; // Stop/recovery made it terminal.
+        if (outcome?.outcome === "promptRequired" &&
+            db.ownsLock(record.lane) && db.ownsPendingClaim(record.lane, row.id) &&
+            !record.cancelRequested && !db.getSetting(stopFenceKey(session.conversationId))) {
+          clearSetting(db, queueReceiptKey(key));
+          db.releasePendingClaim(record.lane, row.id);
+        } else {
+          // Unknown/failed steering may have injected side effects. Refuse
+          // automatic replay even though completion could not be confirmed.
+          this.writeQueueReceipt(key, { status: "uncertain", reason: "steering_unconfirmed", runId: record.lane.runId });
+        }
+      });
       return false;
     }
     // Injection is irreversible, but Stop and the Bridge claim fence decide
