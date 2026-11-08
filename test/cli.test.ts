@@ -37,7 +37,7 @@ describe("CLI Runner", () => {
 
   it("rejects unsupported tool-free providers", () => {
     const agy = buildCliInvocation({
-      bot: "antigravity", prompt: "advise", sessionId: null, command: "agy_acp_server.par",
+      bot: "antigravity", prompt: "advise", sessionId: null, command: "agy",
       model: "gemini-3.5-flash-high", outputFormat: "json", toolMode: "none",
     });
     expect(agy.transport).toBe("acp-stdio");
@@ -285,7 +285,7 @@ describe("buildCliInvocation — attachment injection", () => {
       attachments: ["/tmp/x.jpg", "/tmp/y.png"],
     });
     expect(invocation.transport).toBe("acp-stdio");
-    expect(invocation.args).toEqual(["--uid="]);
+    expect(invocation.args).toEqual(["acp"]);
     expect(invocation.args.join(" ")).not.toContain("/tmp/x.jpg");
   });
 
