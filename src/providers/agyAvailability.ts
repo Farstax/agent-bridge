@@ -8,20 +8,13 @@ export interface AgyAvailabilityOptions {
   env?: Record<string, string | undefined>;
 }
 
-/**
- * Native agy CLI authentication is separate from legacy antigravity-acp.
- * Include the old token only for diagnostics/visible existing connection
- * state; the official CLI itself decides whether sign-in is usable.
- */
+/** Official CLI sign-in is independent of the old .par OAuth token. */
 export function resolveAgyAcpAuthPaths(
   homeDir: string = homedir(),
   env: Record<string, string | undefined> = process.env,
 ): string[] {
   const geminiHome = env.GEMINI_HOME?.trim() || join(homeDir, ".gemini");
-  return [
-    join(geminiHome, "oauth_creds.json"),
-    join(geminiHome, "antigravity-acp", "acp_token.json"),
-  ];
+  return [join(geminiHome, "oauth_creds.json")];
 }
 
 export function hasAgyAcpCachedAuth(options: AgyAvailabilityOptions = {}): boolean {
