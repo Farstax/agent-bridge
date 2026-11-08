@@ -94,6 +94,10 @@ describe("Agy ACP provider", () => {
     })).toEqual(expect.objectContaining({ executable: "/usr/local/bin/agy" }));
     expect(resolveProviderRuntime("agy", {
       PATH: "/home/agentbridge/.local/bin:/usr/local/bin",
+      AGY_ACP_COMMAND: "agy",
+    })).toEqual(expect.objectContaining({ executable: "/usr/local/bin/agy" }));
+    expect(resolveProviderRuntime("agy", {
+      PATH: "/home/agentbridge/.local/bin:/usr/local/bin",
       AGENT_BRIDGE_AGY_ACP_LINK: "/opt/disposable/managed/agy",
     })).toEqual(expect.objectContaining({ executable: "/opt/disposable/managed/agy" }));
     expect(agyAcpPolicy.buildChildEnv).toBeUndefined();
