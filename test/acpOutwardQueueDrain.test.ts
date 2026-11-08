@@ -186,7 +186,8 @@ describe("outward ACP durable queue ownership", () => {
       expect(attempts).toBe(2);
       expect(seen).toEqual(["value\n12\n7\n", "value\n12\n7\n"]);
       const latest = f.db.getLatestRunForConversation({ surfaceIdentity: OUTWARD_ACP_SURFACE, chatKey: f.session.conversationId });
-      expect(latest).toMatchObject({ status: "done", final_text_preview: "csv_sum:19" });
+      expect(latest).toMatchObject({ status: "done" });
+      expect(f.db.getRun(latest!.run_id)).toMatchObject({ final_text_preview: "csv_sum:19" });
       expect(f.db.getEventsForRun(latest.run_id)).toEqual(expect.arrayContaining([
         expect.objectContaining({ type: "acp.event" }),
       ]));
