@@ -66,6 +66,42 @@ describe("outward ACP durable capacity worker (#1114)", () => {
   });
 
 
+  it("Stop cancels a claimed ordinary wake before successor Run admission", async () => {
+    const root = mkdtempSync(join(tmpdir(), "bridge-acp-ordinary-stop-"));
+    roots.push(root);
+    const db = openDb(join(root, "state.sqlite"), { databaseRole: "interactive" });
+    const session = new OutwardAcpSessionRepository(db.raw).create({
+      sessionId: "ordinary-stop-ws", conversationId: "acp:ordinary-stop", cwd: root,
+    });
+    const identity = { surfaceIdentity: OUTWARD_ACP_SURFACE, chatKey: session.conversationId };
+    db.insertRun("ordinary-stop-origin", identity, "codex");
+    persistProviderSession(db, identity, "codex", "original-native-session", "ordinary-stop-origin");
+    expect(db.updateRunCompleted("ordinary-stop-origin", "pending operation", "original-native-session")).toBe(true);
+    const now = Date.now();
+    const wake = requestRunContinuation(db, {
+      originRunId: "ordinary-stop-origin", ...identity, provider: "codex",
+      reason: "continue after delay", afterSeconds: 5, outwardSessionId: session.sessionId,
+    }, now);
+    const claimed = claimDueRunContinuation(db, wake.id, now + 5_001, {
+      runId: "worker", claimToken: "stop-race-claim",
+    });
+    expect(claimed?.state).toBe("claimed");
+    const engine = { executeSurfaceNeutralTurn: vi.fn() };
+    const executor = new BridgeOutwardAcpPromptExecutor({
+      db, providerChain: ["codex"], createEngine: () => engine,
+      lookupSession: (id) => new OutwardAcpSessionRepository(db.raw).get(id),
+    });
+    try {
+      expect(await executor.cancel(session)).toBe("confirmed");
+      expect(listRunContinuations(db, OUTWARD_ACP_SURFACE)).toEqual([
+        expect.objectContaining({ id: wake.id, state: "cancelled" }),
+      ]);
+      db.insertRun("would-be-successor", identity, "codex");
+      expect(linkRunContinuationRun(db, wake.id, "would-be-successor", "stop-race-claim")).toBe(false);
+      expect(engine.executeSurfaceNeutralTurn).not.toHaveBeenCalled();
+    } finally { await executor.shutdown(); db.close(); }
+  });
+
   it("rejects a Workstream root replaced by a symlink before background wake", async () => {
     const root = mkdtempSync(join(tmpdir(), "bridge-acp-root-switch-"));
     roots.push(root);
