@@ -44,6 +44,16 @@ export class EventStore {
     }
   }
 
+  /** Admit an already-fenced Run before provider dispatch. ACP requires the
+   * Run and its idempotent receipt/successor link in the same transaction;
+   * messaging can continue admitting on its first run.started event. Both
+   * reach this existing Run persistence owner. */
+  admitRun(runId: string, chatKey: string, bot: string): void {
+    if (this.runInserted) throw new Error("Run already admitted");
+    this.db.insertRun(runId, this._identityFor(chatKey), bot);
+    this.runInserted = true;
+  }
+
   collect(event: BridgeEvent): void {
     try {
       if (event.type === "run.started") {
