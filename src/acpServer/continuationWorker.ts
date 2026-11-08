@@ -6,7 +6,8 @@
 import { realpath } from "node:fs/promises";
 import { isAbsolute } from "node:path";
 import { openProductionDb, type BridgeDb } from "../db.js";
-import { RunContinuationRunner, listRunContinuations, type RunContinuation } from "../runContinuation.js";
+import { RunContinuationRunner, buildRunContinuationInstruction, listRunContinuations, type RunContinuation } from "../runContinuation.js";
+import { lookupProviderSession } from "../providers/sessionRuntime.js";
 import { outwardServiceId, recoverOutwardLanes } from "./recovery.js";
 import { prepareInteractiveCliAuth } from "../interactiveCliAuth.js";
 import { OutwardAcpSessionRepository, type OutwardAcpSessionRecord } from "../repositories/outwardAcpSessionRepository.js";
@@ -52,6 +53,56 @@ export async function resumeOutwardCapacityWait(
     if (error instanceof OutwardCapacityRetry) return false;
     throw error;
   }
+}
+
+/** Execute a claimed ordinary wake through the same supervised worker, without
+ * ACP stdio or a second lifecycle. No original side-effecting prompt is replayed. */
+export async function resumeOutwardOrdinaryContinuation(
+  db: BridgeDb,
+  lookup: (id: string) => OutwardAcpSessionRecord | null,
+  executor: OutwardAcpPromptExecutor,
+  wake: RunContinuation,
+): Promise<boolean> {
+  if (wake.capacityWait || !wake.outwardSessionId || !wake.claimToken ||
+      wake.state !== "claimed" || wake.surfaceIdentity !== OUTWARD_ACP_SURFACE) {
+    throw new Error("outward ordinary continuation is not an authorised claimed wake");
+  }
+  const session = lookup(wake.outwardSessionId);
+  if (!session || session.conversationId !== wake.chatKey) {
+    throw new Error("outward ordinary Workstream identity changed");
+  }
+  const cwd = await realpath(session.cwd);
+  if (!isAbsolute(cwd) || cwd !== session.cwd) {
+    throw new Error("outward ordinary workspace path is invalid");
+  }
+  const origin = db.getRun(wake.originRunId);
+  const providerSessionId = lookupProviderSession(db,
+    { surfaceIdentity: OUTWARD_ACP_SURFACE, chatKey: wake.chatKey }, wake.provider);
+  if (!origin || origin.status !== "done" || !origin.session_id ||
+      origin.surface_identity !== OUTWARD_ACP_SURFACE || origin.chat_id !== wake.chatKey ||
+      origin.bot !== wake.provider || providerSessionId !== origin.session_id) {
+    throw new Error("outward ordinary continuation provider-session authority changed");
+  }
+  const result = await executor.execute({
+    session,
+    prompt: buildRunContinuationInstruction(wake),
+    signal: new AbortController().signal,
+    onUpdate: () => undefined,
+    ordinaryResume: {
+      id: wake.id, claimToken: wake.claimToken, provider: wake.provider,
+      providerSessionId,
+    },
+  });
+  // ACP end_turn alone cannot prove durable Run/outcome settlement.
+  const current = listRunContinuations(db, OUTWARD_ACP_SURFACE).find((item) => item.id === wake.id);
+  const successor = current?.successorRunId ? db.getRun(current.successorRunId) : null;
+  if (result.stopReason !== "end_turn" || !current || current.claimToken !== wake.claimToken ||
+      current.state !== "claimed" || !successor || successor.status !== "done" ||
+      successor.surface_identity !== OUTWARD_ACP_SURFACE || successor.chat_id !== wake.chatKey ||
+      !successor.outcome_status) {
+    throw new Error("outward ordinary continuation successor was not durably settled");
+  }
+  return true;
 }
 
 /** Read-only, claim-fenced evidence required before retiring retained inputs. */
@@ -120,8 +171,10 @@ async function main(): Promise<void> {
   const executor = createProductionOutwardAcpPromptExecutor(db, dbPath, process.env, (id) => repository.get(id));
   const runner = new RunContinuationRunner(db, OUTWARD_ACP_SURFACE, async (wait) => {
     try {
-      const outcome = await resumeOutwardCapacityWait(db, (id) => repository.get(id), executor, wait);
-      if (outcome) {
+      const outcome = wait.outwardSessionId
+        ? await resumeOutwardOrdinaryContinuation(db, (id) => repository.get(id), executor, wait)
+        : await resumeOutwardCapacityWait(db, (id) => repository.get(id), executor, wait);
+      if (outcome && wait.capacityWait) {
         // An ACP end_turn cannot alone prove that the Run/events committed.
         if (!outwardCapacityCompletionProven(db, wait)) {
           throw new Error("outward capacity successor completion is not durably proven");
