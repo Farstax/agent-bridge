@@ -114,6 +114,8 @@ export function requestAgentBridgeOutcome(args: string[], env: EnvLike = process
   const dbPath = required(env, "AGENT_BRIDGE_CONTEXT_DB");
   const runId = required(env, "AGENT_BRIDGE_RUN_ID");
   const surfaceIdentity = required(env, "AGENT_BRIDGE_SURFACE_IDENTITY");
+  const outwardSessionId = surfaceIdentity === "acp:outward"
+    ? required(env, "AGENT_BRIDGE_OUTWARD_SESSION_ID") : undefined;
   const chatKey = required(env, "AGENT_BRIDGE_CHAT_KEY");
   const provider = required(env, "AGENT_BRIDGE_PROVIDER") as RouteableBotKind;
   const lock = {
@@ -178,6 +180,7 @@ export function requestAgentBridgeOutcome(args: string[], env: EnvLike = process
         const c = requestRunContinuation(db, {
           originRunId: runId, surfaceIdentity, chatKey, provider, reason: detail,
           ...(dueAtMs === undefined ? { afterSeconds: Number(secondsRaw) } : { dueAtMs }), delivery,
+          ...(outwardSessionId ? { outwardSessionId } : {}),
         });
         return `Continuation scheduled for ${c.dueAt}. Finish this Run without promising the user to check manually.`;
       }
