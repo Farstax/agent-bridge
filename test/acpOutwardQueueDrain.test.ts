@@ -137,7 +137,7 @@ describe("outward ACP durable queue ownership", () => {
       const key = "acp-request:s1:capacity-attachment";
       const retainedId = "acp-queue-capacity-retry";
       await stageOutwardAcpAttachments(f.root, [
-        { type: "resource", resource: { uri: "file:///values.csv", mimeType: "text/csv", text: "value\\n12\\n7\\n" } },
+        { type: "resource", resource: { uri: "file:///values.csv", mimeType: "text/csv", text: "value\n12\n7\n" } },
       ], (paths) => retainOutwardAcpAttachmentsForWait(f.root, paths, retainedId));
       f.db.admitMessage(OUTWARD_ACP_SURFACE, f.session.conversationId, {
         prompt: "retry with attachment", chatId: f.session.sessionId, chatType: "acp",
@@ -162,7 +162,7 @@ describe("outward ACP durable queue ownership", () => {
             // native-tool result to generate the answer; asserting only
             // attachment presence would miss a broken content path.
             const csv = seen.at(-1)!;
-            const parsed = csv.trim().split("\\n").slice(1).map(Number);
+            const parsed = csv.trim().split("\n").slice(1).map(Number);
             const toolOutput = { sum: parsed.reduce((total, value) => total + value, 0) };
             input.collect(eventType.acpEvent({
               runId: input.runId, bot: "codex", chatId: String(input.chatId), chatKey: input.chatKey,
@@ -184,7 +184,7 @@ describe("outward ACP durable queue ownership", () => {
         await new Promise((resolve) => setTimeout(resolve, 25));
       }
       expect(attempts).toBe(2);
-      expect(seen).toEqual(["value\\n12\\n7\\n", "value\\n12\\n7\\n"]);
+      expect(seen).toEqual(["value\n12\n7\n", "value\n12\n7\n"]);
       const latest = f.db.getLatestRunForConversation({ surfaceIdentity: OUTWARD_ACP_SURFACE, chatKey: f.session.conversationId });
       expect(latest).toMatchObject({ status: "done", final_text_preview: "csv_sum:19" });
       expect(f.db.getEventsForRun(latest.run_id)).toEqual(expect.arrayContaining([
