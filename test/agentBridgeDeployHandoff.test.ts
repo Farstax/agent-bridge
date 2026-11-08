@@ -217,6 +217,40 @@ describe("terminally failed handoff retirement", () => {
     expect(result.stdout).toContain("superseded");
   });
 
+  it("keeps the failed receipt when supersede admission fails so a later accept stays closed", () => {
+    const result = probe([
+      "module.accept_handoff(archive, None, None)",
+      "directory = root / 'handoffs' / (commit + '-' + sha256)",
+      "module.update_handoff_result(directory, 'failed', commit, sha256, 'action_required')",
+      "other = root / 'other.tar.gz'",
+      "other.write_bytes(b'second release')",
+      "other_sha = hashlib.sha256(other.read_bytes()).hexdigest()",
+      "other_commit = 'b' * 40",
+      "def fake_other_validate(path, *args):",
+      "    module.VERIFIED_MANIFESTS[other_sha] = {'commit': other_commit, '_staging_footprint': (4096, 2, path.stat().st_size)}",
+      "    return (other_commit, other_sha, None)",
+      "module.validate_archive = fake_other_validate",
+      "module.admit_staging = lambda *args: (_ for _ in ()).throw(RuntimeError('disk_headroom_insufficient'))",
+      "try:",
+      "    module.accept_handoff(other, None, None, supersede_failed=True)",
+      "    raise AssertionError('failed admission still superseded')",
+      "except RuntimeError as error:",
+      "    assert 'disk_headroom_insufficient' in str(error)",
+      "assert directory.exists()",
+      "assert json.loads((directory / 'result.json').read_text())['status'] == 'failed'",
+      "assert not (root / 'retired').exists() or list((root / 'retired').iterdir()) == []",
+      "module.admit_staging = lambda *args: None",
+      "try:",
+      "    module.accept_handoff(other, None, None)",
+      "    raise AssertionError('failed receipt was silently replaced after a partial supersede')",
+      "except RuntimeError as error:",
+      "    assert 'unresolved' in str(error)",
+      "print('interlock-held')",
+    ].join("\n"));
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout).toContain("interlock-held");
+  });
+
   it("refuses to supersede an accepted, deferred, or active failed handoff", () => {
     const result = probe([
       "module.accept_handoff(archive, None, None)",

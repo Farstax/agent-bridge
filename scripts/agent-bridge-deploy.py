@@ -938,9 +938,9 @@ def handoff_unit_is_active(unit: str, production: bool) -> bool:
     return subprocess.run(["/usr/bin/systemctl", "is-active", "--quiet", unit], check=False).returncode == 0
 
 
-def retire_terminally_failed_handoff(
-    directory: Path, receipt: dict, production: bool, superseded_by: str | None = None,
-) -> Path:
+def assert_terminally_failed_handoff_retireable(
+    directory: Path, receipt: dict, production: bool,
+) -> None:
     identity = directory.name
     try:
         commit, sha256 = identity.split("-", 1)
@@ -954,6 +954,13 @@ def retire_terminally_failed_handoff(
         fail("failed handoff receipt identity does not match directory")
     if handoff_unit_is_active(handoff_unit(commit, sha256), production):
         fail("failed handoff worker is still active")
+
+
+def retire_terminally_failed_handoff(
+    directory: Path, receipt: dict, production: bool, superseded_by: str | None = None,
+) -> Path:
+    identity = directory.name
+    assert_terminally_failed_handoff_retireable(directory, receipt, production)
     retired_root = retired_handoff_root(production)
     secure_handoff_directory(retired_root, production)
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
@@ -1171,7 +1178,13 @@ def accept_handoff(
         if len(failed_others) > 1:
             fail("multiple unresolved handoff targets require a bounded recovery audit")
         for other, other_receipt in failed_others:
-            retire_terminally_failed_handoff(other, other_receipt, production, superseded_by=identity)
+            assert_terminally_failed_handoff_retireable(other, other_receipt, production)
+        def retire_superseded_failures() -> None:
+            # Retire only after this replacement is durably accepted or verified.
+            # Retiring first would drop the fail-closed interlock if admission
+            # or receipt persistence then fails.
+            for other, other_receipt in failed_others:
+                retire_terminally_failed_handoff(other, other_receipt, production, superseded_by=identity)
         staging_root = Path(configured_value(config, "release_root")) if config else Path(
             os.environ.get("AGENT_BRIDGE_DEPLOY_TEST_RELEASE_ROOT") or tempfile.gettempdir())
         admit_staging(archive, commit, sha256, staging_root, production, directory)
@@ -1216,6 +1229,7 @@ def accept_handoff(
         unit = handoff_unit(commit, sha256)
         if production and verify_handoff_readback(commit):
             update_handoff_result(directory, "verified", commit, sha256)
+            retire_superseded_failures()
             clean_verified_archive(release_copy)
             return f"verified {commit} {sha256} unit={unit}"
         result_file = directory / "result.json"
@@ -1229,14 +1243,17 @@ def accept_handoff(
                 # guarded owner rather than report a stale verified receipt.
                 if not production or verify_handoff_readback(commit):
                     clean_verified_archive(release_copy)
+                    retire_superseded_failures()
                     return f"verified {commit} {sha256} unit={unit}"
         # Avoid concurrent duplicate systemd workers. A completed or failed
         # unit can be retried by the exact same authorised request.
         state = subprocess.run(["/usr/bin/systemctl", "is-active", "--quiet", unit],
                                check=False).returncode if production else 1
         if state == 0:
+            retire_superseded_failures()
             return f"accepted {commit} {sha256} unit={unit} pending"
         update_handoff_result(directory, "accepted", commit, sha256, approval_reference=approval_reference)
+        retire_superseded_failures()
         command = detached_command(release_copy, approved_copy, owner_copy, unit)
         command.remove("--wait")
         command.append("--handoff-id=" + identity)
