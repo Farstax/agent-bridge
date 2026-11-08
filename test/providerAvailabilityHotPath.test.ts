@@ -1,13 +1,11 @@
-import { createHash } from "node:crypto";
-import { chmodSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { commandExistsOnPath } from "../src/interactiveCliAuth.js";
-import { hasAgyRuntimePrerequisites } from "../src/providers/agyAvailability.js";
+import { commandExistsOnPath, getAvailableCliKinds } from "../src/interactiveCliAuth.js";
 
 // Issue #1385: availability runs on every Workstream status projection, so it
-// must not spawn subprocesses or re-hash an unchanged harness, while staying
+// must not spawn subprocesses or inspect obsolete harnesses, while staying
 // exactly as fresh as before.
 describe("Issue #1385: provider availability hot path", () => {
   it("resolves PATH commands in-process like which", () => {
@@ -29,26 +27,24 @@ describe("Issue #1385: provider availability hot path", () => {
     }
   });
 
-  it("re-hashes the Agy harness whenever its file changes", () => {
+  it("re-checks official CLI executable and native sign-in without harness I/O", () => {
     const root = mkdtempSync(join(tmpdir(), "abp-agy-"));
     try {
-      const target = join(root, "localharness_external");
-      const link = join(root, "link");
-      writeFileSync(target, "#!/bin/sh\necho one\n"); chmodSync(target, 0o755);
-      symlinkSync(target, link);
-      writeFileSync(join(root, "manifest.json"), JSON.stringify({
-        schemaVersion: 2,
-        harnessName: "localharness_external",
-        harnessSha256: createHash("sha256").update(readFileSync(target)).digest("hex"),
-      }));
-      const check = () => hasAgyRuntimePrerequisites({ env: { ANTIGRAVITY_HARNESS_PATH: link } });
-      expect(check()).toBe(true);
-      expect(check()).toBe(true);
-      // Same size, different content: the digest must be recomputed.
-      writeFileSync(target, "#!/bin/sh\necho two\n");
-      expect(check()).toBe(false);
-      writeFileSync(target, "#!/bin/sh\necho one\n");
-      expect(check()).toBe(true);
+      const binary = join(root, "agy");
+      const login = join(root, ".gemini", "oauth_creds.json");
+      writeFileSync(binary, "#!/bin/sh\necho agy\n"); chmodSync(binary, 0o755);
+      const available = () => getAvailableCliKinds({
+        homeDir: root, env: { AGY_ACP_COMMAND: binary, HOME: root }, failedProviders: new Set(),
+        commandExists: (cmd) => cmd === binary && commandExistsOnPath(binary),
+      }).has("antigravity");
+      expect(available()).toBe(false);
+      mkdirSync(join(root, ".gemini"));
+      writeFileSync(login, "{}\n");
+      expect(available()).toBe(true);
+      chmodSync(binary, 0o644);
+      expect(available()).toBe(false);
+      chmodSync(binary, 0o755);
+      expect(available()).toBe(true);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
