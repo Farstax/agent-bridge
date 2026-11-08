@@ -761,6 +761,26 @@ export function reconcileRunContinuations(db: BridgeDb, surfaceIdentity: string,
         continue;
       }
     }
+    if (continuation.outwardSessionId && !continuation.successorRunId &&
+        continuation.claimExpiresAt && Date.parse(continuation.claimExpiresAt) <= nowMs) {
+      // The existing atomic successor link is committed before any provider
+      // execution. No successor + no queued occurrence proves this wake never
+      // reached the provider boundary. Rotate its claim by requeueing; a
+      // concurrent stale worker must revalidate its exact token before admission.
+      db.runInTransaction(() => {
+        const row = db.raw.prepare("SELECT value FROM settings WHERE key = ?")
+          .get(key(continuation.id)) as { value: string } | undefined;
+        const current = row ? parse(row.value) : null;
+        if (!current || current.state !== "claimed" || !current.outwardSessionId ||
+            current.claimToken !== continuation.claimToken || current.successorRunId ||
+            db.hasPendingMessageForCorrelationKey(current.surfaceIdentity, `${PREFIX}${current.id}`)) return;
+        db.raw.prepare("UPDATE settings SET value = ? WHERE key = ?").run(JSON.stringify({
+          ...current, state: "pending", claimedAt: undefined, claimRunId: undefined,
+          claimToken: undefined, claimExpiresAt: undefined,
+        }), key(current.id));
+      });
+      continue;
+    }
     settleRunContinuation(db, continuation.id, "failed", "interrupted_by_restart", nowMs);
   }
 }
