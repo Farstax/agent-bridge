@@ -328,7 +328,7 @@ describe("BridgeEngine", () => {
       });
       const client = makeMockClient();
       const engine = new BridgeEngine(
-        { surfaceIdentity: "test", kind: "antigravity", botConfig: { command: "agy_acp_server.par", modelPreference: [] }, allowedUserIds: new Set(["42"]), executionMode: "safe", pollIntervalMs: 1000, workingDir: process.cwd() },
+        { surfaceIdentity: "test", kind: "antigravity", botConfig: { command: "agy", modelPreference: [] }, allowedUserIds: new Set(["42"]), executionMode: "safe", pollIntervalMs: 1000, workingDir: process.cwd() },
         db, client, { runProviderInvocation },
       );
 
@@ -584,7 +584,7 @@ describe("BridgeEngine", () => {
           surfaceIdentity: "test",
           kind: "health",
           executionKind: "antigravity",
-          botConfig: { command: "agy_acp_server.par", modelPreference: [] },
+          botConfig: { command: "agy", modelPreference: [] },
           allowedUserIds: new Set(["42"]),
           executionMode: "safe",
           pollIntervalMs: 1000, workingDir: process.cwd(),
@@ -602,7 +602,7 @@ describe("BridgeEngine", () => {
       expect(runProviderInvocation).toHaveBeenCalledOnce();
       expect(runProviderInvocation.mock.calls[0][1]).toEqual(expect.objectContaining({
         transport: "acp-stdio",
-        args: ["--uid="],
+        args: ["acp"],
       }));
       expect(runProviderInvocation.mock.calls[0][1].args).not.toContain("--print");
       expect(client.sendMessage).toHaveBeenCalledOnce();
@@ -621,7 +621,7 @@ describe("BridgeEngine", () => {
         {
           surfaceIdentity: "test",
           kind: "antigravity",
-          botConfig: { command: "agy_acp_server.par", modelPreference: [] },
+          botConfig: { command: "agy", modelPreference: [] },
           allowedUserIds: new Set(["42"]),
           executionMode: "safe",
           pollIntervalMs: 1000, workingDir: process.cwd(),
@@ -648,7 +648,7 @@ describe("BridgeEngine", () => {
         {
           surfaceIdentity: "test",
           kind: "antigravity",
-          botConfig: { command: "agy_acp_server.par", modelPreference: [] },
+          botConfig: { command: "agy", modelPreference: [] },
           allowedUserIds: new Set(["42"]),
           executionMode: "safe",
           pollIntervalMs: 1000, workingDir: process.cwd(),
@@ -683,7 +683,7 @@ describe("BridgeEngine", () => {
       });
       const client = makeMockClient();
       const engine = new BridgeEngine(
-        { surfaceIdentity: "test", kind: "antigravity", botConfig: { command: "agy_acp_server.par", modelPreference: ["primary", "fallback"] }, allowedUserIds: new Set(["42"]), executionMode: "safe", pollIntervalMs: 1000, workingDir: process.cwd() },
+        { surfaceIdentity: "test", kind: "antigravity", botConfig: { command: "agy", modelPreference: ["primary", "fallback"] }, allowedUserIds: new Set(["42"]), executionMode: "safe", pollIntervalMs: 1000, workingDir: process.cwd() },
         db,
         client,
         { runProviderInvocation },
@@ -709,7 +709,7 @@ describe("BridgeEngine", () => {
         {
           surfaceIdentity: "test",
           kind: "antigravity",
-          botConfig: { command: "agy_acp_server.par", modelPreference: [] },
+          botConfig: { command: "agy", modelPreference: [] },
           allowedUserIds: new Set(["42"]),
           executionMode: "safe",
           pollIntervalMs: 1000, workingDir: process.cwd(),
@@ -1549,7 +1549,7 @@ describe("BridgeEngine", () => {
         {
           surfaceIdentity: "test",
           kind: "antigravity",
-          botConfig: { command: "agy_acp_server.par", modelPreference: [] },
+          botConfig: { command: "agy", modelPreference: [] },
           allowedUserIds: new Set(["42"]),
           executionMode: "safe",
           pollIntervalMs: 1000, workingDir: process.cwd(),
