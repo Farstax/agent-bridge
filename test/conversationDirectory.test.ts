@@ -44,6 +44,7 @@ describe("conversation-owned execution directories (#1179)", () => {
     expect(existsSync(first)).toBe(false);
     expect(existsSync(second)).toBe(true);
     expect(git(repository, "worktree", "list", "--porcelain")).not.toContain(first);
+    expect(git(repository, "worktree", "list", "--porcelain")).toContain(second);
     expect(existsSync(repository)).toBe(true);
   });
 

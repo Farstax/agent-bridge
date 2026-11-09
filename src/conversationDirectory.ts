@@ -5,7 +5,7 @@
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { existsSync, lstatSync, mkdirSync, realpathSync, rmSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { dirname, join, sep } from "node:path";
 import { resolveWorkspaceLock } from "./workspaceLock.js";
 
 export interface ConversationDirectoryIdentity {
@@ -56,10 +56,19 @@ export function deleteConversationDirectory(
   if (lstatSync(expected).isSymbolicLink() || realpathSync(expected) !== expected) {
     throw new Error("refusing to delete a symlinked conversation directory");
   }
-  rmSync(expected, { recursive: true, force: true, maxRetries: 2, retryDelay: 50 });
-  // Removing a nested agent-created worktree can leave a registration behind.
-  // Pruning missing registrations does not delete commits or shared branches.
+  // Detach only worktrees registered beneath this conversation directory.
+  // A repository-wide prune could remove registrations belonging to others.
   const lock = resolveWorkspaceLock(sourceCwd);
-  if (lock) execFileSync("git", ["-C", lock.worktreeRoot, "worktree", "prune"],
-    { stdio: "ignore", timeout: 10_000 });
+  if (lock) {
+    const worktrees = execFileSync("git", ["-C", lock.worktreeRoot, "worktree", "list", "--porcelain"],
+      { encoding: "utf8", timeout: 10_000 });
+    for (const line of worktrees.split("\n")) {
+      if (!line.startsWith("worktree ")) continue;
+      const path = line.slice("worktree ".length);
+      if (path !== expected && !path.startsWith(expected + sep)) continue;
+      execFileSync("git", ["-C", lock.worktreeRoot, "worktree", "remove", "--force", "--force", path],
+        { stdio: "ignore", timeout: 10_000 });
+    }
+  }
+  rmSync(expected, { recursive: true, force: true, maxRetries: 2, retryDelay: 50 });
 }
