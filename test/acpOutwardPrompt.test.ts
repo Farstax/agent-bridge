@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 import * as acp from "@agentclientprotocol/sdk/unstable";
 import { connectWithAcpInitialization } from "./support/initializedAcpClient.js";
 import { openDb } from "../src/db.js";
+import { WorkspaceLockBusyError } from "../src/cli.js";
 import { type as eventType } from "../src/events/types.js";
 import { OutwardAcpSessionRepository } from "../src/repositories/outwardAcpSessionRepository.js";
 import { createOutwardAcpAgent } from "../src/acpServer/app.js";
@@ -582,6 +583,49 @@ describe("outward ACP prompt execution", () => {
       });
       expect(attempts).toBe(1);
       expect(db.getRun("run-host-capacity")).toMatchObject({ status: "failed" });
+    } finally {
+      db.close();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("reports a held Git worktree as busy: failed Run, no fallback, no capacity wait, lane released", async () => {
+    const root = mkdtempSync(join(tmpdir(), "agent-bridge-outward-worktree-busy-"));
+    const db = openDb(join(root, "bridge.sqlite"), { databaseRole: "interactive" });
+    try {
+      const session = new OutwardAcpSessionRepository(db.raw).create({
+        sessionId: "outward-worktree-busy",
+        conversationId: "acp:worktree-busy",
+        cwd: root,
+      });
+      let attempts = 0;
+      const executor = new BridgeOutwardAcpPromptExecutor({
+        db,
+        providerChain: ["codex", "claude"] as const,
+        runId: () => "run-worktree-busy",
+        createEngine: () => ({
+          executeSurfaceNeutralTurn: async () => {
+            attempts += 1;
+            throw new WorkspaceLockBusyError();
+          },
+        }),
+      });
+      await expect(executor.execute({
+        session,
+        prompt: "hello",
+        signal: new AbortController().signal,
+        deferCapacity: true,
+        onUpdate: () => undefined,
+      })).rejects.toMatchObject({
+        code: -32002,
+        data: expect.objectContaining({ reason: "workspace_busy", runId: "run-worktree-busy" }),
+      });
+      expect(attempts).toBe(1);
+      // A busy worktree is a failure of this Run, never a user cancellation.
+      expect(db.getRun("run-worktree-busy")).toMatchObject({ status: "failed" });
+      const reacquired = db.acquireLock(OUTWARD_ACP_SURFACE, session.conversationId);
+      expect(reacquired).not.toBeNull();
+      if (reacquired) db.unlock(reacquired);
     } finally {
       db.close();
       rmSync(root, { recursive: true, force: true });

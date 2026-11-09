@@ -71,6 +71,8 @@ export async function runWithAcpTransientRetry<T>(
     return await operation(1);
   } catch (error) {
     const normalized = error instanceof Error ? error : new Error(String(error));
+    // The bounded worktree wait already covered any hand-off; a retry would only wait again.
+    if (normalized.name === "WorkspaceLockBusyError") throw error;
     const kind = classifyProviderError(providerId, normalized).kind;
     if (kind !== "transient" && kind !== "unknown") throw error;
     if (kind === "unknown" && options.promptSubmitted?.()) throw error;

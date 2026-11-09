@@ -19,7 +19,12 @@ import type { CliOptions } from "./types.js";
 import { type as evtType } from "./events/types.js";
 import type { BridgeEvent } from "./events/types.js";
 import type { ExecutionLaneHandle } from "./db.js";
-import { buildFileLockedInvocation, buildWorkspaceLockedInvocation } from "./workspaceLock.js";
+import {
+  WORKSPACE_LOCK_CONFLICT_EXIT_CODE,
+  buildFileLockedInvocation,
+  buildWorkspaceLockedInvocation,
+  resolveWorkspaceLockWaitSeconds,
+} from "./workspaceLock.js";
 import { validateSuccessfulCliExit } from "./cliSuccessfulExitValidation.js";
 import {
   filterProviderCredentialEnv,
@@ -216,6 +221,15 @@ export class CliTimeoutError extends Error {
   constructor(message: string, public readonly timeoutKind: "hard" | "idle") {
     super(message);
     this.name = "CliTimeoutError";
+  }
+}
+
+/** Another Run holds this Git worktree; the bounded lock wait expired before the provider started. */
+export class WorkspaceLockBusyError extends Error {
+  public readonly category = "workspace_busy";
+  constructor(message = "Another Run is using this workspace's Git worktree. Try again when it finishes.") {
+    super(message);
+    this.name = "WorkspaceLockBusyError";
   }
 }
 
@@ -707,6 +721,7 @@ export async function runSupervisedStdioSession<T>(
     : { command, args };
   const spawnInvocation = buildWorkspaceLockedInvocation(providerInvocation.command, providerInvocation.args, cwd, {
     bypassWorkspaceLock: options.bypassWorkspaceLock,
+    waitSeconds: resolveWorkspaceLockWaitSeconds(),
   });
   console.log(formatSpawnLog(command, args, cwd, options.chatId, undefined, redactionEnv));
   const childEnv = filterProviderCredentialEnv(options.bot, redactionEnv);
@@ -759,7 +774,25 @@ export async function runSupervisedStdioSession<T>(
   // ACP stdout is protocol traffic and therefore authoritative liveness.
   // stderr is diagnostic only: periodic logging must not keep a wedged
   // provider alive forever.
-  child.stdout.on("data", () => { resetIdleTimer(); });
+  let protocolStarted = false;
+  child.stdout.on("data", () => { protocolStarted = true; resetIdleTimer(); });
+  // flock --no-fork execs the provider in place, so the conflict status can only
+  // be the lock's: before any protocol traffic and only after the full bounded
+  // wait, which a provider exiting early on its own cannot imitate.
+  const lockWaitSeconds = spawnInvocation.workspaceLock ? resolveWorkspaceLockWaitSeconds() : null;
+  const lockWaitStartedAt = Date.now();
+  const lockWasBusy = (code: number | null): boolean => lockWaitSeconds !== null
+    && code === WORKSPACE_LOCK_CONFLICT_EXIT_CODE
+    && !protocolStarted
+    && Date.now() - lockWaitStartedAt >= lockWaitSeconds * 1000 - 250;
+  const exited = new Promise<void>((resolve) => { child.once("exit", () => resolve()); });
+  if (lockWaitSeconds !== null) {
+    child.once("exit", (code) => {
+      if (settled || !lockWasBusy(code)) return;
+      pendingError = new WorkspaceLockBusyError();
+      stdioAbort.abort(pendingError);
+    });
+  }
   child.stderr.on("data", (data) => {
     const safeChunk = stderrRedactor.push(data.toString());
     if (safeChunk) {
@@ -794,6 +827,11 @@ export async function runSupervisedStdioSession<T>(
     });
     return result;
   } catch (error) {
+    // The session can reject on stream close before the exit status is delivered.
+    if (!pendingError && lockWaitSeconds !== null && !protocolStarted) {
+      await Promise.race([exited, new Promise<void>((resolve) => setTimeout(resolve, 500).unref())]);
+      if (lockWasBusy(child.exitCode)) pendingError = new WorkspaceLockBusyError();
+    }
     if (pendingError) throw pendingError;
     if (spawnError) throw spawnError;
     throw error;

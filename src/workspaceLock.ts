@@ -21,6 +21,8 @@ export interface LockedInvocation {
 }
 
 const LOCK_FILE_NAME = "agent-bridge-execution.lock";
+/** flock exit status when a bounded wait expires; only meaningful before the wrapped command starts. */
+export const WORKSPACE_LOCK_CONFLICT_EXIT_CODE = 75;
 const FLOCK_CANDIDATES = ["/usr/bin/flock", "/bin/flock"];
 
 /**
@@ -86,11 +88,24 @@ export function buildFileLockedInvocation(
   };
 }
 
+/**
+ * Optional bound on how long a Run may wait for the worktree lock, from
+ * BRIDGE_WORKSPACE_LOCK_WAIT_SECONDS. Unset keeps the historical unbounded
+ * wait; only the Desk ACP server opts in so a held worktree is reported as
+ * busy instead of looking like silent provider execution.
+ */
+export function resolveWorkspaceLockWaitSeconds(env: NodeJS.ProcessEnv = process.env): number | null {
+  const raw = env.BRIDGE_WORKSPACE_LOCK_WAIT_SECONDS?.trim();
+  if (!raw) return null;
+  const seconds = Number(raw);
+  return Number.isFinite(seconds) && seconds > 0 && seconds <= 300 ? seconds : null;
+}
+
 export function buildWorkspaceLockedInvocation(
   command: string,
   args: string[],
   cwd: string,
-  opts: { bypassWorkspaceLock?: boolean } = {},
+  opts: { bypassWorkspaceLock?: boolean; waitSeconds?: number | null } = {},
 ): LockedInvocation {
   // Narrowly scoped opt-out for verified fresh, read-only, tool-free
   // invocations (Issue #177 /btw) — never a general-purpose toggle.
@@ -100,7 +115,14 @@ export function buildWorkspaceLockedInvocation(
   if (!workspaceLock) return { command, args, workspaceLock: null };
   return {
     command: resolveFlockCommand(),
-    args: ["--exclusive", "--no-fork", workspaceLock.lockFile, command, ...args],
+    args: [
+      "--exclusive",
+      "--no-fork",
+      ...(opts.waitSeconds ? ["--wait", String(opts.waitSeconds), "--conflict-exit-code", String(WORKSPACE_LOCK_CONFLICT_EXIT_CODE)] : []),
+      workspaceLock.lockFile,
+      command,
+      ...args,
+    ],
     workspaceLock,
   };
 }
