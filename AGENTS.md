@@ -43,6 +43,7 @@ Use repository instructions for durable architecture/safety and Skills for repea
 - `skills/release-readiness-review/SKILL.md` — authoritative `review it` adversarial review.
 - `skills/delivery-directives/SKILL.md` — owner commands `ship it`, `review it`, `release it`, `deploy it`, `hotfix`.
 - `skills/systematic-debugging/SKILL.md` — diagnosis when the cause is not established.
+- `skills/code-simplification/SKILL.md` — behavior-preserving simplification on request or a concrete in-scope complexity problem; not another review stage.
 - `skills/git-sandbox/SKILL.md` — substantial isolated worktrees when useful.
 - `skills/engineering-retro/SKILL.md` — explicit retros across recent work or releases to identify repeated avoidable owner intervention and only evidence-backed reusable improvements.
 
