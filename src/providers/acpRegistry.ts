@@ -52,7 +52,7 @@ const RELEASE_LOCKED_ACP_REGISTRY_ENTRIES: Readonly<Partial<Record<ProviderId, A
   codex: {
     id: "codex-acp",
     name: "Codex",
-    version: "2.5.0",
+    version: "2.6.0",
     description: "ACP adapter for OpenAI's coding assistant",
     repository: "https://github.com/agentclientprotocol/codex-acp",
     authors: ["OpenAI", "JetBrains s.r.o", "Zed Industries"],
@@ -60,7 +60,7 @@ const RELEASE_LOCKED_ACP_REGISTRY_ENTRIES: Readonly<Partial<Record<ProviderId, A
     license_url: "https://github.com/agentclientprotocol/codex-acp/blob/main/LICENSE",
     distribution: {
       npx: {
-        package: "@agentclientprotocol/codex-acp@2.5.0",
+        package: "@agentclientprotocol/codex-acp@2.6.0",
       },
     },
   },
