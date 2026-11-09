@@ -26,6 +26,10 @@ const OUTWARD_ACP_HISTORY_LIMIT = 200;
 console.log = (...args: unknown[]) => console.error(...args);
 console.info = (...args: unknown[]) => console.error(...args);
 
+// Independent Workstreams share one Git worktree lock. Report a held worktree as
+// busy after a short bound instead of waiting silently behind another Run.
+process.env.BRIDGE_WORKSPACE_LOCK_WAIT_SECONDS ??= "5";
+
 const bridgeProjectDir = process.env.BRIDGE_PROJECT_DIR || process.cwd();
 const workspaceRoot = realpathSync(process.env.BRIDGE_ACP_WORKSPACE_ROOT || bridgeProjectDir);
 const dbPath = process.env.DB_PATH || `${bridgeProjectDir}/.data/bridge.sqlite`;

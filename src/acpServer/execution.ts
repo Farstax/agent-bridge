@@ -1031,6 +1031,15 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
           { sessionId: input.session.sessionId, runId, reason: "execution_capacity" },
         );
       }
+      if (error instanceof Error && error.name === "WorkspaceLockBusyError") {
+        // Another Run owns this Git worktree. Report the real condition; do not
+        // enter capacity wait or provider fallback, neither of which frees it.
+        throw new acp.RequestError(
+          OUTWARD_ACP_BUSY_ERROR,
+          "outward ACP workspace is in use by another Run",
+          { sessionId: input.session.sessionId, runId, reason: "workspace_busy" },
+        );
+      }
       // A standard ACP client has no deferred-result semantics. Only clients
       // that explicitly opted in, and only when the independently supervised
       // workspace worker is enabled, may receive a durable waiting outcome.

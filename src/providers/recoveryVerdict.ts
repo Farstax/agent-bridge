@@ -54,9 +54,9 @@ export function decideProviderRecovery(
   const capacityExhausted = isFallbackEligibleProviderError(classification)
     || isFallbackEligibleProviderError(classifyAnyProviderError(error));
   const evidence = mergeProviderFailureEvidence(readProviderFailureEvidence(error), priorEvidence);
-  if (error.name === "ProviderExecutionCapacityError") {
-    // Host-wide execution slots are shared by every provider. Switching CLIs
-    // cannot create capacity, so this must never look like provider quota.
+  if (error.name === "ProviderExecutionCapacityError" || error.name === "WorkspaceLockBusyError") {
+    // Host-wide execution slots and the Git worktree lock are shared by every
+    // provider. Switching CLIs cannot create either, so neither is provider quota.
     return {
       classification,
       reason: null,
