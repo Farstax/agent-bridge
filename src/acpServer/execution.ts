@@ -142,6 +142,8 @@ export interface OutwardWorkstreamControl {
   status(session: OutwardAcpSessionRecord): OutwardWorkstreamStatus;
   /** Read shared durable continuation state once when projecting a Workstream list. */
   statusMany?(sessions: readonly OutwardAcpSessionRecord[]): OutwardWorkstreamStatus[];
+  /** Existing lane-fenced mutation path, reused for safe archive cleanup. */
+  withIdleLane?<T>(session: OutwardAcpSessionRecord, operation: () => T): T;
   selectProvider(session: OutwardAcpSessionRecord, provider: string): OutwardWorkstreamStatus;
   cancelDeferred?(session: OutwardAcpSessionRecord): Promise<OutwardWorkstreamStatus>;
 }
@@ -1749,7 +1751,8 @@ export function createProductionOutwardAcpPromptExecutor(
       allowedUserIds,
       executionMode,
       pollIntervalMs: 1000,
-      workingDir: session.cwd,
+      workingDir: session.executionCwd ?? session.cwd,
+      ...(session.executionCwd ? { sourceWorkspaceDir: session.cwd } : {}),
       fullConfig,
       maxConcurrentExecutions: capacity.maxConcurrentExecutions,
       executionCapacityDb: executionCapacityDb ?? undefined,

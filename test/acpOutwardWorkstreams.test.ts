@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync, symlinkSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -272,9 +272,13 @@ describe("outward ACP Workstreams (#1101)", () => {
       rmSync(other, { recursive: true, force: true });
     }
     const conversationA = f.repo.get(a.sessionId)!.conversationId;
+    const ownedB = f.repo.get(b.sessionId)!.executionCwd!;
+    expect(existsSync(ownedB)).toBe(true);
+    writeFileSync(join(ownedB, "uncommitted.txt"), "temporary work");
 
     await call(app, WORKSTREAM_METHODS.update, { sessionId: a.sessionId, cwd: f.root, title: "  Release notes  " });
     await call(app, WORKSTREAM_METHODS.update, { sessionId: b.sessionId, cwd: f.root, archived: true });
+    expect(existsSync(ownedB)).toBe(false);
 
     const visible = await call<{ workstreams: Array<{ sessionId: string; title: string | null; conversationId: string; status: { state: string } }> }>(
       app, WORKSTREAM_METHODS.list, { cwd: f.root });
@@ -287,6 +291,8 @@ describe("outward ACP Workstreams (#1101)", () => {
       [[a.sessionId, false], [b.sessionId, true]].sort());
 
     await call(app, WORKSTREAM_METHODS.update, { sessionId: b.sessionId, cwd: f.root, archived: false });
+    expect(existsSync(ownedB)).toBe(true);
+    expect(existsSync(join(ownedB, "uncommitted.txt"))).toBe(false);
 
     // Reopen: identity and metadata are durable, not process memory.
     f.db.close();
@@ -295,6 +301,23 @@ describe("outward ACP Workstreams (#1101)", () => {
     const repo = new OutwardAcpSessionRepository(db.raw);
     expect(repo.get(a.sessionId)).toMatchObject({ conversationId: conversationA, title: "Release notes", archivedAt: null });
     expect(repo.list(f.root).map((s) => s.sessionId).sort()).toEqual([a.sessionId, b.sessionId].sort());
+  });
+
+  it("cannot archive or delete a directory beneath an unresolved Run", async () => {
+    const f = fixture();
+    const exec = executor(f.db, []);
+    const app = agent(f, { workstreams: exec });
+    const created = await connectWithAcpInitialization(acp.client({ name: "t" }), app, (agent) =>
+      agent.request(acp.methods.agent.session.new, { cwd: f.root, mcpServers: [] }));
+    const session = f.repo.get(created.sessionId)!;
+    const owned = session.executionCwd!;
+    f.db.insertRun("archive-busy", { surfaceIdentity: OUTWARD_ACP_SURFACE, chatKey: session.conversationId }, "codex");
+
+    await expect(call(app, WORKSTREAM_METHODS.update,
+      { sessionId: session.sessionId, cwd: f.root, archived: true }))
+      .rejects.toMatchObject({ code: -32002 });
+    expect(existsSync(owned)).toBe(true);
+    expect(f.repo.get(session.sessionId)?.archivedAt).toBeNull();
   });
 
   it("fails closed for unknown sessions, cwd mismatch and invalid input", async () => {

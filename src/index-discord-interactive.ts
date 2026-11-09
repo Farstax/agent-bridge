@@ -166,6 +166,7 @@ const engines = Object.fromEntries(
       {
         kind,
         surfaceIdentity: "discord:interactive",
+        isolatedConversationDirectories: true,
         botConfig: { ...config.bots[kind as BotKind], token },
         allowedUserIds: engineAllowedUserIds,
         executionMode: resolveExecutionMode(kind as BotKind, process.env),

@@ -238,6 +238,7 @@ const engines = Object.fromEntries(
         {
           kind,
           surfaceIdentity: runtimePolicy.surfaceIdentity,
+          isolatedConversationDirectories: true,
           botConfig,
           allowedUserIds,
           executionMode: resolveExecutionMode(kind, process.env),

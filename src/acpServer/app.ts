@@ -4,6 +4,7 @@ import { randomUUID } from "node:crypto";
 import { realpathSync, statSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, sep } from "node:path";
 import { rm, writeFile } from "node:fs/promises";
+import { deleteConversationDirectory, ensureConversationDirectory } from "../conversationDirectory.js";
 import { createWhisperCppTranscriber, prepareVoiceTurn, type VoiceTranscriber } from "../voiceIngress.js";
 import type { InteractiveTurnInput } from "../interactiveIngress.js";
 import type {
@@ -263,10 +264,22 @@ export function createOutwardAcpAgent(options: OutwardAcpAgentOptions = {}): Age
         if (title === undefined && archived === undefined) {
           throw acp.RequestError.invalidParams({ field: "params" }, "nothing to update");
         }
-        if (control.status(session).state === "waiting") {
-          throw new acp.RequestError(-32002, "deferred Workstream cannot be modified until completion or cancellation");
-        }
-        const updated = sessions.update!(session.sessionId, { title, archived });
+        const modify = () => {
+          const state = control.status(session);
+          if (state.state === "waiting" || (archived === true && (state.state === "running" || state.queued > 0))) {
+            throw new acp.RequestError(-32002, "Workstream has active or queued work; Stop it before archiving");
+          }
+          const identity = { surfaceIdentity: "acp:outward", chatKey: session.conversationId };
+          if (archived === true && session.executionCwd) {
+            deleteConversationDirectory(session.cwd, identity, session.executionCwd);
+          } else if (archived === false && session.executionCwd && session.archivedAt) {
+            const recreated = ensureConversationDirectory(session.cwd, identity);
+            if (recreated !== session.executionCwd) throw new Error("conversation directory ownership changed");
+          }
+          return sessions.update!(session.sessionId, { title, archived });
+        };
+        const updated = archived !== undefined && control.withIdleLane
+          ? control.withIdleLane(session, modify) : modify();
         return { workstream: workstreamView(updated!) };
       })
       .onRequest(WORKSTREAM_METHODS.status, objectParams, (ctx) => {
@@ -329,7 +342,8 @@ export function createOutwardAcpAgent(options: OutwardAcpAgentOptions = {}): Age
     const sessionId = randomUUID();
     const conversationId = `acp:${randomUUID()}`;
     const cwd = authorizeWorkspacePath(ctx.params.cwd, workspaceRoot);
-    sessions.create({ sessionId, conversationId, cwd });
+    const executionCwd = ensureConversationDirectory(cwd, { surfaceIdentity: "acp:outward", chatKey: conversationId });
+    sessions.create({ sessionId, conversationId, cwd, executionCwd });
     return { sessionId };
   });
 
@@ -387,7 +401,7 @@ export function createOutwardAcpAgent(options: OutwardAcpAgentOptions = {}): Age
       };
       const prepared = await prepareVoiceTurn(input, {
         transcriber: options.voiceTranscriber ?? createWhisperCppTranscriber(),
-        signal: ctx.signal, workspaceDir: cwd, maxAudioBytes: maximum,
+        signal: ctx.signal, workspaceDir: session.executionCwd ?? cwd, maxAudioBytes: maximum,
         stager: { async stage({ operationDir }) {
           const path = join(operationDir, `recording.${extension}`);
           await writeFile(path, audio, { mode: 0o600 });

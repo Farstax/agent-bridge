@@ -60,6 +60,7 @@ import { getCodexUsageText } from "./codexUsage.js";
 import { clearHandoffRequired, isProviderFallbackHandoffRequired, markHandoffRequired } from "./handoffState.js";
 import { deriveConversationOwnerKey } from "./conversationOwnerKey.js";
 import { prependWorkspaceContext } from "./workspaceContext.js";
+import { conversationDirectoryPath, conversationDirectorySettingKey, ensureConversationDirectory } from "./conversationDirectory.js";
 import type { BridgeEvent } from "./events/types.js";
 import { type as eventType } from "./events/types.js";
 import { EventStore } from "./events/store.js";
@@ -150,6 +151,10 @@ export interface BridgeEngineOptions {
   pollIntervalMs: number;
   soulContext?: string | null;
   workingDir?: string;
+  /** Interactive surfaces allocate one stable working directory per conversation. */
+  isolatedConversationDirectories?: boolean;
+  /** Original checkout, provided to agents working in an isolated directory. */
+  sourceWorkspaceDir?: string;
   workspaceContext?: string | null;
   fullConfig?: BridgeConfig;
   hooks?: BridgeEngineHooks;
@@ -272,8 +277,30 @@ export class BridgeEngine {
     }, 1500);
   }
 
-  private _workingDir(executionKind: RouteableBotKind = this._executionKind()): string {
-    return this.opts.workingDir ?? getCliWorkingDir(executionKind);
+  private _workingDir(executionKind: RouteableBotKind = this._executionKind(), chatKey?: string): string {
+    if (this.opts.workingDir || !this.opts.isolatedConversationDirectories || !chatKey) {
+      return this.opts.workingDir ?? getCliWorkingDir(executionKind);
+    }
+    const source = getCliWorkingDir();
+    const identity = { surfaceIdentity: this.surfaceIdentity, chatKey };
+    const key = conversationDirectorySettingKey(identity);
+    const stored = this.db.getSetting(key);
+    if (stored === "legacy") return getCliWorkingDir(executionKind);
+    const expected = conversationDirectoryPath(source, identity);
+    if (stored && stored !== expected) throw new Error("conversation directory owner changed");
+    if (!stored) {
+      // Preserve established conversations in their existing checkout.
+      // An initial admitted user turn has no earlier assistant reply.
+      const historical = this.db.getRecentConvTurns(chatKey, 20, undefined, this.surfaceIdentity)
+        .some((turn) => turn.role === "assistant");
+      if (historical) {
+        this.db.setSetting(key, "legacy");
+        return getCliWorkingDir(executionKind);
+      }
+    }
+    const cwd = ensureConversationDirectory(source, identity);
+    if (!stored) this.db.setSetting(key, cwd);
+    return cwd;
   }
 
   async run(): Promise<void> {
@@ -481,7 +508,7 @@ export class BridgeEngine {
       if (messages.some(hasAudioAttachment)) {
         const prepared = await prepareVoiceBatchForDispatch(messages, {
           signal: preProviderScope.controller.signal,
-          workspaceDir: this._workingDir(),
+          workspaceDir: this._workingDir(this._executionKind(), messages[0]?.chatKey),
           notify: async (turn, message) => {
             await this.sendText(turn.delivery.chatId, { text: message, message_thread_id: turn.threadId });
           },
@@ -617,7 +644,7 @@ export class BridgeEngine {
     const model = isRouteableKind(this.kind)
       ? (this.db.getSetting(this.kind) || this.opts.botConfig.modelPreference[0] || null)
       : (this.opts.botConfig.modelPreference[0] || null);
-    const cwd = this._workingDir(executionKind);
+    const cwd = this._workingDir(executionKind, chatKey);
 
     const btwPrompt = prependWorkspaceContext([
       "This is a fresh, read-only side question.",
@@ -1978,11 +2005,17 @@ export class BridgeEngine {
     const includeFreshContext = contextMode !== "resume";
     const contextPrompt = this._buildRecentContextPrompt(chatKey, prompt, contextMode);
     const access = this._buildContextAccess(chatKey, runId, executionKind, chatId, threadId, laneHandle, outcomeEligible, ordinaryWorkstreamId);
-    const workspacePrompt = this.opts.workspaceContext === undefined
+    const managedWorkspacePrompt = this.opts.workspaceContext === undefined
       ? prependWorkspaceContext(contextPrompt, process.env, { includeManagedContext: includeFreshContext })
       : (includeFreshContext && this.opts.workspaceContext
           ? `[Managed workspace context]\n${this.opts.workspaceContext}\n\n${contextPrompt}`
           : contextPrompt);
+    const sourceDir = this.opts.sourceWorkspaceDir
+      ?? (this.opts.isolatedConversationDirectories ? getCliWorkingDir(executionKind) : null);
+    const isolatedDir = sourceDir && includeFreshContext ? this._workingDir(executionKind, chatKey) : null;
+    const workspacePrompt = isolatedDir && isolatedDir !== sourceDir
+      ? `[Conversation working directory]\nYou are executing in ${isolatedDir}. The source checkout is ${sourceDir}. For coding tasks, create and manage a separate Git worktree within this conversation directory; do not edit the shared checkout.\n\n${managedWorkspacePrompt}`
+      : managedWorkspacePrompt;
     const fallbackPrompt = nativeSessionMode === "fresh" && isRouteableKind(this.kind) && isProviderFallbackHandoffRequired(this.db, this.surfaceIdentity, chatKey, this.kind)
       ? prependProviderFallbackContinuation(workspacePrompt)
       : workspacePrompt;
@@ -2200,7 +2233,7 @@ export class BridgeEngine {
 
     const fileSendOptions = threadId != null ? { message_thread_id: threadId } : undefined;
     const outDir = await prepareOutputDir(chatKey, this.kind, runId ?? randomUUID());
-    const cwd = this._workingDir(executionKind);
+    const cwd = this._workingDir(executionKind, chatKey);
     const nativeSessionMode = buildCliInvocation({
       bot: executionKind,
       command: this.opts.botConfig.command,
