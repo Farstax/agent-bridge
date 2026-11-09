@@ -8,6 +8,7 @@ import { openExecutionCapacityCoordinator } from "../executionCapacity.js";
 import type { BridgeDb, DiscardedPendingMessage } from "../db.js";
 import type { ExecutionLaneHandle } from "../db.js";
 import { BridgeEngine, MAX_QUEUE_DEPTH, type PendingMessage, type SurfaceNeutralTurnInput } from "../engine.js";
+import { defaultSoulPath, loadSoulContext, normalizeSoulMode } from "../soul.js";
 import { EventStore } from "../events/store.js";
 import { type as eventType, type BridgeEvent, type RunCompletedEvent } from "../events/types.js";
 import { executionLaneCoordinator } from "../executionLaneCoordinator.js";
@@ -1750,6 +1751,10 @@ export function createProductionOutwardAcpPromptExecutor(
       botConfig: bots[attemptProvider],
       allowedUserIds,
       executionMode,
+      soulContext: loadSoulContext({
+        mode: normalizeSoulMode(env.AGENT_BRIDGE_SOUL_MODE),
+        path: env.AGENT_BRIDGE_SOUL_PATH || defaultSoulPath(env.BRIDGE_PROJECT_DIR || session.cwd),
+      }),
       pollIntervalMs: 1000,
       workingDir: session.executionCwd ?? session.cwd,
       ...(session.executionCwd ? { sourceWorkspaceDir: session.cwd } : {}),
