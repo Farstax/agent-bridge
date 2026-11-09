@@ -303,6 +303,23 @@ describe("outward ACP Workstreams (#1101)", () => {
     expect(repo.list(f.root).map((s) => s.sessionId).sort()).toEqual([a.sessionId, b.sessionId].sort());
   });
 
+  it("cannot archive or delete a directory beneath an unresolved Run", async () => {
+    const f = fixture();
+    const exec = executor(f.db, []);
+    const app = agent(f, { workstreams: exec });
+    const created = await connectWithAcpInitialization(acp.client({ name: "t" }), app, (agent) =>
+      agent.request(acp.methods.agent.session.new, { cwd: f.root, mcpServers: [] }));
+    const session = f.repo.get(created.sessionId)!;
+    const owned = session.executionCwd!;
+    f.db.insertRun("archive-busy", { surfaceIdentity: OUTWARD_ACP_SURFACE, chatKey: session.conversationId }, "codex");
+
+    await expect(call(app, WORKSTREAM_METHODS.update,
+      { sessionId: session.sessionId, cwd: f.root, archived: true }))
+      .rejects.toMatchObject({ code: -32002 });
+    expect(existsSync(owned)).toBe(true);
+    expect(f.repo.get(session.sessionId)?.archivedAt).toBeNull();
+  });
+
   it("fails closed for unknown sessions, cwd mismatch and invalid input", async () => {
     const f = fixture();
     f.repo.create({ sessionId: "s1", conversationId: "acp:c1", cwd: f.root });
