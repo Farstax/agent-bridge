@@ -4,6 +4,8 @@ export interface OutwardAcpSessionRecord {
   sessionId: string;
   conversationId: string;
   cwd: string;
+  /** Null for legacy sessions: keep their existing execution directory. */
+  executionCwd?: string | null;
   createdAt: string;
   /** Workstream metadata (#1101); null until the owner names it. */
   title?: string | null;
@@ -14,24 +16,27 @@ export interface NewOutwardAcpSession {
   sessionId: string;
   conversationId: string;
   cwd: string;
+  executionCwd?: string | null;
 }
 
 interface OutwardAcpSessionRow {
   session_id: string;
   conversation_id: string;
   cwd: string;
+  execution_cwd: string | null;
   created_at: string;
   title: string | null;
   archived_at: string | null;
 }
 
-const COLUMNS = "session_id, conversation_id, cwd, created_at, title, archived_at";
+const COLUMNS = "session_id, conversation_id, cwd, execution_cwd, created_at, title, archived_at";
 
 function toRecord(row: OutwardAcpSessionRow): OutwardAcpSessionRecord {
   return {
     sessionId: row.session_id,
     conversationId: row.conversation_id,
     cwd: row.cwd,
+    executionCwd: row.execution_cwd,
     createdAt: row.created_at,
     title: row.title,
     archivedAt: row.archived_at,
@@ -43,9 +48,9 @@ export class OutwardAcpSessionRepository {
 
   create(session: NewOutwardAcpSession): OutwardAcpSessionRecord {
     this.db.prepare(`
-      INSERT INTO outward_acp_sessions (session_id, conversation_id, cwd)
-      VALUES (?, ?, ?)
-    `).run(session.sessionId, session.conversationId, session.cwd);
+      INSERT INTO outward_acp_sessions (session_id, conversation_id, cwd, execution_cwd)
+      VALUES (?, ?, ?, ?)
+    `).run(session.sessionId, session.conversationId, session.cwd, session.executionCwd ?? null);
 
     const created = this.get(session.sessionId);
     if (!created) throw new Error("outward ACP session persistence failed");

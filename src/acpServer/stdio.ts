@@ -100,7 +100,7 @@ try {
     sensors: new SensorRegistry({ db, dbPath }),
     prepareConfig: (session, provider, command) => prepareInteractiveAcpConfigControl({
       kind: provider, commandText: `/${command}`, surfaceIdentity: OUTWARD_ACP_SURFACE,
-      chatKey: session.conversationId, db, executionMode: resolveExecutionMode(provider, process.env), cwd: session.cwd,
+      chatKey: session.conversationId, db, executionMode: resolveExecutionMode(provider, process.env), cwd: session.executionCwd ?? session.cwd,
     }),
   });
   const connection = createOutwardAcpAgent({ sessions, promptExecutor, workstreams: promptExecutor, commands, workspaceRoot }).connect(stream);

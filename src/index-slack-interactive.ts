@@ -178,6 +178,7 @@ const CLI_KINDS: CliKind[] = interactiveChainKinds();
 const engines = Object.fromEntries(CLI_KINDS.map((kind) => [kind, new BridgeEngine({
   kind,
   surfaceIdentity,
+  isolatedConversationDirectories: true,
   botConfig: { ...config.bots[kind as BotKind], token: "" },
   allowedUserIds: engineAllowedUserIds,
   executionMode: resolveExecutionMode(kind as BotKind, process.env),
