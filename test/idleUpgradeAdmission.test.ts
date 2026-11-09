@@ -86,13 +86,35 @@ describe("atomic generic idle-only upgrade admission (#1161)", () => {
     expect(tryAdmitIdleUpgrade(path).state).toBe("admitted");
   });
 
-  it("defers accepted queued work, claimed work, open receipts and future continuations", () => {
-    const id = db.enqueueMsg(identity.surfaceIdentity, identity.chatKey, { prompt: "pending", chatId: "isolated", chatType: "acp" });
+  it("preserves durable queued messages across idle admission without allowing them to execute", () => {
+    const id = db.enqueueMsg(identity.surfaceIdentity, identity.chatKey, {
+      prompt: "pending", chatId: "isolated", chatType: "acp",
+    });
+    expect(readIdleUpgradeState(path)).toBe("idle");
+    const fence = admit();
+    expect(() => db.raw.prepare("UPDATE pending_messages SET state = 'claimed' WHERE id = ?").run(id))
+      .toThrow("agent_bridge_idle_maintenance_deferred_busy");
+    expect(db.raw.prepare("SELECT state, prompt FROM pending_messages WHERE id = ?").get(id))
+      .toMatchObject({ state: "queued", prompt: "pending" });
+    expect(releaseIdleUpgrade(path, fence.token)).toBe(true);
+    expect(db.raw.prepare("SELECT state, prompt FROM pending_messages WHERE id = ?").get(id))
+      .toMatchObject({ state: "queued", prompt: "pending" });
+  });
+
+  it("permits persisted undelivered receipts but fences dispatch, and defers actual claims", () => {
+    db.createEventReceipt(event);
+    expect(readIdleUpgradeState(path)).toBe("idle");
+    const fence = admit();
+    expect(() => db.raw.prepare("UPDATE event_receipts SET status = 'dispatching' WHERE idempotency_key = ?")
+      .run(event.idempotency_key)).toThrow("agent_bridge_idle_maintenance_deferred_busy");
+    expect(releaseIdleUpgrade(path, fence.token)).toBe(true);
+    db.raw.prepare("DELETE FROM event_receipts WHERE idempotency_key = ?").run(event.idempotency_key);
+    const id = db.enqueueMsg(identity.surfaceIdentity, identity.chatKey, {
+      prompt: "claimed", chatId: "isolated", chatType: "acp",
+    });
+    db.raw.prepare("UPDATE pending_messages SET state = 'claimed' WHERE id = ?").run(id);
     expect(tryAdmitIdleUpgrade(path).state).toBe("deferred_busy");
     db.deletePendingMsg(id);
-    db.createEventReceipt(event);
-    expect(tryAdmitIdleUpgrade(path).state).toBe("deferred_busy");
-    db.raw.prepare("DELETE FROM event_receipts WHERE idempotency_key = ?").run(event.idempotency_key);
     db.setSetting("run-continuation:v1:delayed", JSON.stringify({ version: 1, state: "pending" }));
     expect(tryAdmitIdleUpgrade(path).state).toBe("deferred_busy");
     db.setSetting("run-continuation:v1:delayed", JSON.stringify({ version: 1, state: "completed" }));
