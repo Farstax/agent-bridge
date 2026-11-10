@@ -19,6 +19,18 @@ describe("Agy ACP managed host component", () => {
     });
   });
 
+  it("persists the managed Agy CLI and migrates 1.4.5 installer values", () => {
+    const installer = readFileSync(resolve(repoRoot, "scripts/install.sh"), "utf8");
+    expect(() => execFileSync("bash", ["-n", resolve(repoRoot, "scripts/install.sh")])).not.toThrow();
+    expect(installer).toContain('prompt AGY_ACP_COMMAND "Agy ACP command" "${AGENT_BRIDGE_AGY_ACP_LINK:-/usr/local/bin/agy}"');
+    expect(installer).toContain('agy_acp_server.par|*/agy_acp_server.par) unset AGY_ACP_COMMAND');
+    expect(installer).toContain('if [[ "${AGY_ACP_ARGS:-}" == "--uid=" ]]; then AGY_ACP_ARGS=acp; fi');
+    expect(installer).toContain('echo "AGY_ACP_COMMAND=${AGY_ACP_COMMAND}"');
+    expect(installer).not.toContain("command -v agy_acp_server.par");
+    expect(installer).not.toContain("resolve_binary agy_acp_server.par");
+    expect(installer).not.toContain("AGY_ACP_COMMAND=${AGY_ACP_COMMAND:-agy_acp_server.par}");
+  });
+
   describe("archive extraction (the snippet the installer actually runs)", () => {
     const installer = readFileSync(resolve(repoRoot, "scripts/install-agy-acp.sh"), "utf8");
     const snippet = /python3 - "\$archive" "\$staging\/agy" <<'PY'\n([\s\S]*?)\nPY\n/.exec(installer)?.[1];

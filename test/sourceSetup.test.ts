@@ -22,7 +22,7 @@ describe("source setup", () => {
       ["codex-acp", "/usr/local/bin/codex-acp"],
       ["claude-agent-acp", "/usr/local/bin/claude-agent-acp"],
       ["grok", "/usr/local/bin/grok"],
-      ["agy_acp_server.par", "/usr/local/bin/agy_acp_server.par"],
+      ["/usr/local/bin/agy", "/usr/local/bin/agy"],
       ["cursor-agent", "/usr/local/bin/cursor-agent"],
     ]);
 

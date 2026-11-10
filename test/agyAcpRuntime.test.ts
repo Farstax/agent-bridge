@@ -100,6 +100,19 @@ describe("Agy ACP provider", () => {
       PATH: "/home/agentbridge/.local/bin:/usr/local/bin",
       AGENT_BRIDGE_AGY_ACP_LINK: "/opt/disposable/managed/agy",
     })).toEqual(expect.objectContaining({ executable: "/opt/disposable/managed/agy" }));
+    // Migrated 1.4.5 service environments must not shadow the official CLI.
+    for (const command of ["agy_acp_server.par", "/usr/local/bin/agy_acp_server.par"]) {
+      expect(resolveProviderRuntime("agy", { AGY_ACP_COMMAND: command, AGY_ACP_ARGS: "--uid=" }))
+        .toEqual(expect.objectContaining({ executable: "/usr/local/bin/agy", args: ["acp"] }));
+      expect(resolveProviderRuntime("agy", {
+        AGY_ACP_COMMAND: command,
+        AGY_ACP_ARGS: "--uid=",
+        AGENT_BRIDGE_AGY_ACP_LINK: "/opt/disposable/managed/agy",
+      })).toEqual(expect.objectContaining({ executable: "/opt/disposable/managed/agy", args: ["acp"] }));
+    }
+    expect(resolveProviderRuntime("agy", {
+      AGY_ACP_COMMAND: "/opt/custom/agy", AGY_ACP_ARGS: "--custom-arg",
+    })).toEqual(expect.objectContaining({ executable: "/opt/custom/agy", args: ["--custom-arg"] }));
     expect(agyAcpPolicy.buildChildEnv).toBeUndefined();
     expect(agyAcpPolicy.authenticateMethodId).toBeUndefined();
   });
