@@ -11,7 +11,7 @@ export function resolveAgyAcpCommand(
 ): string {
   const configured = env.AGY_ACP_COMMAND?.trim();
   // The legacy bare "agy" service setting must not route via an unqualified user PATH.
-  if (configured && configured !== "agy") return configured;
+  if (configured && configured !== "agy" && !/(?:^|\/)agy_acp_server\.par$/.test(configured)) return configured;
   return env.AGENT_BRIDGE_AGY_ACP_LINK?.trim() || DEFAULT_AGY_ACP_COMMAND;
 }
 
@@ -21,7 +21,9 @@ export function resolveAgyAcpArgs(
 ): string[] {
   const raw = env.AGY_ACP_ARGS;
   if (raw !== undefined) {
-    return raw.trim().split(/\s+/).filter(Boolean);
+    const args = raw.trim().split(/\s+/).filter(Boolean);
+    // Prior Agy ACP server used --uid=; the official CLI uses the acp subcommand.
+    return args.length === 1 && args[0] === "--uid=" ? [...DEFAULT_AGY_ACP_ARGS] : args;
   }
   return [...(entry?.distribution.binary?.["linux-x86_64"]?.args ?? DEFAULT_AGY_ACP_ARGS)];
 }
