@@ -152,6 +152,12 @@ seed_from_env_file "${REPO_DIR}/.env.antigravity"
 seed_from_env_file "${REPO_DIR}/.env.claude"
 seed_from_env_file "${REPO_DIR}/.env.discord-interactive"
 
+# Migrate only the removed 1.4.5 adapter settings; preserve other explicit overrides.
+case "${AGY_ACP_COMMAND:-}" in
+  agy_acp_server.par|*/agy_acp_server.par) unset AGY_ACP_COMMAND ;;
+esac
+if [[ "${AGY_ACP_ARGS:-}" == "--uid=" ]]; then AGY_ACP_ARGS=acp; fi
+
 prompt() {
   local var="$1" label="$2" default="${3:-}"
   local current="${!var:-}"
@@ -198,7 +204,7 @@ prompt DISCORD_GUILD_ID               "Discord guild ID (optional, leave blank f
 prompt CODEX_ACP_COMMAND   "Codex ACP command"   "${REPO_DIR}/node_modules/.bin/codex-acp"
 prompt CLAUDE_ACP_COMMAND  "Claude ACP command"  "${REPO_DIR}/node_modules/.bin/claude-agent-acp"
 prompt GROK_ACP_COMMAND "Grok ACP command" "${REPO_DIR}/node_modules/.bin/grok"
-prompt AGY_ACP_COMMAND "Agy ACP command" "$(command -v agy_acp_server.par 2>/dev/null || true)"
+prompt AGY_ACP_COMMAND "Agy ACP command" "${AGENT_BRIDGE_AGY_ACP_LINK:-/usr/local/bin/agy}"
 prompt CURSOR_ACP_COMMAND "Cursor ACP command" "$(command -v cursor-agent 2>/dev/null || echo cursor-agent)"
 prompt CODEX_PROJECT_DIR       "Codex working directory (blank = BRIDGE_PROJECT_DIR)"       ""
 prompt ANTIGRAVITY_PROJECT_DIR "Antigravity working directory (blank = BRIDGE_PROJECT_DIR)" ""
@@ -303,7 +309,6 @@ if [[ "${SKIP_CLI_INSTALL}" != "1" ]]; then
     sudo -u "${TARGET_USER}" env AGENT_BRIDGE_CURSOR_ACP_USER="${TARGET_USER}" HOME="${TARGET_HOME}" \
       /bin/bash "${REPO_DIR}/scripts/install-cursor-acp.sh"
   fi
-  AGY_ACP_COMMAND="${AGY_ACP_COMMAND:-$(resolve_binary agy_acp_server.par)}"
   CURSOR_ACP_COMMAND="${CURSOR_ACP_COMMAND:-${TARGET_HOME}/.local/bin/cursor-agent}"
   install_shared_skills
 elif [[ -n "${AGENT_BRIDGE_SKILLS:-}" ]]; then
@@ -415,7 +420,7 @@ _write_interactive_defaults() {
     echo "CODEX_ACP_COMMAND=${CODEX_ACP_COMMAND}"
     echo "CLAUDE_ACP_COMMAND=${CLAUDE_ACP_COMMAND}"
     echo "GROK_ACP_COMMAND=${GROK_ACP_COMMAND}"
-    echo "AGY_ACP_COMMAND=${AGY_ACP_COMMAND:-agy_acp_server.par}"
+    echo "AGY_ACP_COMMAND=${AGY_ACP_COMMAND}"
     echo "CURSOR_ACP_COMMAND=${CURSOR_ACP_COMMAND:-cursor-agent}"
     [[ -n "${CODEX_ACP_ARGS:-}" ]] && echo "CODEX_ACP_ARGS=${CODEX_ACP_ARGS}"
     [[ -n "${CLAUDE_ACP_ARGS:-}" ]] && echo "CLAUDE_ACP_ARGS=${CLAUDE_ACP_ARGS}"
@@ -449,7 +454,7 @@ _write_discord_defaults() {
       echo "CODEX_ACP_COMMAND=${CODEX_ACP_COMMAND}"
       echo "CLAUDE_ACP_COMMAND=${CLAUDE_ACP_COMMAND}"
       echo "GROK_ACP_COMMAND=${GROK_ACP_COMMAND}"
-      echo "AGY_ACP_COMMAND=${AGY_ACP_COMMAND:-agy_acp_server.par}"
+      echo "AGY_ACP_COMMAND=${AGY_ACP_COMMAND}"
       echo "CURSOR_ACP_COMMAND=${CURSOR_ACP_COMMAND:-cursor-agent}"
       [[ -n "${CODEX_ACP_ARGS:-}" ]] && echo "CODEX_ACP_ARGS=${CODEX_ACP_ARGS}"
       [[ -n "${CLAUDE_ACP_ARGS:-}" ]] && echo "CLAUDE_ACP_ARGS=${CLAUDE_ACP_ARGS}"
