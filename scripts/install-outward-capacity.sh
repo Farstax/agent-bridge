@@ -101,69 +101,7 @@ current_pointer="$(sed -n 's/^current_pointer=//p' "$rollout_config")"
 # rollback release without this installer leaves the enabled unit inactive.
 unit_contents="# Managed by Agent Bridge outward-capacity host component
 $(sed "s/BRIDGE_USER/$runtime_user/g" "$template")"
-unit_contents="${unit_contents/After=network-online.target/After=network-online.target agent-bridge-bot.service$'\n'PartOf=agent-bridge-bot.service$current_pointer\/scripts\/install-outward-capacity.sh}"
-unit_contents="${unit_contents/WantedBy=multi-user.target/WantedBy=agent-bridge-bot.service}"
-[[ "$unit_contents" == *"PartOf=agent-bridge-bot.service"* &&
-   "$unit_contents" == *"WantedBy=agent-bridge-bot.service"* ]] ||
-  fail "unable to bind auxiliary worker lifecycle"
-
-defaults_contents=""
-for key in "${allowed[@]}"; do
-  [[ -n "${settings[$key]:-}" ]] || continue
-  defaults_contents+="${settings[$key]}"$'\n'
-done
-
-if [[ -e "$unit_path" || -L "$unit_path" ]]; then
-  secure_file "$unit_path"
-  grep -Fxq '# Managed by Agent Bridge outward-capacity host component' "$unit_path" ||
-    fail "existing capacity unit has another owner"
-fi
-if [[ -e "$defaults_path" || -L "$defaults_path" ]]; then secure_file "$defaults_path"; fi
-
-if [[ "$phase" == verify ]]; then
-  [[ -f "$unit_path" && -f "$defaults_path" ]] ||
-    fail "capacity worker has not been installed"
-  cmp -s "$unit_path" <(printf '%s\n' "$unit_contents") ||
-    fail "worker unit definition has drifted"
-  cmp -s "$defaults_path" <(printf '%s' "$defaults_contents") ||
-    fail "worker environment has drifted"
-  systemctl is-enabled --quiet agent-bridge-outward-capacity.service ||
-    fail "capacity unit is not enabled"
-  systemctl is-active --quiet agent-bridge-outward-capacity.service ||
-    fail "capacity worker is not active"
-  healthy
-  exit 0
-fi
-if [[ "$phase" == prepare ]]; then
-  printf 'host_component_status=no_op\n'
-  exit 0
-fi
-
-write_managed() {
-  local path="$1" contents="$2" mode="$3" temporary
-  if [[ -f "$path" ]] && cmp -s "$path" <(printf '%s' "$contents"); then return 1; fi
-  temporary="$(mktemp "${path}.XXXXXX")"
-  printf '%s' "$contents" > "$temporary"
-  chown root:root "$temporary"
-  chmod "$mode" "$temporary"
-  mv -f -- "$temporary" "$path"
-  return 0
-}
-
-changed=0
-write_managed "$defaults_path" "$defaults_contents" 0600 && changed=1
-write_managed "$unit_path" "$unit_contents"$'\n' 0644 && changed=1
-systemctl daemon-reload
-systemctl enable --quiet agent-bridge-outward-capacity.service
-# Commit happens while the primary service is contained. Only the normal
-# guarded restart of the bot may start the new worker via its .wants link.
-if [[ "$phase" == converge ]] &&
-   systemctl is-active --quiet agent-bridge-bot.service; then
-  systemctl start agent-bridge-outward-capacity.service
-fi
-if (( changed )); then printf 'host_component_status=converged\n'
-else printf 'host_component_status=no_op\n'; fi
-\n'ConditionPathExists=$current_pointer\/scripts\/install-outward-capacity.sh}"
+unit_contents="${unit_contents/After=network-online.target/After=network-online.target agent-bridge-bot.service$'\n'PartOf=agent-bridge-bot.service$'\n'ConditionPathExists=$current_pointer\/scripts\/install-outward-capacity.sh}"
 unit_contents="${unit_contents/WantedBy=multi-user.target/WantedBy=agent-bridge-bot.service}"
 [[ "$unit_contents" == *"PartOf=agent-bridge-bot.service"* &&
    "$unit_contents" == *"WantedBy=agent-bridge-bot.service"* ]] ||
