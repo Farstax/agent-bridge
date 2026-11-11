@@ -32,8 +32,19 @@ secure_file() {
 # No legacy bot: fresh interactive installation already creates and supervises
 # this worker, and noninteractive hosts do not require an outward ACP worker.
 if [[ ! -e "$bot_env" && ! -L "$bot_env" ]]; then
-  if [[ "$phase" == verify ]]; then healthy
-  else printf 'host_component_status=no_op\n'; fi
+  if [[ "$phase" == verify ]]; then
+    # Fresh interactive installs own this unit independently. Do not report a
+    # healthy component if their supervised worker is installed but stopped.
+    if [[ -e "$unit_path" || -L "$unit_path" ]]; then
+      [[ -f "$unit_path" && ! -L "$unit_path" ]] ||
+        fail "fresh outward worker unit is unsafe"
+      systemctl is-active --quiet agent-bridge-outward-capacity.service ||
+        fail "fresh outward capacity worker is not active"
+    fi
+    healthy
+  else
+    printf 'host_component_status=no_op\n'
+  fi
   exit 0
 fi
 secure_file "$bot_env"
