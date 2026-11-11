@@ -27,6 +27,8 @@ describe("initial installation release contract", () => {
       "systemd/agent-bridge-codex.service",
       "systemd/agent-bridge-discord-interactive.service",
       "systemd/agent-bridge-interactive.service",
+      "systemd/agent-bridge-outward-capacity.service",
+      "scripts/install-outward-capacity.sh",
       "scripts/agent-bridge-sensors.ts",
       "bin/agent-bridge-sensors",
       "systemd/agent-bridge-tmp-cleanup.service",
