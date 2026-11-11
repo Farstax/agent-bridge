@@ -16,6 +16,7 @@ import { SAFE_SURFACE_CAPABILITIES, type MessagingPlatform } from "../platform.j
 import { interactiveChainKinds, parseCliChain } from "../providers/selection.js";
 import { lookupProviderSession, persistProviderSession } from "../providers/sessionRuntime.js";
 import type { OutwardAcpSessionRecord } from "../repositories/outwardAcpSessionRepository.js";
+import { OUTWARD_USER_TURN_OPERATION_PREFIX } from "../repositories/conversationRepository.js";
 import { createSurfaceNeutralProviderRouter, type SurfaceNeutralProviderRouter } from "../surfaceNeutralProviderRouter.js";
 import { getCachedAvailableCliKinds } from "../interactiveCliAuth.js";
 import { applyManualCliSwitchHandoff, getStoredCliPreference, setUserCliPreference, type CliKind } from "../interactiveBot.js";
@@ -832,9 +833,15 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
           }
         } else {
           // A resumed turn must never append the original user request again.
-          db.addConvTurn(input.session.conversationId, "user", input.prompt, provider, {
+          const turnId = db.addConvTurn(input.session.conversationId, "user", input.prompt, provider, {
             surfaceIdentity: OUTWARD_ACP_SURFACE,
           }, queued ? queuedSubmittedAt(db, queued.id) : undefined);
+          // Persist the real client operation ID in the same transaction as
+          // the user turn. This metadata is for Desk reconciliation only and
+          // never changes provider context, transcript text or execution.
+          if (input.requestId && /^[A-Za-z0-9._:-]{1,128}$/.test(input.requestId)) {
+            db.setSetting(OUTWARD_USER_TURN_OPERATION_PREFIX + turnId, input.requestId);
+          }
           // The normal transcript replaces the display-only queue record atomically.
           if (queued) retireQueuedDisplay(db, queued.key);
         }
