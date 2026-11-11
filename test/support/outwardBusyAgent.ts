@@ -10,6 +10,7 @@ import * as acp from "@agentclientprotocol/sdk";
 import { openDb } from "../../src/db.js";
 import { OutwardAcpSessionRepository } from "../../src/repositories/outwardAcpSessionRepository.js";
 import { createOutwardAcpAgent } from "../../src/acpServer/app.js";
+import { listQueuedDisplay } from "../../src/acpServer/queuedDisplay.js";
 import { AcpCommands } from "../../src/acpServer/commands.js";
 import { BridgeOutwardAcpPromptExecutor, OUTWARD_ACP_SURFACE, outwardCommandConfig } from "../../src/acpServer/execution.js";
 import { outwardServiceId, recoverOutwardLanes } from "../../src/acpServer/recovery.js";
@@ -89,6 +90,8 @@ const connection = createOutwardAcpAgent({
     update: (id, c) => sessions.update(id, c),
     history: (conversationId) => db.getRecentConvTurns(conversationId, 50, undefined, OUTWARD_ACP_SURFACE)
       .map((t) => ({ role: t.role as "user" | "assistant", text: t.text })),
+    historyPage: (conversationId, beforeId) => db.getConvHistoryPage(conversationId, 50, beforeId, OUTWARD_ACP_SURFACE),
+    queuedDisplay: (sessionId) => listQueuedDisplay(db, sessionId),
   },
   promptExecutor: executor, workstreams: executor, commands, workspaceRoot,
 }).connect(stream);
