@@ -161,7 +161,7 @@ if (ownerNotificationIngress) {
 const sensorRegistry = new SensorRegistry({ db, dbPath, env: process.env });
 
 await db.reconcileOrphanedRuns({
-  candidateRuns: db.listRunningRuns(runtimePolicy.surfaceIdentity),
+  candidateRuns: db.listRunningRuns(surfaceIdentity),
   minAgeMs: Number(process.env.ORPHAN_RECONCILIATION_MIN_AGE_MS || 10 * 60 * 1000),
   processState: (run) => getExecutionProcessState(run.run_id),
   containmentState: (_run, processState) => processState === "absent" ? "proven" : "ambiguous",
