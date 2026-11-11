@@ -368,6 +368,26 @@ describe("guarded rollout helper", { timeout: 30_000 }, () => {
     ]);
   }, 15_000);
 
+  it("rejects an outward worker pointed at a different DB before containment", () => {
+    const fixture = createFixture();
+    prepareImmutableRelease(fixture, fixture.previousCommit);
+    const interactive = "agent-bridge-interactive.service";
+    const worker = "agent-bridge-outward-capacity.service";
+    writeFileSync(join(fixture.envDir, "agent-bridge-outward-capacity"),
+      `DB_PATH=${fixture.dbPaths[0]}\n`, { mode: 0o600 });
+    rewriteConfig(fixture, (lines) => [
+      ...lines.filter((line) => !line.startsWith("unit=") && !line.startsWith("database=")),
+      `unit=${interactive}`, `unit=${worker}`, `database=${fixture.dbPaths[3]}`,
+    ]);
+    writeFileSync(fixture.stateFile, `${interactive}\n${worker}\n`);
+
+    const result = runRollout(fixture);
+
+    expect(result.status).not.toBe(0);
+    expect(`${result.stdout}\n${result.stderr}`).toContain("outward worker must share the selected interactive database");
+    expect(actions(fixture)).not.toContain("systemctl:stop");
+  }, 15_000);
+
   it("captures inventory for every configured unit when multiple units are selected", () => {
     const fixture = createFixture();
     prepareImmutableRelease(fixture, fixture.previousCommit);
