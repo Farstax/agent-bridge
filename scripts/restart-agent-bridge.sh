@@ -13,7 +13,6 @@ fi
 
 units=(
   agent-bridge-discord-interactive.service
-  agent-bridge-health.service
   agent-bridge-interactive.service
 )
 
