@@ -12,9 +12,6 @@ if ! [[ "$delay" =~ ^[0-9]+$ ]]; then
 fi
 
 units=(
-  agent-bridge-antigravity.service
-  agent-bridge-claude.service
-  agent-bridge-codex.service
   agent-bridge-discord-interactive.service
   agent-bridge-health.service
   agent-bridge-interactive.service
