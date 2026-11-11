@@ -20,6 +20,7 @@ readonly -a ALLOWED_UNITS=(
   # Legacy input only: removed from the target cohort when the release no longer carries it.
   agent-bridge-health.service
   agent-bridge-interactive.service
+  agent-bridge-outward-capacity.service
 )
 readonly CLEANUP_SERVICE_UNIT="agent-bridge-tmp-cleanup.service"
 readonly CLEANUP_TIMER_UNIT="agent-bridge-tmp-cleanup.timer"
@@ -694,7 +695,7 @@ for unit in "${units[@]}"; do
     agent-bridge-health.service) unit_roles[$unit]=health ;;
     agent-bridge-discord-interactive.service) unit_roles[$unit]=discord ;;
     agent-bridge-slack-interactive.service) unit_roles[$unit]=slack ;;
-    agent-bridge-bot.service|agent-bridge-interactive.service) unit_roles[$unit]=interactive ;;
+    agent-bridge-bot.service|agent-bridge-interactive.service|agent-bridge-outward-capacity.service) unit_roles[$unit]=interactive ;;
     *) unit_roles[$unit]=shared ;;
   esac
   discovered_databases[$canonical]=1
@@ -1268,6 +1269,21 @@ PY
   record_phase HEALTH_STATE_RETIRED
 }
 
+verify_legacy_outward_after_start() {
+  (( release_mode == 1 )) || return 0
+  [[ -n "${selected_units[agent-bridge-bot.service]:-}" ]] || return 0
+  local worker="agent-bridge-outward-capacity.service"
+  if [[ -f "$current_pointer/scripts/install-outward-capacity.sh" ]]; then
+    [[ -f "$systemd_unit_dir/$worker" && ! -L "$systemd_unit_dir/$worker" ]] ||
+      { echo "legacy outward capacity unit missing after activation" >&2; return 1; }
+    "$systemctl_cmd" is-active --quiet "$worker" ||
+      { echo "legacy outward capacity worker did not start" >&2; return 1; }
+  elif "$systemctl_cmd" is-active --quiet "$worker"; then
+    echo "legacy outward capacity worker remained active after rollback" >&2
+    return 1
+  fi
+}
+
 restore_previous_release_and_start() {
   (( release_mode == 1 )) || return 0
   restore_health_retirement_config || { echo "health retirement config rollback failed" >&2; return 1; }
@@ -1309,6 +1325,7 @@ restore_previous_release_and_start() {
   record_recovery_phase PREVIOUS_RELEASE_STARTING || return 1
   "$systemctl_cmd" start "${recovery_units[@]}" || { recontain_after_recovery_failure; return 1; }
   for unit in "${recovery_units[@]}"; do assert_service_active "$unit" || { recontain_after_recovery_failure; return 1; }; done
+  verify_legacy_outward_after_start || { recontain_after_recovery_failure; return 1; }
   (( smoke_delay > 0 )) && /usr/bin/sleep "$smoke_delay"
   for unit in "${recovery_units[@]}"; do assert_service_active "$unit" || { recontain_after_recovery_failure; return 1; }; done
   startup_errors="$($journalctl_cmd --since "$recovery_since" --priority err --no-pager "${recovery_journal_args[@]}" 2>&1)" || { recontain_after_recovery_failure; return 1; }
@@ -2030,10 +2047,25 @@ stop_and_verify_all_services() {
   local -a cgroup_files=()
   local evidence_name="${1:-containment-evidence.json}" evidence_file="$artifact_dir/${1:-containment-evidence.json}" first_unit=1
   local -a remaining_pids=()
-  if ! "$systemctl_cmd" stop "${units[@]}"; then stop_ok=0; fi
+  local -a containment_units=("${units[@]}")
+  # A legacy bot's outward worker is an auxiliary dependency, not a second DB
+  # or rollout inventory entry. Verify its full cgroup is contained with the
+  # parent before taking the existing SQLite backup.
+  if [[ -n "${selected_units[agent-bridge-bot.service]:-}" &&
+        -z "${selected_units[agent-bridge-outward-capacity.service]:-}" ]]; then
+    local auxiliary="$systemd_unit_dir/agent-bridge-outward-capacity.service"
+    if [[ -e "$auxiliary" || -L "$auxiliary" ]]; then
+      [[ -f "$auxiliary" && ! -L "$auxiliary" ]] ||
+        die "legacy outward capacity unit is unsafe"
+      /usr/bin/grep -Fxq '# Managed by Agent Bridge outward-capacity host component' "$auxiliary" ||
+        die "legacy outward capacity unit has an unknown owner"
+      containment_units+=("agent-bridge-outward-capacity.service")
+    fi
+  fi
+  if ! "$systemctl_cmd" stop "${containment_units[@]}"; then stop_ok=0; fi
   printf '{\n  "createdAt": "%s",\n  "stopCommandSucceeded": %s,\n  "units": [\n' \
     "$(/usr/bin/date -u '+%Y-%m-%dT%H:%M:%SZ')" "$([[ "$stop_ok" == 1 ]] && echo true || echo false)" > "$evidence_file"
-  for unit in "${units[@]}"; do
+  for unit in "${containment_units[@]}"; do
     if ! active_state="$("$systemctl_cmd" show "$unit" --property=ActiveState --value 2>/dev/null)" \
       || ! sub_state="$("$systemctl_cmd" show "$unit" --property=SubState --value 2>/dev/null)" \
       || ! result="$("$systemctl_cmd" show "$unit" --property=Result --value 2>/dev/null)" \
@@ -2614,6 +2646,7 @@ record_phase SERVICES_STARTING
 restart_boundary="$(/usr/bin/date -u '+%Y-%m-%dT%H:%M:%S.%3NZ')"
 "$systemctl_cmd" start "${units[@]}"
 for unit in "${units[@]}"; do assert_service_active "$unit"; done
+verify_legacy_outward_after_start || die "legacy outward capacity worker acceptance failed"
 services_started=1
 if (( smoke_delay > 0 )); then /usr/bin/sleep "$smoke_delay"; fi
 journal_args=()
