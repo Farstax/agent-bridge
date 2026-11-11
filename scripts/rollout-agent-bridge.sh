@@ -700,6 +700,19 @@ for unit in "${units[@]}"; do
   esac
   discovered_databases[$canonical]=1
 done
+# The outward worker shares its interactive owner's DB; its service identity
+# cannot introduce another database or independently change its schema role.
+if [[ -n "${selected_units[agent-bridge-outward-capacity.service]:-}" ]]; then
+  capacity_owner=""
+  if [[ -n "${selected_units[agent-bridge-interactive.service]:-}" ]]; then
+    capacity_owner="agent-bridge-interactive.service"
+  elif [[ -n "${selected_units[agent-bridge-bot.service]:-}" ]]; then
+    capacity_owner="agent-bridge-bot.service"
+  fi
+  [[ -n "$capacity_owner" &&
+     "${unit_databases[agent-bridge-outward-capacity.service]}" == "${unit_databases[$capacity_owner]}" ]] ||
+    die "outward worker must share the selected interactive database"
+fi
 if (( retiring_health == 1 && health_already_retired == 0 )); then
   retired_health_database="${unit_databases[agent-bridge-health.service]:-}"
   [[ -n "$retired_health_database" ]] || die "legacy health unit has no resolved database"
