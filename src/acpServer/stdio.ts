@@ -5,6 +5,7 @@ import { Readable, Writable } from "node:stream";
 import { realpathSync } from "node:fs";
 import { openProductionDb } from "../db.js";
 import { OutwardAcpSessionRepository } from "../repositories/outwardAcpSessionRepository.js";
+import { listQueuedDisplay } from "./queuedDisplay.js";
 import { createOutwardAcpAgent, type OutwardAcpSessionStore } from "./app.js";
 import { prepareInteractiveCliAuth } from "../interactiveCliAuth.js";
 import { getCodexUsageText } from "../codexUsage.js";
@@ -60,6 +61,7 @@ try {
     historyPage: (conversationId, beforeId) => db.getConvHistoryPage(
       conversationId, 50, beforeId, OUTWARD_ACP_SURFACE,
     ),
+    queuedDisplay: (sessionId) => listQueuedDisplay(db, sessionId),
     history: (conversationId) => db.getRecentConvTurns(
       conversationId,
       OUTWARD_ACP_HISTORY_LIMIT,

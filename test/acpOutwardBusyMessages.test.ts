@@ -426,6 +426,10 @@ describe("outward ACP busy-message admission over real stdio", () => {
     const file = { type: "resource", resource: { uri: "file:///stop.txt", mimeType: "text/plain", text: "must be discarded" } };
     expect((await prompt(b, sid, "discarded queue item", { ...OPT_IN, "agent-bridge/request-id": requestId }, [file])).result._meta["agent-bridge"].outcome).toBe("queued");
     expect(readdirSync(root).some((name) => name.startsWith(".agent-bridge-queued-attachments-"))).toBe(true);
+    const queuedHistory = (await b.request("_agent-bridge/workstreams/history_page", { sessionId: sid, cwd: root })).result.messages;
+    expect(queuedHistory).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: `user-${requestId}`, text: expect.stringContaining("discarded queue item"), state: "pending" }),
+    ]));
 
     const c = agent(); await c.initialize();
     const stopped = await c.request("_agent-bridge/commands/run", { sessionId: sid, cwd: root, command: "stop" });
@@ -433,6 +437,13 @@ describe("outward ACP busy-message admission over real stdio", () => {
     expect((await first).result.stopReason).toBe("cancelled");
     expect((await status(c, sid)).queued).toBe(0);
     expect(readdirSync(root).some((name) => name.startsWith(".agent-bridge-queued-attachments-"))).toBe(false);
+    const cancelledHistory = (await c.request("_agent-bridge/workstreams/history_page", { sessionId: sid, cwd: root })).result.messages;
+    expect(cancelledHistory).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: `user-${requestId}`, text: expect.stringContaining("discarded queue item"), state: "cancelled" }),
+    ]));
+    const isolated = await session(c);
+    const otherHistory = (await c.request("_agent-bridge/workstreams/history_page", { sessionId: isolated, cwd: root })).result.messages;
+    expect(otherHistory.some((item: { text: string }) => item.text === "discarded queue item")).toBe(false);
 
     const retry = await prompt(c, sid, "discarded queue item", { ...OPT_IN, "agent-bridge/request-id": requestId }, [file]);
     expect(retry.result._meta["agent-bridge"]).toMatchObject({ outcome: "settled", status: "cancelled" });
@@ -441,6 +452,8 @@ describe("outward ACP busy-message admission over real stdio", () => {
 
     expect((await prompt(c, sid, "after confirmed stop")).result.stopReason).toBe("end_turn");
     expect(executions().map((run) => run.prompt)).toEqual(["hold:stop-target", "after confirmed stop"]);
+    expect((await c.request("_agent-bridge/workstreams/history_page", { sessionId: sid, cwd: root })).result.messages)
+      .toEqual(expect.arrayContaining([expect.objectContaining({ id: `user-${requestId}`, state: "cancelled" })]));
   }, 60000);
 
   it("keeps a claimed attachment until its active Run is cancelled, then releases it", async () => {

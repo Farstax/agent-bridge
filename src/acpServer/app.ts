@@ -40,6 +40,8 @@ export interface OutwardAcpSessionStore {
     nextCursor: number | null;
     turnCount: number;
   };
+  /** Display-only pending/cancelled queued submissions, never ACP session/load replay. */
+  queuedDisplay?(sessionId: string): ReadonlyArray<{ id: string; role: "user"; text: string; createdAt: string; state: "pending" | "cancelled" | "failed"; admitted: true }>;
   list?(cwd: string, options: { includeArchived?: boolean }): OutwardAcpSessionRecord[];
   update?(sessionId: string, change: { title?: string; archived?: boolean }): OutwardAcpSessionRecord | null;
 }
@@ -236,13 +238,16 @@ export function createOutwardAcpAgent(options: OutwardAcpAgentOptions = {}): Age
           throw acp.RequestError.invalidParams({ field: "beforeId" }, "invalid history cursor");
         }
         const page = sessions.historyPage(session.conversationId, beforeId as number | undefined);
-        const messages: Array<{ id: string; role: "user" | "assistant"; text: string; createdAt: string; state: "complete" }> = [];
+        const messages: Array<{ id: string; role: "user" | "assistant"; text: string; createdAt: string; state: "complete" | "pending" | "cancelled" | "failed"; admitted?: boolean }> = [];
         for (const turn of page.turns) {
           const id = `${session.sessionId}:${turn.role}:${turn.ordinal}`;
           const last = messages.at(-1);
           if (turn.role === "assistant" && last?.id === id) last.text += turn.text;
           else messages.push({ id, role: turn.role, text: turn.text, createdAt: turn.createdAt, state: "complete" });
         }
+        // Queued-only text is separate from provider-facing conversation_turns.
+        // Present it on the newest page; transcript cursors/ordinals remain unchanged.
+        if (beforeId === undefined) messages.push(...(sessions.queuedDisplay?.(session.sessionId) ?? []));
         return { messages, nextCursor: page.nextCursor, hasMore: page.nextCursor !== null, turnCount: page.turnCount };
       })
       .onRequest(WORKSTREAM_METHODS.list, objectParams, (ctx) => {
