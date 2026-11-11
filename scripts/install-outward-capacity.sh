@@ -62,7 +62,7 @@ runtime_user="$(sed -n 's/^runtime_user=//p' "$rollout_config")"
 # Preserve the systemd EnvironmentFile syntax, without sourcing untrusted
 # shell text. Only operational keys are passed; never copy chat/API tokens.
 allowed=(
-  DB_PATH NODE_BIN INTERACTIVE_CLI_CHAIN INTERACTIVE_DEFAULT_CLI BRIDGE_PROVIDER_LOCK
+  DB_PATH NODE_BIN INTERACTIVE_CLI_CHAIN INTERACTIVE_DEFAULT_CLI
   AGENT_BRIDGE_INSTALLATION_ID AGENT_BRIDGE_EXECUTION_COORDINATION_DB_PATH
   CODEX_ACP_COMMAND CODEX_ACP_ARGS CLAUDE_ACP_COMMAND CLAUDE_ACP_ARGS
   GROK_ACP_COMMAND GROK_ACP_ARGS AGY_ACP_COMMAND AGY_ACP_ARGS
