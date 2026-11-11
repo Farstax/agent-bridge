@@ -2,21 +2,16 @@ import { describe, expect, it } from "vitest";
 import { loadBotsConfig } from "../src/config.js";
 
 describe("Execution path contracts", () => {
-  it("loads the deprecated Gemini token alias into the Antigravity runtime config, but not the retired native command/model aliases", () => {
-    // Agy is migrated to the shared ACP runtime: the command now resolves only
-    // through AGY_ACP_COMMAND (see resolveAgyAcpCommand), and ACP model
-    // preference is negotiated live from the session, not a static env list.
-    // The Telegram bot-token alias predates and is independent of that
-    // migration, so it still applies.
+  it("ignores retired dedicated Telegram aliases but keeps Antigravity ACP command resolution", () => {
     const config = loadBotsConfig({
       TELEGRAM_BOT_TOKEN_GEMINI: "legacy-token",
       GEMINI_COMMAND: "legacy-agy",
       GEMINI_MODEL_PREFERENCE: "model-a,model-b",
       GEMINI_PROJECT_DIR: "/srv/project",
-    } as any, { withTokens: true });
+    });
 
     expect(config.antigravity).toMatchObject({
-      token: "legacy-token",
+      token: undefined,
       command: "/usr/local/bin/agy",
       modelPreference: [],
     });

@@ -10,7 +10,7 @@ import {
   createAutonomousGoalIfNoneActive,
   recordAutonomousSupervisorMessageId,
 } from "../src/autonomousGoalRuntime.js";
-import { resolveAutonomyRuntimeConfig } from "../src/providerLock.js";
+import { resolveAutonomyRuntimeConfig } from "../src/config.js";
 
 function autonomyDir(): string {
   const dir = mkdtempSync(join(tmpdir(), "autonomy-successor-"));
@@ -55,7 +55,7 @@ describe("bounded autonomous Episode succession (#512)", () => {
       AGENT_BRIDGE_AUTONOMY_MAX_CYCLES: "7",
       AGENT_BRIDGE_AUTONOMY_REQUIRE_EPISODE_APPROVAL: "false",
       AGENT_BRIDGE_AUTONOMY_MAX_EPISODES_PER_DAY: "2",
-    }, null) as any;
+    }) as any;
 
     expect(enabled).toMatchObject({
       enabled: true,
@@ -67,7 +67,7 @@ describe("bounded autonomous Episode succession (#512)", () => {
     const defaults = resolveAutonomyRuntimeConfig({
       AGENT_BRIDGE_AUTONOMY_DIR: "/tmp/autonomy",
       AGENT_BRIDGE_AUTONOMY_DB_PATH: "/tmp/autonomy.sqlite",
-    }, null) as any;
+    }) as any;
     expect(defaults.requireEpisodeApproval).toBe(true);
     expect(defaults.maxEpisodesPerDay).toBeGreaterThan(0);
 
@@ -75,22 +75,12 @@ describe("bounded autonomous Episode succession (#512)", () => {
       AGENT_BRIDGE_AUTONOMY_DIR: "/tmp/autonomy",
       AGENT_BRIDGE_AUTONOMY_DB_PATH: "/tmp/autonomy.sqlite",
       AGENT_BRIDGE_AUTONOMY_REQUIRE_EPISODE_APPROVAL: "sometimes",
-    }, null)).toThrow(/must be true or false/);
+    })).toThrow(/must be true or false/);
     expect(() => resolveAutonomyRuntimeConfig({
       AGENT_BRIDGE_AUTONOMY_DIR: "/tmp/autonomy",
       AGENT_BRIDGE_AUTONOMY_DB_PATH: "/tmp/autonomy.sqlite",
       AGENT_BRIDGE_AUTONOMY_MAX_EPISODES_PER_DAY: "0",
-    }, null)).toThrow(/positive integer/);
-  });
-
-  it("keeps provider-locked runtimes disabled without validating inherited autonomy config", () => {
-    expect(resolveAutonomyRuntimeConfig({
-      AGENT_BRIDGE_AUTONOMY_DIR: "not-absolute",
-      AGENT_BRIDGE_AUTONOMY_DB_PATH: "also-bad",
-      AGENT_BRIDGE_AUTONOMY_MAX_CYCLES: "nope",
-      AGENT_BRIDGE_AUTONOMY_REQUIRE_EPISODE_APPROVAL: "nope",
-      AGENT_BRIDGE_AUTONOMY_MAX_EPISODES_PER_DAY: "nope",
-    }, "claude")).toMatchObject({ enabled: false, dir: null, dbPath: null, requireEpisodeApproval: true });
+    })).toThrow(/positive integer/);
   });
 
   it("creates one automatic successor after a final continue and stops at the daily Episode ceiling", async () => {

@@ -178,7 +178,6 @@ describe("isCliCommandText", () => {
           const handled = await handleInteractiveCliCommand({
             rawText: message.text ?? "",
             botUsername: "crawlerinteractivebot",
-            providerLock: null,
             chatKey: String(message.chat.id),
             chatId: message.chat.id,
             threadId: message.message_thread_id,

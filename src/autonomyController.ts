@@ -20,7 +20,7 @@ import {
 import {
   parseAutonomyMaxEpisodesPerDay,
   parseAutonomyRequireEpisodeApproval,
-} from "./providerLock.js";
+} from "./config.js";
 import { interactiveChainKinds, parseCliChain } from "./providers/selection.js";
 import { createSurfaceNeutralProviderRouter } from "./surfaceNeutralProviderRouter.js";
 

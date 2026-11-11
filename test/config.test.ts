@@ -47,16 +47,14 @@ describe("loadBotsConfig", () => {
     expect(bots.cursor.modelPreference).toEqual([]);
   });
 
-  it("honours legacy GEMINI token fallbacks for antigravity without native command fallback", () => {
-    const bots = loadBotsConfig({ GEMINI_COMMAND: "gem", TELEGRAM_BOT_TOKEN_GEMINI: "t1" }, { withTokens: true });
-    expect(bots.antigravity.command).toBe("/usr/local/bin/agy");
-    expect(bots.antigravity.token).toBe("t1");
-  });
-
-  it("omits tokens unless withTokens is set", () => {
-    const env = { TELEGRAM_BOT_TOKEN_CODEX: "tok" };
-    expect(loadBotsConfig(env).codex.token).toBeUndefined();
-    expect(loadBotsConfig(env, { withTokens: true }).codex.token).toBe("tok");
+  it("never loads provider-locked Telegram tokens into ACP provider configuration", () => {
+    const bots = loadBotsConfig({
+      TELEGRAM_BOT_TOKEN_CODEX: "legacy-codex",
+      TELEGRAM_BOT_TOKEN_CLAUDE: "legacy-claude",
+      TELEGRAM_BOT_TOKEN_GEMINI: "legacy-gemini",
+      TELEGRAM_BOT_TOKEN_GROK: "legacy-grok",
+    });
+    expect(Object.values(bots).every((bot) => bot.token === undefined)).toBe(true);
   });
 });
 

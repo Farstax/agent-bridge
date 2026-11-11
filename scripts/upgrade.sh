@@ -303,11 +303,9 @@ if [[ "${1:-}" == "--update" ]]; then
 
   echo "[update] Restarting active services..."
   UPDATE_SERVICES=(
-    agent-bridge-claude
-    agent-bridge-codex
-    agent-bridge-antigravity
     agent-bridge-interactive
     agent-bridge-discord-interactive
+    agent-bridge-slack-interactive
   )
   for svc in "${UPDATE_SERVICES[@]}"; do
     if systemctl is-active --quiet "${svc}" 2>/dev/null; then
@@ -379,9 +377,6 @@ elif [[ -n "${AGENT_BRIDGE_SKILLS:-}" && "${AGENT_BRIDGE_SKILLS}" != "none" && "
   install_shared_skills
 fi
 
-install_unit agent-bridge-codex
-install_unit agent-bridge-antigravity
-
 # Ops housekeeping — not gated by any bot token, always installed.
 install_unit agent-bridge-tmp-cleanup
 install_timer agent-bridge-tmp-cleanup
@@ -398,17 +393,13 @@ ensure_node_default() {
   fi
 }
 
-ensure_node_default /etc/default/agent-bridge-codex
-ensure_node_default /etc/default/agent-bridge-antigravity
+UNITS_TO_ENABLE="agent-bridge-tmp-cleanup.timer"
 
-UNITS_TO_ENABLE="agent-bridge-codex agent-bridge-antigravity agent-bridge-tmp-cleanup.timer"
-
-# Install claude unit only if its defaults file is present (created by install.sh)
-CLAUDE_DEFAULTS="/etc/default/agent-bridge-claude"
-if [[ -f "${CLAUDE_DEFAULTS}" ]]; then
-  install_unit agent-bridge-claude
-  ensure_node_default "${CLAUDE_DEFAULTS}"
-  UNITS_TO_ENABLE="${UNITS_TO_ENABLE} agent-bridge-claude"
+INTERACTIVE_DEFAULTS="/etc/default/agent-bridge-interactive"
+if [[ -f "${INTERACTIVE_DEFAULTS}" ]]; then
+  install_unit agent-bridge-interactive
+  ensure_node_default "${INTERACTIVE_DEFAULTS}"
+  UNITS_TO_ENABLE="${UNITS_TO_ENABLE} agent-bridge-interactive"
 fi
 
 DISCORD_INT_DEFAULTS="/etc/default/agent-bridge-discord-interactive"

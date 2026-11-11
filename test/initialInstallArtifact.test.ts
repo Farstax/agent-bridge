@@ -22,9 +22,6 @@ describe("initial installation release contract", () => {
       "scripts/release-activate.py",
       "scripts/rollout-authorization.py",
       "scripts/rollout-acceptance.py",
-      "systemd/agent-bridge-antigravity.service",
-      "systemd/agent-bridge-claude.service",
-      "systemd/agent-bridge-codex.service",
       "systemd/agent-bridge-discord-interactive.service",
       "systemd/agent-bridge-interactive.service",
       "systemd/agent-bridge-outward-capacity.service",
@@ -35,6 +32,9 @@ describe("initial installation release contract", () => {
       "systemd/agent-bridge-tmp-cleanup.timer",
     ]) {
       expect(workflow).toContain(requiredPath);
+    }
+    for (const retired of ["codex", "claude", "antigravity"]) {
+      expect(workflow).not.toContain(`systemd/agent-bridge-${retired}.service`);
     }
     expect(workflow).not.toContain("systemd/agent-bridge-health.service");
     expect(workflow).not.toContain("configure-health-mode.py");

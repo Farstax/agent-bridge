@@ -1,8 +1,7 @@
 /**
  * PURPOSE: Entry point for the unified Telegram runtime.
- * One Telegram bot polls for messages. It is either switchable across providers
- * or fixed to one provider by BRIDGE_PROVIDER_LOCK for dedicated bot units.
- * NEIGHBORS: src/providerLock.ts, src/interactiveBot.ts, src/engine.ts, src/db.ts
+ * One interactive Telegram bot polls for messages and supports provider switching.
+ * NEIGHBORS: src/config.ts, src/interactiveBot.ts, src/engine.ts, src/db.ts
  */
 
 import { join } from "node:path";
@@ -13,7 +12,7 @@ import { TelegramClient } from "./telegram.js";
 import { BridgeEngine } from "./engine.js";
 import { defaultSoulPath, loadSoulContext, normalizeSoulMode } from "./soul.js";
 import { sendTelegramMessage } from "./messageDelivery.js";
-import { loadBotsConfig, resolveExecutionMode, resolveBusyMessageMode, resolveExecutionCapacityConfig, validateBusyMessageModeEnv } from "./config.js";
+import { loadBotsConfig, resolveExecutionMode, resolveBusyMessageMode, resolveExecutionCapacityConfig, resolveAutonomyRuntimeConfig, validateBusyMessageModeEnv } from "./config.js";
 import { openExecutionCapacityCoordinator } from "./executionCapacity.js";
 import { ProviderFallbackChain } from "./providerFallback.js";
 import { parseCliChain, interactiveChainKinds } from "./providers/selection.js";
@@ -45,7 +44,6 @@ import {
 } from "./interactiveBot.js";
 import { isAcpConfigControlCommand, prepareInteractiveAcpConfigControl } from "./interactiveAcpConfig.js";
 import { targetTelegramAbortUpdate } from "./telegramCommandTarget.js";
-import { resolveAutonomyRuntimeConfig, resolveTelegramRuntimePolicy } from "./providerLock.js";
 import { toUserMessage } from "./cli.js";
 import { getExecutionProcessState } from "./cliSupervisor.js";
 import { resolveTimeoutsForKind } from "./timeouts.js";
@@ -78,15 +76,8 @@ const configuredCliChain = parseCliChain(
   process.env.INTERACTIVE_CLI_CHAIN,
   { allowed: supportedCliKinds, fallback: ["codex", "claude", "antigravity", "grok", "cursor"] },
 );
-const runtimePolicy = resolveTelegramRuntimePolicy(process.env, supportedCliKinds);
-const { providerLock, token } = runtimePolicy;
-if (!token) {
-  throw new Error(
-    providerLock
-      ? `Telegram bot token is required for locked provider ${providerLock}`
-      : "TELEGRAM_BOT_TOKEN_INTERACTIVE is required",
-  );
-}
+const token = process.env.TELEGRAM_BOT_TOKEN_INTERACTIVE;
+if (!token) throw new Error("TELEGRAM_BOT_TOKEN_INTERACTIVE is required");
 
 const allowedUserIds = new Set(
   (process.env.TELEGRAM_ALLOWED_USER_IDS || process.env.TELEGRAM_ALLOWED_USER_ID || "")
@@ -95,7 +86,7 @@ const allowedUserIds = new Set(
 
 const dbPath = process.env.DB_PATH || `${getBridgeProjectDir()}/.data/bridge.sqlite`;
 const pollIntervalMs = Number(process.env.POLL_INTERVAL_MS || 1000);
-const executionMode = resolveExecutionMode(providerLock ?? "codex", process.env);
+const executionMode = resolveExecutionMode("codex", process.env);
 validateBusyMessageModeEnv(process.env);
 const busyMessageMode = resolveBusyMessageMode(process.env);
 const executionCapacity = resolveExecutionCapacityConfig(process.env);
@@ -104,12 +95,12 @@ const {
   dir: autonomyDir,
   dbPath: autonomyDbPath,
   maxCycles: autonomyMaxCycles,
-} = resolveAutonomyRuntimeConfig(process.env, providerLock);
+} = resolveAutonomyRuntimeConfig(process.env);
 
 const config: BridgeConfig = {
   allowedUserIds,
   serviceEnvFile: process.env.BRIDGE_ENV_FILE || null,
-  serviceKind: providerLock,
+  serviceKind: null,
   pollIntervalMs,
   executionMode,
   busyMessageMode,
@@ -124,22 +115,22 @@ const soulContext = loadSoulContext({
 if (soulContext) console.log(`[interactive] loaded SOUL.md context (${soulContext.length} chars)`);
 
 const db = openProductionDb(dbPath, {
-  serviceId: runtimePolicy.databaseServiceId,
+  serviceId: "telegram:interactive",
   installationId: process.env.AGENT_BRIDGE_INSTALLATION_ID,
   requireInstallationIdentity: process.env.NODE_ENV === "production" && Boolean(process.env.AGENT_BRIDGE_INSTALLATION_ID?.trim()),
-  databaseRole: runtimePolicy.databaseRole,
+  databaseRole: "interactive",
 });
-runtimePolicy.surfaceIdentity = recoveryCopySurfaceIdentity(db.raw, runtimePolicy.surfaceIdentity);
+const surfaceIdentity = recoveryCopySurfaceIdentity(db.raw, "telegram:interactive");
 const executionCapacityDb = openExecutionCapacityCoordinator(executionCapacity, dbPath, db, {
-  serviceId: runtimePolicy.databaseServiceId,
+  serviceId: "telegram:interactive",
   installationId: process.env.AGENT_BRIDGE_INSTALLATION_ID,
   requireInstallationIdentity: process.env.NODE_ENV === "production" && Boolean(process.env.AGENT_BRIDGE_INSTALLATION_ID?.trim()),
-  databaseRole: runtimePolicy.databaseRole,
+  databaseRole: "interactive",
 });
 const client = new TelegramClient(
   token,
   fetch,
-  resolveTimeoutsForKind(providerLock ?? "codex").fetchTimeoutMs,
+  resolveTimeoutsForKind("codex").fetchTimeoutMs,
 );
 const autonomyDb = autonomyDbPath ? openProductionDb(autonomyDbPath, {
   serviceId: "telegram:interactive-autonomy",
@@ -147,9 +138,7 @@ const autonomyDb = autonomyDbPath ? openProductionDb(autonomyDbPath, {
   requireInstallationIdentity: process.env.NODE_ENV === "production" && Boolean(process.env.AGENT_BRIDGE_INSTALLATION_ID?.trim()),
   databaseRole: "interactive",
 }) : null;
-const ownerNotificationSocketPath = providerLock
-  ? undefined
-  : process.env.BRIDGE_OWNER_NOTIFICATION_SOCKET?.trim();
+const ownerNotificationSocketPath = process.env.BRIDGE_OWNER_NOTIFICATION_SOCKET?.trim();
 const ownerNotificationIngress = ownerNotificationSocketPath
   ? await startOwnerNotificationIngress({
       socketPath: ownerNotificationSocketPath,
@@ -158,9 +147,9 @@ const ownerNotificationIngress = ownerNotificationSocketPath
         sendMessage: (chatId, text) => client.sendMessage({ chat_id: chatId, text }),
       },
       recordDeliveredAssistantTurn: (chatKey, text) => {
-        const ownerKey = deriveConversationOwnerKey(runtimePolicy.surfaceIdentity, allowedUserIds);
+        const ownerKey = deriveConversationOwnerKey(surfaceIdentity, allowedUserIds);
         db.addConvTurn(chatKey, "assistant", text, undefined, {
-          surfaceIdentity: runtimePolicy.surfaceIdentity,
+          surfaceIdentity: surfaceIdentity,
           ...(ownerKey ? { ownerKey } : {}),
         });
       },
@@ -204,9 +193,9 @@ if (!botUsername) {
 }
 
 const fallbackChain = new ProviderFallbackChain(
-  providerLock ? runtimePolicy.cliKinds : configuredCliChain,
+  configuredCliChain,
   db,
-  runtimePolicy.surfaceIdentity,
+  surfaceIdentity,
   (cli) => getAvailableCliKinds().has(cli as CliKind),
 );
 const fallbackRequests = new Map<string, import("./engine.js").ProviderFallbackReason>();
@@ -214,22 +203,17 @@ const capacityFallbackAttempts = new Map<string, { runId: string; chatId: number
 
 function resolveCredentialCheckedPreference(chatKey: string): { pref: CliKind | null; available: Set<CliKind>; stored: CliKind } {
   const detected = getAvailableCliKinds();
-  if (providerLock) {
-    const available = new Set<CliKind>(detected.has(providerLock) ? [providerLock] : []);
-    return { pref: available.has(providerLock) ? providerLock : null, available, stored: providerLock };
-  }
-
-  const stored = getUserCliPreference(db, { surfaceIdentity: runtimePolicy.surfaceIdentity, chatKey });
+  const stored = getUserCliPreference(db, { surfaceIdentity: surfaceIdentity, chatKey });
   const pref = resolveAvailableCliPreference(stored, detected);
   if (pref && pref !== stored) {
-    setUserCliPreference(db, { surfaceIdentity: runtimePolicy.surfaceIdentity, chatKey }, pref);
+    setUserCliPreference(db, { surfaceIdentity: surfaceIdentity, chatKey }, pref);
     fallbackChain.setActiveCli(chatKey, pref);
   }
   return { pref, available: detected, stored };
 }
 
 const engines = Object.fromEntries(
-  runtimePolicy.cliKinds.map((kind) => {
+  supportedCliKinds.map((kind) => {
     const botConfig = kind === "custom-acp"
       ? { command: "", modelPreference: [], token }
       : { ...config.bots[kind], token };
@@ -238,7 +222,7 @@ const engines = Object.fromEntries(
       new BridgeEngine(
         {
           kind,
-          surfaceIdentity: runtimePolicy.surfaceIdentity,
+          surfaceIdentity: surfaceIdentity,
           isolatedConversationDirectories: true,
           botConfig,
           allowedUserIds,
@@ -256,7 +240,7 @@ const engines = Object.fromEntries(
                 await prepareInteractiveAcpConfigControl({
                   kind,
                   commandText,
-                  surfaceIdentity: runtimePolicy.surfaceIdentity,
+                  surfaceIdentity: surfaceIdentity,
                   chatKey: ctx.chatKey,
                   db,
                   executionMode: resolveExecutionMode(kind, process.env),
@@ -281,13 +265,12 @@ const engines = Object.fromEntries(
   }),
 ) as Record<CliKind, BridgeEngine>;
 
-const defaultPref = providerLock
-  ?? resolveAvailableCliPreference(getUserCliPreference(db, { surfaceIdentity: runtimePolicy.surfaceIdentity, chatKey: "default" }), getAvailableCliKinds())
+const defaultPref = resolveAvailableCliPreference(getUserCliPreference(db, { surfaceIdentity: surfaceIdentity, chatKey: "default" }), getAvailableCliKinds())
   ?? "codex";
 
 const runIngressSocket = process.env.BRIDGE_RUN_INGRESS_SOCKET?.trim();
 const runIngressToken = process.env.BRIDGE_RUN_INGRESS_TOKEN?.trim();
-const runIngress = !providerLock && runIngressSocket && runIngressToken
+const runIngress = runIngressSocket && runIngressToken
   ? new RunIngressServer({
       socketPath: runIngressSocket,
       expectedToken: runIngressToken,
@@ -383,7 +366,7 @@ for (const engine of Object.values(engines)) {
   engine.setQueuedMessageHandler(async (queued) => {
     const chatKey = queued.chatKey;
     return dispatchClaimedInteractiveWithFallback(queued, chatKey, {
-      surfaceIdentity: runtimePolicy.surfaceIdentity, engines, fallbackChain, fallbackRequests, capacityFallbackAttempts, db,
+      surfaceIdentity: surfaceIdentity, engines, fallbackChain, fallbackRequests, capacityFallbackAttempts, db,
       notify: async (msg) => {
         await sendTelegramMessage({ client, kind: "interactive", chatId: queued.chatId, body: { text: msg, message_thread_id: queued.threadId ?? undefined } });
       },
@@ -405,11 +388,11 @@ await runUnifiedTelegramIngress({
 });
 
 async function runInteractiveIngress(): Promise<void> {
-const scheduledOwnerKey = deriveConversationOwnerKey(runtimePolicy.surfaceIdentity, allowedUserIds);
+const scheduledOwnerKey = deriveConversationOwnerKey(surfaceIdentity, allowedUserIds);
 const scheduledActorId = allowedUserIds.values().next().value;
 const scheduledRoutineRunner = scheduledOwnerKey && scheduledActorId ? new ScheduledRoutineRunner(
   db,
-  runtimePolicy.surfaceIdentity,
+  surfaceIdentity,
   async (routine, intendedAt, occurrenceKey) => {
     if (routine.ownerKey !== scheduledOwnerKey) {
       console.warn(`[scheduled-routines] owner mismatch for ${routine.id}; occurrence skipped`);
@@ -479,7 +462,7 @@ scheduledRoutineRunner?.start();
 
 const runContinuationRunner = scheduledActorId ? new RunContinuationRunner(
   db,
-  runtimePolicy.surfaceIdentity,
+  surfaceIdentity,
   async (continuation) => {
     if (continuation.capacityWait) {
       return resumeCapacityHeldQueue(continuation, { engines, fallbackChain, db });
@@ -529,10 +512,10 @@ runContinuationRunner?.start();
 await registerGlobalCommands(defaultPref, "");
 const registeredGroupChats = new Set<number>();
 
-console.log(`[interactive] starting polling${providerLock ? ` locked to ${providerLock}` : ""}...`);
+console.log("[interactive] starting polling...");
 
-let offset = db.getLastUpdateId(runtimePolicy.pollKind);
-const POLL_KIND = runtimePolicy.pollKind;
+let offset = db.getLastUpdateId("codex");
+const POLL_KIND = "codex";
 
 for (;;) {
   try {
@@ -636,7 +619,6 @@ for (;;) {
           if (await handleInteractiveCliCommand({
             rawText,
             botUsername,
-            providerLock,
             chatKey,
             chatId,
             threadId: message.message_thread_id,
@@ -684,13 +666,6 @@ for (;;) {
 
           const newCli = handleCliSwitchCallback(cbq.data);
           if (newCli !== null) {
-            if (providerLock) {
-              await client.answerCallbackQuery({
-                callback_query_id: cbq.id,
-                text: `Provider is fixed to ${providerLock}`,
-              });
-              continue;
-            }
             const available = getAvailableCliKinds();
             if (!available.has(newCli)) {
               await client.answerCallbackQuery({ callback_query_id: cbq.id, text: `${newCli} is not available on this box` });
@@ -701,7 +676,7 @@ for (;;) {
             const messageId = cbq.message?.message_id;
             const chatKey = resolveUpdateChatKey(typedUpdate);
             if (chatKey) {
-              switchManualCli(db, { surfaceIdentity: runtimePolicy.surfaceIdentity, chatKey }, newCli, fallbackChain);
+              switchManualCli(db, { surfaceIdentity: surfaceIdentity, chatKey }, newCli, fallbackChain);
             }
             await client.answerCallbackQuery({ callback_query_id: cbq.id, text: `Switched to ${newCli}` });
             if (chatId && messageId) {
@@ -740,7 +715,7 @@ for (;;) {
           }
 
           if (chatId != null) {
-            dispatchUnifiedTelegramUpdate(typedUpdate, chatKey, runtimePolicy.surfaceIdentity, engines[pref], async (turn) => {
+            dispatchUnifiedTelegramUpdate(typedUpdate, chatKey, surfaceIdentity, engines[pref], async (turn) => {
               await dispatchInteractiveTurnWithFallback(turn, {
                 engines,
                 fallbackChain,
@@ -764,9 +739,7 @@ for (;;) {
               .catch((err: unknown) => console.error("[interactive] handleUpdate error", err));
           }
         } else {
-          const pref = providerLock
-            ? (getAvailableCliKinds().has(providerLock) ? providerLock : null)
-            : resolveAvailableCliPreference("codex", getAvailableCliKinds());
+          const pref = resolveAvailableCliPreference("codex", getAvailableCliKinds());
           if (pref) {
             await engines[pref].handleUpdate(typedUpdate);
           } else {

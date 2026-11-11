@@ -59,9 +59,6 @@ DEFAULT_AGENT_BRIDGE_SKILLS = (
 
 # unit, defaults file, enabling token(s), persistent database directory
 SERVICES: tuple[tuple[str, str, tuple[str, ...], str], ...] = (
-    ("agent-bridge-codex.service", "agent-bridge-codex", ("TELEGRAM_BOT_TOKEN_CODEX",), "codex"),
-    ("agent-bridge-antigravity.service", "agent-bridge-antigravity", ("TELEGRAM_BOT_TOKEN_ANTIGRAVITY", "TELEGRAM_BOT_TOKEN_GEMINI"), "antigravity"),
-    ("agent-bridge-claude.service", "agent-bridge-claude", ("TELEGRAM_BOT_TOKEN_CLAUDE",), "claude"),
     ("agent-bridge-interactive.service", "agent-bridge-interactive", ("TELEGRAM_BOT_TOKEN_INTERACTIVE",), "interactive"),
     ("agent-bridge-discord-interactive.service", "agent-bridge-discord-interactive", ("DISCORD_BOT_TOKEN",), "discord-interactive"),
     ("agent-bridge-slack-interactive.service", "agent-bridge-slack-interactive", ("SLACK_BOT_TOKEN_FILE",), "slack-interactive"),
@@ -71,9 +68,6 @@ SERVICES: tuple[tuple[str, str, tuple[str, ...], str], ...] = (
 # the three single-CLI bridges share the same database shape but retain
 # separate persistent state.
 DATABASE_ROLES = {
-    "codex": "shared",
-    "antigravity": "shared",
-    "claude": "shared",
     "interactive": "interactive",
     "discord-interactive": "interactive",
     "slack-interactive": "interactive",
@@ -109,8 +103,6 @@ SHARED_KEYS = (
 )
 
 SERVICE_KEYS = (
-    "TELEGRAM_BOT_TOKEN_CODEX", "TELEGRAM_BOT_TOKEN_ANTIGRAVITY",
-    "TELEGRAM_BOT_TOKEN_GEMINI", "TELEGRAM_BOT_TOKEN_CLAUDE",
     "TELEGRAM_BOT_TOKEN_INTERACTIVE",
     "DISCORD_BOT_TOKEN", "DISCORD_APPLICATION_ID",
     "DISCORD_GUILD_ID", "DISCORD_ALLOWED_USER_IDS",

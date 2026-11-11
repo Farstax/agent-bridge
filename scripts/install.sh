@@ -45,12 +45,8 @@ done
 cat <<'EOF'
 agent-bridge install
 - shared config reads: /etc/default/agent-bridge-shared  (paths, sensors, allowed users)
-- codex service reads: /etc/default/agent-bridge-codex   (token, command, DB path)
-- antigravity service reads: /etc/default/agent-bridge-antigravity
-- claude service reads: /etc/default/agent-bridge-claude  (optional — skipped if no token provided)
-- bot-specific file overrides shared file when the same key appears in both
-- CODEX_PROJECT_DIR / ANTIGRAVITY_PROJECT_DIR / CLAUDE_PROJECT_DIR override the CLI cwd per bot
-- shared local memory is configured automatically for codex, antigravity, and claude
+- interactive Telegram reads /etc/default/agent-bridge-interactive (when configured)
+- provider ACP commands and authentication are shared across supported surfaces
 - bundled shared skills are installed into native CLI skill directories by default
 EOF
 
@@ -93,7 +89,7 @@ seed_from_env_file() {
   local key value
   for key in BRIDGE_ROOT_DIR BRIDGE_PROJECT_DIR BRIDGE_CURRENT_RELEASE_DIR \
               TELEGRAM_ALLOWED_USER_IDS TELEGRAM_ALLOWED_USER_ID \
-               TELEGRAM_BOT_TOKEN_CODEX TELEGRAM_BOT_TOKEN_ANTIGRAVITY TELEGRAM_BOT_TOKEN_CLAUDE TELEGRAM_BOT_TOKEN_INTERACTIVE \
+               TELEGRAM_BOT_TOKEN_INTERACTIVE \
               AGY_ACP_COMMAND AGY_ACP_ARGS \
               CLAUDE_ACP_COMMAND CLAUDE_ACP_ARGS \
               CODEX_ACP_COMMAND CODEX_ACP_ARGS \
@@ -147,9 +143,6 @@ write_env_file() {
 }
 
 seed_from_env_file "${REPO_DIR}/.env.shared"
-seed_from_env_file "${REPO_DIR}/.env.codex"
-seed_from_env_file "${REPO_DIR}/.env.antigravity"
-seed_from_env_file "${REPO_DIR}/.env.claude"
 seed_from_env_file "${REPO_DIR}/.env.discord-interactive"
 
 # Migrate only the removed 1.4.5 adapter settings; preserve other explicit overrides.
@@ -193,9 +186,6 @@ prompt BRIDGE_ROOT_DIR    "Bridge root directory"    "${TARGET_HOME}"
 prompt BRIDGE_PROJECT_DIR "Bridge project directory" "${REPO_DIR}"
 prompt BRIDGE_CURRENT_RELEASE_DIR "Active release pointer" "/opt/agent-bridge/releases/current"
 prompt TELEGRAM_ALLOWED_USER_IDS  "Telegram allowed user IDs (comma-separated)"
-prompt TELEGRAM_BOT_TOKEN_CODEX       "Codex bot token"
-prompt TELEGRAM_BOT_TOKEN_ANTIGRAVITY "Antigravity bot token"
-prompt TELEGRAM_BOT_TOKEN_CLAUDE      "Claude bot token (leave blank to skip)"
 prompt TELEGRAM_BOT_TOKEN_INTERACTIVE "Interactive bot token (leave blank to skip)"
 prompt DISCORD_BOT_TOKEN              "Discord bot token (leave blank to skip)"
 prompt DISCORD_APPLICATION_ID         "Discord application ID (leave blank to skip)"
@@ -218,8 +208,6 @@ ensure_var BRIDGE_ROOT_DIR           "Bridge root directory"
 ensure_var BRIDGE_PROJECT_DIR        "Bridge project directory"
 ensure_var BRIDGE_CURRENT_RELEASE_DIR "Active release pointer"
 ensure_var TELEGRAM_ALLOWED_USER_IDS "Telegram allowed user IDs"
-ensure_var TELEGRAM_BOT_TOKEN_CODEX        "Codex bot token"
-ensure_var TELEGRAM_BOT_TOKEN_ANTIGRAVITY  "Antigravity bot token"
 ensure_var BRIDGE_EXECUTION_MODE     "Execution mode"
 
 install_shared_skills() {
@@ -324,11 +312,6 @@ ensure_var CURSOR_ACP_COMMAND "Cursor ACP command"
 # Write local .env.* files from examples (machine-specific values substituted in)
 echo "Writing local env files..."
 write_env_file "${REPO_DIR}/.env.shared.example"      "${REPO_DIR}/.env.shared"
-write_env_file "${REPO_DIR}/.env.codex.example"       "${REPO_DIR}/.env.codex"
-write_env_file "${REPO_DIR}/.env.antigravity.example" "${REPO_DIR}/.env.antigravity"
-if [[ -n "${TELEGRAM_BOT_TOKEN_CLAUDE:-}" ]]; then
-  write_env_file "${REPO_DIR}/.env.claude.example"    "${REPO_DIR}/.env.claude"
-fi
 if [[ -n "${DISCORD_BOT_TOKEN:-}" ]]; then
   write_env_file "${REPO_DIR}/.env.discord-interactive.example" "${REPO_DIR}/.env.discord-interactive"
 fi
@@ -372,31 +355,6 @@ _write_shared_defaults() {
   echo "  wrote ${dest}"
 }
 
-# Write bot-specific defaults (token, command, DB path — shared vars come from agent-bridge-shared)
-_write_systemd_defaults() {
-  local bot="$1"
-  local token_var="$2"
-  local cmd_var="$3"
-  local proj_var="$4"
-  local dest="${DEFAULTS_DIR}/agent-bridge-${bot}"
-
-  {
-    echo "BRIDGE_ENV_FILE=${dest}"
-    echo "${token_var}=${!token_var:-}"
-    echo "${cmd_var}=${!cmd_var:-}"
-    [[ -n "${!proj_var:-}" ]] && echo "${proj_var}=${!proj_var}"
-    if [[ "${bot}" == "codex" ]]; then
-      [[ -n "${CODEX_ACP_ARGS:-}" ]] && echo "CODEX_ACP_ARGS=${CODEX_ACP_ARGS}"
-    elif [[ "${bot}" == "claude" ]]; then
-      [[ -n "${CLAUDE_ACP_ARGS:-}" ]] && echo "CLAUDE_ACP_ARGS=${CLAUDE_ACP_ARGS}"
-    elif [[ "${bot}" == "antigravity" ]]; then
-      [[ -n "${AGY_ACP_ARGS:-}" ]] && echo "AGY_ACP_ARGS=${AGY_ACP_ARGS}"
-    fi
-    true
-  } | sudo tee "${dest}" > /dev/null
-  echo "  wrote ${dest}"
-}
-
 _write_release_defaults() {
   local dest="${DEFAULTS_DIR}/agent-bridge-release"
   {
@@ -408,8 +366,6 @@ _write_release_defaults() {
 
 _write_release_defaults
 _write_shared_defaults
-_write_systemd_defaults codex       TELEGRAM_BOT_TOKEN_CODEX       CODEX_ACP_COMMAND   CODEX_PROJECT_DIR
-_write_systemd_defaults antigravity TELEGRAM_BOT_TOKEN_ANTIGRAVITY AGY_ACP_COMMAND ANTIGRAVITY_PROJECT_DIR
 _write_interactive_defaults() {
   local dest="${DEFAULTS_DIR}/agent-bridge-interactive"
   {
@@ -466,8 +422,6 @@ _write_discord_defaults() {
   echo "  wrote ${dest}"
 }
 
-install_unit agent-bridge-codex
-install_unit agent-bridge-antigravity
 if [[ -n "${TELEGRAM_BOT_TOKEN_INTERACTIVE:-}" ]]; then
   _write_interactive_defaults
   install_unit agent-bridge-interactive
@@ -476,16 +430,10 @@ fi
 install_unit agent-bridge-tmp-cleanup
 install_timer agent-bridge-tmp-cleanup
 
-UNITS_TO_ENABLE="agent-bridge-codex agent-bridge-antigravity agent-bridge-tmp-cleanup.timer"
+UNITS_TO_ENABLE="agent-bridge-tmp-cleanup.timer"
 if [[ -n "${TELEGRAM_BOT_TOKEN_INTERACTIVE:-}" ]]; then
   UNITS_TO_ENABLE="${UNITS_TO_ENABLE} agent-bridge-interactive"
 fi
-if [[ -n "${TELEGRAM_BOT_TOKEN_CLAUDE:-}" ]]; then
-  _write_systemd_defaults claude TELEGRAM_BOT_TOKEN_CLAUDE CLAUDE_ACP_COMMAND CLAUDE_PROJECT_DIR
-  install_unit agent-bridge-claude
-  UNITS_TO_ENABLE="${UNITS_TO_ENABLE} agent-bridge-claude"
-fi
-
 if [[ -n "${DISCORD_BOT_TOKEN:-}" ]]; then
   _write_discord_defaults discord-interactive
   install_unit agent-bridge-discord-interactive
