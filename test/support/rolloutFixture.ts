@@ -466,7 +466,7 @@ if [[ "\${cmd[1]:-}" == */tsx/dist/cli.mjs && "\${cmd[2]:-}" == */scripts/idle-m
     exit 2
   fi
   if [[ "$action" == acquire ]]; then
-    node -e 'const a=process.argv.slice(1);const paths=a.flatMap((v,i)=>v==="--db"?[a[i+1]]:[]);const token="00000000-0000-4000-8000-000000000001";console.log(JSON.stringify({state:"admitted",roles:paths.map(dbPath=>({dbPath,fence:{token}}))}));' "\${cmd[@]:4}"
+    node -e 'const a=process.argv.slice(1);const paths=a.flatMap((v,i)=>v==="--db"?[a[i+1]]:[]);const token="00000000-0000-4000-8000-000000000001";console.log(JSON.stringify({state:"admitted",roles:paths.map(dbPath=>({dbPath,fence:{token}}))}));' -- "\${cmd[@]:4}"
     exit 0
   fi
   if [[ "$action" == release ]]; then
