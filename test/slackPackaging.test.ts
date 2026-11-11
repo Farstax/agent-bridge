@@ -26,7 +26,8 @@ describe("slack packaging contract (#943)", () => {
   it("the guarded rollout recognises the Slack unit and database role", () => {
     const rollout = read("scripts/rollout-agent-bridge.sh");
     expect(rollout).toContain("agent-bridge-slack-interactive.service");
-    expect(rollout).toMatch(/agent-bridge-slack-interactive\.service\) unit_roles\[\$unit\]=slack/);
+    expect(rollout).toContain("agent-bridge-discord-interactive.service|agent-bridge-slack-interactive.service");
+    expect(rollout).toContain("*/interactive/bridge.sqlite|*/interactive.sqlite) unit_roles[$unit]=interactive");
   });
 
   it("the manifest requests exactly the documented scopes, events and Socket Mode", () => {

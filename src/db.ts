@@ -662,7 +662,9 @@ export class BridgeDb {
       const processState = options.processState(run);
       const containmentState = options.containmentState?.(run, processState) ?? "ambiguous";
       if (processState !== "absent" || containmentState !== "proven") continue;
-      const lockState = this.locks.hasRunLock(run.run_id) || this.locks.hasChatLock(run.chat_id) ? "live" : "absent" as const;
+      const lockState = this.locks.hasRunLock(run.run_id) || (run.surface_identity
+        ? this.locks.hasLaneLock(run.surface_identity, run.chat_id)
+        : this.locks.hasChatLock(run.chat_id)) ? "live" : "absent" as const;
       const claimed = this.raw.prepare(`
         SELECT id, state, claim_run_id, claim_acquisition_id
         FROM pending_messages WHERE claim_run_id = ? ORDER BY id

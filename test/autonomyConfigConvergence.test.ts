@@ -136,7 +136,7 @@ module.subprocess.run = lambda args, **kwargs: calls.append(args) or SimpleNames
 primary = module.database_path(state_root, interactive)
 module.bootstrap_databases(
     Path(${JSON.stringify(release)}), Path("/usr/bin/node"), SimpleNamespace(pw_name="agentbridge"),
-    [interactive], [primary, autonomy],
+    [interactive], [primary, autonomy], state_root,
 )
 print(json.dumps({"resolved": str(resolved), "calls": calls}))
 `;

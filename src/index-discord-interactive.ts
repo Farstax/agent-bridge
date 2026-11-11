@@ -71,7 +71,7 @@ const allowedUserIds = new Set(
 );
 const engineAllowedUserIds = new Set<string>(allowedUserIds);
 
-const dbPath = process.env.DB_PATH || `${getBridgeProjectDir()}/.data/discord-interactive.sqlite`;
+const dbPath = process.env.DB_PATH || `${getBridgeProjectDir()}/.data/bridge.sqlite`;
 const executionMode = resolveExecutionMode("codex", process.env);
 validateBusyMessageModeEnv(process.env);
 const busyMessageMode = resolveBusyMessageMode(process.env);
@@ -97,13 +97,13 @@ const db = openProductionDb(dbPath, {
   serviceId: "discord:interactive",
   installationId: process.env.AGENT_BRIDGE_INSTALLATION_ID,
   requireInstallationIdentity: process.env.NODE_ENV === "production" && Boolean(process.env.AGENT_BRIDGE_INSTALLATION_ID?.trim()),
-  databaseRole: "discord",
+  databaseRole: "interactive",
 });
 const executionCapacityDb = openExecutionCapacityCoordinator(executionCapacity, dbPath, db, {
   serviceId: "discord:interactive",
   installationId: process.env.AGENT_BRIDGE_INSTALLATION_ID,
   requireInstallationIdentity: process.env.NODE_ENV === "production" && Boolean(process.env.AGENT_BRIDGE_INSTALLATION_ID?.trim()),
-  databaseRole: "discord",
+  databaseRole: "interactive",
 });
 
 // ── Fallback chain ────────────────────────────────────────────────────────────
@@ -135,6 +135,7 @@ const client = new DiscordClient({
       console.warn("[discord-interactive] command registration failed", err),
     );
     reconciliationReady = db.reconcileOrphanedRuns({
+      candidateRuns: db.listRunningRuns("discord:interactive"),
       minAgeMs: Number(process.env.ORPHAN_RECONCILIATION_MIN_AGE_MS || 10 * 60 * 1000),
       processState: (run) => getExecutionProcessState(run.run_id),
       containmentState: (_run, processState) => processState === "absent" ? "proven" : "ambiguous",
