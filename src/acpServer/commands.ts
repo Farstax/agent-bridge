@@ -13,6 +13,7 @@ import { supportsReadOnlyBtw } from "../providers/registry.js";
 import type { OutwardAcpSessionRecord } from "../repositories/outwardAcpSessionRepository.js";
 import type { BotKind, BridgeConfig, RouteableBotKind } from "../types.js";
 import { OUTWARD_ACP_SURFACE, type OutwardStopResult, type OutwardWorkstreamControl } from "./execution.js";
+import { clearQueuedDisplay } from "./queuedDisplay.js";
 
 /**
  * Optional ACP commands use existing Bridge owners. Commands with a standard
@@ -228,7 +229,11 @@ export class AcpCommands {
         if (await control.cancel(session) !== "confirmed") {
           throw new acp.RequestError(-32002, "/reset cannot proceed until the running execution confirms Stop", { sessionId: session.sessionId });
         }
-        const result = control.withIdleLane(session, () => legacy("/reset"));
+        const result = control.withIdleLane(session, () => {
+          const reset = legacy("/reset");
+          clearQueuedDisplay(db, session.sessionId);
+          return reset;
+        });
         return { command: name, text: result && "text" in result ? result.text : "Session reset." };
       }
       case "cli":
