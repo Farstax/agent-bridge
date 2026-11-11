@@ -9,6 +9,7 @@ import { type as eventType } from "../src/events/types.js";
 import { getHandoffReason } from "../src/handoffState.js";
 import { listRunContinuations, requestRunContinuation, settleRunContinuation } from "../src/runContinuation.js";
 import { OutwardAcpSessionRepository } from "../src/repositories/outwardAcpSessionRepository.js";
+import { OUTWARD_USER_TURN_OPERATION_PREFIX } from "../src/repositories/conversationRepository.js";
 import { createOutwardAcpAgent, WORKSTREAM_METHODS, type OutwardAcpAgentOptions, type OutwardAcpSessionStore } from "../src/acpServer/app.js";
 import { BridgeOutwardAcpPromptExecutor, OUTWARD_ACP_SURFACE } from "../src/acpServer/execution.js";
 import type { BotKind } from "../src/types.js";
@@ -212,7 +213,8 @@ describe("outward ACP Workstreams (#1101)", () => {
       f.db.getConvHistoryPage(conversationId, 50, beforeId, OUTWARD_ACP_SURFACE);
     f.repo.create({ sessionId: "history-1", conversationId: "acp:history-1", cwd: f.root });
     for (let i = 0; i < 105; i++) {
-      f.db.addConvTurn("acp:history-1", "user", `question ${i}`, undefined, { surfaceIdentity: OUTWARD_ACP_SURFACE });
+      const id = f.db.addConvTurn("acp:history-1", "user", `question ${i}`, undefined, { surfaceIdentity: OUTWARD_ACP_SURFACE });
+      if (i === 55) f.db.setSetting(OUTWARD_USER_TURN_OPERATION_PREFIX + id, "op-known-55");
       f.db.addConvTurn("acp:history-1", "assistant", `answer ${i}`, undefined, { surfaceIdentity: OUTWARD_ACP_SURFACE });
     }
     const app = agent(f, { workstreams: executor(f.db, []) });
@@ -223,7 +225,8 @@ describe("outward ACP Workstreams (#1101)", () => {
       app, WORKSTREAM_METHODS.historyPage, { sessionId: "history-1", cwd: f.root },
     );
     expect(first.messages).toHaveLength(100);
-    expect(first.messages[0]).toMatchObject({ id: "history-1:user:55", text: "question 55" });
+    expect(first.messages[0]).toMatchObject({ id: "history-1:user:55", text: "question 55", operationId: "op-known-55" });
+    expect(first.messages[1]).not.toHaveProperty("operationId");
     expect(first.messages.at(-1)).toMatchObject({ id: "history-1:assistant:104", text: "answer 104" });
     expect(first.turnCount).toBe(105);
     const second = await call<typeof first>(app, WORKSTREAM_METHODS.historyPage,
