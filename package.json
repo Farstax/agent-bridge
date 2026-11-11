@@ -23,6 +23,11 @@
         "id": "cursor-acp",
         "installer": "scripts/install-cursor-acp.sh",
         "phase_protocol": 1
+      },
+      {
+        "id": "outward-capacity",
+        "installer": "scripts/install-outward-capacity.sh",
+        "phase_protocol": 1
       }
     ]
   },
