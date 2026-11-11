@@ -877,11 +877,11 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
       // This metadata-only update is never an assistant answer or transcript.
       if (!queued && !input.ordinaryResume && !input.capacityResume && input.requestId) {
         try {
-          await input.onUpdate({
+          void Promise.resolve(input.onUpdate({
             sessionUpdate: "agent_message_chunk",
             content: { type: "text", text: "" },
             _meta: { "agent-bridge/prompt-accepted": { requestId: input.requestId, runId } },
-          } as OutwardUpdate);
+          } as OutwardUpdate)).catch(() => undefined);
         } catch { /* A lost notification cannot undo a durably admitted Run. */ }
       }
 
