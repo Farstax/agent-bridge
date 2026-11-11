@@ -833,7 +833,7 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
           // A resumed turn must never append the original user request again.
           db.addConvTurn(input.session.conversationId, "user", input.prompt, provider, {
             surfaceIdentity: OUTWARD_ACP_SURFACE,
-          });
+          }, queued ? queuedSubmittedAt(db, queued.id) : undefined);
         }
         return admittedStore;
       });
@@ -1462,6 +1462,7 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
           )) return false;
         } catch { /* corrupt receipts fail closed in replay/recovery */ }
       }
+      const submittedAt = queuedSubmittedAt(db, row.id);
       if (record.cancelRequested || !db.completePendingMsg(record.lane, row.id)) {
         // The provider may have consumed the prompt, so a lost claim or
         // request-scoped cancellation cannot safely put it back on the queue.
@@ -1469,7 +1470,7 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
         this.writeQueueReceipt(key, { status: "uncertain", reason: "steering_claim_lost", runId: record.lane.runId });
         return false;
       }
-      db.addConvTurn(session.conversationId, "user", row.prompt, record.provider, { surfaceIdentity: OUTWARD_ACP_SURFACE });
+      db.addConvTurn(session.conversationId, "user", row.prompt, record.provider, { surfaceIdentity: OUTWARD_ACP_SURFACE }, submittedAt);
       this.writeQueueReceipt(key, { status: "steered", runId: record.lane.runId });
       return true;
     });
@@ -1614,6 +1615,14 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
     // only the owner or proven-containment recovery may end the Run.
     return "pending";
   }
+}
+
+/** Source of truth for accepted queued user submission time; read before retiring the row. */
+function queuedSubmittedAt(db: BridgeDb, id: number): string {
+  const row = db.raw.prepare("SELECT created_at AS submittedAt FROM pending_messages WHERE id = ? AND surface = ?")
+    .get(id, OUTWARD_ACP_SURFACE) as { submittedAt: string } | undefined;
+  if (!row?.submittedAt) throw new Error("queued submission timestamp unavailable");
+  return row.submittedAt;
 }
 
 /** A user Stop discarded the queued message before its Run was created. */

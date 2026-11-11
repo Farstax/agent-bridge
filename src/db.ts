@@ -854,8 +854,8 @@ export class BridgeDb {
 
   // ── Conversation turns ──────────────────────────────────────────────────
 
-  addConvTurn(chatKey: string, role: "user" | "assistant", text: string, cli?: string, provenance?: ConversationTurnProvenance): void {
-    this.conversations.addConvTurn(chatKey, role, text, cli, provenance);
+  addConvTurn(chatKey: string, role: "user" | "assistant", text: string, cli?: string, provenance?: ConversationTurnProvenance, createdAt?: string): void {
+    this.conversations.addConvTurn(chatKey, role, text, cli, provenance, createdAt);
   }
 
   getRecentConvTurns(
