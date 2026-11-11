@@ -164,10 +164,14 @@ export class ConversationRepository {
     text: string,
     cli?: string,
     provenance?: ConversationTurnProvenance,
+    createdAt?: string,
   ): void {
+    // Only the guest-owned queued submission supplies an earlier accepted-at time.
+    // All other turns retain the existing database commit-time default.
     this.db
-      .prepare(`INSERT INTO conversation_turns (chat_key, role, text, cli, surface_identity, owner_key) VALUES (?, ?, ?, ?, ?, ?)`) 
-      .run(chatKey, role, text, cli ?? null, provenance?.surfaceIdentity ?? null, provenance?.ownerKey ?? null);
+      .prepare(`INSERT INTO conversation_turns (chat_key, role, text, cli, surface_identity, owner_key, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, COALESCE(?, strftime('%Y-%m-%dT%H:%M:%fZ','now')))`) 
+      .run(chatKey, role, text, cli ?? null, provenance?.surfaceIdentity ?? null, provenance?.ownerKey ?? null, createdAt ?? null);
   }
 
   getRecentConvTurns(

@@ -83,6 +83,12 @@ describe("outward ACP busy-message admission over real stdio", () => {
     const receipt = await prompt(b, sid, "hold:two", OPT_IN);
     expect(receipt.result._meta["agent-bridge"]).toMatchObject({ outcome: "queued", mode: "queue", position: 1 });
     expect(typeof receipt.result._meta["agent-bridge"].queueId).toBe("number");
+    const submittedAt = "2026-09-21T10:11:12.123Z";
+    const store = openDb(dbPath, { databaseRole: "interactive" });
+    try {
+      expect(store.raw.prepare("UPDATE pending_messages SET created_at = ? WHERE id = ?")
+        .run(submittedAt, receipt.result._meta["agent-bridge"].queueId).changes).toBe(1);
+    } finally { store.close(); }
     const third = await prompt(b, sid, "third", OPT_IN);
     expect(third.result._meta["agent-bridge"]).toMatchObject({ outcome: "queued", position: 2 });
     const live = await status(b, sid);
@@ -97,6 +103,50 @@ describe("outward ACP busy-message admission over real stdio", () => {
     expect(executions().map((e) => e.prompt)).toEqual(["hold:one", "hold:two", "third"]);
     await waitFor(async () => (await status(b, sid)).queued === 0);
     expect(new Set(executions().map((e) => e.prompt)).size).toBe(3);
+    const observed = openDb(dbPath, { databaseRole: "interactive" });
+    try {
+      const submitted = observed.raw.prepare("SELECT created_at AS time FROM conversation_turns WHERE role = 'user' AND text = ?")
+        .get("hold:two") as { time: string } | undefined;
+      const completed = observed.raw.prepare("SELECT created_at AS time FROM conversation_turns WHERE role = 'assistant' AND text = ?")
+        .get("done:hold:two") as { time: string } | undefined;
+      expect(submitted?.time).toBe(submittedAt);
+      expect(completed?.time).toBeTruthy();
+      expect(completed?.time).not.toBe(submittedAt);
+    } finally { observed.close(); }
+  }, 60000);
+
+  it("retains the accepted-at time when an augment message is steered into an active Run", async () => {
+    const a = agent(); await a.initialize();
+    const sid = await session(a);
+    const mode = await a.request("_agent-bridge/commands/run", {
+      sessionId: sid, cwd: root, command: "queue_mode", select: "queue_mode:augment",
+    });
+    expect(mode.error).toBeUndefined();
+    const first = prompt(a, sid, "hold:steer");
+    await waitFor(() => executions().length === 1);
+    const b = agent(); await b.initialize();
+    // Steering requires the ACP process that owns the active provider Run.
+    const augment = prompt(a, sid, "steered submission", {
+      ...OPT_IN, "agent-bridge/request-id": "timestamp-steered-001",
+    });
+    await waitFor(() => existsSync(join(control, "steering.log")));
+    const submittedAt = "2026-09-21T08:09:10.123Z";
+    const store = openDb(dbPath, { databaseRole: "interactive" });
+    try {
+      expect(store.raw.prepare("UPDATE pending_messages SET created_at = ? WHERE prompt = ?")
+        .run(submittedAt, "steered submission").changes).toBe(1);
+    } finally { store.close(); }
+    release("steering-rpc");
+    const received = await augment;
+    expect(received.result._meta["agent-bridge"].outcome).toBe("steered");
+    release("steer");
+    await first;
+    const observed = openDb(dbPath, { databaseRole: "interactive" });
+    try {
+      const submitted = observed.raw.prepare("SELECT created_at AS time FROM conversation_turns WHERE role = 'user' AND text = ?")
+        .get("steered submission") as { time: string } | undefined;
+      expect(submitted?.time).toBe(submittedAt);
+    } finally { observed.close(); }
   }, 60000);
 
   it("is idempotent for a repeated request id before and after settlement", async () => {
@@ -376,7 +426,6 @@ describe("outward ACP busy-message admission over real stdio", () => {
     const file = { type: "resource", resource: { uri: "file:///stop.txt", mimeType: "text/plain", text: "must be discarded" } };
     expect((await prompt(b, sid, "discarded queue item", { ...OPT_IN, "agent-bridge/request-id": requestId }, [file])).result._meta["agent-bridge"].outcome).toBe("queued");
     expect(readdirSync(root).some((name) => name.startsWith(".agent-bridge-queued-attachments-"))).toBe(true);
-    // The guest is already the durable owner of this submitted message.
     const queuedHistory = (await b.request("_agent-bridge/workstreams/history_page", { sessionId: sid, cwd: root })).result.messages;
     expect(queuedHistory).toEqual(expect.arrayContaining([
       expect.objectContaining({ id: `user-${requestId}`, text: "discarded queue item", state: "pending" }),
@@ -392,7 +441,6 @@ describe("outward ACP busy-message admission over real stdio", () => {
     expect(cancelledHistory).toEqual(expect.arrayContaining([
       expect.objectContaining({ id: `user-${requestId}`, text: "discarded queue item", state: "cancelled" }),
     ]));
-    // This display-only record must not become provider-facing conversation context.
     const isolated = await session(c);
     const otherHistory = (await c.request("_agent-bridge/workstreams/history_page", { sessionId: isolated, cwd: root })).result.messages;
     expect(otherHistory.some((item: { text: string }) => item.text === "discarded queue item")).toBe(false);
