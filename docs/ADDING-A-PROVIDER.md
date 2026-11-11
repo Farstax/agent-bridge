@@ -15,7 +15,7 @@ has not adopted ACP; do not create one for a Registry-listed ACP agent.
 Keep three concerns separate:
 
 1. **ACP contract** — the Registry-listed agent is release-pinned and qualified through the shared ACP runtime.
-2. **Ordinary Bridge routing and surfaces** — the provider can actually be selected by normal Runs, configured by Bridge, participate in fallback, and optionally receive a dedicated provider-locked service or surface.
+2. **Ordinary Bridge routing and surfaces** — the provider can actually be selected by normal Runs, configured by Bridge, and participate in fallback.
 3. **Managed lifecycle** — Agent Bridge installation/upgrade tooling installs, pins, authenticates, checks, or qualifies the selected agent distribution.
 
 A provider that should participate in ordinary Bridge Runs must be represented

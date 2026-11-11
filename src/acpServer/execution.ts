@@ -1701,7 +1701,7 @@ const NO_DELIVERY_PLATFORM: MessagingPlatform = {
 
 /**
  * Ordered inward provider chain for outward ACP execution. A provider lock
- * (dedicated single-provider systemd unit) yields a single-entry chain --
+ * (a single-provider ACP instance) yields a single-entry chain --
  * the router still works, it just never has anywhere to fall back to.
  */
 /**
