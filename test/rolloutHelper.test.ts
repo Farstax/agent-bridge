@@ -310,6 +310,64 @@ describe("guarded rollout helper", { timeout: 30_000 }, () => {
     ]);
   }, 15_000);
 
+  it("contains the legacy auxiliary worker alongside the bot before backing up its shared DB", () => {
+    const fixture = createFixture();
+    prepareImmutableRelease(fixture, fixture.previousCommit);
+    useLegacyBotInventory(fixture);
+    const worker = "agent-bridge-outward-capacity.service";
+    const unitPath = join(fixture.root, "systemd", worker);
+    writeFileSync(unitPath, "# Managed by Agent Bridge outward-capacity host component\n", { mode: 0o644 });
+    for (const unit of ["agent-bridge-bot.service", worker]) {
+      const cgroup = join(fixture.cgroupRoot, "agent-bridge-test", unit);
+      mkdirSync(cgroup, { recursive: true });
+      writeFileSync(join(cgroup, "cgroup.procs"), "");
+    }
+    writeFileSync(fixture.stateFile, `agent-bridge-bot.service\n${worker}\n`);
+
+    const result = runRollout(fixture);
+
+    expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
+    expect(actions(fixture)).toContain(`systemctl:stop agent-bridge-bot.service ${worker}`);
+    const artifacts = readFileSync(join(fixture.logDir, "latest"), "utf8").trim();
+    const evidence = JSON.parse(readFileSync(join(artifacts, "containment-evidence.json"), "utf8"));
+    expect(evidence.units.map((entry: { unit: string }) => entry.unit)).toContain(worker);
+    // The worker shares the bot DB; it must not create a second database role.
+    const postStart = JSON.parse(readFileSync(join(artifacts, "post-start-evidence.json"), "utf8"));
+    expect(postStart.databases).toHaveLength(1);
+    expect(postStart.databases[0].role).toBe("interactive");
+  }, 15_000);
+
+  it("treats the fresh outward worker and interactive bot as one interactive database role", () => {
+    const fixture = createFixture();
+    prepareImmutableRelease(fixture, fixture.previousCommit);
+    const interactive = "agent-bridge-interactive.service";
+    const worker = "agent-bridge-outward-capacity.service";
+    writeFileSync(join(fixture.envDir, "agent-bridge-outward-capacity"),
+      `DB_PATH=${fixture.dbPaths[3]}\n`, { mode: 0o600 });
+    rewriteConfig(fixture, (lines) => [
+      ...lines.filter((line) => !line.startsWith("unit=") && !line.startsWith("database=")),
+      `unit=${interactive}`, `unit=${worker}`, `database=${fixture.dbPaths[3]}`,
+    ]);
+    for (const unit of [interactive, worker]) {
+      const cgroup = join(fixture.cgroupRoot, "agent-bridge-test", unit);
+      mkdirSync(cgroup, { recursive: true });
+      writeFileSync(join(cgroup, "cgroup.procs"), "");
+    }
+    writeFileSync(fixture.stateFile, `${interactive}\n${worker}\n`);
+
+    const result = runRollout(fixture);
+
+    expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
+    const artifacts = readFileSync(join(fixture.logDir, "latest"), "utf8").trim();
+    const postStart = JSON.parse(readFileSync(join(artifacts, "post-start-evidence.json"), "utf8"));
+    expect(postStart.databases).toEqual([
+      expect.objectContaining({
+        path: fixture.dbPaths[3], role: "interactive",
+        resolvingUnits: expect.arrayContaining([interactive, worker]),
+      }),
+    ]);
+  }, 15_000);
+
   it("captures inventory for every configured unit when multiple units are selected", () => {
     const fixture = createFixture();
     prepareImmutableRelease(fixture, fixture.previousCommit);
