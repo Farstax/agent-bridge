@@ -15,12 +15,12 @@ has not adopted ACP; do not create one for a Registry-listed ACP agent.
 Keep three concerns separate:
 
 1. **ACP contract** — the Registry-listed agent is release-pinned and qualified through the shared ACP runtime.
-2. **Ordinary Bridge routing and surfaces** — the provider can actually be selected by normal Runs, configured by Bridge, participate in fallback, and optionally receive a dedicated provider-locked service or surface.
+2. **Ordinary Bridge routing and surfaces** — the provider can actually be selected by normal Runs, configured by Bridge, participate in fallback, through the existing Telegram, Discord, Slack and Desk surfaces.
 3. **Managed lifecycle** — Agent Bridge installation/upgrade tooling installs, pins, authenticates, checks, or qualifies the selected agent distribution.
 
 A provider that should participate in ordinary Bridge Runs must be represented
-in the current closed Bridge routing/configuration types. Installation and a
-dedicated service remain separate product decisions.
+in the current closed Bridge routing/configuration types. Provider selection
+and fallback do not require a provider-specific Telegram bot or systemd service.
 
 ## Architecture boundaries
 
@@ -264,7 +264,7 @@ To make it available to ordinary Bridge routing, also trace:
 ```text
 src/types.ts
 src/config.ts
-routing / provider-lock / timeout records
+routing / fallback / timeout records
 provider-ID <-> BotKind mapping
 src/providers/qualification.ts
 ```
@@ -272,8 +272,6 @@ src/providers/qualification.ts
 Only add these when the product requires them:
 
 ```text
-.env provider examples / dedicated bot surface
-systemd dedicated service
 managed installer / automatic CLI upgrade ownership
 fallback-chain membership
 ```
