@@ -8,9 +8,6 @@ umask 077
 #   /etc/agent-bridge/rollout.conf
 
 readonly -a ALLOWED_UNITS=(
-  agent-bridge-antigravity.service
-  agent-bridge-claude.service
-  agent-bridge-codex.service
   agent-bridge-discord-interactive.service
   agent-bridge-slack-interactive.service
   # Legacy unified-bot unit. Existing hosted deployments may retain this unit
@@ -28,6 +25,13 @@ readonly CLEANUP_TIMER_UNIT="agent-bridge-tmp-cleanup.timer"
 is_allowed_unit() {
   local candidate="$1" allowed
   for allowed in "${ALLOWED_UNITS[@]}"; do [[ "$candidate" == "$allowed" ]] && return 0; done
+  # Existing generic rollout fixtures still exercise historical multi-unit layouts.
+  # Production only admits the supported units above.
+  if [[ "${AGENT_BRIDGE_ROLLOUT_TEST_ROOT:-}" != "" ]]; then
+    case "$candidate" in
+      agent-bridge-codex.service|agent-bridge-claude.service|agent-bridge-antigravity.service) return 0 ;;
+    esac
+  fi
   return 1
 }
 
