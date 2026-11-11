@@ -693,8 +693,14 @@ for unit in "${units[@]}"; do
   unit_databases[$unit]="$canonical"
   case "$unit" in
     agent-bridge-health.service) unit_roles[$unit]=health ;;
-    agent-bridge-discord-interactive.service) unit_roles[$unit]=discord ;;
-    agent-bridge-slack-interactive.service) unit_roles[$unit]=slack ;;
+    agent-bridge-discord-interactive.service|agent-bridge-slack-interactive.service)
+      # New shared surface installations use the interactive role. Retired
+      # standalone role DBs are not copied into the shared database.
+      case "$canonical" in
+        */interactive/bridge.sqlite|*/interactive.sqlite) unit_roles[$unit]=interactive ;;
+        *) [[ "$unit" == "agent-bridge-discord-interactive.service" ]] && unit_roles[$unit]=discord || unit_roles[$unit]=slack ;;
+      esac ;;
+
     agent-bridge-bot.service|agent-bridge-interactive.service|agent-bridge-outward-capacity.service) unit_roles[$unit]=interactive ;;
     *) unit_roles[$unit]=shared ;;
   esac

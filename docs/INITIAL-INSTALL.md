@@ -69,11 +69,11 @@ A successful installation:
 
 1. refuses to continue if `/opt/agent-bridge/releases/current` already exists;
 2. writes root-owned mode `0600` service defaults;
-3. stores service databases under `/var/lib/agent-bridge/<service>/bridge.sqlite`, outside the immutable release;
+3. stores service databases outside immutable releases; Telegram, Discord and Slack share `/var/lib/agent-bridge/interactive/bridge.sqlite`;
 4. installs the configured systemd units and cleanup timer;
 5. installs `agent-bridge-deploy` and its private helpers as root-owned commands;
 6. writes the fixed root-owned `/etc/agent-bridge/rollout.conf` inventory and helper hashes;
-7. bootstraps each selected, previously absent service database as the runtime user, with its fixed provenance role;
+7. bootstraps each distinct selected, previously absent database once as the runtime user, with its fixed provenance role;
 8. stages the exact immutable release and atomically creates the first `current` pointer;
 9. starts only the configured services;
 10. verifies active services and SQLite integrity;

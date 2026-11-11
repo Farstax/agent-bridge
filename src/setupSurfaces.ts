@@ -26,7 +26,7 @@ export function normalizeSetupUserIds(raw: string, surface: "discord" | "slack")
 }
 function q(value: string): string { return JSON.stringify(value); }
 export function surfaceSourceDbPath(projectDir: string, surface: "discord" | "slack"): string {
-  return join(resolve(projectDir), ".data", surface + "-interactive.sqlite");
+  return join(resolve(projectDir), ".data", "bridge.sqlite");
 }
 export function renderSurfaceSetupEnv(input: {
   surface: "discord" | "slack"; projectDir: string; userIds: string;
@@ -130,7 +130,7 @@ export function bootstrapSourceSurfaceDb(dbPath: string, role: "discord" | "slac
   if (existsSync(dbPath)) return; // Existing history is immutable to setup; runtime validates its schema.
   mkdirSync(dirname(dbPath), { recursive: true });
   try {
-    execFileSync(process.execPath, ["--import", "tsx", "scripts/rollout-db.ts", "bootstrap", "--db", dbPath, "--role", role, "--confirm-new-role", dbPath], {
+    execFileSync(process.execPath, ["--import", "tsx", "scripts/rollout-db.ts", "bootstrap", "--db", dbPath, "--role", "interactive", "--confirm-new-role", dbPath], {
       cwd: resolve("."), stdio: ["ignore", "pipe", "pipe"], timeout: 120000,
     });
   } catch {

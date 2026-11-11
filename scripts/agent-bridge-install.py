@@ -75,8 +75,8 @@ DATABASE_ROLES = {
     "antigravity": "shared",
     "claude": "shared",
     "interactive": "interactive",
-    "discord-interactive": "discord",
-    "slack-interactive": "slack",
+    "discord-interactive": "interactive",
+    "slack-interactive": "interactive",
 }
 
 # release path, installed path, rollout identity key
@@ -193,7 +193,7 @@ def validate_slack_credentials(env: Mapping[str, str], account: pwd.struct_passw
 
 
 def database_path(state_root: Path, service: tuple[str, str, tuple[str, ...], str]) -> Path:
-    return state_root / service[3] / "bridge.sqlite"
+    return state_root / ("interactive" if service[3] in {"interactive", "discord-interactive", "slack-interactive"} else service[3]) / "bridge.sqlite"
 
 
 def configured_autonomy_database(
@@ -243,9 +243,12 @@ def bootstrap_databases(
     account: pwd.struct_passwd,
     services: Sequence[tuple[str, str, tuple[str, ...], str]],
     databases: Sequence[Path],
+    state_root: Path,
 ) -> None:
-    """Create schema-valid, provenance-bound databases before services start."""
-    if len(databases) not in {len(services), len(services) + 1}:
+    """Bootstrap each selected database once, even when services share it."""
+    service_roles = {database_path(state_root, service): DATABASE_ROLES[service[3]] for service in services}
+    extras = [path for path in databases if path not in service_roles]
+    if len(databases) != len(set(databases)) or set(service_roles) - set(databases) or len(extras) > 1:
         fail("selected service and database inventories do not match")
     tsx = release / "node_modules/tsx/dist/cli.mjs"
     bootstrap = release / "scripts/rollout-db.ts"
@@ -259,15 +262,12 @@ def bootstrap_databases(
             "--confirm-new-role", str(database),
         ], check=True, capture_output=True, text=True)
 
-    for service, database in zip(services, databases[:len(services)]):
-        role = DATABASE_ROLES.get(service[3])
-        if role is None:
-            fail(f"unknown database role for service state: {service[3]}")
+    for database, role in service_roles.items():
         bootstrap_database(database, role)
-    if len(databases) == len(services) + 1:
+    if extras:
         if not any(service[0] == "agent-bridge-interactive.service" for service in services):
             fail("secondary autonomy database requires agent-bridge-interactive.service")
-        bootstrap_database(databases[-1], "interactive")
+        bootstrap_database(extras[0], "interactive")
 
 
 def install_shared_skills(
@@ -664,7 +664,8 @@ def configure_host(
             fail(f"release is missing systemd unit: {unit_source}")
         safe_write(SYSTEMD_DIR / unit, render_systemd_file(unit, unit_source.read_text(encoding="utf-8"), account.pw_name), 0o644)
         units.append(unit)
-        databases.append(db_path)
+        if db_path not in databases:
+            databases.append(db_path)
         if db_name == "interactive":
             # Outward ACP continuations share the interactive database, but
             # need no Telegram/Discord/Slack secrets or new database/runtime.
@@ -868,7 +869,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             print(json.dumps(activate.prepare_release_host_components(release_root, staged, activated_commit), sort_keys=True), flush=True)
         install_shared_skills(release_root / activated_commit, pinned_node, account, os.environ)
         bootstrapped_databases = list(databases)
-        bootstrap_databases(release_root / activated_commit, pinned_node, account, selected, databases)
+        bootstrap_databases(release_root / activated_commit, pinned_node, account, selected, databases, state_root)
         # Commit-mode activation runs the component installers again.
         with component_environment_context(component_environment):
             print(activate.activate(release_root, current, activated_commit), flush=True)

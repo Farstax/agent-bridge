@@ -251,7 +251,7 @@ print(json.dumps({
     ]);
     expect(result.databases).toEqual([
       "/var/lib/agent-bridge/interactive/bridge.sqlite",
-      "/var/lib/agent-bridge/discord-interactive/bridge.sqlite",
+      "/var/lib/agent-bridge/interactive/bridge.sqlite",
     ]);
     expect(result.inside).toEqual([false, false]);
   });
@@ -298,7 +298,7 @@ with tempfile.TemporaryDirectory() as directory:
   (release / "scripts").mkdir()
   (release / "node_modules/tsx/dist/cli.mjs").write_text("runtime")
   (release / "scripts/rollout-db.ts").write_text("bootstrap")
-  module.bootstrap_databases(release, pathlib.Path("/usr/bin/node"), account, services, paths)
+  module.bootstrap_databases(release, pathlib.Path("/usr/bin/node"), account, services, paths, pathlib.Path("/var/lib/agent-bridge"))
 print(json.dumps({"calls": calls}))
 `) as { calls: string[][] };
 
@@ -582,7 +582,7 @@ except Exception as error:
 
 
 describe("optional Slack immutable first-install (#1003)", () => {
-  it("selects Slack without a Telegram/Discord bot, preserving its dedicated DB role", () => {
+  it("selects Slack without Telegram, using the interactive DB role", () => {
     const result = probe(`
 services = module.selected_services({
   "SLACK_BOT_TOKEN_FILE": "/private/slack/bot",
@@ -598,7 +598,7 @@ values = module.service_values({
 print(json.dumps({"units": [s[0] for s in services], "role": module.DATABASE_ROLES[service[3]], "values": values}))
 `) as { units: string[]; role: string; values: Record<string, string> };
     expect(result.units).toEqual(["agent-bridge-slack-interactive.service"]);
-    expect(result.role).toBe("slack");
+    expect(result.role).toBe("interactive");
     expect(result.values.SLACK_BOT_TOKEN_FILE).toBe("/private/slack/bot");
     expect(result.values.SLACK_APP_TOKEN_FILE).toBe("/private/slack/app");
     expect(result.values.BRIDGE_EXECUTION_MODE).toBe("safe");

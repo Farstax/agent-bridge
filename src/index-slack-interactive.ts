@@ -129,7 +129,7 @@ const verifiedContext = { teamId: identity.teamId, appId: identity.appId, botUse
 
 // ── Engine composition (identical ownership to the Discord companion) ───────
 
-const dbPath = process.env.DB_PATH || `${getBridgeProjectDir()}/.data/slack-interactive.sqlite`;
+const dbPath = process.env.DB_PATH || `${getBridgeProjectDir()}/.data/bridge.sqlite`;
 const executionMode = resolveExecutionMode("codex", process.env);
 validateBusyMessageModeEnv(process.env);
 const busyMessageMode = resolveBusyMessageMode(process.env);
@@ -156,7 +156,7 @@ try {
     serviceId: "slack:interactive",
     installationId: process.env.AGENT_BRIDGE_INSTALLATION_ID,
     requireInstallationIdentity: process.env.NODE_ENV === "production" && Boolean(process.env.AGENT_BRIDGE_INSTALLATION_ID?.trim()),
-    databaseRole: "slack",
+    databaseRole: "interactive",
   });
 } catch (error) {
   fail("database_unavailable", error instanceof Error ? error.message : "database unavailable", status);
@@ -165,7 +165,7 @@ const executionCapacityDb = openExecutionCapacityCoordinator(executionCapacity, 
   serviceId: "slack:interactive",
   installationId: process.env.AGENT_BRIDGE_INSTALLATION_ID,
   requireInstallationIdentity: process.env.NODE_ENV === "production" && Boolean(process.env.AGENT_BRIDGE_INSTALLATION_ID?.trim()),
-  databaseRole: "slack",
+  databaseRole: "interactive",
 });
 
 const client = new SlackClient(web as unknown as import("./slack.js").SlackPostingClient);
@@ -239,6 +239,7 @@ const receiptRuntime = createSlackReceiptRuntime({
 let reconciliationReady: Promise<void> = Promise.resolve();
 
 reconciliationReady = db.reconcileOrphanedRuns({
+  candidateRuns: db.listRunningRuns(surfaceIdentity),
   minAgeMs: Number(process.env.ORPHAN_RECONCILIATION_MIN_AGE_MS || 10 * 60 * 1000),
   processState: (run) => getExecutionProcessState(run.run_id),
   containmentState: (_run, processState) => processState === "absent" ? "proven" : "ambiguous",

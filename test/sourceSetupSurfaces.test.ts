@@ -29,7 +29,7 @@ describe("standalone multi-surface source onboarding (#1003)", () => {
     expect(() => normalizeSetupUserIds("nick", "discord")).toThrow("Invalid discord");
   });
 
-  it("renders isolated Discord configuration without reusing Telegram DB", () => {
+  it("renders Discord configuration using the shared interactive DB", () => {
     const raw = renderSurfaceSetupEnv({
       surface: "discord", projectDir: "/tmp/project", providers: [provider],
       userIds: "123456789012345678", discordBotToken: "secret", discordApplicationId: "987654321098765432",
@@ -37,7 +37,7 @@ describe("standalone multi-surface source onboarding (#1003)", () => {
     const config = dotenv.parse(raw);
     expect(config.DISCORD_APPLICATION_ID).toBe("987654321098765432");
     expect(config.DISCORD_ALLOWED_USER_IDS).toBe("123456789012345678");
-    expect(config.DB_PATH).toBe("/tmp/project/.data/discord-interactive.sqlite");
+    expect(config.DB_PATH).toBe("/tmp/project/.data/bridge.sqlite");
     expect(config.INTERACTIVE_CLI_CHAIN).toBe("codex");
     expect(config.TELEGRAM_BOT_TOKEN_INTERACTIVE).toBeUndefined();
   });
@@ -50,7 +50,7 @@ describe("standalone multi-surface source onboarding (#1003)", () => {
     const config = dotenv.parse(raw);
     expect(config.SLACK_BOT_TOKEN_FILE).toBe("/private/bot");
     expect(config.SLACK_APP_TOKEN_FILE).toBe("/private/app");
-    expect(config.DB_PATH).toBe("/tmp/project/.data/slack-interactive.sqlite");
+    expect(config.DB_PATH).toBe("/tmp/project/.data/bridge.sqlite");
     expect(config.BRIDGE_EXECUTION_MODE).toBe("safe");
     expect(raw).not.toContain("xoxb-");
   });
@@ -90,7 +90,7 @@ describe("standalone multi-surface source onboarding (#1003)", () => {
       expect(existsSync(dbPath)).toBe(false);
       bootstrapSourceSurfaceDb(dbPath, role);
       expect(existsSync(dbPath)).toBe(true);
-      const db = openProductionDb(dbPath, { serviceId: role + ":interactive-test", databaseRole: role });
+      const db = openProductionDb(dbPath, { serviceId: role + ":interactive-test", databaseRole: "interactive" });
       db.raw.close();
       const before = statSync(dbPath).mtimeMs;
       bootstrapSourceSurfaceDb(dbPath, role);
