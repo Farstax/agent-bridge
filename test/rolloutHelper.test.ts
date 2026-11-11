@@ -316,6 +316,7 @@ describe("guarded rollout helper", { timeout: 30_000 }, () => {
     useLegacyBotInventory(fixture);
     const worker = "agent-bridge-outward-capacity.service";
     const unitPath = join(fixture.root, "systemd", worker);
+    mkdirSync(dirname(unitPath), { recursive: true });
     writeFileSync(unitPath, "# Managed by Agent Bridge outward-capacity host component\n", { mode: 0o644 });
     for (const unit of ["agent-bridge-bot.service", worker]) {
       const cgroup = join(fixture.cgroupRoot, "agent-bridge-test", unit);
