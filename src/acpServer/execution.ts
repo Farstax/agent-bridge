@@ -21,6 +21,7 @@ import { getCachedAvailableCliKinds } from "../interactiveCliAuth.js";
 import { applyManualCliSwitchHandoff, getStoredCliPreference, setUserCliPreference, type CliKind } from "../interactiveBot.js";
 import type { BotKind, BridgeConfig, CliResult, RouteableBotKind } from "../types.js";
 import { QUEUED_ATTACHMENT_MARKER, readRetainedOutwardAcpAttachments, retainOutwardAcpAttachmentsForWait, releaseRetainedOutwardAcpAttachments } from "./attachments.js";
+import { rememberQueuedDisplay, settleQueuedDisplay, retireQueuedDisplay } from "./queuedDisplay.js";
 import { resolveLaneBusyMessageMode } from "../busyMessageMode.js";
 import { discardDeskRunArtifacts, retainDeskArtifacts } from "./artifacts.js";
 import { hasPendingCapacityWait, listRunContinuations, linkCapacityContinuationRun, linkRunContinuationRun, RUN_CONTINUATION_PREFIX, requestRunContinuation, cancelPendingRunContinuation, settleRunContinuation, type RunContinuation } from "../runContinuation.js";
@@ -834,6 +835,8 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
           db.addConvTurn(input.session.conversationId, "user", input.prompt, provider, {
             surfaceIdentity: OUTWARD_ACP_SURFACE,
           });
+          // The normal transcript replaces the display-only queue record atomically.
+          if (queued) retireQueuedDisplay(db, queued.key);
         }
         return admittedStore;
       });
@@ -1322,9 +1325,13 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
           attachments: attachments.length > 0 ? [`${RETAINED_ATTACHMENT_MARKER}${retainedId}`] : [],
           scheduledOccurrenceKey: key,
         }, MAX_QUEUE_DEPTH, queueReceiptKey(key), queueRunLinkKey(key), queueReservationKey(key), reservationToken ?? "", stopFenceKey(session.conversationId));
-        if (accepted.kind === "queued" && (input.ordinaryResume ||
-            (input.ordinaryContinuations && this.supportsOrdinaryContinuations))) {
-          db.setSetting(ordinaryConsentKey(key), "1");
+        if (accepted.kind === "queued") {
+          if (input.requestId && !input.ordinaryResume) {
+            rememberQueuedDisplay(db, session.sessionId, input.requestId, input.prompt, attachments.length);
+          }
+          if (input.ordinaryResume || (input.ordinaryContinuations && this.supportsOrdinaryContinuations)) {
+            db.setSetting(ordinaryConsentKey(key), "1");
+          }
         }
         return accepted;
       });
@@ -1470,6 +1477,7 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
         return false;
       }
       db.addConvTurn(session.conversationId, "user", row.prompt, record.provider, { surfaceIdentity: OUTWARD_ACP_SURFACE });
+      retireQueuedDisplay(db, key);
       this.writeQueueReceipt(key, { status: "steered", runId: record.lane.runId });
       return true;
     });
@@ -1479,8 +1487,9 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
     const { db } = this.options;
     db.runInImmediateTransaction(() => {
       // Stop's terminal receipt is authoritative, including across ACP processes.
+      const prior = db.getSetting(queueReceiptKey(key));
       if (receipt.status !== "cancelled") {
-        const previous = db.getSetting(queueReceiptKey(key));
+        const previous = prior;
         if (previous) {
           try {
             if ((JSON.parse(previous) as { status?: string }).status === "cancelled") return;
@@ -1489,6 +1498,14 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
       }
       const now = Date.now();
       db.setSetting(queueReceiptKey(key), JSON.stringify({ ...receipt, at: new Date(now).toISOString() }));
+      if (receipt.status === "cancelled") {
+        // A steering RPC might have injected the prompt before Stop. Never claim "not run" then.
+        let wasSteering = false;
+        try { wasSteering = Boolean(prior && JSON.parse(prior).status === "steering"); } catch { /* fail closed */ }
+        settleQueuedDisplay(db, key, wasSteering ? "failed" : "cancelled");
+      } else if (receipt.status === "uncertain" || receipt.status === "failed") {
+        settleQueuedDisplay(db, key, "failed");
+      }
       if (["done", "failed", "cancelled", "steered", "uncertain"].includes(String(receipt.status))) {
         clearSetting(db, ordinaryConsentKey(key));
       }
