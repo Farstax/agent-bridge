@@ -8,7 +8,6 @@
     "scripts/provider-qualification.ts",
     "scripts/qualify-logical-messages.ts",
     "scripts/rollout-db.ts",
-    "scripts/scan-token-savings.ts",
     "scripts/skill-manager.ts"
   ],
   "project": [

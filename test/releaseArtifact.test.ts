@@ -117,7 +117,6 @@ describe("release artifact manifest", () => {
           "typecheck:unused": "tsc --noEmit -p tsconfig.unused.json",
           "cleanup:check": "knip",
           skills: "tsx scripts/skill-manager.ts",
-          "scan-token-savings": "tsx scripts/scan-token-savings.ts",
         },
         dependencies: { "better-sqlite3": "^12.9.0", dotenv: "^17.2.3", tsx: "^4.21.0" },
       }),
