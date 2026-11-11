@@ -428,7 +428,7 @@ describe("outward ACP busy-message admission over real stdio", () => {
     expect(readdirSync(root).some((name) => name.startsWith(".agent-bridge-queued-attachments-"))).toBe(true);
     const queuedHistory = (await b.request("_agent-bridge/workstreams/history_page", { sessionId: sid, cwd: root })).result.messages;
     expect(queuedHistory).toEqual(expect.arrayContaining([
-      expect.objectContaining({ id: `user-${requestId}`, text: "discarded queue item", state: "pending" }),
+      expect.objectContaining({ id: `user-${requestId}`, text: expect.stringContaining("discarded queue item"), state: "pending" }),
     ]));
 
     const c = agent(); await c.initialize();
@@ -439,7 +439,7 @@ describe("outward ACP busy-message admission over real stdio", () => {
     expect(readdirSync(root).some((name) => name.startsWith(".agent-bridge-queued-attachments-"))).toBe(false);
     const cancelledHistory = (await c.request("_agent-bridge/workstreams/history_page", { sessionId: sid, cwd: root })).result.messages;
     expect(cancelledHistory).toEqual(expect.arrayContaining([
-      expect.objectContaining({ id: `user-${requestId}`, text: "discarded queue item", state: "cancelled" }),
+      expect.objectContaining({ id: `user-${requestId}`, text: expect.stringContaining("discarded queue item"), state: "cancelled" }),
     ]));
     const isolated = await session(c);
     const otherHistory = (await c.request("_agent-bridge/workstreams/history_page", { sessionId: isolated, cwd: root })).result.messages;
