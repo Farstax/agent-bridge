@@ -453,6 +453,32 @@ cmd=("$@")
 if [[ "\${cmd[1]:-}" == */tsx/dist/cli.mjs && "\${cmd[2]:-}" == */scripts/rollout-db.ts ]]; then
   cmd=("\${cmd[0]}" "${fixture.root}/rollout-db-bundled.mjs" "\${cmd[@]:3}")
 fi
+# The rollout fixture uses a legacy database shape. Exercise its pre-stop
+# integration contract independently of the existing real SQLite fence tests.
+if [[ "${cmd[1]:-}" == */tsx/dist/cli.mjs && "${cmd[2]:-}" == */scripts/idle-maintenance.ts ]]; then
+  action="${cmd[3]:-}"
+  if [[ "$action" == acquire && "${FAKE_IDLE_UPGRADE_STATE:-}" == deferred_busy ]]; then
+    echo '{"state":"deferred_busy"}'
+    exit 75
+  fi
+  if [[ "$action" == acquire && "${FAKE_IDLE_UPGRADE_STATE:-}" == unknown ]]; then
+    echo '{"state":"unknown"}'
+    exit 2
+  fi
+  if [[ "$action" == acquire ]]; then
+    node -e 'const a=process.argv.slice(1);const paths=a.flatMap((v,i)=>v==="--db"?[a[i+1]]:[]);const token="00000000-0000-4000-8000-000000000001";console.log(JSON.stringify({state:"admitted",roles:paths.map(dbPath=>({dbPath,fence:{token}}))}));' "${cmd[@]:4}"
+    exit 0
+  fi
+  if [[ "$action" == release ]]; then
+    if [[ "${FAKE_IDLE_FENCE_RELEASE_FAIL:-}" == 1 ]]; then
+      echo '{"released":false}'
+      exit 2
+    fi
+    echo '{"released":true}'
+    exit 0
+  fi
+  exit 2
+fi
 if [ -n "\${FAKE_FAIL_PHASE:-}" ] && [ "\${FAKE_FAIL_PHASE:-}" = "$phase" ]; then
   "\${cmd[@]}"
   if [ -n "\${FAKE_CORRUPT_DB:-}" ]; then printf 'corrupt' > "$FAKE_CORRUPT_DB"; fi
@@ -512,6 +538,7 @@ function getSharedTemplate(): SharedTemplate {
   symlinkSync(nodeModules, join(project, "node_modules"));
   if (existsSync(migrationScript)) copyFileSync(migrationScript, join(project, "scripts", "rollout-db.ts"));
   if (existsSync(migrationImplScript)) copyFileSync(migrationImplScript, join(project, "scripts", "rollout-db-impl.ts"));
+  copyFileSync(fileURLToPath(new URL("../../scripts/idle-maintenance.ts", import.meta.url)), join(project, "scripts", "idle-maintenance.ts"));
   copyFileSync(cleanupScript, join(project, "scripts", "reap-tmp-artifacts.sh"));
   copyFileSync(sentinelClearPath, join(project, "scripts", "rollout-sentinel-clear.sh"));
   copyFileSync(cleanupServiceTemplate, join(project, "systemd", "agent-bridge-tmp-cleanup.service"));
