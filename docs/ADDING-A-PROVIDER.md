@@ -19,8 +19,8 @@ Keep three concerns separate:
 3. **Managed lifecycle** — Agent Bridge installation/upgrade tooling installs, pins, authenticates, checks, or qualifies the selected agent distribution.
 
 A provider that should participate in ordinary Bridge Runs must be represented
-in the current closed Bridge routing/configuration types. Installation and a
-dedicated service remain separate product decisions.
+in the current closed Bridge routing/configuration types. Installation remains a
+separate product decision.
 
 ## Architecture boundaries
 
@@ -143,7 +143,7 @@ Run `npm run typecheck` early after widening `ProviderId` or `BotKind`; exhausti
 
 Do **not** create a dedicated Telegram bot, environment file, or systemd unit merely because a provider exists.
 
-A routeable provider may participate through the shared interactive service. Add dedicated surface/service configuration only when the product requires a separately locked provider surface. Existing providers demonstrate both patterns.
+A routeable provider may participate through the shared interactive service. Dedicated provider-locked Telegram bots and their services were retired (OSS #1196); do not add one.
 
 Update `.env.*.example` and Telegram/Discord presentation only for configuration or choices actually exposed to users/operators.
 
@@ -272,8 +272,7 @@ src/providers/qualification.ts
 Only add these when the product requires them:
 
 ```text
-.env provider examples / dedicated bot surface
-systemd dedicated service
+.env provider examples
 managed installer / automatic CLI upgrade ownership
 fallback-chain membership
 ```
@@ -290,7 +289,6 @@ Before opening the PR:
 - [ ] Keep execution on the shared `cliSupervisor.ts` path.
 - [ ] For an explicitly non-ACP provider only, add native launch metadata, a fail-closed runtime/parser, and `src/cli.ts` dispatch.
 - [ ] If routeable, add `BotKind`, Bridge config, routing/provider-lock mappings, and exhaustive `BotKind` records.
-- [ ] Add a dedicated surface/service only when independently required.
 - [ ] Define authoritative authentication/readiness evidence.
 - [ ] Decide explicitly whether the provider participates in fallback.
 - [ ] Decide explicitly whether Agent Bridge owns installation/upgrades.
