@@ -2256,6 +2256,24 @@ remove_sentinel_if_removable() {
   return 0
 }
 
+# The ordinary protected rollout reuses OSS's existing all-role atomic idle
+# fence. Its acquisition receipt is held by this still-live shell PID; the
+# separate TSX CLI must never become the durable owner.
+release_rollout_idle_fence() {
+  (( idle_fence_acquired == 1 )) || return 0
+  local outcome
+  if ! outcome="$(run_as_runtime "$node_bin" "$project_dir/node_modules/tsx/dist/cli.mjs" "$project_dir/scripts/idle-maintenance.ts" release "${idle_release_args[@]}")"; then
+    echo "protected idle fence release failed; retain rollout sentinel for trusted recovery" >&2
+    return 1
+  fi
+  if [[ "$outcome" != '{"released":true}' ]]; then
+    echo "protected idle fence release was not verified; retain rollout sentinel for trusted recovery" >&2
+    return 1
+  fi
+  idle_fence_acquired=0
+  return 0
+}
+
 on_exit() {
   status=$?
   set +e
@@ -2264,6 +2282,13 @@ on_exit() {
     echo "rollback cleanup timer failed; manual review required" >&2
   fi
   if (( status == 0 && completed == 1 )); then
+    # Do not call the normal failure path after an already-accepted release:
+    # it would stop healthy services. Keep the sentinel if the fence cannot
+    # be released by its exact tokens.
+    if ! release_rollout_idle_fence; then
+      echo "release accepted but idle fence release requires operator recovery" >&2
+      exit 1
+    fi
     sentinel_removable=1
     if remove_sentinel_if_removable; then
       return 0
@@ -2281,6 +2306,10 @@ on_exit() {
     # the completion ledger/result files) is a distinct problem and must
     # not be mislabeled as this one or allowed to clear the sentinel.
     echo "STATE: ACCEPTED_HEALTH_RETIREMENT_FAILED — release $expected_commit is running and accepted; retired health-unit cleanup failed and needs manual follow-up" >&2
+    if ! release_rollout_idle_fence; then
+      echo "idle fence release requires operator recovery; sentinel retained" >&2
+      exit 1
+    fi
     sentinel_removable=1
     if ! remove_sentinel_if_removable; then
       echo "automatic sentinel cleanup also failed; manual review required in addition to the failure above" >&2
@@ -2296,6 +2325,10 @@ on_exit() {
     # the first attempt. Mark this invocation's own ledger terminal so later
     # retention can prune the refused attempt's evidence.
     sentinel_removable=1
+    if ! release_rollout_idle_fence; then
+      sentinel_removable=0
+      status=1
+    fi
     if (( phase_ledger_created == 1 )) && ! record_phase PRECONDITION_FAILED; then
       echo "refused rollout evidence could not be marked terminal: $phase_ledger" >&2
     fi
@@ -2369,6 +2402,12 @@ on_exit() {
   elif (( recovery_running == 1 )); then
     echo "previous release services running and recovery health verified"
   fi
+  # Release after a proven healthy rollback, never after unproven containment.
+  # Keep both the fence and the sentinel on an ambiguous stop/restore.
+  if (( sentinel_removable == 1 )) && ! release_rollout_idle_fence; then
+    sentinel_removable=0
+    status=1
+  fi
   if ! remove_sentinel_if_removable; then
     echo "automatic sentinel cleanup also failed; manual review required in addition to the failure above" >&2
     status=1
@@ -2408,6 +2447,8 @@ release_accepted=0
 sentinel_removable=0
 sentinel_identity=""
 previous_pointer_target=""
+idle_fence_acquired=0
+declare -a idle_release_args=()
 declare -a expected_backups=()
 
 converge_sentinel_clear_helper
@@ -2584,6 +2625,58 @@ if (( release_mode == 1 )); then
   record_phase HOST_COMPONENTS_PREPARED
 fi
 admit_rollout_disk
+
+# This is the last pre-stop boundary. All canonical managed database roles
+# are known, and this shell will own the fence until acceptance or a proven
+# healthy recovery. A live outward ACP Run is not necessarily in the stopped
+# bot unit's cgroup, so systemd-only containment is not sufficient.
+[[ -f "$project_dir/scripts/idle-maintenance.ts" ]] || die "protected idle admission helper missing from staged release"
+idle_db_args=()
+for database in "${databases[@]}"; do idle_db_args+=(--db "$database"); done
+if ! run_as_runtime "$node_bin" "$project_dir/node_modules/tsx/dist/cli.mjs" "$project_dir/scripts/idle-maintenance.ts" acquire --owner-pid "$" "${idle_db_args[@]}" > "$artifact_dir/idle-upgrade-admission.json"; then
+  idle_refusal="$(/usr/bin/python3 - "$artifact_dir/idle-upgrade-admission.json" <<'PY'
+import json, sys
+try:
+    print(json.load(open(sys.argv[1], encoding="utf-8")).get("state", "unknown"))
+except (OSError, ValueError, TypeError):
+    print("unknown")
+PY
+)"
+  if [[ "$idle_refusal" == deferred_busy ]]; then die "provider_sessions_active"; fi
+  die "protected_idle_upgrade_admission_unknown"
+fi
+# Check all expected paths and exact tokens before beginning containment.
+# Preserve the original role inventory even if later migration retires a role.
+if ! /usr/bin/python3 - "$artifact_dir/idle-upgrade-admission.json" "${databases[@]}" > "$artifact_dir/idle-upgrade-release-args.txt" <<'PY'
+import json, re, sys
+receipt = json.load(open(sys.argv[1], encoding="utf-8"))
+expected = sys.argv[2:]
+roles = receipt.get("roles")
+if receipt.get("state") != "admitted" or not isinstance(roles, list) or len(roles) != len(expected):
+    raise SystemExit("invalid all-role idle fence receipt")
+by_path = {}
+for role in roles:
+    path = role.get("dbPath")
+    token = role.get("fence", {}).get("token")
+    if not isinstance(path, str) or not isinstance(token, str) or not re.fullmatch(r"[0-9a-f-]{36}", token) or path in by_path:
+        raise SystemExit("invalid idle fence role receipt")
+    by_path[path] = token
+if set(by_path) != set(expected) or any("\n" in path or "\r" in path for path in expected):
+    raise SystemExit("idle fence role inventory mismatch")
+for path in expected:
+    print("--db")
+    print(path)
+    print("--token")
+    print(by_path[path])
+PY
+then
+  die "protected_idle_upgrade_receipt_unverifiable"
+fi
+mapfile -t idle_release_args < "$artifact_dir/idle-upgrade-release-args.txt"
+(( ${#idle_release_args[@]} == ${#databases[@]} * 4 )) || die "protected_idle_upgrade_receipt_unverifiable"
+idle_fence_acquired=1
+hash_evidence_file "$artifact_dir/idle-upgrade-admission.json"
+echo "protected all-role idle fence acquired"
 
 echo "stopping all services"
 stop_attempted=1
