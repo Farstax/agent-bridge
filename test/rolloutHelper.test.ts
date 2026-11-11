@@ -144,6 +144,34 @@ function runAuthorizedRollout(fixture: Fixture, authorizationFile: string, overr
 }
 
 describe("guarded rollout helper", { timeout: 30_000 }, () => {
+  describe("protected all-role idle fence (#1207)", () => {
+    it.each(["deferred_busy", "unknown"] as const)("never stops services when all-role admission is %s", (state) => {
+      const fixture = createFixture();
+      const result = runRollout(fixture, undefined, undefined, { FAKE_IDLE_UPGRADE_STATE: state });
+      expect(result.status).not.toBe(0);
+      expect(`${result.stdout}\n${result.stderr}`).toContain(
+        state === "deferred_busy" ? "provider_sessions_active" : "protected_idle_upgrade_admission_unknown",
+      );
+      const events = actions(fixture);
+      expect(events).toContain("scripts/idle-maintenance.ts acquire");
+      expect(events).not.toContain("systemctl:stop");
+    });
+
+    it("acquires before stop and releases only after accepted health verification", () => {
+      const fixture = createFixture();
+      const result = runRollout(fixture);
+      expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
+      const events = actions(fixture);
+      const acquire = events.indexOf("scripts/idle-maintenance.ts acquire");
+      const stop = events.indexOf("systemctl:stop");
+      const release = events.indexOf("scripts/idle-maintenance.ts release");
+      expect(acquire).toBeGreaterThan(-1);
+      expect(stop).toBeGreaterThan(acquire);
+      expect(release).toBeGreaterThan(stop);
+      expect(events.slice(release)).toContain("release");
+    });
+  });
+
   it.each(["missing", "extra", "reordered"])("rejects %s EnvironmentFiles inventory before stopping services", (mode) => {
     const fixture = createFixture();
     prepareImmutableRelease(fixture, fixture.previousCommit);
