@@ -292,6 +292,71 @@ describe("outward ACP prompt execution", () => {
     }
   });
 
+  it("notifies the matching ordinary ACP operation after durable admission, before provider completion", async () => {
+    const root = mkdtempSync(join(tmpdir(), "agent-bridge-ordinary-receipt-"));
+    const db = openDb(join(root, "bridge.sqlite"), { databaseRole: "interactive" });
+    let release!: () => void;
+    const providerFinished = new Promise<void>((resolve) => { release = resolve; });
+    try {
+      const sessions = new OutwardAcpSessionRepository(db.raw);
+      const session = sessions.create({ sessionId: "ordinary-session", conversationId: "acp:ordinary", cwd: root });
+      const executor = new BridgeOutwardAcpPromptExecutor({
+        db, providerChain: ["codex"] as const, runId: () => "run-ordinary",
+        createEngine: () => ({
+          executeSurfaceNeutralTurn: async () => {
+            await providerFinished;
+            return { text: "done", sessionId: "provider-ordinary", stopReason: "end_turn" };
+          },
+        }),
+      });
+      const updates: acp.SessionNotification[] = [];
+      let received!: () => void;
+      const gotReceipt = new Promise<void>((resolve) => { received = resolve; });
+      const client = acp.client({ name: "farstax-desk-test" })
+        .onNotification(acp.methods.client.session.update, ({ params }) => {
+          updates.push(params);
+          const meta = (params.update as { _meta?: Record<string, unknown> })._meta;
+          if (meta?.["agent-bridge/prompt-accepted"]) received();
+        });
+      const response = await connectWithAcpInitialization(
+        client, createOutwardAcpAgent({ sessions, promptExecutor: executor, workspaceRoot: root }),
+        async (agent) => {
+          await agent.request(acp.methods.agent.initialize, {
+            protocolVersion: acp.PROTOCOL_VERSION, clientCapabilities: {},
+          });
+          const running = agent.request(acp.methods.agent.session.prompt, {
+            sessionId: session.sessionId,
+            prompt: [{ type: "text", text: "hello" }],
+            _meta: { "agent-bridge/busy-messages": 1, "agent-bridge/request-id": "ordinary-op-1" },
+          });
+          try {
+            await Promise.race([
+              gotReceipt,
+              new Promise<never>((_, reject) => setTimeout(() => reject(new Error("no early durable receipt")), 2500)),
+            ]);
+            expect(db.getRun("run-ordinary")?.status).toBe("running");
+            expect(db.getRecentConvTurns("acp:ordinary", 5, undefined, OUTWARD_ACP_SURFACE)
+              .some((turn) => turn.role === "user" && turn.text === "hello")).toBe(true);
+            expect(updates.filter((item) => (item.update as { _meta?: Record<string, unknown> })._meta?.["agent-bridge/prompt-accepted"]))
+              .toEqual([{
+                sessionId: "ordinary-session",
+                update: {
+                  sessionUpdate: "agent_message_chunk", content: { type: "text", text: "" },
+                  _meta: { "agent-bridge/prompt-accepted": { requestId: "ordinary-op-1", runId: "run-ordinary" } },
+                },
+              }]);
+          } finally { release(); }
+          return running;
+        },
+      );
+      expect(response.stopReason).toBe("end_turn");
+    } finally {
+      release();
+      db.close();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("resets a safe preview on retry and cancellation without exposing a stale final", async () => {
     const root = mkdtempSync(join(tmpdir(), "agent-bridge-preview-reset-"));
     const db = openDb(join(root, "bridge.sqlite"), { databaseRole: "interactive" });
