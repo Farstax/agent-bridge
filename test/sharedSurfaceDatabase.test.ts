@@ -22,6 +22,11 @@ describe("shared messaging surface database (#1198)", () => {
       insert.run("discord-run", "discord:interactive", "123");
       insert.run("slack-run", "slack:T1:A1", "123");
 
+      // A live Slack lane with the same raw chat ID must not block recovery
+      // of an unrelated Discord conversation.
+      const slackLock = slack.acquireLock("slack:T1:A1", "123");
+      expect(slackLock).not.toBeNull();
+
       expect(discord.listRunningRuns("discord:interactive").map(run => run.run_id)).toEqual(["discord-run"]);
       expect(slack.listRunningRuns("slack:T1:A1").map(run => run.run_id)).toEqual(["slack-run"]);
 
@@ -35,6 +40,7 @@ describe("shared messaging surface database (#1198)", () => {
       expect(reconciled.map(run => run.run_id)).toEqual(["discord-run"]);
       expect(telegram.listRunningRuns("telegram:interactive").map(run => run.run_id)).toEqual(["telegram-run"]);
       expect(slack.listRunningRuns("slack:T1:A1").map(run => run.run_id)).toEqual(["slack-run"]);
+      expect(slack.hasExecutionLaneLock("slack:T1:A1", "123")).toBe(true);
     } finally {
       telegram.close();
       discord.close();
