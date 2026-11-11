@@ -2,25 +2,8 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
 describe("systemd templates", () => {
-  it("pin service-specific env files and absolute CLI paths", () => {
-    const codex = readFileSync(new URL("../systemd/agent-bridge-codex.service", import.meta.url), "utf8");
-    const antigravity = readFileSync(new URL("../systemd/agent-bridge-antigravity.service", import.meta.url), "utf8");
-
-    expect(codex).toContain("EnvironmentFile=/etc/default/agent-bridge-codex");
-    expect(antigravity).toContain("EnvironmentFile=/etc/default/agent-bridge-antigravity");
-    expect(codex).toContain("User=BRIDGE_USER");
-    expect(antigravity).toContain("User=BRIDGE_USER");
-    expect(codex).toContain('export PATH="$(dirname "${NODE_BIN:?}"):$PATH"');
-    expect(antigravity).toContain('export PATH="$(dirname "${NODE_BIN:?}"):$PATH"');
-    expect(codex).toContain('cd "${BRIDGE_CURRENT_RELEASE_DIR:?}"');
-    expect(antigravity).toContain('cd "${BRIDGE_CURRENT_RELEASE_DIR:?}"');
-  });
-
   it("requires every service to resolve code through the controlled current pointer", () => {
     const units = [
-      "agent-bridge-antigravity.service",
-      "agent-bridge-claude.service",
-      "agent-bridge-codex.service",
       "agent-bridge-discord-interactive.service",
       "agent-bridge-interactive.service",
     ];
@@ -34,16 +17,13 @@ describe("systemd templates", () => {
     }
   });
 
-  it("all service templates load shared env file before bot-specific", () => {
-    const codex = readFileSync(new URL("../systemd/agent-bridge-codex.service", import.meta.url), "utf8");
-    const antigravity = readFileSync(new URL("../systemd/agent-bridge-antigravity.service", import.meta.url), "utf8");
-    const claude = readFileSync(new URL("../systemd/agent-bridge-claude.service", import.meta.url), "utf8");
-
-    for (const [name, content] of [["codex", codex], ["antigravity", antigravity], ["claude", claude]] as const) {
-      expect(content, name).toContain("EnvironmentFile=-/etc/default/agent-bridge-shared");
-      const sharedIdx = content.indexOf("EnvironmentFile=-/etc/default/agent-bridge-shared");
-      const specificIdx = content.indexOf(`EnvironmentFile=/etc/default/agent-bridge-${name}`);
-      expect(sharedIdx, `${name}: shared before specific`).toBeLessThan(specificIdx);
+  it("loads shared configuration before each supported service environment", () => {
+    for (const name of ["interactive", "discord-interactive"]) {
+      const content = readFileSync(new URL(`../systemd/agent-bridge-${name}.service`, import.meta.url), "utf8");
+      const shared = content.indexOf("EnvironmentFile=-/etc/default/agent-bridge-shared");
+      const surface = content.indexOf(`EnvironmentFile=/etc/default/agent-bridge-${name}`);
+      expect(shared, name).toBeGreaterThanOrEqual(0);
+      expect(surface, name).toBeGreaterThan(shared);
     }
   });
 
@@ -61,24 +41,17 @@ describe("systemd templates", () => {
     expect(shared).not.toMatch(/ADVISOR/i);
   });
 
-  it("all service templates include KillMode=control-group", () => {
-    const codex = readFileSync(new URL("../systemd/agent-bridge-codex.service", import.meta.url), "utf8");
-    const antigravity = readFileSync(new URL("../systemd/agent-bridge-antigravity.service", import.meta.url), "utf8");
-    const claude = readFileSync(new URL("../systemd/agent-bridge-claude.service", import.meta.url), "utf8");
-    expect(codex).toContain("KillMode=control-group");
-    expect(antigravity).toContain("KillMode=control-group");
-    expect(claude).toContain("KillMode=control-group");
+  it("uses KillMode=control-group in each supported service", () => {
+    for (const name of ["interactive", "discord-interactive"]) {
+      const content = readFileSync(new URL(`../systemd/agent-bridge-${name}.service`, import.meta.url), "utf8");
+      expect(content).toContain("KillMode=control-group");
+    }
   });
 
-  it("keeps workspace locking off for shared canonical-checkout services", () => {
-    const codex = readFileSync(new URL("../systemd/agent-bridge-codex.service", import.meta.url), "utf8");
-    const antigravity = readFileSync(new URL("../systemd/agent-bridge-antigravity.service", import.meta.url), "utf8");
-    const claude = readFileSync(new URL("../systemd/agent-bridge-claude.service", import.meta.url), "utf8");
-    const interactive = readFileSync(new URL("../systemd/agent-bridge-interactive.service", import.meta.url), "utf8");
-    const discord = readFileSync(new URL("../systemd/agent-bridge-discord-interactive.service", import.meta.url), "utf8");
-
-    for (const [name, content] of [["codex", codex], ["antigravity", antigravity], ["claude", claude], ["interactive", interactive], ["discord", discord]] as const) {
-      expect(content, name).toContain("Environment=BRIDGE_WORKSPACE_LOCK_MODE=off");
+  it("keeps workspace locking off for canonical interactive services", () => {
+    for (const name of ["interactive", "discord-interactive"]) {
+      const content = readFileSync(new URL(`../systemd/agent-bridge-${name}.service`, import.meta.url), "utf8");
+      expect(content).toContain("Environment=BRIDGE_WORKSPACE_LOCK_MODE=off");
     }
   });
 

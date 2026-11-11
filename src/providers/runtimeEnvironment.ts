@@ -10,13 +10,9 @@ export interface ProviderRuntimeEnvironmentFile {
   optional: boolean;
 }
 
-function providerServiceName(providerId: ProviderId): string {
-  return providerId === "agy" ? "antigravity" : providerId;
-}
-
 /**
- * Ordered EnvironmentFile inputs used by the provider systemd services.
- * Later files override earlier files, matching systemd EnvironmentFile order.
+ * Ordered EnvironmentFile inputs for the unified interactive Telegram runtime.
+ * ACP providers share this service environment; later files take precedence.
  */
 export function providerRuntimeEnvironmentFiles(
   providerId: ProviderId,
@@ -25,7 +21,7 @@ export function providerRuntimeEnvironmentFiles(
   return [
     { path: join(directory, "agent-bridge-shared"), optional: true },
     { path: join(directory, "agent-bridge-release"), optional: false },
-    { path: join(directory, `agent-bridge-${providerServiceName(providerId)}`), optional: false },
+    { path: join(directory, "agent-bridge-interactive"), optional: false },
   ];
 }
 
@@ -35,10 +31,10 @@ export interface LoadProviderRuntimeEnvironmentOptions {
 }
 
 /**
- * Load the OSS-owned provider service environment without logging values.
+ * Load the OSS-owned interactive provider environment without logging values.
  *
  * `baseEnv` is an explicit injection hook for tests/callers. Service files are
- * applied after it in unit order, so shared < release < provider-specific.
+ * applied after it in unit order: shared < release < interactive.
  */
 export function loadProviderRuntimeEnvironment(
   providerId: ProviderId,

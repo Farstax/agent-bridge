@@ -22,7 +22,7 @@ describe("issue #654 qualification runtime parity", () => {
     const root = mkdtempSync(join(tmpdir(), "agent-bridge-provider-env-"));
     writeFileSync(join(root, "agent-bridge-shared"), "BRIDGE_EXECUTION_MODE=safe\nCLI_TIMEOUT_MS=1000\nCLI_IDLE_TIMEOUT_MS=2000\n");
     writeFileSync(join(root, "agent-bridge-release"), "BRIDGE_EXECUTION_MODE=trusted\nCLI_TIMEOUT_MS=3000\n");
-    writeFileSync(join(root, "agent-bridge-codex"), "CODEX_EXECUTION_MODE=safe\nCODEX_CLI_TIMEOUT_MS=4000\nCODEX_CLI_IDLE_TIMEOUT_MS=5000\n");
+    writeFileSync(join(root, "agent-bridge-interactive"), "CODEX_EXECUTION_MODE=safe\nCODEX_CLI_TIMEOUT_MS=4000\nCODEX_CLI_IDLE_TIMEOUT_MS=5000\n");
 
     const env = loadProviderRuntimeEnvironment("codex", { directory: root, baseEnv: {} });
     expect(resolveQualificationRuntimePolicy("codex", env)).toEqual({
@@ -36,7 +36,7 @@ describe("issue #654 qualification runtime parity", () => {
     const root = mkdtempSync(join(tmpdir(), "agent-bridge-provider-entrypoint-env-"));
     writeFileSync(join(root, "agent-bridge-shared"), "BRIDGE_EXECUTION_MODE=safe\nCLI_TIMEOUT_MS=1000\nCLI_IDLE_TIMEOUT_MS=2000\n");
     writeFileSync(join(root, "agent-bridge-release"), "BRIDGE_EXECUTION_MODE=safe\nCLI_TIMEOUT_MS=3000\nCLI_IDLE_TIMEOUT_MS=3500\n");
-    writeFileSync(join(root, "agent-bridge-antigravity"), "ANTIGRAVITY_EXECUTION_MODE=trusted\nANTIGRAVITY_CLI_TIMEOUT_MS=3600000\nANTIGRAVITY_CLI_IDLE_TIMEOUT_MS=180000\nAGY_ACP_COMMAND=/service/agy\n");
+    writeFileSync(join(root, "agent-bridge-interactive"), "ANTIGRAVITY_EXECUTION_MODE=trusted\nANTIGRAVITY_CLI_TIMEOUT_MS=3600000\nANTIGRAVITY_CLI_IDLE_TIMEOUT_MS=180000\nAGY_ACP_COMMAND=/service/agy\n");
 
     const env = resolveQualificationEntrypointEnvironment("agy", {
       directory: root,
@@ -71,8 +71,8 @@ describe("issue #654 qualification runtime parity", () => {
   it("falls back to ambient env when a required service file exists but cannot be read (issue #660)", () => {
     const root = mkdtempSync(join(tmpdir(), "agent-bridge-provider-entrypoint-unreadable-"));
     writeFileSync(join(root, "agent-bridge-release"), "BRIDGE_EXECUTION_MODE=safe\n");
-    writeFileSync(join(root, "agent-bridge-codex"), "CODEX_EXECUTION_MODE=trusted\n");
-    chmodSync(join(root, "agent-bridge-codex"), 0o000);
+    writeFileSync(join(root, "agent-bridge-interactive"), "CODEX_EXECUTION_MODE=trusted\n");
+    chmodSync(join(root, "agent-bridge-interactive"), 0o000);
 
     try {
       const env = resolveQualificationEntrypointEnvironment("codex", {
@@ -86,13 +86,13 @@ describe("issue #654 qualification runtime parity", () => {
 
       expect(resolveQualificationRuntimePolicy("codex", env).executionMode).toBe("trusted");
     } finally {
-      chmodSync(join(root, "agent-bridge-codex"), 0o600);
+      chmodSync(join(root, "agent-bridge-interactive"), 0o600);
     }
   });
 
-  it("uses the same ordered environment files as the deployed provider services", () => {
-    for (const [provider, service] of [["codex", "codex"], ["agy", "antigravity"]] as const) {
-      const unit = readFileSync(`systemd/agent-bridge-${service}.service`, "utf8");
+  it("uses the interactive service environment for every ACP provider", () => {
+    for (const provider of ["codex", "agy"] as const) {
+      const unit = readFileSync("systemd/agent-bridge-interactive.service", "utf8");
       const unitFiles = unit.split("\n")
         .filter((line) => line.startsWith("EnvironmentFile="))
         .map((line) => ({

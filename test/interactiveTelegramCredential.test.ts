@@ -22,7 +22,6 @@ const unitPath = new URL("../systemd/agent-bridge-interactive.service", import.m
 const workflowPath = new URL("../.github/workflows/release-artifact.yml", import.meta.url);
 const installDocPath = new URL("../docs/INITIAL-INSTALL.md", import.meta.url);
 const interactiveRuntimePath = new URL("../src/index-interactive.ts", import.meta.url);
-const providerLockPath = new URL("../src/providerLock.ts", import.meta.url);
 const credentialName = "telegram-bot-token-interactive";
 
 const roots: string[] = [];
@@ -74,7 +73,6 @@ describe("interactive Telegram systemd credential", () => {
     const workflow = readFileSync(workflowPath, "utf8");
     const installDoc = readFileSync(installDocPath, "utf8");
     const runtime = readFileSync(interactiveRuntimePath, "utf8");
-    const providerLock = readFileSync(providerLockPath, "utf8");
 
     expect(unit).toContain("EnvironmentFile=-/etc/default/agent-bridge-shared");
     expect(unit).toContain("EnvironmentFile=/etc/default/agent-bridge-release");
@@ -95,8 +93,6 @@ describe("interactive Telegram systemd credential", () => {
     expect(installDoc).toContain("attaching the credential alone");
     expect(runtime).not.toContain("CREDENTIALS_DIRECTORY");
     expect(runtime).not.toContain(credentialName);
-    expect(providerLock).not.toContain("CREDENTIALS_DIRECTORY");
-    expect(providerLock).not.toContain(credentialName);
   });
 
   it("preserves an environment token when no credential is attached", () => {
