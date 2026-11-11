@@ -51,6 +51,7 @@ export function listQueuedDisplay(db: BridgeDb, sessionId: string): Array<{
   text: string;
   createdAt: string;
   state: DisplayRecord["state"];
+  admitted: true;
 }> {
   const prefix = sessionPrefix(sessionId);
   const rows = db.raw.prepare(
@@ -64,6 +65,7 @@ export function listQueuedDisplay(db: BridgeDb, sessionId: string): Array<{
       text: record.text || (record.attachments ? "Attachment (no longer available after cancellation)" : ""),
       createdAt: record.createdAt,
       state: record.state,
+      admitted: true as const,
     };
   }).sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id));
 }
