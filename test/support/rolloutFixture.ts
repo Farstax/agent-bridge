@@ -455,22 +455,22 @@ if [[ "\${cmd[1]:-}" == */tsx/dist/cli.mjs && "\${cmd[2]:-}" == */scripts/rollou
 fi
 # The rollout fixture uses a legacy database shape. Exercise its pre-stop
 # integration contract independently of the existing real SQLite fence tests.
-if [[ "${cmd[1]:-}" == */tsx/dist/cli.mjs && "${cmd[2]:-}" == */scripts/idle-maintenance.ts ]]; then
-  action="${cmd[3]:-}"
-  if [[ "$action" == acquire && "${FAKE_IDLE_UPGRADE_STATE:-}" == deferred_busy ]]; then
+if [[ "\${cmd[1]:-}" == */tsx/dist/cli.mjs && "\${cmd[2]:-}" == */scripts/idle-maintenance.ts ]]; then
+  action="\${cmd[3]:-}"
+  if [[ "$action" == acquire && "\${FAKE_IDLE_UPGRADE_STATE:-}" == deferred_busy ]]; then
     echo '{"state":"deferred_busy"}'
     exit 75
   fi
-  if [[ "$action" == acquire && "${FAKE_IDLE_UPGRADE_STATE:-}" == unknown ]]; then
+  if [[ "$action" == acquire && "\${FAKE_IDLE_UPGRADE_STATE:-}" == unknown ]]; then
     echo '{"state":"unknown"}'
     exit 2
   fi
   if [[ "$action" == acquire ]]; then
-    node -e 'const a=process.argv.slice(1);const paths=a.flatMap((v,i)=>v==="--db"?[a[i+1]]:[]);const token="00000000-0000-4000-8000-000000000001";console.log(JSON.stringify({state:"admitted",roles:paths.map(dbPath=>({dbPath,fence:{token}}))}));' "${cmd[@]:4}"
+    node -e 'const a=process.argv.slice(1);const paths=a.flatMap((v,i)=>v==="--db"?[a[i+1]]:[]);const token="00000000-0000-4000-8000-000000000001";console.log(JSON.stringify({state:"admitted",roles:paths.map(dbPath=>({dbPath,fence:{token}}))}));' "\${cmd[@]:4}"
     exit 0
   fi
   if [[ "$action" == release ]]; then
-    if [[ "${FAKE_IDLE_FENCE_RELEASE_FAIL:-}" == 1 ]]; then
+    if [[ "\${FAKE_IDLE_FENCE_RELEASE_FAIL:-}" == 1 ]]; then
       echo '{"released":false}'
       exit 2
     fi
