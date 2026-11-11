@@ -9,6 +9,16 @@ describe("initial installation release contract", () => {
     expect(installer).toContain("install_unit agent-bridge-interactive");
   });
 
+  it("does not restart retired provider-locked services or propagate the old lock key", () => {
+    const restart = readFileSync("scripts/restart-agent-bridge.sh", "utf8");
+    const installer = readFileSync("scripts/agent-bridge-install.py", "utf8");
+    expect(restart).toContain("agent-bridge-interactive.service");
+    for (const retired of ["codex", "claude", "antigravity"]) {
+      expect(restart).not.toContain(`agent-bridge-${retired}.service`);
+    }
+    expect(installer).not.toContain("BRIDGE_PROVIDER_LOCK");
+  });
+
   it("packages the initial installer, guarded deployer and service units", () => {
     const workflow = readFileSync(".github/workflows/release-artifact.yml", "utf8");
 
