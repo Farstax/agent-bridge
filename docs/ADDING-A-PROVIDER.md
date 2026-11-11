@@ -15,7 +15,7 @@ has not adopted ACP; do not create one for a Registry-listed ACP agent.
 Keep three concerns separate:
 
 1. **ACP contract** — the Registry-listed agent is release-pinned and qualified through the shared ACP runtime.
-2. **Ordinary Bridge routing and surfaces** — the provider can actually be selected by normal Runs, configured by Bridge, participate in fallback, through the existing Telegram, Discord, Slack and Desk surfaces.
+2. **Ordinary Bridge routing and surfaces** — the provider can be selected for ordinary Runs, configured through Bridge, and included in fallback across the existing Telegram, Discord, Slack, and Desk surfaces.
 3. **Managed lifecycle** — Agent Bridge installation/upgrade tooling installs, pins, authenticates, checks, or qualifies the selected agent distribution.
 
 A provider that should participate in ordinary Bridge Runs must be represented
