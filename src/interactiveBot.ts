@@ -114,7 +114,6 @@ export function isCliCommandText(rawText: string, botUsername?: string | null): 
 export interface InteractiveCliCommandInput {
   rawText: string;
   botUsername?: string | null;
-  providerLock: CliKind | null;
   chatKey: string;
   chatId: number | string;
   threadId?: number | string;
@@ -128,13 +127,6 @@ export interface InteractiveCliCommandInput {
 
 export async function handleInteractiveCliCommand(input: InteractiveCliCommandInput): Promise<boolean> {
   if (!isCliCommandText(input.rawText, input.botUsername)) return false;
-  if (input.providerLock) {
-    await input.sendMessage({
-      text: `Provider is fixed to **${input.providerLock}** for this bot.`,
-      message_thread_id: input.threadId,
-    });
-    return true;
-  }
   const { pref, available, stored } = input.resolvePreference(input.chatKey);
   await input.sendMessage({
     text: buildCliStatusText(pref ?? stored, available),

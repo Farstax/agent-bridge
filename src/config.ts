@@ -7,6 +7,7 @@
  * NEIGHBORS: src/index-interactive.ts, src/index-discord-interactive.ts, src/types.ts
  */
 
+import { isAbsolute } from "node:path";
 import { normalizeAgyModelFamily } from "./effort.js";
 import { resolveAgyAcpCommand } from "./providers/agyAcpConfig.js";
 import { resolveCodexAcpCommand } from "./providers/codexAcpConfig.js";
@@ -85,32 +86,31 @@ export function parseAntigravityModelPreference(raw: string | undefined): string
  * execution catalogue and fallback list. Claude/Codex/Grok/Agy/Cursor preference policy is
  * consumed only after their ACP sessions advertise configOptions.
  */
-export function loadBotsConfig(env: Env, opts: { withTokens?: boolean } = {}): Record<BotKind, BotConfig> {
-  const token = (v: string | undefined) => (opts.withTokens ? v : undefined);
+export function loadBotsConfig(env: Env): Record<BotKind, BotConfig> {
   resolveCustomAcpLaunch(env);
   return {
     codex: {
-      token: token(env.TELEGRAM_BOT_TOKEN_CODEX),
+      token: undefined,
       command: resolveCodexAcpCommand(env),
       modelPreference: [],
     },
     antigravity: {
-      token: token(env.TELEGRAM_BOT_TOKEN_ANTIGRAVITY || env.TELEGRAM_BOT_TOKEN_GEMINI),
+      token: undefined,
       command: resolveAgyAcpCommand(env),
       modelPreference: [],
     },
     claude: {
-      token: token(env.TELEGRAM_BOT_TOKEN_CLAUDE),
+      token: undefined,
       command: resolveClaudeAcpCommand(env),
       modelPreference: [],
     },
     grok: {
-      token: token(env.TELEGRAM_BOT_TOKEN_GROK),
+      token: undefined,
       command: resolveGrokAcpCommand(env),
       modelPreference: [],
     },
     cursor: {
-      token: token(env.TELEGRAM_BOT_TOKEN_CURSOR),
+      token: undefined,
       command: resolveCursorAcpCommand(env),
       modelPreference: [],
     },
@@ -193,4 +193,53 @@ export function validateTokenUniqueness(tokens: Record<string, string | undefine
     }
     seen.set(tok, surface);
   }
+}
+
+
+export interface AutonomyRuntimeConfig {
+  enabled: boolean;
+  dir: string | null;
+  dbPath: string | null;
+  maxCycles: number;
+  requireEpisodeApproval: boolean;
+  maxEpisodesPerDay: number;
+}
+
+export const DEFAULT_AUTONOMY_MAX_EPISODES_PER_DAY = 5;
+
+export function parseAutonomyRequireEpisodeApproval(raw: string | undefined): boolean {
+  const value = raw?.trim().toLowerCase();
+  if (!value) return true;
+  if (value === "true") return true;
+  if (value === "false") return false;
+  throw new Error("AGENT_BRIDGE_AUTONOMY_REQUIRE_EPISODE_APPROVAL must be true or false");
+}
+
+export function parseAutonomyMaxEpisodesPerDay(raw: string | undefined): number {
+  const value = Number(raw || DEFAULT_AUTONOMY_MAX_EPISODES_PER_DAY);
+  if (!Number.isInteger(value) || value < 1) {
+    throw new Error("AGENT_BRIDGE_AUTONOMY_MAX_EPISODES_PER_DAY must be a positive integer");
+  }
+  return value;
+}
+
+export function resolveAutonomyRuntimeConfig(
+  env: Env,
+): AutonomyRuntimeConfig {
+  const requireEpisodeApproval = parseAutonomyRequireEpisodeApproval(env.AGENT_BRIDGE_AUTONOMY_REQUIRE_EPISODE_APPROVAL);
+  const maxEpisodesPerDay = parseAutonomyMaxEpisodesPerDay(env.AGENT_BRIDGE_AUTONOMY_MAX_EPISODES_PER_DAY);
+  const dir = env.AGENT_BRIDGE_AUTONOMY_DIR?.trim() || null;
+  const dbPath = env.AGENT_BRIDGE_AUTONOMY_DB_PATH?.trim() || null;
+  if (Boolean(dir) !== Boolean(dbPath)) {
+    throw new Error("AGENT_BRIDGE_AUTONOMY_DIR and AGENT_BRIDGE_AUTONOMY_DB_PATH must be configured together");
+  }
+  if (dir && !isAbsolute(dir)) throw new Error("AGENT_BRIDGE_AUTONOMY_DIR must be absolute");
+  if (dbPath && !isAbsolute(dbPath)) throw new Error("AGENT_BRIDGE_AUTONOMY_DB_PATH must be absolute");
+
+  const maxCycles = Number(env.AGENT_BRIDGE_AUTONOMY_MAX_CYCLES || 3);
+  if (!Number.isInteger(maxCycles) || maxCycles < 1) {
+    throw new Error("AGENT_BRIDGE_AUTONOMY_MAX_CYCLES must be a positive integer");
+  }
+
+  return { enabled: Boolean(dir && dbPath), dir, dbPath, maxCycles, requireEpisodeApproval, maxEpisodesPerDay };
 }
