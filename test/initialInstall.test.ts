@@ -290,8 +290,10 @@ account = type("Account", (), {"pw_name": "agentbridge"})()
 services = module.selected_services({
   "TELEGRAM_BOT_TOKEN_CODEX": "codex-token",
   "TELEGRAM_BOT_TOKEN_INTERACTIVE": "interactive-token",
+  "DISCORD_BOT_TOKEN": "discord-token",
+  "DISCORD_APPLICATION_ID": "application-id",
 })
-paths = [module.database_path(pathlib.Path("/var/lib/agent-bridge"), service) for service in services]
+paths = list(dict.fromkeys(module.database_path(pathlib.Path("/var/lib/agent-bridge"), service) for service in services))
 with tempfile.TemporaryDirectory() as directory:
   release = pathlib.Path(directory) / "release"
   (release / "node_modules/tsx/dist").mkdir(parents=True)
