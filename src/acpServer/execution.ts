@@ -872,6 +872,19 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
       }, REMOTE_STOP_POLL_MS);
       stopPoll.unref();
 
+      // The Run and original user turn were committed together above. Notify
+      // the originating ACP client before provider execution can finish.
+      // This metadata-only update is never an assistant answer or transcript.
+      if (!queued && !input.ordinaryResume && !input.capacityResume && input.requestId) {
+        try {
+          await input.onUpdate({
+            sessionUpdate: "agent_message_chunk",
+            content: { type: "text", text: "" },
+            _meta: { "agent-bridge/prompt-accepted": { requestId: input.requestId, runId } },
+          } as OutwardUpdate);
+        } catch { /* A lost notification cannot undo a durably admitted Run. */ }
+      }
+
       if (active.cancelRequested) {
         eventStore.collect(cancelledEvent(runId, provider, input.session, active.cancelReason ?? "shutdown"));
         eventStore.finalize();
