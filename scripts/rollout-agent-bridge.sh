@@ -1325,8 +1325,8 @@ restore_previous_release_and_start() {
   record_recovery_phase PREVIOUS_RELEASE_STARTING || return 1
   "$systemctl_cmd" start "${recovery_units[@]}" || { recontain_after_recovery_failure; return 1; }
   for unit in "${recovery_units[@]}"; do assert_service_active "$unit" || { recontain_after_recovery_failure; return 1; }; done
-  verify_legacy_outward_after_start || { recontain_after_recovery_failure; return 1; }
   (( smoke_delay > 0 )) && /usr/bin/sleep "$smoke_delay"
+  verify_legacy_outward_after_start || { recontain_after_recovery_failure; return 1; }
   for unit in "${recovery_units[@]}"; do assert_service_active "$unit" || { recontain_after_recovery_failure; return 1; }; done
   startup_errors="$($journalctl_cmd --since "$recovery_since" --priority err --no-pager "${recovery_journal_args[@]}" 2>&1)" || { recontain_after_recovery_failure; return 1; }
   [[ -z "$startup_errors" || "$startup_errors" == "-- No entries --" ]] || { echo "previous release journal smoke failed" >&2; recontain_after_recovery_failure; return 1; }
@@ -2646,9 +2646,9 @@ record_phase SERVICES_STARTING
 restart_boundary="$(/usr/bin/date -u '+%Y-%m-%dT%H:%M:%S.%3NZ')"
 "$systemctl_cmd" start "${units[@]}"
 for unit in "${units[@]}"; do assert_service_active "$unit"; done
-verify_legacy_outward_after_start || die "legacy outward capacity worker acceptance failed"
 services_started=1
 if (( smoke_delay > 0 )); then /usr/bin/sleep "$smoke_delay"; fi
+verify_legacy_outward_after_start || die "legacy outward capacity worker acceptance failed"
 journal_args=()
 for unit in "${units[@]}"; do journal_args+=(-u "$unit"); done
 startup_errors="$("$journalctl_cmd" --since "$journal_since" --priority err --no-pager "${journal_args[@]}" 2>&1)" || die "journal smoke command failed"
