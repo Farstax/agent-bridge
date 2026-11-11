@@ -10,6 +10,9 @@ if [[ "${1:-}" == --print-required-bytes ]]; then printf '0\n'; exit 0; fi
 [[ "$EUID" == 0 ]] || { echo "outward-capacity: root required" >&2; exit 1; }
 
 fail() { echo "outward-capacity: $*" >&2; exit 1; }
+healthy() {
+  printf 'host_component_health=healthy\n'
+}
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 template="$script_dir/../systemd/agent-bridge-outward-capacity.service"
 unit_path=/etc/systemd/system/agent-bridge-outward-capacity.service
@@ -29,7 +32,7 @@ secure_file() {
 # No legacy bot: fresh interactive installation already creates and supervises
 # this worker, and noninteractive hosts do not require an outward ACP worker.
 if [[ ! -e "$bot_env" && ! -L "$bot_env" ]]; then
-  if [[ "$phase" == verify ]]; then printf 'host_component_health=healthy\n'
+  if [[ "$phase" == verify ]]; then healthy
   else printf 'host_component_status=no_op\n'; fi
   exit 0
 fi
@@ -128,7 +131,7 @@ if [[ "$phase" == verify ]]; then
     fail "capacity unit is not enabled"
   systemctl is-active --quiet agent-bridge-outward-capacity.service ||
     fail "capacity worker is not active"
-  printf 'host_component_health=healthy\n'
+  healthy
   exit 0
 fi
 if [[ "$phase" == prepare ]]; then
