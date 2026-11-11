@@ -103,9 +103,16 @@ describe("outward ACP busy-message admission over real stdio", () => {
     expect(executions().map((e) => e.prompt)).toEqual(["hold:one", "hold:two", "third"]);
     await waitFor(async () => (await status(b, sid)).queued === 0);
     expect(new Set(executions().map((e) => e.prompt)).size).toBe(3);
-    const page = await b.request("_agent-bridge/workstreams/history_page", { sessionId: sid, cwd: root });
-    expect(page.result.messages.find((m: { role: string; text: string }) => m.role === "user" && m.text === "hold:two")?.createdAt).toBe(submittedAt);
-    expect(page.result.messages.find((m: { role: string; text: string }) => m.role === "assistant" && m.text === "done:hold:two")?.createdAt).not.toBe(submittedAt);
+    const observed = openDb(dbPath, { databaseRole: "interactive" });
+    try {
+      const submitted = observed.raw.prepare("SELECT created_at AS time FROM conversation_turns WHERE role = 'user' AND text = ?")
+        .get("hold:two") as { time: string } | undefined;
+      const completed = observed.raw.prepare("SELECT created_at AS time FROM conversation_turns WHERE role = 'assistant' AND text = ?")
+        .get("done:hold:two") as { time: string } | undefined;
+      expect(submitted?.time).toBe(submittedAt);
+      expect(completed?.time).toBeTruthy();
+      expect(completed?.time).not.toBe(submittedAt);
+    } finally { observed.close(); }
   }, 60000);
 
   it("retains the accepted-at time when an augment message is steered into an active Run", async () => {
@@ -134,9 +141,12 @@ describe("outward ACP busy-message admission over real stdio", () => {
     expect(received.result._meta["agent-bridge"].outcome).toBe("steered");
     release("steer");
     await first;
-    const page = await b.request("_agent-bridge/workstreams/history_page", { sessionId: sid, cwd: root });
-    expect(page.result.messages.find((m: { role: string; text: string }) =>
-      m.role === "user" && m.text === "steered submission")?.createdAt).toBe(submittedAt);
+    const observed = openDb(dbPath, { databaseRole: "interactive" });
+    try {
+      const submitted = observed.raw.prepare("SELECT created_at AS time FROM conversation_turns WHERE role = 'user' AND text = ?")
+        .get("steered submission") as { time: string } | undefined;
+      expect(submitted?.time).toBe(submittedAt);
+    } finally { observed.close(); }
   }, 60000);
 
   it("is idempotent for a repeated request id before and after settlement", async () => {
