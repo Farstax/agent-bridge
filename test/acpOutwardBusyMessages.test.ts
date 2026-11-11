@@ -118,7 +118,8 @@ describe("outward ACP busy-message admission over real stdio", () => {
     const first = prompt(a, sid, "hold:steer");
     await waitFor(() => executions().length === 1);
     const b = agent(); await b.initialize();
-    const augment = prompt(b, sid, "steered submission", {
+    // Steering requires the ACP process that owns the active provider Run.
+    const augment = prompt(a, sid, "steered submission", {
       ...OPT_IN, "agent-bridge/request-id": "timestamp-steered-001",
     });
     await waitFor(() => existsSync(join(control, "steering.log")));
