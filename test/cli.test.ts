@@ -384,6 +384,7 @@ describe("buildCliInvocation — attachment injection", () => {
     for (const invocation of [fresh, resumed]) {
       const occurrences = (invocation.prompt ?? "").split("Agent Bridge execution contract:").length - 1;
       expect(occurrences).toBe(1);
+      expect(invocation.prompt).toContain("do and verify as much of the authorised work as possible");
       expect(invocation.prompt).toContain("MUST call the outcome command before writing any final-answer text");
       expect(invocation.prompt).toContain("send the final answer only once, after the outcome call returns");
       expect(invocation.prompt).toContain("Meaningful interim progress updates are allowed");
