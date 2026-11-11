@@ -36,7 +36,7 @@ export interface OutwardAcpSessionStore {
   /** Durable Run authority for generated files. */
   isCompletedRun?(conversationId: string, runId: string): boolean;
   historyPage?(conversationId: string, beforeId?: number): {
-    turns: ReadonlyArray<{ id: number; role: "user" | "assistant"; text: string; createdAt: string; ordinal: number }>;
+    turns: ReadonlyArray<{ id: number; role: "user" | "assistant"; text: string; createdAt: string; ordinal: number; operationId?: string }>;
     nextCursor: number | null;
     turnCount: number;
   };
@@ -238,12 +238,12 @@ export function createOutwardAcpAgent(options: OutwardAcpAgentOptions = {}): Age
           throw acp.RequestError.invalidParams({ field: "beforeId" }, "invalid history cursor");
         }
         const page = sessions.historyPage(session.conversationId, beforeId as number | undefined);
-        const messages: Array<{ id: string; role: "user" | "assistant"; text: string; createdAt: string; state: "complete" | "pending" | "cancelled" | "failed"; admitted?: boolean }> = [];
+        const messages: Array<{ id: string; role: "user" | "assistant"; text: string; createdAt: string; state: "complete" | "pending" | "cancelled" | "failed"; admitted?: boolean; operationId?: string }> = [];
         for (const turn of page.turns) {
           const id = `${session.sessionId}:${turn.role}:${turn.ordinal}`;
           const last = messages.at(-1);
           if (turn.role === "assistant" && last?.id === id) last.text += turn.text;
-          else messages.push({ id, role: turn.role, text: turn.text, createdAt: turn.createdAt, state: "complete" });
+          else messages.push({ id, role: turn.role, text: turn.text, createdAt: turn.createdAt, state: "complete", ...(turn.role === "user" && turn.operationId ? { operationId: turn.operationId } : {}) });
         }
         // Queued-only text is separate from provider-facing conversation_turns.
         // Present it on the newest page; transcript cursors/ordinals remain unchanged.
