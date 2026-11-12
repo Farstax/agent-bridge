@@ -2794,19 +2794,21 @@ if (( retiring_health == 1 && retired_health_database_present == 1 )); then
 fi
 "$acceptance_validator" "${acceptance_args[@]}" || die "bounded queue/claim/lock acceptance failed"
 hash_evidence_file "$artifact_dir/acceptance-evidence.json"
+record_phase ACCEPTED
+# Acceptance and service health are durable. Release exact fence tokens
+# *before* retiring/relocating old database files: the release helper cannot
+# open a deleted database to verify a token. New work can now run safely.
+release_accepted=1
+release_rollout_idle_fence || die "accepted release idle fence needs trusted recovery"
+# Everything after this line is best-effort retirement of databases/units
+# that the accepted new services no longer own. A cleanup failure must not
+# stop healthy services.
 if [[ -n "$health_relocation_source" ]] && (( retiring_health == 0 )); then
   echo "retiring legacy health database path=$health_relocation_source"
   /usr/bin/rm -f -- "$health_relocation_source" "${health_relocation_source}-wal" "${health_relocation_source}-shm"
   [[ ! -e "$health_relocation_source" && ! -L "$health_relocation_source" ]] || die "legacy health database could not be retired"
   record_phase HEALTH_DB_RELOCATED
 fi
-record_phase ACCEPTED
-# The release is already activated, started, and accepted at this point.
-# Everything after this line is best-effort hygiene for an unrelated,
-# already-retired service — its failure must not be treated with the same
-# severity as a failure of the release itself (on_exit checks this before
-# deciding whether to contain/stop the already-healthy new release).
-release_accepted=1
 retire_health_state_after_acceptance
 prune_host_component_retention
 reconcile_bundled_skills_after_acceptance
