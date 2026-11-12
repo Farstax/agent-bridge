@@ -168,6 +168,20 @@ describe("guarded rollout helper", { timeout: 30_000 }, () => {
       expect(actions(fixture).match(/^systemctl:stop\b/gm) ?? []).toHaveLength(1);
     });
 
+    it("releases both original and copied health database fences after relocation acceptance", () => {
+      const fixture = createFixture();
+      const relocatedPath = join(dirname(fixture.dbPaths[2]), "health-relocated.sqlite");
+      writeFileSync(join(fixture.envDir, "agent-bridge-health"), `HEALTH_DB_PATH=${relocatedPath}\n`, { mode: 0o600 });
+      rewriteConfig(fixture, (lines) => [...lines, `legacy_database=${fixture.dbPaths[2]}`]);
+      const result = runRollout(fixture);
+      expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
+      expect(existsSync(relocatedPath)).toBe(true);
+      expect(existsSync(fixture.dbPaths[2])).toBe(false);
+      const release = actions(fixture).split("\n").find((event) => event.includes("scripts/idle-maintenance.ts release"));
+      expect(release).toContain(`--db ${fixture.dbPaths[2]} --token `);
+      expect(release).toContain(`--db ${relocatedPath} --token `);
+    }, 15_000);
+
     it("acquires before stop and releases only after accepted health verification", () => {
       const fixture = createFixture();
       const result = runRollout(fixture);
