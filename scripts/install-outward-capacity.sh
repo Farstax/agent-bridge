@@ -80,7 +80,106 @@ for env_file in "$shared_env" "$interactive_env" "$bot_env"; do
     key="${BASH_REMATCH[1]}"
     for allowed_key in "${allowed[@]}"; do
       if [[ "$key" == "$allowed_key" ]]; then
-        [[ "$line" != *$'\r'* ]] || fail "invalid environment value"
+        # Desk also reads the interactive env; only copy its mode policy here.
+        [[ "$env_file" != "$interactive_env" || "$key" == *_EXECUTION_MODE ]] || break
+        [[ "$line" != *        settings["$key"]="$line"
+        break
+      fi
+    done
+  done < "$env_file"
+done
+scalar() {
+  local raw="${1#*=}"
+  if [[ "$raw" == \"*\" || "$raw" == \'*\' ]]; then raw="${raw:1:${#raw}-2}"; fi
+  [[ "$raw" != *[\"\'\\\$]* && "$raw" != *[[:space:]]* ]] ||
+    fail "unsafe managed path value"
+  printf '%s' "$raw"
+}
+[[ -n "${settings[DB_PATH]:-}" && -n "${settings[NODE_BIN]:-}" ]] ||
+  fail "legacy bot is missing DB_PATH or NODE_BIN"
+db_path="$(scalar "${settings[DB_PATH]}")"
+node_bin="$(scalar "${settings[NODE_BIN]}")"
+[[ "$db_path" == /var/lib/agent-bridge/*.sqlite && -f "$db_path" && ! -L "$db_path" ]] ||
+  fail "invalid existing interactive database"
+[[ "$(realpath -e "$db_path")" == "$db_path" ]] ||
+  fail "noncanonical interactive database"
+grep -Fxq "database=$db_path" "$rollout_config" ||
+  fail "interactive database not in trusted rollout inventory"
+[[ "$node_bin" == /* && -x "$node_bin" && ! -L "$node_bin" ]] ||
+  fail "invalid managed Node binary"
+
+current_pointer="$(sed -n 's/^current_pointer=//p' "$rollout_config")"
+[[ "$current_pointer" =~ ^/[a-zA-Z0-9/._-]+$ && -L "$current_pointer" ]] ||
+  fail "invalid managed release pointer"
+
+# The auxiliary worker is tied to the existing bot's systemd transaction:
+# stopping the bot for guarded DB migration stops its worker first. An older
+# rollback release without this installer leaves the enabled unit inactive.
+unit_contents="# Managed by Agent Bridge outward-capacity host component
+$(sed "s/BRIDGE_USER/$runtime_user/g" "$template")"
+unit_contents="${unit_contents/After=network-online.target/After=network-online.target agent-bridge-bot.service$'\n'PartOf=agent-bridge-bot.service$'\n'ConditionPathExists=$current_pointer\/scripts\/install-outward-capacity.sh}"
+unit_contents="${unit_contents/WantedBy=multi-user.target/WantedBy=agent-bridge-bot.service}"
+[[ "$unit_contents" == *"PartOf=agent-bridge-bot.service"* &&
+   "$unit_contents" == *"WantedBy=agent-bridge-bot.service"* ]] ||
+  fail "unable to bind auxiliary worker lifecycle"
+
+defaults_contents=""
+for key in "${allowed[@]}"; do
+  [[ -n "${settings[$key]:-}" ]] || continue
+  defaults_contents+="${settings[$key]}"$'\n'
+done
+
+if [[ -e "$unit_path" || -L "$unit_path" ]]; then
+  secure_file "$unit_path"
+  grep -Fxq '# Managed by Agent Bridge outward-capacity host component' "$unit_path" ||
+    fail "existing capacity unit has another owner"
+fi
+if [[ -e "$defaults_path" || -L "$defaults_path" ]]; then secure_file "$defaults_path"; fi
+
+if [[ "$phase" == verify ]]; then
+  [[ -f "$unit_path" && -f "$defaults_path" ]] ||
+    fail "capacity worker has not been installed"
+  cmp -s "$unit_path" <(printf '%s\n' "$unit_contents") ||
+    fail "worker unit definition has drifted"
+  cmp -s "$defaults_path" <(printf '%s' "$defaults_contents") ||
+    fail "worker environment has drifted"
+  systemctl is-enabled --quiet agent-bridge-outward-capacity.service ||
+    fail "capacity unit is not enabled"
+  systemctl is-active --quiet agent-bridge-outward-capacity.service ||
+    fail "capacity worker is not active"
+  healthy
+  exit 0
+fi
+if [[ "$phase" == prepare ]]; then
+  printf 'host_component_status=no_op\n'
+  exit 0
+fi
+
+write_managed() {
+  local path="$1" contents="$2" mode="$3" temporary
+  if [[ -f "$path" ]] && cmp -s "$path" <(printf '%s' "$contents"); then return 1; fi
+  temporary="$(mktemp "${path}.XXXXXX")"
+  printf '%s' "$contents" > "$temporary"
+  chown root:root "$temporary"
+  chmod "$mode" "$temporary"
+  mv -f -- "$temporary" "$path"
+  return 0
+}
+
+changed=0
+write_managed "$defaults_path" "$defaults_contents" 0600 && changed=1
+write_managed "$unit_path" "$unit_contents"$'\n' 0644 && changed=1
+systemctl daemon-reload
+systemctl enable --quiet agent-bridge-outward-capacity.service
+# Commit happens while the primary service is contained. Only the normal
+# guarded restart of the bot may start the new worker via its .wants link.
+if [[ "$phase" == converge ]] &&
+   systemctl is-active --quiet agent-bridge-bot.service; then
+  systemctl start agent-bridge-outward-capacity.service
+fi
+if (( changed )); then printf 'host_component_status=converged\n'
+else printf 'host_component_status=no_op\n'; fi
+\r'* ]] || fail "invalid environment value"
         settings["$key"]="$line"
         break
       fi
