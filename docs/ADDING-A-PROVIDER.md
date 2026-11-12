@@ -264,7 +264,7 @@ To make it available to ordinary Bridge routing, also trace:
 ```text
 src/types.ts
 src/config.ts
-routing / provider-lock / timeout records
+routing / fallback / timeout records
 provider-ID <-> BotKind mapping
 src/providers/qualification.ts
 ```

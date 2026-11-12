@@ -664,7 +664,7 @@ def configure_host(
             capacity_defaults = {
                 key: value for key, value in settings.items()
                 if key == "DB_PATH" or key in (
-                    "INTERACTIVE_CLI_CHAIN", "BRIDGE_PROVIDER_LOCK",
+                    "INTERACTIVE_CLI_CHAIN",
                     "CODEX_ACP_COMMAND", "CODEX_ACP_ARGS",
                     "CLAUDE_ACP_COMMAND", "CLAUDE_ACP_ARGS",
                     "GROK_ACP_COMMAND", "GROK_ACP_ARGS",

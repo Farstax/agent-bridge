@@ -176,8 +176,8 @@ Discord uses `npx tsx src/index-discord-interactive.ts` and Slack uses `npx tsx 
 For manual configuration, copy [`.env.interactive.example`](.env.interactive.example).
 The switchable interactive runtime uses `INTERACTIVE_CLI_CHAIN` for provider
 fallback. `npm run doctor` reads `.env.interactive` by default; set
-`BRIDGE_ENV_FILE` to diagnose another runtime env file. Provider-locked and
-production deployment details live in the operator documentation below.
+`BRIDGE_ENV_FILE` to diagnose another runtime env file. Production deployment
+details live in the operator documentation below.
 
 Choose an additional standalone surface using its guide:
 
