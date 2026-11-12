@@ -112,7 +112,7 @@ describe("outward ACP cancellation ownership", () => {
       const [result] = await Promise.all([running, shutdown]);
       expect(result.stopReason).toBe("cancelled");
       expect(db.getRun("run-shutdown")).toMatchObject({ status: "cancelled", error: "shutdown" });
-      expect(executor.status(session).lastRun?.error).toBe("Run cancelled.");
+      expect(executor.status(session).lastRun).toMatchObject({ interrupted: true, error: "Run interrupted by service shutdown." });
     } finally {
       db.close();
       rmSync(root, { recursive: true, force: true });
