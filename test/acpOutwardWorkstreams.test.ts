@@ -618,6 +618,22 @@ describe("outward ACP Workstreams (#1101)", () => {
     expect(attempts.at(-1)?.provider).toBe("codex");
   });
 
+  it("distinguishes service shutdown from an explicit user Stop in durable Workstream status", () => {
+    const f = fixture();
+    const session = f.repo.create({ sessionId: "interrupted", conversationId: "acp:interrupted", cwd: f.root });
+    f.db.insertRun("run-for-shutdown", { surfaceIdentity: OUTWARD_ACP_SURFACE, chatKey: "acp:interrupted" }, "codex");
+    const update = f.db.raw.prepare("UPDATE bridge_runs SET status = 'cancelled', error = ? WHERE run_id = ?");
+    const exec = executor(f.db, []);
+    update.run("shutdown", "run-for-shutdown");
+    expect(exec.status(session)).toMatchObject({
+      state: "cancelled", lastRun: { interrupted: true, error: "Run interrupted by service shutdown." },
+    });
+    update.run("user", "run-for-shutdown");
+    expect(exec.status(session)).toMatchObject({
+      state: "cancelled", lastRun: { interrupted: false, error: "Run cancelled by user." },
+    });
+  });
+
   it("reports failed and attention states only from durable Run records", async () => {
     const f = fixture();
     f.repo.create({ sessionId: "s1", conversationId: "acp:c1", cwd: f.root });
