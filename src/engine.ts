@@ -1947,6 +1947,8 @@ export class BridgeEngine {
     const outcomePrompt = canOutcome ? [
       "[Agent Bridge outcome]",
       "Before ending this Run, you MUST call \"$AGENT_BRIDGE_OUTCOME_COMMAND\" exactly once with a final disposition of the original user intent:",
+      "Before claiming complete, compare EVERY requested action in the original user intent with what was actually done and verified (including tests, review, merge, release or deployment if requested).",
+      "Do not count plans, attempts, unverified claims, or ACP end_turn as completed work. If anything authorised remains, finish it, request bounded continue, or report a genuine blocker.",
       "  complete --evidence \"<verified outcome>\"  (all authorised work finished)",
       "  continue --after-seconds 60 --reason \"<remaining work and next action>\"  (work remains; bounded continuation is necessary)",
       "  continue --at \"<RFC 3339 time with Z or offset, up to 7 days ahead>\" --reason \"<what to re-check>\"  (unfinished work of this task must wake once later; not a new routine or recurring task)",
@@ -2383,7 +2385,8 @@ export class BridgeEngine {
           "Do not repeat earlier work or side effects. Reconcile the ORIGINAL user intent against evidence already gathered.",
           "Report the outcome now using \"$AGENT_BRIDGE_OUTCOME_COMMAND\" with exactly one of:",
           "complete --evidence \"<verified result>\"; continue --after-seconds 60|--at \"<timestamp>\" --reason \"<remaining work>\"; blocked --reason \"<genuine blocker>\".",
-          "This is the only reconciliation attempt. Do not claim completion while work remains.",
+          "This is the only reconciliation attempt. Before claiming complete, verify EVERY action in the ORIGINAL user request against actual evidence; plans, attempts, and unverified results are not completion.",
+          "Do not claim completion while work remains; use continue for bounded unfinished work or blocked for a genuine obstacle.",
           "After calling the helper, provide a complete, accurate user-facing final answer reflecting the actual current outcome, including any correction to your previous answer.",
         ].join("\n");
         const followup = await this._buildPromptForCli(
@@ -2488,6 +2491,26 @@ export class BridgeEngine {
           telemetry: combineSequentialTurnTelemetry(stagedResult.telemetry, reconciledResult.telemetry),
         };
       }
+      // The helper commits "continue" and its wake atomically; confirm that the
+      // matching actionable record still exists before settling the provider Run.
+      // No replay or new scheduling here: side effects may already have happened.
+      if (eligibleOutcome) {
+        const disposition = readRunOutcome(this.db, runId!);
+        if (disposition?.status === "continue") {
+          const wake = listRunContinuations(this.db, this.surfaceIdentity)
+            .find((item) => item.id === runId && item.originRunId === runId);
+          if (!wake || wake.chatKey !== chatKey || wake.provider !== executionKind
+            || wake.reason !== disposition.detail
+            || (wake.state !== "pending" && wake.state !== "claimed")
+            || !Number.isFinite(Date.parse(wake.dueAt))
+            || !(Date.parse(wake.expiresAt) > Math.max(Date.now(), Date.parse(wake.dueAt)))
+            || (this.surfaceIdentity === "acp:outward" && wake.outwardSessionId !== ordinaryWorkstreamId)) {
+            throw new RunOutcomeReconciliationError(
+              "The continue outcome has no matching durable, actionable scheduled continuation; original intent remains unresolved.",
+            );
+          }
+        }
+      }
       if (this.hooks.onAfterExecute) {
         try {
           await this.hooks.onAfterExecute(prompt, stagedResult.text, hookContext(chatId, chatKey, body.message_thread_id));
@@ -2535,7 +2558,7 @@ export class BridgeEngine {
       return stagedResult;
     } catch (error) {
       if (logFile) { try { rmSync(logFile); } catch {} }
-      if (error instanceof MissingRunOutcomeError) throw error;
+      if (error instanceof MissingRunOutcomeError || error instanceof RunOutcomeReconciliationError) throw error;
       if (error instanceof LostExecutionLeaseError) {
         // Fenced after losing the execution lease: never publish, and the
         // attempt owns no further continuation, so its output is terminal.

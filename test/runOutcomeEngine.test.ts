@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { BridgeEngine } from "../src/engine.js";
 import { openDb } from "../src/db.js";
 import { MissingRunOutcomeError, RunOutcomeReconciliationError, requestAgentBridgeOutcome } from "../src/runOutcome.js";
-import { listRunContinuations } from "../src/runContinuation.js";
+import { listRunContinuations, RUN_CONTINUATION_PREFIX } from "../src/runContinuation.js";
 
 const dirs: string[] = [];
 afterEach(() => {
@@ -13,7 +13,7 @@ afterEach(() => {
   for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
 });
 
-function fixture(mode: "complete-after-retry" | "continue-after-retry" | "blocked-after-retry" | "missing-twice" | "report-first" | "retry-throws" | "refusal" | "continue-then-invalid-session" | "continue-then-model-fallback" | "continue-then-internal-retry", surfaceIdentity = "telegram:interactive") {
+function fixture(mode: "complete-after-retry" | "continue-after-retry" | "blocked-after-retry" | "missing-twice" | "report-first" | "report-continue" | "continue-no-wake" | "continue-cancelled-wake" | "continue-mismatched-wake" | "continue-mismatched-binding" | "retry-throws" | "refusal" | "continue-then-invalid-session" | "continue-then-model-fallback" | "continue-then-internal-retry", surfaceIdentity = "telegram:interactive") {
   const dir = mkdtempSync(join(tmpdir(), "run-outcome-engine-")); dirs.push(dir);
   const path = join(dir, "bridge.sqlite");
   const db = openDb(path, { serviceId: "outcome-engine-test", runId: "process" });
@@ -40,6 +40,22 @@ function fixture(mode: "complete-after-retry" | "continue-after-retry" | "blocke
     }
     if (mode === "report-first" || (mode === "complete-after-retry" && calls === 2) || (mode === "continue-then-invalid-session" && calls === 2) || (mode === "continue-then-model-fallback" && calls === 2) || mode === "continue-then-internal-retry") {
       requestAgentBridgeOutcome(["complete", "--evidence", "verified"], options.contextEnv);
+    }
+    if (mode === "report-continue" || mode === "continue-no-wake" || mode === "continue-cancelled-wake" || mode === "continue-mismatched-wake" || mode === "continue-mismatched-binding") {
+      requestAgentBridgeOutcome(["continue", "--after-seconds", "60", "--reason", "finish pending verification"], options.contextEnv);
+      const key = `${RUN_CONTINUATION_PREFIX}run-one`;
+      if (mode === "continue-no-wake") {
+        db.raw.prepare("DELETE FROM settings WHERE key = ?").run(key);
+      } else if (mode !== "report-continue") {
+        const row = db.raw.prepare("SELECT value FROM settings WHERE key = ?").get(key) as { value: string };
+        const existing = JSON.parse(row.value) as Record<string, unknown>;
+        const changed = mode === "continue-cancelled-wake"
+          ? { ...existing, state: "cancelled" }
+          : mode === "continue-mismatched-binding"
+            ? { ...existing, outwardSessionId: "wrong-ws" }
+            : { ...existing, chatKey: "some-other-workstream" };
+        db.raw.prepare("UPDATE settings SET value = ? WHERE key = ?").run(JSON.stringify(changed), key);
+      }
     }
     if (mode === "continue-after-retry" && calls === 2) {
       requestAgentBridgeOutcome(["continue", "--after-seconds", "60", "--reason", "CI pending, finish merge"], options.contextEnv);
@@ -135,6 +151,7 @@ describe("ordinary Run objective settlement", () => {
     const { db, engine, handle, invocation } = fixture("continue-after-retry");
     const result = await engine.executePromptAsync("Ship both PRs", null, "chat", {}, () => {}, [], undefined, "run-one", null, "chat", handle);
     expect(invocation).toHaveBeenCalledTimes(2);
+    expect(invocation.mock.calls[1][4].prompt).toContain("Before claiming complete, verify EVERY action");
     expect(db.getRun("run-one").outcome_status).toBe("continue");
     expect(listRunContinuations(db)).toEqual([expect.objectContaining({
       originRunId: "run-one", state: "pending", reason: "CI pending, finish merge",
@@ -150,6 +167,49 @@ describe("ordinary Run objective settlement", () => {
     expect(db.getRun("run-one").outcome_status).toBe("blocked");
     expect(listRunContinuations(db)).toHaveLength(0);
     expect(result.text).toBe("Reconciliation was recorded");
+    db.close();
+  });
+
+  it("asks the agent to verify every original requested step without a second turn", async () => {
+    const { db, engine, handle, invocation } = fixture("report-first");
+    await engine.executePromptAsync("Implement, test, review and deploy", null, "chat", {}, () => {}, [], undefined, "run-one", null, "chat", handle);
+    expect(invocation).toHaveBeenCalledTimes(1);
+    expect(invocation.mock.calls[0][4].prompt).toContain("Before claiming complete, compare EVERY requested action");
+    db.close();
+  });
+
+  it("verifies a normal continued Run has a matching durable pending wake", async () => {
+    const { db, engine, handle, invocation } = fixture("report-continue");
+    await engine.executePromptAsync("Finish later", null, "chat", {}, () => {}, [], undefined, "run-one", null, "chat", handle);
+    expect(invocation).toHaveBeenCalledTimes(1);
+    expect(db.getRun("run-one").outcome_status).toBe("continue");
+    expect(listRunContinuations(db)).toEqual([expect.objectContaining({
+      id: "run-one", originRunId: "run-one", chatKey: "chat", state: "pending",
+    })]);
+    db.close();
+  });
+
+  it.each([
+    ["missing", "continue-no-wake"],
+    ["cancelled", "continue-cancelled-wake"],
+    ["wrong Workstream", "continue-mismatched-wake"],
+  ] as const)("does not settle continue with a %s durable wake", async (_reason, mode) => {
+    const { db, engine, handle, invocation } = fixture(mode);
+    await expect(engine.executePromptAsync("Finish later", null, "chat", {}, () => {}, [], undefined, "run-one", null, "chat", handle))
+      .rejects.toBeInstanceOf(RunOutcomeReconciliationError);
+    expect(invocation).toHaveBeenCalledTimes(1);
+    expect(db.getRun("run-one").outcome_status).toBe("continue");
+    db.close();
+  });
+
+  it("does not settle a Desk continuation for the wrong outward Workstream", async () => {
+    const { db, engine, handle, invocation } = fixture("continue-mismatched-binding", "acp:outward");
+    await expect(engine.executePromptAsync(
+      "Resume this Workstream", null, "chat",
+      { publishArtifacts: false, ordinaryWorkstreamId: "ws-trusted" },
+      () => {}, [], undefined, "run-one", null, "chat", handle,
+    )).rejects.toBeInstanceOf(RunOutcomeReconciliationError);
+    expect(invocation).toHaveBeenCalledTimes(1);
     db.close();
   });
 
