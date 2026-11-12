@@ -17,13 +17,19 @@ function sha256(value: Buffer | string): string {
 
 afterEach(cleanupRoots);
 
-function makeRelease(commit = COMMIT): { archive: string; approval: string; root: string; releaseSha: string } {
+function makeRelease(commit = COMMIT, includeRolloutHelpers = false): { archive: string; approval: string; root: string; releaseSha: string } {
   const root = mkdtempSync(join(tmpdir(), "agent-bridge-deploy-release-"));
   const payload = Buffer.from("runtime\n");
   const lock = Buffer.from("lock\n");
   const qualification = Buffer.from(JSON.stringify({ commit, tree: TREE, checks: ["test", "typecheck", "architecture-lint"] }) + "\n");
   writeFileSync(join(root, "runtime.js"), payload);
   writeFileSync(join(root, "package-lock.json"), lock);
+  const helpers = includeRolloutHelpers ? [
+    "scripts/rollout-agent-bridge.sh", "scripts/release-activate.py",
+    "scripts/rollout-restore.py", "scripts/rollout-authorization.py", "scripts/rollout-acceptance.py",
+  ] : [];
+  if (helpers.length) mkdirSync(join(root, "scripts"));
+  for (const path of helpers) copyFileSync(path, join(root, path));
   const manifest = {
     schema_version: 1,
     commit,
@@ -32,13 +38,14 @@ function makeRelease(commit = COMMIT): { archive: string; approval: string; root
       { path: "package-lock.json", sha256: sha256(lock), size: lock.length },
       { path: "qualification-evidence.json", sha256: sha256(qualification), size: qualification.length },
       { path: "runtime.js", sha256: sha256(payload), size: payload.length },
+      ...helpers.map((path) => ({ path, sha256: sha256(readFileSync(join(root, path))), size: readFileSync(join(root, path)).length })),
     ],
     package_lock_sha256: sha256(lock),
   };
   writeFileSync(join(root, "manifest.json"), `${JSON.stringify(manifest)}\n`);
   writeFileSync(join(root, "qualification-evidence.json"), qualification);
   const archive = join(root, `agent-bridge-${commit}.tar.gz`);
-  execFileSync("tar", ["-czf", archive, "-C", root, "manifest.json", "package-lock.json", "qualification-evidence.json", "runtime.js"]);
+  execFileSync("tar", ["-czf", archive, "-C", root, "manifest.json", "package-lock.json", "qualification-evidence.json", "runtime.js", ...helpers]);
   const approval = join(root, "production-approval.json");
   const releaseSha = sha256(readFileSync(archive));
   writeFileSync(approval, `${JSON.stringify({
