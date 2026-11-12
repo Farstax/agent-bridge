@@ -13,7 +13,7 @@ afterEach(() => {
   for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
 });
 
-function fixture(mode: "complete-after-retry" | "continue-after-retry" | "blocked-after-retry" | "missing-twice" | "report-first" | "report-continue" | "continue-no-wake" | "continue-cancelled-wake" | "continue-mismatched-wake" | "retry-throws" | "refusal" | "continue-then-invalid-session" | "continue-then-model-fallback" | "continue-then-internal-retry", surfaceIdentity = "telegram:interactive") {
+function fixture(mode: "complete-after-retry" | "continue-after-retry" | "blocked-after-retry" | "missing-twice" | "report-first" | "report-continue" | "continue-no-wake" | "continue-cancelled-wake" | "continue-mismatched-wake" | "continue-mismatched-binding" | "retry-throws" | "refusal" | "continue-then-invalid-session" | "continue-then-model-fallback" | "continue-then-internal-retry", surfaceIdentity = "telegram:interactive") {
   const dir = mkdtempSync(join(tmpdir(), "run-outcome-engine-")); dirs.push(dir);
   const path = join(dir, "bridge.sqlite");
   const db = openDb(path, { serviceId: "outcome-engine-test", runId: "process" });
@@ -41,7 +41,7 @@ function fixture(mode: "complete-after-retry" | "continue-after-retry" | "blocke
     if (mode === "report-first" || (mode === "complete-after-retry" && calls === 2) || (mode === "continue-then-invalid-session" && calls === 2) || (mode === "continue-then-model-fallback" && calls === 2) || mode === "continue-then-internal-retry") {
       requestAgentBridgeOutcome(["complete", "--evidence", "verified"], options.contextEnv);
     }
-    if (mode === "report-continue" || mode === "continue-no-wake" || mode === "continue-cancelled-wake" || mode === "continue-mismatched-wake") {
+    if (mode === "report-continue" || mode === "continue-no-wake" || mode === "continue-cancelled-wake" || mode === "continue-mismatched-wake" || mode === "continue-mismatched-binding") {
       requestAgentBridgeOutcome(["continue", "--after-seconds", "60", "--reason", "finish pending verification"], options.contextEnv);
       const key = `${RUN_CONTINUATION_PREFIX}run-one`;
       if (mode === "continue-no-wake") {
@@ -51,7 +51,9 @@ function fixture(mode: "complete-after-retry" | "continue-after-retry" | "blocke
         const existing = JSON.parse(row.value) as Record<string, unknown>;
         const changed = mode === "continue-cancelled-wake"
           ? { ...existing, state: "cancelled" }
-          : { ...existing, chatKey: "some-other-workstream" };
+          : mode === "continue-mismatched-binding"
+            ? { ...existing, outwardSessionId: "wrong-ws" }
+            : { ...existing, chatKey: "some-other-workstream" };
         db.raw.prepare("UPDATE settings SET value = ? WHERE key = ?").run(JSON.stringify(changed), key);
       }
     }
@@ -197,6 +199,17 @@ describe("ordinary Run objective settlement", () => {
       .rejects.toBeInstanceOf(RunOutcomeReconciliationError);
     expect(invocation).toHaveBeenCalledTimes(1);
     expect(db.getRun("run-one").outcome_status).toBe("continue");
+    db.close();
+  });
+
+  it("does not settle a Desk continuation for the wrong outward Workstream", async () => {
+    const { db, engine, handle, invocation } = fixture("continue-mismatched-binding", "acp:outward");
+    await expect(engine.executePromptAsync(
+      "Resume this Workstream", null, "chat",
+      { publishArtifacts: false, ordinaryWorkstreamId: "ws-trusted" },
+      () => {}, [], undefined, "run-one", null, "chat", handle,
+    )).rejects.toBeInstanceOf(RunOutcomeReconciliationError);
+    expect(invocation).toHaveBeenCalledTimes(1);
     db.close();
   });
 
