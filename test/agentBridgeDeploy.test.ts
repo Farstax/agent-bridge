@@ -999,6 +999,49 @@ except RuntimeError as error:
     expect(readFileSync(join(releaseRoot, COMMIT, "runtime.js"), "utf8")).toBe("runtime\n");
   });
 
+  it("replaces an older installed rollout helper with the staged fenced helper before its first stop (#1207)", () => {
+    const fixture = createFixture();
+    const release = makeRelease(fixture.expectedCommit, true);
+    const releaseRoot = mkdtempSync(join(tmpdir(), "agent-bridge-deploy-upgrade-"));
+    const installedRoot = mkdtempSync(join(tmpdir(), "agent-bridge-deploy-old-"));
+    const installedDeployer = join(installedRoot, "agent-bridge-deploy");
+    copyFileSync(DEPLOYER, installedDeployer);
+    mkdirSync(join(installedRoot, "usr/local/sbin"), { recursive: true });
+    mkdirSync(join(installedRoot, "usr/local/libexec"), { recursive: true });
+    const installedHelpers = [
+      "usr/local/sbin/rollout-agent-bridge",
+      "usr/local/libexec/agent-bridge-release-activate",
+      "usr/local/libexec/agent-bridge-rollout-restore",
+      "usr/local/libexec/agent-bridge-rollout-authorization.py",
+      "usr/local/libexec/agent-bridge-rollout-acceptance.py",
+    ];
+    for (const path of installedHelpers) {
+      writeFileSync(join(installedRoot, path), "#!/bin/sh\necho 'unsafe old rollout helper invoked'\nexit 96\n", { mode: 0o755 });
+    }
+    const installedRollout = join(installedRoot, installedHelpers[0]);
+    const result = spawnSync("python3", [installedDeployer, "--release", release.archive, "--approval", release.approval], {
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        AGENT_BRIDGE_DEPLOY_TEST: "1",
+        AGENT_BRIDGE_DEPLOY_TEST_STAGE_HELPER: resolve("scripts/release-stage.py"),
+        AGENT_BRIDGE_DEPLOY_TEST_RELEASE_ROOT: releaseRoot,
+        AGENT_BRIDGE_DEPLOY_TEST_HELPER_ROOT: installedRoot,
+        AGENT_BRIDGE_DEPLOY_TEST_ROLLOUT_CONFIG: fixture.configFile,
+        AGENT_BRIDGE_DEPLOY_TEST_RUNNER: installedRollout,
+        AGENT_BRIDGE_ROLLOUT_TEST_ROOT: fixture.root,
+        FAKE_IDLE_UPGRADE_STATE: "deferred_busy",
+      },
+    });
+    expect(result.status).not.toBe(0);
+    expect(`${result.stdout}\n${result.stderr}`).toContain("provider_sessions_active");
+    expect(`${result.stdout}\n${result.stderr}`).not.toContain("unsafe old rollout helper invoked");
+    expect(readFileSync(installedRollout, "utf8")).toContain("release_rollout_idle_fence");
+    const actions = readFileSync(fixture.actionLog, "utf8");
+    expect(actions).toContain("scripts/idle-maintenance.ts acquire");
+    expect(actions).not.toContain("systemctl:stop");
+  }, 15_000);
+
   it("hands the one-command deployment into the existing containment and acceptance state machine", () => {
     const fixture = createFixture();
     const release = makeRelease(fixture.expectedCommit);
