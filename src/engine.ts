@@ -187,7 +187,7 @@ export interface SurfaceNeutralTurnInput {
   /** Outward ACP owns generated files; never send them through a messaging client. */
   onOutputArtifacts?: (outDir: string) => Promise<{ retained: number; discarded: number }>;
   /** Per-Run provider recovery evidence for durable capacity decisions. */
-  onProviderRecoveryDecision?: (reason: ProviderFallbackReason | null, exhausted: boolean) => void;
+  onProviderRecoveryDecision?: (reason: ProviderFallbackReason | null, exhausted: boolean, transition?: { fromProvider: BotKind; toProvider: BotKind }) => void;
   /** Trusted, request-authorised Desk Workstream for ordinary outcomes/continuations. */
   ordinaryWorkstreamId?: string;
   /** A claimed ordinary wake must not silently abandon its bound native session. */
