@@ -166,6 +166,7 @@ describe("guarded rollout helper", { timeout: 30_000 }, () => {
       const stop = events.indexOf("systemctl:stop");
       const release = events.indexOf("scripts/idle-maintenance.ts release");
       expect(acquire).toBeGreaterThan(-1);
+      expect(readFileSync(fixture.actionLog, "utf8")).toMatch(/idle-maintenance\.ts acquire --owner-pid [1-9][0-9]+ --db/);
       expect(stop).toBeGreaterThan(acquire);
       expect(release).toBeGreaterThan(stop);
       expect(events.slice(release)).toContain("release");
