@@ -2297,6 +2297,12 @@ on_exit() {
     exit 1
   fi
   if (( release_accepted == 1 && completed == 0 )); then
+    # A failed exact-token release is not a health-unit retirement failure.
+    # Never retry a potentially partial multi-role release or remove its sentinel.
+    if (( idle_fence_acquired == 1 )); then
+      echo "STATE: ACCEPTED_IDLE_FENCE_RELEASE_FAILED — healthy release accepted, fence release unverified; sentinel retained for trusted recovery" >&2
+      exit 1
+    fi
     # The release itself already activated, started, and passed acceptance,
     # and the only step that can still fail before `completed=1` is the
     # trailing, unrelated health-unit retirement — containing/stopping the
