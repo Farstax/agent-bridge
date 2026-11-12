@@ -43,7 +43,7 @@ describe("outward ACP worker host component (#1181)", () => {
       const interactive = join(root, "interactive.env");
       const bot = join(root, "bot.env");
       writeFileSync(shared, "BRIDGE_EXECUTION_MODE=safe\nGROK_EXECUTION_MODE=trusted\nTELEGRAM_BOT_TOKEN=do-not-copy\n");
-      writeFileSync(interactive, "BRIDGE_EXECUTION_MODE=trusted\nCODEX_EXECUTION_MODE=trusted\nCLAUDE_EXECUTION_MODE=safe\n");
+      writeFileSync(interactive, "BRIDGE_EXECUTION_MODE=trusted\nCODEX_EXECUTION_MODE=trusted\nCLAUDE_EXECUTION_MODE=safe\nINTERACTIVE_DEFAULT_CLI=claude\n");
       writeFileSync(bot, "CODEX_EXECUTION_MODE=safe\nCURSOR_EXECUTION_MODE=trusted\nPROVIDER_API_KEY=do-not-copy\n");
       const snippet = [
         "set -Eeuo pipefail",
@@ -64,6 +64,7 @@ describe("outward ACP worker host component (#1181)", () => {
       expect(result).toContain("CURSOR_EXECUTION_MODE=trusted\n");
       expect(result).not.toContain("TELEGRAM_BOT_TOKEN");
       expect(result).not.toContain("PROVIDER_API_KEY");
+      expect(result).not.toContain("INTERACTIVE_DEFAULT_CLI=claude");
       writeFileSync(shared, "");
       writeFileSync(interactive, "");
       writeFileSync(bot, "");
