@@ -18,6 +18,7 @@ template="$script_dir/../systemd/agent-bridge-outward-capacity.service"
 unit_path=/etc/systemd/system/agent-bridge-outward-capacity.service
 defaults_path=/etc/default/agent-bridge-outward-capacity
 bot_env=/etc/default/agent-bridge-bot
+interactive_env=/etc/default/agent-bridge-interactive
 shared_env=/etc/default/agent-bridge-shared
 rollout_config=/etc/agent-bridge/rollout.conf
 [[ -f "$template" && ! -L "$template" ]] || fail "verified release is missing the worker unit"
@@ -50,6 +51,7 @@ fi
 secure_file "$bot_env"
 secure_file "$rollout_config"
 if [[ -e "$shared_env" || -L "$shared_env" ]]; then secure_file "$shared_env"; fi
+if [[ -e "$interactive_env" || -L "$interactive_env" ]]; then secure_file "$interactive_env"; fi
 grep -Fxq 'unit=agent-bridge-bot.service' "$rollout_config" ||
   fail "legacy bot is not in trusted rollout inventory"
 
@@ -64,12 +66,14 @@ runtime_user="$(sed -n 's/^runtime_user=//p' "$rollout_config")"
 allowed=(
   DB_PATH NODE_BIN INTERACTIVE_CLI_CHAIN INTERACTIVE_DEFAULT_CLI BRIDGE_PROVIDER_LOCK
   AGENT_BRIDGE_INSTALLATION_ID AGENT_BRIDGE_EXECUTION_COORDINATION_DB_PATH
+  BRIDGE_EXECUTION_MODE CODEX_EXECUTION_MODE CLAUDE_EXECUTION_MODE
+  GROK_EXECUTION_MODE ANTIGRAVITY_EXECUTION_MODE CURSOR_EXECUTION_MODE
   CODEX_ACP_COMMAND CODEX_ACP_ARGS CLAUDE_ACP_COMMAND CLAUDE_ACP_ARGS
   GROK_ACP_COMMAND GROK_ACP_ARGS AGY_ACP_COMMAND AGY_ACP_ARGS
   CURSOR_ACP_COMMAND CURSOR_ACP_ARGS
 )
 declare -A settings=()
-for env_file in "$shared_env" "$bot_env"; do
+for env_file in "$shared_env" "$interactive_env" "$bot_env"; do
   [[ -f "$env_file" ]] || continue
   while IFS= read -r line || [[ -n "$line" ]]; do
     [[ "$line" =~ ^([A-Z_][A-Z0-9_]*)=(.*)$ ]] || continue
