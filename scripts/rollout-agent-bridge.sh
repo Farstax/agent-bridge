@@ -2805,6 +2805,20 @@ record_phase ACCEPTED
 # *before* retiring/relocating old database files: the release helper cannot
 # open a deleted database to verify a token. New work can now run safely.
 release_accepted=1
+# The legacy health relocation copies the fenced SQLite file to a new path.
+# Release its copied marker with the SAME original token after acceptance,
+# otherwise the newly activated health database would remain fenced forever.
+if [[ -n "$health_relocation_source" ]] && (( retiring_health == 0 )); then
+  relocated_fence_token=""
+  for (( arg_index=0; arg_index<${#idle_release_args[@]}; arg_index+=4 )); do
+    if [[ "${idle_release_args[$((arg_index + 1))]}" == "$health_relocation_source" ]]; then
+      relocated_fence_token="${idle_release_args[$((arg_index + 3))]}"
+      break
+    fi
+  done
+  [[ "$relocated_fence_token" =~ ^[0-9a-f-]{36}$ ]] || die "relocated health idle fence token unavailable"
+  idle_release_args+=(--db "$health_relocation_target" --token "$relocated_fence_token")
+fi
 release_rollout_idle_fence || die "accepted release idle fence needs trusted recovery"
 # Everything after this line is best-effort retirement of databases/units
 # that the accepted new services no longer own. A cleanup failure must not
