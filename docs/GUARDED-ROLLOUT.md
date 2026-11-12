@@ -149,9 +149,20 @@ migration, pointer activation, restart, acceptance and rollback sequencing.
 5. Validate effective systemd safety properties: exact units, fragment paths,
    drop-ins, environment files, active states and the fixed database inventory.
 6. Acquire the exclusive rollout lock and capture durable preflight evidence.
-7. Stop the configured services and prove `MainPID=0`, `ControlPID=0` and empty
-   service cgroups. No provider-CLI process classification is required after
-   containment.
+7. Immediately before the first stop, take the atomic all-role idle-upgrade
+   fence (`scripts/idle-maintenance.ts acquire`, the OSS #1161 admission) over
+   every configured database role. A tracked active Run, execution lock, claim,
+   capacity claim or continuation refuses the rollout as the retryable
+   `provider_sessions_active` before any service is stopped; the accepted
+   deployment request is resumed by the existing handoff owner once idle. An
+   unprovable state (`idle_admission_unknown`) fails closed. The fence blocks
+   new Bridge Run/claim admission through the stop boundary and is released by
+   exact token before the new release starts, or after a verified restore. It
+   is never cleared by elapsed time; if a rollout process is killed, a root
+   operator recovers it with `idle-maintenance recover --containment-verified`
+   only after proving containment ended. Then stop the configured services and
+   prove `MainPID=0`, `ControlPID=0` and empty service cgroups. No provider-CLI
+   process classification is required after containment.
 8. Checkpoint WALs, verify integrity/foreign keys/schema, and create complete
    byte-exact verified backups of all five databases. Never delete a non-empty
    WAL.

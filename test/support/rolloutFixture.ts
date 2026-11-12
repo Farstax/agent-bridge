@@ -28,6 +28,8 @@ export const helperPath = fileURLToPath(new URL("../../scripts/rollout-agent-bri
 export const sentinelClearPath = fileURLToPath(new URL("../../scripts/rollout-sentinel-clear.sh", import.meta.url));
 export const restoreHelperPath = fileURLToPath(new URL("../../scripts/rollout-restore.py", import.meta.url));
 export const migrationScript = fileURLToPath(new URL("../../scripts/rollout-db.ts", import.meta.url));
+export const idleMaintenanceStub = fileURLToPath(new URL("./idleMaintenanceStub.mjs", import.meta.url));
+export const idleMaintenanceScript = fileURLToPath(new URL("../../scripts/idle-maintenance.ts", import.meta.url));
 export const migrationImplScript = fileURLToPath(new URL("../../scripts/rollout-db-impl.ts", import.meta.url));
 export const cleanupScript = fileURLToPath(new URL("../../scripts/reap-tmp-artifacts.sh", import.meta.url));
 export const cleanupServiceTemplate = fileURLToPath(new URL("../../systemd/agent-bridge-tmp-cleanup.service", import.meta.url));
@@ -256,6 +258,7 @@ echo "systemctl:$*" >> "${fixture.actionLog}"
   stop)
     if [ "\${1:-}" = agent-bridge-tmp-cleanup.timer ]; then rm -f "${fixture.root}/cleanup-timer-active"; exit 0; fi
     count=0
+    if [ -n "\${FAKE_ON_FIRST_STOP:-}" ] && [ ! -f "${fixture.root}/stop-count" ]; then "$FAKE_ON_FIRST_STOP" || true; fi
     [ ! -f "${fixture.root}/stop-count" ] || count="$(cat "${fixture.root}/stop-count")"
     count=$((count + 1))
     printf '%s\n' "$count" > "${fixture.root}/stop-count"
@@ -453,6 +456,13 @@ cmd=("$@")
 if [[ "\${cmd[1]:-}" == */tsx/dist/cli.mjs && "\${cmd[2]:-}" == */scripts/rollout-db.ts ]]; then
   cmd=("\${cmd[0]}" "${fixture.root}/rollout-db-bundled.mjs" "\${cmd[@]:3}")
 fi
+if [[ "\${cmd[1]:-}" == */tsx/dist/cli.mjs && "\${cmd[2]:-}" == */scripts/idle-maintenance.ts ]]; then
+  if [ -n "\${FAKE_REAL_IDLE:-}" ]; then
+    cmd=("\${cmd[0]}" "${fixture.root}/idle-maintenance-bundled.mjs" "\${cmd[@]:3}")
+  else
+    cmd=("\${cmd[0]}" "${fixture.root}/idle-maintenance-stub.mjs" "\${cmd[@]:3}")
+  fi
+fi
 if [ -n "\${FAKE_FAIL_PHASE:-}" ] && [ "\${FAKE_FAIL_PHASE:-}" = "$phase" ]; then
   "\${cmd[@]}"
   if [ -n "\${FAKE_CORRUPT_DB:-}" ]; then printf 'corrupt' > "$FAKE_CORRUPT_DB"; fi
@@ -496,6 +506,7 @@ if [ "\${FAKE_NO_JOURNAL_ENTRIES:-}" = 1 ]; then echo '-- No entries --'; fi
 interface SharedTemplate {
   templateDir: string;
   bundledRolloutDb: string;
+  bundledIdleMaintenance: string;
   expectedCommit: string;
   previousCommit: string;
 }
@@ -511,6 +522,7 @@ function getSharedTemplate(): SharedTemplate {
   symlinkSync(sourceDir, join(project, "src"));
   symlinkSync(nodeModules, join(project, "node_modules"));
   if (existsSync(migrationScript)) copyFileSync(migrationScript, join(project, "scripts", "rollout-db.ts"));
+  copyFileSync(idleMaintenanceScript, join(project, "scripts", "idle-maintenance.ts"));
   if (existsSync(migrationImplScript)) copyFileSync(migrationImplScript, join(project, "scripts", "rollout-db-impl.ts"));
   copyFileSync(cleanupScript, join(project, "scripts", "reap-tmp-artifacts.sh"));
   copyFileSync(sentinelClearPath, join(project, "scripts", "rollout-sentinel-clear.sh"));
@@ -543,7 +555,17 @@ function getSharedTemplate(): SharedTemplate {
     `--outfile=${bundledRolloutDb}`,
   ]);
 
-  sharedTemplate = { templateDir: project, bundledRolloutDb, expectedCommit, previousCommit };
+  const bundledIdleMaintenance = join(templateRoot, "idle-maintenance-bundled.mjs");
+  execFileSync("./node_modules/.bin/esbuild", [
+    join(project, "scripts", "idle-maintenance.ts"),
+    "--bundle",
+    "--platform=node",
+    "--format=esm",
+    "--packages=external",
+    `--outfile=${bundledIdleMaintenance}`,
+  ]);
+
+  sharedTemplate = { templateDir: project, bundledRolloutDb, bundledIdleMaintenance, expectedCommit, previousCommit };
   sharedTemplateCleanups.push(() => {
     execFileSync("chmod", ["-R", "u+w", templateRoot], { stdio: "ignore" });
     rmSync(templateRoot, { recursive: true, force: true });
@@ -606,6 +628,8 @@ export function createFixture(options: { pending?: number; unknownSchema?: boole
   const previousCommit = template.previousCommit;
   symlinkSync(nodeModules, join(root, "node_modules"));
   symlinkSync(template.bundledRolloutDb, join(root, "rollout-db-bundled.mjs"));
+  symlinkSync(template.bundledIdleMaintenance, join(root, "idle-maintenance-bundled.mjs"));
+  symlinkSync(idleMaintenanceStub, join(root, "idle-maintenance-stub.mjs"));
 
   const dbPaths = Array.from({ length: 4 }, (_, index) => join(dbDir, `bridge-${index}.sqlite`));
   const emptyTemplate = getEmptyLegacyDbTemplate();

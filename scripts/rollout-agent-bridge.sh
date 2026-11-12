@@ -2256,6 +2256,69 @@ remove_sentinel_if_removable() {
   return 0
 }
 
+# Idle-upgrade fence (#1161 admission reused for #1207). The fence is taken
+# once, immediately before the first disruptive service stop, over every
+# database role this transaction can disrupt. The retired health database
+# carries no Bridge execution and is not a fenced role. Tokens are held in
+# memory for this rollout's lifetime; the fence is owned by this process.
+run_idle_tool() {
+  run_as_runtime "$node_bin" "$project_dir/node_modules/tsx/dist/cli.mjs" "$project_dir/scripts/idle-maintenance.ts" "$@"
+}
+idle_fence_db_args() {
+  idle_db_args=()
+  for database in "${databases[@]}"; do
+    if (( retiring_health == 1 )) && [[ "$database" == "$retired_health_database" ]]; then continue; fi
+    idle_db_args+=(--db "$database")
+  done
+}
+acquire_idle_fence() {
+  local output rc line
+  idle_fence_db_args
+  output="$(run_idle_tool acquire --owner-pid "$$" "${idle_db_args[@]}")" && rc=0 || rc=$?
+  if (( rc == 75 )); then
+    die "provider_sessions_active: accepted Bridge work is still active; no service was stopped and the deployment will be retried when idle"
+  elif (( rc != 0 )); then
+    die "idle_admission_unknown: Bridge idle state could not be proven or a prior idle fence needs recovery; no service was stopped"
+  fi
+  idle_fence_dbs=(); idle_fence_tokens=()
+  while IFS=$'\t' read -r line_db line_token; do
+    [[ "$line_db" == /* && "$line_token" =~ ^[0-9a-f-]{36}$ ]] || die "idle admission returned an invalid fence"
+    idle_fence_dbs+=("$line_db"); idle_fence_tokens+=("$line_token")
+  done < <(printf '%s' "$output" | /usr/bin/python3 -c '
+import json, sys
+admission = json.load(sys.stdin)
+assert admission["state"] == "admitted"
+for role in admission["roles"]:
+    print(role["dbPath"] + "\t" + role["fence"]["token"])
+')
+  (( ${#idle_fence_dbs[@]} > 0 )) || die "idle admission returned no fence"
+  idle_fence_held=1
+}
+release_idle_fence() {
+  local release_args=() index
+  (( idle_fence_held == 1 )) || return 0
+  for index in "${!idle_fence_dbs[@]}"; do
+    release_args+=(--db "${idle_fence_dbs[$index]}" --token "${idle_fence_tokens[$index]}")
+  done
+  run_idle_tool release "${release_args[@]}" || return 1
+  idle_fence_held=0
+}
+# A restored backup was taken while this rollout's fence was held, so it can
+# carry the fence marker even after an earlier release. Release by exact token
+# when the marker is present, then require the restored roles to be idle.
+release_idle_fence_after_restore() {
+  local release_args=() index
+  (( ${#idle_fence_dbs[@]} > 0 )) || return 0
+  for index in "${!idle_fence_dbs[@]}"; do
+    release_args+=(--db "${idle_fence_dbs[$index]}" --token "${idle_fence_tokens[$index]}")
+  done
+  run_idle_tool release "${release_args[@]}" >/dev/null 2>&1 || true
+  local status_args=()
+  for index in "${!idle_fence_dbs[@]}"; do status_args+=(--db "${idle_fence_dbs[$index]}"); done
+  run_idle_tool status "${status_args[@]}" >/dev/null || return 1
+  idle_fence_held=0
+}
+
 on_exit() {
   status=$?
   set +e
@@ -2296,6 +2359,11 @@ on_exit() {
     # the first attempt. Mark this invocation's own ledger terminal so later
     # retention can prune the refused attempt's evidence.
     sentinel_removable=1
+    if ! release_idle_fence; then
+      echo "idle fence could not be released after a pre-stop failure; sentinel retained for recovery" >&2
+      sentinel_removable=0
+      status=1
+    fi
     if (( phase_ledger_created == 1 )) && ! record_phase PRECONDITION_FAILED; then
       echo "refused rollout evidence could not be marked terminal: $phase_ledger" >&2
     fi
@@ -2324,7 +2392,7 @@ on_exit() {
         # databases, mislabeling a STOPPED_UNCHANGED state as
         # RESTORE_INCOMPLETE — same sentinel outcome (retained) either way,
         # but the wrong operator-facing recovery instructions.
-        if restore_backups; then
+        if restore_backups && release_idle_fence_after_restore; then
           # restore_backups() only returns success once every database's
           # SHA-256 has been independently re-verified against the backup
           # manifest — "restored" and "verified" are the same check here,
@@ -2354,7 +2422,7 @@ on_exit() {
         # no complete backup is trusted. Recover directly to the previous
         # release before any new service can start; partial backup artifacts
         # are never used as a restore source.
-        if (( release_mode == 1 )) && restore_previous_release_and_start && record_phase PRE_BACKUP_RECOVERED; then
+        if (( release_mode == 1 )) && release_idle_fence_after_restore && restore_previous_release_and_start && record_phase PRE_BACKUP_RECOVERED; then
           echo "STATE: PRE_BACKUP_RECOVERED — unchanged databases retained; previous release restored and healthy; partial backup artifacts under $backup_set are not trusted" >&2
           sentinel_removable=1
         else
@@ -2400,6 +2468,9 @@ start_attempted=0
 services_started=0
 recovery_running=0
 stop_attempted=0
+idle_fence_held=0
+declare -a idle_fence_dbs=()
+declare -a idle_fence_tokens=()
 phase_ledger_created=0
 backup_completed=0
 pointer_switched=0
@@ -2525,6 +2596,7 @@ run_db_tool() {
   run_as_runtime "$node_bin" "$project_dir/node_modules/tsx/dist/cli.mjs" "$project_dir/scripts/rollout-db.ts" "$@"
 }
 
+
 # A configured autonomy database has no dependency on the old process.  Make
 # and validate it before containment so a missing file can never become an
 # unreserved post-stop allocator.
@@ -2585,6 +2657,10 @@ if (( release_mode == 1 )); then
 fi
 admit_rollout_disk
 
+# Atomic all-role idle admission immediately before the first disruptive stop.
+# A busy or unprovable result refuses the rollout as a pure precondition
+# failure: no service is stopped and the sentinel is removed for the retry owner.
+acquire_idle_fence
 echo "stopping all services"
 stop_attempted=1
 stop_and_verify_all_services || die "CONTAINMENT INCOMPLETE during primary stop"
@@ -2662,6 +2738,9 @@ if (( release_mode == 1 )); then
 fi
 
 verify_runtime_assets_readable
+# Services remain contained: release the exact fence tokens so the new release
+# can admit Runs once it starts. The rollback path re-verifies restored roles.
+release_idle_fence || die "idle fence could not be released before service start"
 echo "starting all services"
 journal_since="$(/usr/bin/date -u '+%Y-%m-%d %H:%M:%S UTC')"
 start_attempted=1

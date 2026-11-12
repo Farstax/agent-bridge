@@ -252,6 +252,44 @@ describe("privileged helper lifecycle", () => {
     }
   }, 20_000);
 
+  it("upgrades from the previously installed defective release by installing its pre-stop fence before the helper runs (#1207)", () => {
+    const release = makeRelease();
+    const installedRoot = mkdtempSync(join(tmpdir(), "agent-bridge-helper-lifecycle-installed-"));
+    installOldCohort(installedRoot);
+    // e3ec3791 shipped a rollout helper that stops services without idle admission.
+    const installedRollout = join(installedRoot, AUTO_REFRESH_HELPERS[0].installed);
+    writeFileSync(installedRollout, "#!/usr/bin/env bash\n# defective e3ec3791 helper: stops services before idle admission\n");
+    const configFile = join(installedRoot, "rollout.conf");
+    writeFileSync(configFile, "runtime_user=content-crawler\nenvironment=production-content-crawler\nrelease_stage_sha256=bootstrap-trust-anchor\n");
+    const runnerProbe = join(installedRoot, "runner-saw-helper");
+    const runner = join(installedRoot, "runner.sh");
+    // The deployer's next step is to execute the installed helper path; capture
+    // exactly what is installed at that boundary.
+    writeFileSync(runner, `#!/usr/bin/env bash\nset -euo pipefail\ncp ${JSON.stringify(installedRollout)} ${JSON.stringify(runnerProbe)}\n`);
+    chmodSync(runner, 0o755);
+
+    const result = spawnSync("python3", [DEPLOYER, "--release", release.archive, "--approval", release.approval], {
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        AGENT_BRIDGE_DEPLOY_TEST: "1",
+        AGENT_BRIDGE_DEPLOY_TEST_RELEASE_ROOT: mkdtempSync(join(tmpdir(), "agent-bridge-helper-lifecycle-stage-")),
+        AGENT_BRIDGE_DEPLOY_TEST_HELPER_ROOT: installedRoot,
+        AGENT_BRIDGE_DEPLOY_TEST_ROLLOUT_CONFIG: configFile,
+        AGENT_BRIDGE_DEPLOY_TEST_RUNNER: runner,
+      },
+    });
+
+    expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
+    const executed = readFileSync(runnerProbe, "utf8");
+    expect(executed).not.toContain("defective e3ec3791");
+    expect(executed).toBe(readFileSync("scripts/rollout-agent-bridge.sh", "utf8"));
+    const fence = executed.indexOf("\nacquire_idle_fence\n");
+    expect(fence).toBeGreaterThan(0);
+    expect(fence).toBeLessThan(executed.indexOf("\nstop_attempted=1\n"));
+    expect(readFileSync(configFile, "utf8")).toContain(`rollout_helper_sha256=${sha256(readFileSync("scripts/rollout-agent-bridge.sh"))}`);
+  }, 20_000);
+
   it("serializes distinct helper cohorts from convergence through rollout completion", async () => {
     const firstRelease = makeRelease({ helperTag: "first" });
     const secondRelease = makeRelease({ helperTag: "second" });

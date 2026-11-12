@@ -4,6 +4,7 @@
     "src/index*.ts",
     "scripts/agent-bridge-context.ts",
     "scripts/autonomous-goal-operator.ts",
+    "scripts/idle-maintenance.ts",
     "scripts/optimize-prompt-loop.ts",
     "scripts/provider-qualification.ts",
     "scripts/qualify-logical-messages.ts",
