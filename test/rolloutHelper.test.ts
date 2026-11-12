@@ -157,6 +157,16 @@ describe("guarded rollout helper", { timeout: 30_000 }, () => {
       expect(events).not.toContain("systemctl:stop");
     });
 
+    it("retains the sentinel and healthy accepted services if exact-token fence release fails", () => {
+      const fixture = createFixture();
+      const result = runRollout(fixture, undefined, undefined, { FAKE_IDLE_FENCE_RELEASE_FAIL: "1" });
+      expect(result.status).not.toBe(0);
+      expect(`${result.stdout}\n${result.stderr}`).toContain("protected idle fence release failed");
+      expect(existsSync(join(fixture.logDir, ".rollout-in-progress"))).toBe(true);
+      expect(existsSync(join(fixture.root, "started"))).toBe(true);
+      expect(actions(fixture).filter((event) => event === "systemctl:stop")).toHaveLength(1);
+    });
+
     it("acquires before stop and releases only after accepted health verification", () => {
       const fixture = createFixture();
       const result = runRollout(fixture);
