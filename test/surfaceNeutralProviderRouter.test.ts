@@ -111,6 +111,37 @@ describe("surface-neutral provider attempt isolation", () => {
     }
   });
 
+
+  it("reports only real cross-provider transitions, in order, with classified reasons", async () => {
+    const db = openDb(":memory:");
+    const recovery = vi.fn();
+    const attempts: BotKind[] = [];
+    const failures: Partial<Record<BotKind, string>> = {
+      claude: "rate limit capacity exhausted",
+      codex: "authentication required",
+    };
+    const router = createSurfaceNeutralProviderRouter({
+      db, initialProvider: "claude", providerChain: ["claude", "codex", "grok"],
+      engineForProvider: (provider) => ({
+        executeSurfaceNeutralTurn: async () => {
+          attempts.push(provider);
+          if (failures[provider]) throw new Error(failures[provider]);
+          return { text: "done", sessionId: "grok-session" };
+        },
+      }) as any,
+    });
+    try {
+      await expect(router.executeSurfaceNeutralTurn({
+        ...turnInput(vi.fn()), onProviderRecoveryDecision: recovery,
+      })).resolves.toMatchObject({ text: "done" });
+      expect(attempts).toEqual(["claude", "codex", "grok"]);
+      expect(recovery.mock.calls).toEqual([
+        ["capacity", false, { fromProvider: "claude", toProvider: "codex" }],
+        ["auth_required", false, { fromProvider: "codex", toProvider: "grok" }],
+      ]);
+    } finally { db.close(); }
+  });
+
   it("fences the durable provider before a native fallback outcome helper runs", async () => {
     const db = openDb(":memory:");
     const chatKey = "acp:fallback-provider-fence";

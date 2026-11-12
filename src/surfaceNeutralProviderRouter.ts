@@ -140,7 +140,8 @@ export function createSurfaceNeutralProviderRouter(
           // whatever chatActiveIdx currently holds — a concurrent status peek
           // must never be able to shift this (#1114 P0).
           const next = fallback.advance(input.chatKey, provider);
-          input.onProviderRecoveryDecision?.(decision.reason, next === null);
+          input.onProviderRecoveryDecision?.(decision.reason, next === null, next && next !== provider
+            ? { fromProvider: provider, toProvider: next as BotKind } : undefined);
           if (!next) {
             for (const event of attemptEvents) input.collect(event);
             throw error;

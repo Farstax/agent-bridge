@@ -228,6 +228,58 @@ describe("outward ACP prompt execution", () => {
     }
   });
 
+
+  it("emits ordered, metadata-only fallback transitions without provider error text or transcript contamination", async () => {
+    const root = mkdtempSync(join(tmpdir(), "agent-bridge-fallback-notices-"));
+    const db = openDb(join(root, "bridge.sqlite"), { databaseRole: "interactive" });
+    try {
+      const sessions = new OutwardAcpSessionRepository(db.raw);
+      const session = sessions.create({ sessionId: "fallback-session", conversationId: "acp:fallback", cwd: root });
+      const executor = new BridgeOutwardAcpPromptExecutor({
+        db, providerChain: ["claude", "codex", "grok"] as const,
+        runId: () => "fallback-run",
+        createEngine: (_session, provider) => ({
+          executeSurfaceNeutralTurn: async (input) => {
+            input.collect(eventType.runStarted({
+              runId: input.runId, bot: provider, chatId: String(input.chatId),
+              chatKey: input.chatKey, command: provider, cwd: root, model: null,
+            }));
+            if (provider === "claude") throw new Error("rate limit capacity exhausted");
+            if (provider === "codex") throw new Error("authentication required");
+            input.collect(eventType.runCompleted({
+              runId: input.runId, bot: provider, chatId: String(input.chatId),
+              chatKey: input.chatKey, text: "completed", sessionId: "grok-session",
+            }));
+            return { text: "completed", sessionId: "grok-session", stopReason: "end_turn" };
+          },
+        }),
+      });
+      const updates: acp.SessionNotification[] = [];
+      const client = acp.client({ name: "fallback-markers" })
+        .onNotification(acp.methods.client.session.update, (ctx) => updates.push(ctx.params));
+      const response = await connectWithAcpInitialization(
+        client, createOutwardAcpAgent({ sessions, promptExecutor: executor, workspaceRoot: root }),
+        async (agent) => {
+          await agent.request(acp.methods.agent.initialize, { protocolVersion: acp.PROTOCOL_VERSION, clientCapabilities: {} });
+          return agent.request(acp.methods.agent.session.prompt, {
+            sessionId: session.sessionId, prompt: [{ type: "text", text: "ship task" }],
+          });
+        },
+      );
+      expect(response.stopReason).toBe("end_turn");
+      const markers = updates.filter((item) => (item.update as any)._meta?.["agent-bridge/provider-fallback"]);
+      expect(markers.map((item) => (item.update as any)._meta["agent-bridge/provider-fallback"])).toEqual([
+        { fromProvider: "claude", toProvider: "codex", reason: "capacity" },
+        { fromProvider: "codex", toProvider: "grok", reason: "auth_required" },
+      ]);
+      expect(markers.every((item) => (item.update as any).content?.text === "")).toBe(true);
+      expect(updates[updates.length - 1].update).toMatchObject({ sessionUpdate: "agent_message_chunk", content: { text: "completed" } });
+      expect(JSON.stringify(updates)).not.toContain("rate limit capacity exhausted");
+      expect(JSON.stringify(updates)).not.toContain("authentication required");
+      expect(JSON.stringify(db.getRecentConvTurns("acp:fallback", 10, undefined, OUTWARD_ACP_SURFACE))).not.toContain("provider-fallback");
+    } finally { db.close(); rmSync(root, { recursive: true, force: true }); }
+  });
+
   it("forwards safe opted-in answer chunks over ACP before completion without duplicating the final answer", async () => {
     const root = mkdtempSync(join(tmpdir(), "agent-bridge-outward-preview-"));
     const db = openDb(join(root, "bridge.sqlite"), { databaseRole: "interactive" });
