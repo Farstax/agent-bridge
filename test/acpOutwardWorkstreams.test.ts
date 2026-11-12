@@ -207,6 +207,34 @@ describe("outward ACP Workstreams (#1101)", () => {
     expect(attempts).toEqual([]);
   });
 
+  it("persists actual request IDs with direct executed user turns for exact history reconciliation", async () => {
+    const f = fixture();
+    f.sessions.historyPage = (conversationId, beforeId) =>
+      f.db.getConvHistoryPage(conversationId, 50, beforeId, OUTWARD_ACP_SURFACE);
+    f.repo.create({ sessionId: "correlated", conversationId: "acp:correlated", cwd: f.root });
+    const exec = executor(f.db, []);
+    const app = agent(f, { promptExecutor: exec, workstreams: exec });
+    const submit = (requestId: string) => connectWithAcpInitialization(
+      acp.client({ name: "desk-correlation-test" }), app, (peer) => peer.request(
+        acp.methods.agent.session.prompt,
+        { sessionId: "correlated", prompt: [{ type: "text", text: "identical prompt" }],
+          _meta: { "agent-bridge/request-id": requestId } },
+      ),
+    );
+    await submit("operation-one");
+    await submit("operation-two");
+    const history = await call<{ messages: Array<{ id: string; text: string; role: string; operationId?: string }> }>(
+      app, WORKSTREAM_METHODS.historyPage, { sessionId: "correlated", cwd: f.root },
+    );
+    const users = history.messages.filter((row) => row.role === "user");
+    expect(users.map((row) => row.operationId)).toEqual(["operation-one", "operation-two"]);
+    expect(users.map((row) => row.text)).toEqual(["identical prompt", "identical prompt"]);
+    expect(f.db.getRecentConvTurns("acp:correlated", 10, undefined, OUTWARD_ACP_SURFACE)
+      .filter((turn) => turn.role === "user").map((turn) => turn.text)).toEqual(["identical prompt", "identical prompt"]);
+    f.db.clearConvHistory("acp:correlated", OUTWARD_ACP_SURFACE);
+    expect(f.db.raw.prepare("SELECT key FROM settings WHERE key LIKE ?").all(`${OUTWARD_USER_TURN_OPERATION_PREFIX}%`)).toEqual([]);
+  });
+
   it("authorizes and serves complete 50-turn pages through the outward ACP extension", async () => {
     const f = fixture();
     f.sessions.historyPage = (conversationId, beforeId) =>
