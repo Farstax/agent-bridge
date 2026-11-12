@@ -961,8 +961,14 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
           previewEmitted = true;
           enqueueUpdate({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: delta } });
         } : undefined,
-        onProviderRecoveryDecision: (reason, exhausted) => {
+        onProviderRecoveryDecision: (reason, exhausted, transition) => {
           if (reason !== null) resetPreview();
+          // A Bridge-authored, metadata-only transition; never provider text or transcript.
+          if (reason !== null && transition) enqueueUpdate({
+            sessionUpdate: "agent_message_chunk",
+            content: { type: "text", text: "" },
+            _meta: { "agent-bridge/provider-fallback": { ...transition, reason } },
+          } as OutwardUpdate);
           if (reason === "capacity") encounteredCapacity = true;
           if (exhausted) recoveryChainExhausted = true;
         },
