@@ -527,6 +527,11 @@ describe("guarded rollout helper", { timeout: 30_000 }, () => {
     expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
     expect(existsSync(fixture.dbPaths[2])).toBe(false);
     expect(existsSync(healthDefaults)).toBe(false);
+    // The obsolete role must still exist when its exact fence token is released.
+    const retirementEvents = actions(fixture);
+    expect(retirementEvents.indexOf("scripts/idle-maintenance.ts release")).toBeGreaterThan(-1);
+    expect(retirementEvents.indexOf("systemctl:disable agent-bridge-health.service"))
+      .toBeGreaterThan(retirementEvents.indexOf("scripts/idle-maintenance.ts release"));
     expect(readFileSync(fixture.stateFile, "utf8")).not.toContain("agent-bridge-health.service");
     const config = readFileSync(fixture.configFile, "utf8");
     expect(config).not.toContain("unit=agent-bridge-health.service");
