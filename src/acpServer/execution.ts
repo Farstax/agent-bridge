@@ -135,6 +135,8 @@ export interface OutwardWorkstreamStatus {
     status: string;
     outcome: "complete" | "continue" | "blocked" | null;
     error: string | null;
+    /** Machine-readable distinction from a user-issued Stop. */
+    interrupted?: boolean;
     startedAt: string;
     endedAt: string | null;
   } | null;
@@ -402,8 +404,10 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
         outcome: run.outcome_status,
         error: run.error ? (run.status === "cancelled" && run.error === "user"
           ? "Run cancelled by user."
+          : run.status === "cancelled" && run.error === "shutdown" ? "Run interrupted by service shutdown."
           : run.status === "cancelled" ? "Run cancelled."
             : toUserMessage(new Error(run.error))) : null,
+        interrupted: run.status === "cancelled" && run.error === "shutdown",
         startedAt: run.started_at,
         endedAt: run.ended_at,
       } : null,
