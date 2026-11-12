@@ -9,6 +9,7 @@ import { type as eventType } from "../src/events/types.js";
 import { getHandoffReason } from "../src/handoffState.js";
 import { listRunContinuations, requestRunContinuation, settleRunContinuation } from "../src/runContinuation.js";
 import { OutwardAcpSessionRepository } from "../src/repositories/outwardAcpSessionRepository.js";
+import { OUTWARD_USER_TURN_OPERATION_PREFIX } from "../src/repositories/conversationRepository.js";
 import { createOutwardAcpAgent, WORKSTREAM_METHODS, type OutwardAcpAgentOptions, type OutwardAcpSessionStore } from "../src/acpServer/app.js";
 import { BridgeOutwardAcpPromptExecutor, OUTWARD_ACP_SURFACE } from "../src/acpServer/execution.js";
 import type { BotKind } from "../src/types.js";
@@ -206,13 +207,42 @@ describe("outward ACP Workstreams (#1101)", () => {
     expect(attempts).toEqual([]);
   });
 
+  it("persists actual request IDs with direct executed user turns for exact history reconciliation", async () => {
+    const f = fixture();
+    f.sessions.historyPage = (conversationId, beforeId) =>
+      f.db.getConvHistoryPage(conversationId, 50, beforeId, OUTWARD_ACP_SURFACE);
+    f.repo.create({ sessionId: "correlated", conversationId: "acp:correlated", cwd: f.root });
+    const exec = executor(f.db, []);
+    const app = agent(f, { promptExecutor: exec, workstreams: exec });
+    const submit = (requestId: string) => connectWithAcpInitialization(
+      acp.client({ name: "desk-correlation-test" }), app, (peer) => peer.request(
+        acp.methods.agent.session.prompt,
+        { sessionId: "correlated", prompt: [{ type: "text", text: "identical prompt" }],
+          _meta: { "agent-bridge/request-id": requestId } },
+      ),
+    );
+    await submit("operation-one");
+    await submit("operation-two");
+    const history = await call<{ messages: Array<{ id: string; text: string; role: string; operationId?: string }> }>(
+      app, WORKSTREAM_METHODS.historyPage, { sessionId: "correlated", cwd: f.root },
+    );
+    const users = history.messages.filter((row) => row.role === "user");
+    expect(users.map((row) => row.operationId)).toEqual(["operation-one", "operation-two"]);
+    expect(users.map((row) => row.text)).toEqual(["identical prompt", "identical prompt"]);
+    expect(f.db.getRecentConvTurns("acp:correlated", 10, undefined, OUTWARD_ACP_SURFACE)
+      .filter((turn) => turn.role === "user").map((turn) => turn.text)).toEqual(["identical prompt", "identical prompt"]);
+    f.db.clearConvHistory("acp:correlated", OUTWARD_ACP_SURFACE);
+    expect(f.db.raw.prepare("SELECT key FROM settings WHERE key LIKE ?").all(`${OUTWARD_USER_TURN_OPERATION_PREFIX}%`)).toEqual([]);
+  });
+
   it("authorizes and serves complete 50-turn pages through the outward ACP extension", async () => {
     const f = fixture();
     f.sessions.historyPage = (conversationId, beforeId) =>
       f.db.getConvHistoryPage(conversationId, 50, beforeId, OUTWARD_ACP_SURFACE);
     f.repo.create({ sessionId: "history-1", conversationId: "acp:history-1", cwd: f.root });
     for (let i = 0; i < 105; i++) {
-      f.db.addConvTurn("acp:history-1", "user", `question ${i}`, undefined, { surfaceIdentity: OUTWARD_ACP_SURFACE });
+      const id = f.db.addConvTurn("acp:history-1", "user", `question ${i}`, undefined, { surfaceIdentity: OUTWARD_ACP_SURFACE });
+      if (i === 55) f.db.setSetting(OUTWARD_USER_TURN_OPERATION_PREFIX + id, "op-known-55");
       f.db.addConvTurn("acp:history-1", "assistant", `answer ${i}`, undefined, { surfaceIdentity: OUTWARD_ACP_SURFACE });
     }
     const app = agent(f, { workstreams: executor(f.db, []) });
@@ -223,7 +253,8 @@ describe("outward ACP Workstreams (#1101)", () => {
       app, WORKSTREAM_METHODS.historyPage, { sessionId: "history-1", cwd: f.root },
     );
     expect(first.messages).toHaveLength(100);
-    expect(first.messages[0]).toMatchObject({ id: "history-1:user:55", text: "question 55" });
+    expect(first.messages[0]).toMatchObject({ id: "history-1:user:55", text: "question 55", operationId: "op-known-55" });
+    expect(first.messages[1]).not.toHaveProperty("operationId");
     expect(first.messages.at(-1)).toMatchObject({ id: "history-1:assistant:104", text: "answer 104" });
     expect(first.turnCount).toBe(105);
     const second = await call<typeof first>(app, WORKSTREAM_METHODS.historyPage,
@@ -585,6 +616,22 @@ describe("outward ACP Workstreams (#1101)", () => {
     expect(exec.status(f.repo.get("s1")!)).toMatchObject({ selectedProvider: "codex", nextProvider: "codex" });
     await prompt();
     expect(attempts.at(-1)?.provider).toBe("codex");
+  });
+
+  it("distinguishes service shutdown from an explicit user Stop in durable Workstream status", () => {
+    const f = fixture();
+    const session = f.repo.create({ sessionId: "interrupted", conversationId: "acp:interrupted", cwd: f.root });
+    f.db.insertRun("run-for-shutdown", { surfaceIdentity: OUTWARD_ACP_SURFACE, chatKey: "acp:interrupted" }, "codex");
+    const update = f.db.raw.prepare("UPDATE bridge_runs SET status = 'cancelled', error = ? WHERE run_id = ?");
+    const exec = executor(f.db, []);
+    update.run("shutdown", "run-for-shutdown");
+    expect(exec.status(session)).toMatchObject({
+      state: "cancelled", lastRun: { interrupted: true, error: "Run interrupted by service shutdown." },
+    });
+    update.run("user", "run-for-shutdown");
+    expect(exec.status(session)).toMatchObject({
+      state: "cancelled", lastRun: { interrupted: false, error: "Run cancelled by user." },
+    });
   });
 
   it("reports failed and attention states only from durable Run records", async () => {

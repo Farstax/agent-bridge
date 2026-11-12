@@ -16,6 +16,7 @@ import { SAFE_SURFACE_CAPABILITIES, type MessagingPlatform } from "../platform.j
 import { interactiveChainKinds, parseCliChain } from "../providers/selection.js";
 import { lookupProviderSession, persistProviderSession } from "../providers/sessionRuntime.js";
 import type { OutwardAcpSessionRecord } from "../repositories/outwardAcpSessionRepository.js";
+import { OUTWARD_USER_TURN_OPERATION_PREFIX } from "../repositories/conversationRepository.js";
 import { createSurfaceNeutralProviderRouter, type SurfaceNeutralProviderRouter } from "../surfaceNeutralProviderRouter.js";
 import { getCachedAvailableCliKinds } from "../interactiveCliAuth.js";
 import { applyManualCliSwitchHandoff, getStoredCliPreference, setUserCliPreference, type CliKind } from "../interactiveBot.js";
@@ -134,6 +135,8 @@ export interface OutwardWorkstreamStatus {
     status: string;
     outcome: "complete" | "continue" | "blocked" | null;
     error: string | null;
+    /** Machine-readable distinction from a user-issued Stop. */
+    interrupted?: boolean;
     startedAt: string;
     endedAt: string | null;
   } | null;
@@ -401,8 +404,10 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
         outcome: run.outcome_status,
         error: run.error ? (run.status === "cancelled" && run.error === "user"
           ? "Run cancelled by user."
+          : run.status === "cancelled" && run.error === "shutdown" ? "Run interrupted by service shutdown."
           : run.status === "cancelled" ? "Run cancelled."
             : toUserMessage(new Error(run.error))) : null,
+        interrupted: run.status === "cancelled" && run.error === "shutdown",
         startedAt: run.started_at,
         endedAt: run.ended_at,
       } : null,
@@ -832,9 +837,15 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
           }
         } else {
           // A resumed turn must never append the original user request again.
-          db.addConvTurn(input.session.conversationId, "user", input.prompt, provider, {
+          const turnId = db.addConvTurn(input.session.conversationId, "user", input.prompt, provider, {
             surfaceIdentity: OUTWARD_ACP_SURFACE,
           }, queued ? queuedSubmittedAt(db, queued.id) : undefined);
+          // Persist the real client operation ID in the same transaction as
+          // the user turn. This metadata is for Desk reconciliation only and
+          // never changes provider context, transcript text or execution.
+          if (input.requestId && /^[A-Za-z0-9._:-]{1,128}$/.test(input.requestId)) {
+            db.setSetting(OUTWARD_USER_TURN_OPERATION_PREFIX + turnId, input.requestId);
+          }
           // The normal transcript replaces the display-only queue record atomically.
           if (queued) retireQueuedDisplay(db, queued.key);
         }

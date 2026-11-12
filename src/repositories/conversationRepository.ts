@@ -1,5 +1,7 @@
 import type Database from "better-sqlite3";
 
+export const OUTWARD_USER_TURN_OPERATION_PREFIX = "outward-user-turn-operation:v1:";
+
 export const DEFAULT_CONTEXT_MAX_CHARS = 50_000;
 export const DEFAULT_CONTEXT_RECENT_TURN_LIMIT = 200;
 
@@ -165,13 +167,14 @@ export class ConversationRepository {
     cli?: string,
     provenance?: ConversationTurnProvenance,
     createdAt?: string,
-  ): void {
+  ): number {
     // Only the guest-owned queued submission supplies an earlier accepted-at time.
     // All other turns retain the existing database commit-time default.
-    this.db
+    const result = this.db
       .prepare(`INSERT INTO conversation_turns (chat_key, role, text, cli, surface_identity, owner_key, created_at)
         VALUES (?, ?, ?, ?, ?, ?, COALESCE(?, strftime('%Y-%m-%dT%H:%M:%fZ','now')))`) 
       .run(chatKey, role, text, cli ?? null, provenance?.surfaceIdentity ?? null, provenance?.ownerKey ?? null, createdAt ?? null);
+    return Number(result.lastInsertRowid);
   }
 
   getRecentConvTurns(
@@ -209,7 +212,7 @@ export class ConversationRepository {
 
   /** Read-only keyset pages of complete outward Workstream exchanges. Cursor is an exclusive durable row ID. */
   getConvHistoryPage(chatKey: string, limit: number, beforeId?: number, surfaceIdentity?: string): {
-    turns: Array<{ id: number; role: "user" | "assistant"; text: string; createdAt: string; ordinal: number }>;
+    turns: Array<{ id: number; role: "user" | "assistant"; text: string; createdAt: string; ordinal: number; operationId?: string }>;
     nextCursor: number | null;
     turnCount: number;
   } {
@@ -234,9 +237,16 @@ export class ConversationRepository {
       WHERE ${scope} AND id >= ? AND id < ?
       ORDER BY id ASC`).all(...args, firstId, ceiling) as Array<{ id: number; role: string; text: string; created_at: string }>;
     let ordinal = previous.n - 1;
+    const readOperation = this.db.prepare("SELECT value FROM settings WHERE key = ?");
     const turns = rows.map((row) => {
       if (row.role === "user") ordinal += 1;
-      return { id: row.id, role: row.role as "user" | "assistant", text: row.text, createdAt: row.created_at, ordinal };
+      // Operation identity is metadata only: it never enters provider context.
+      // Legacy turns without a receipt retain the existing presentation.
+      const operationId = row.role === "user"
+        ? (readOperation.get(OUTWARD_USER_TURN_OPERATION_PREFIX + row.id) as { value: string } | undefined)?.value
+        : undefined;
+      return { id: row.id, role: row.role as "user" | "assistant", text: row.text,
+        createdAt: row.created_at, ordinal, ...(operationId ? { operationId } : {}) };
     });
     return { turns, nextCursor: roots.length > limit ? firstId : null, turnCount: total.n };
   }
@@ -391,6 +401,13 @@ export class ConversationRepository {
 
   clearConvHistory(chatKey: string, surfaceIdentity?: string): void {
     const surface = surfaceIdentity?.trim();
+    // Remove display correlation for precisely the turns being reset.
+    // Keep other conversations' IDs and idempotency receipts untouched.
+    const scope = surface ? "chat_key = ? AND (surface_identity = ? OR surface_identity IS NULL)" : "chat_key = ?";
+    const args = surface ? [chatKey, surface] : [chatKey];
+    this.db.prepare(`DELETE FROM settings WHERE key IN (
+      SELECT ? || id FROM conversation_turns WHERE ${scope} AND role = 'user'
+    )`).run(OUTWARD_USER_TURN_OPERATION_PREFIX, ...args);
     if (surface) {
       this.db.prepare(`DELETE FROM conversation_turns WHERE chat_key = ? AND (surface_identity = ? OR surface_identity IS NULL)`).run(chatKey, surface);
       // Historical summaries predate canonical surface provenance. A scoped reset
