@@ -239,7 +239,7 @@ describe("release artifact manifest", () => {
 
     expect(workflow).toContain("cp -a dist src package.json package-lock.json node_modules");
     expect(workflow).toContain('mkdir -p "$root/scripts"');
-    expect(workflow).toContain('scripts/rollout-db.ts scripts/rollout-db-impl.ts scripts/upgrade.sh');
+    expect(workflow).toContain('scripts/rollout-db.ts scripts/rollout-db-impl.ts scripts/idle-maintenance.ts scripts/upgrade.sh');
     expect(workflow).toContain('scripts/upgrade.sh');
     expect(workflow).toContain('scripts/skill-manager.ts');
     expect(workflow).toContain('scripts/agent-bridge-routines.ts');
