@@ -824,9 +824,21 @@ describe("outward ACP stdio boundary", { timeout: 30_000 }, () => {
       expect(fallbackTurn.response).toMatchObject({ jsonrpc: "2.0", id: 4, result: { stopReason: "end_turn" } });
       const fallbackUpdates = fallbackTurn.notifications.filter((notification) => notification.method === "session/update");
       expect(fallbackUpdates.every((notification) => notification.params?.sessionId === outwardSessionId)).toBe(true);
-      // Only the stable outward session id ever crosses the boundary --
-      // never a provider-native session id or the word "claude"/"codex".
-      expect(JSON.stringify(fallbackUpdates)).not.toMatch(/claude|codex/i);
+      // Provider identities are permitted only in Bridge-owned, empty
+      // metadata transitions, never in the displayed assistant text or native
+      // session IDs. The fallback remains otherwise invisible to the client.
+      const fallbackMarkers = fallbackUpdates.filter((notification) =>
+        (notification.params?.update as any)?._meta?.["agent-bridge/provider-fallback"]);
+      expect(fallbackMarkers).toHaveLength(1);
+      expect(fallbackMarkers[0].params?.update).toMatchObject({
+        sessionUpdate: "agent_message_chunk",
+        content: { type: "text", text: "" },
+        _meta: { "agent-bridge/provider-fallback": {
+          fromProvider: "codex", toProvider: "claude", reason: "capacity",
+        } },
+      });
+      const visibleUpdates = fallbackUpdates.filter((notification) => !fallbackMarkers.includes(notification));
+      expect(JSON.stringify(visibleUpdates)).not.toMatch(/claude|codex/i);
 
       const afterFallback = openDb(dbPath, { databaseRole: "interactive" });
       expect(afterFallback.getAcpSessionBinding( { surfaceIdentity: OUTWARD_ACP_SURFACE, chatKey: conversationId }, "claude")).not.toBeNull();
