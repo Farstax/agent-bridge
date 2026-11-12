@@ -8,7 +8,8 @@ afterEach(() => { for (const db of databases.splice(0)) db.close(); });
 function fixture() {
   const db = new Database(":memory:");
   databases.push(db);
-  db.exec(`CREATE TABLE conversation_turns (
+  db.exec(`CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT);
+    CREATE TABLE conversation_turns (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     chat_key TEXT NOT NULL,
     role TEXT NOT NULL,
