@@ -2633,7 +2633,7 @@ admit_rollout_disk
 [[ -f "$project_dir/scripts/idle-maintenance.ts" ]] || die "protected idle admission helper missing from staged release"
 idle_db_args=()
 for database in "${databases[@]}"; do idle_db_args+=(--db "$database"); done
-if ! run_as_runtime "$node_bin" "$project_dir/node_modules/tsx/dist/cli.mjs" "$project_dir/scripts/idle-maintenance.ts" acquire --owner-pid "$" "${idle_db_args[@]}" > "$artifact_dir/idle-upgrade-admission.json"; then
+if ! run_as_runtime "$node_bin" "$project_dir/node_modules/tsx/dist/cli.mjs" "$project_dir/scripts/idle-maintenance.ts" acquire --owner-pid "$$" "${idle_db_args[@]}" > "$artifact_dir/idle-upgrade-admission.json"; then
   idle_refusal="$(/usr/bin/python3 - "$artifact_dir/idle-upgrade-admission.json" <<'PY'
 import json, sys
 try:
@@ -2643,8 +2643,14 @@ except (OSError, ValueError, TypeError):
 PY
 )"
   if [[ "$idle_refusal" == deferred_busy ]]; then die "provider_sessions_active"; fi
+  # A partial fence could remain if the helper failed while releasing roles.
+  # Keep the sentinel until trusted recovery establishes what was acquired.
+  idle_fence_acquired=1
   die "protected_idle_upgrade_admission_unknown"
 fi
+# A successful helper may have installed a durable fence even if its receipt
+# proves malformed. On validation failure the EXIT trap must keep the sentinel.
+idle_fence_acquired=1
 # Check all expected paths and exact tokens before beginning containment.
 # Preserve the original role inventory even if later migration retires a role.
 if ! /usr/bin/python3 - "$artifact_dir/idle-upgrade-admission.json" "${databases[@]}" > "$artifact_dir/idle-upgrade-release-args.txt" <<'PY'
