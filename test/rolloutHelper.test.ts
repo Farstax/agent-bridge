@@ -161,7 +161,8 @@ describe("guarded rollout helper", { timeout: 30_000 }, () => {
       const fixture = createFixture();
       const result = runRollout(fixture, undefined, undefined, { FAKE_IDLE_FENCE_RELEASE_FAIL: "1" });
       expect(result.status).not.toBe(0);
-      expect(`${result.stdout}\n${result.stderr}`).toContain("protected idle fence release failed");
+      expect(`${result.stdout}\n${result.stderr}`).toContain("STATE: ACCEPTED_IDLE_FENCE_RELEASE_FAILED");
+      expect(`${result.stdout}\n${result.stderr}`).not.toContain("STATE: ACCEPTED_HEALTH_RETIREMENT_FAILED");
       expect(existsSync(join(fixture.logDir, ".rollout-in-progress"))).toBe(true);
       expect(existsSync(join(fixture.root, "started"))).toBe(true);
       expect(actions(fixture).filter((event) => event === "systemctl:stop")).toHaveLength(1);
