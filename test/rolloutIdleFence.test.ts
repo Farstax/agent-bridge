@@ -4,7 +4,7 @@ import { join } from "node:path";
 import Database from "better-sqlite3";
 import { afterEach, describe, expect, it } from "vitest";
 import { openDb } from "../src/db.js";
-import { IDLE_UPGRADE_FENCE_KEY, readIdleUpgradeState } from "../src/idleUpgradeAdmission.js";
+import { IDLE_UPGRADE_FENCE_KEY, readIdleUpgradeState, tryAdmitIdleUpgrade, releaseIdleUpgrade } from "../src/idleUpgradeAdmission.js";
 import {
   actions, cleanupRoots, createFixture, prepareImmutableRelease, runRollout, units, type Fixture,
 } from "./support/rolloutFixture";
@@ -86,6 +86,24 @@ describe("protected rollout idle-fence admission (#1207)", () => {
     expect(`${result.stdout}\n${result.stderr}`).toMatch(/idle_admission_unknown/);
     expect(`${result.stdout}\n${result.stderr}`).not.toMatch(/provider_sessions_active/);
     expect(actions(fixture)).not.toContain("systemctl:stop");
+    expect(existsSync(join(fixture.logDir, ".rollout-in-progress"))).toBe(true);
+  }, 60_000);
+
+  it("preserves recovery evidence when an unknown admission leaves a partial fence", () => {
+    const fixture = createFixture();
+    useCurrentSchemaDatabases(fixture);
+    const partial = tryAdmitIdleUpgrade(fixture.dbPaths[0]);
+    expect(partial.state).toBe("admitted");
+    if (partial.state !== "admitted") throw new Error("fixture did not acquire fence");
+    prepareImmutableRelease(fixture, fixture.previousCommit);
+    const result = runRollout(fixture, undefined, undefined, { FAKE_IDLE_PARTIAL_UNKNOWN: "1" });
+    execFileSync("find", [join(fixture.root, "releases"), "-type", "d", "-exec", "chmod", "u+w", "{}", "+"]);
+    expect(result.status).not.toBe(0);
+    expect(actions(fixture)).not.toContain("systemctl:stop");
+    expect(existsSync(join(fixture.logDir, ".rollout-in-progress"))).toBe(true);
+    expect(readIdleUpgradeState(fixture.dbPaths[0])).toBe("deferred_busy");
+    expect(releaseIdleUpgrade(fixture.dbPaths[0], partial.fence.token)).toBe(true);
+    expect(readIdleUpgradeState(fixture.dbPaths[0])).toBe("idle");
   }, 60_000);
 
   it("refuses without a service stop when the target release does not ship the idle admission tool", () => {

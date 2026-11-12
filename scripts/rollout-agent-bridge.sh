@@ -2280,6 +2280,9 @@ acquire_idle_fence() {
   if (( rc == 75 )); then
     die "provider_sessions_active: accepted Bridge work is still active; no service was stopped and the deployment will be retried when idle"
   elif (( rc != 0 )); then
+    # Admission may have failed while releasing a partial cohort. Preserve the
+    # sentinel even though this process has no tokens for those fences.
+    idle_admission_uncertain=1
     die "idle_admission_unknown: Bridge idle state could not be proven or a prior idle fence needs recovery; no service was stopped"
   fi
   # From here a fence exists. Mark it held before parsing so any failure below
@@ -2368,7 +2371,11 @@ on_exit() {
       sentinel_removable=0
       status=1
     fi
-    if (( phase_ledger_created == 1 )) && ! record_phase PRECONDITION_FAILED; then
+    if (( idle_admission_uncertain == 1 )); then
+      sentinel_removable=0
+      echo "idle admission outcome is uncertain; sentinel retained for recovery" >&2
+    fi
+    if (( phase_ledger_created == 1 && sentinel_removable == 1 )) && ! record_phase PRECONDITION_FAILED; then
       echo "refused rollout evidence could not be marked terminal: $phase_ledger" >&2
     fi
   else
@@ -2473,6 +2480,7 @@ services_started=0
 recovery_running=0
 stop_attempted=0
 idle_fence_held=0
+idle_admission_uncertain=0
 declare -a idle_fence_dbs=()
 declare -a idle_fence_tokens=()
 phase_ledger_created=0
