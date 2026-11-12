@@ -165,7 +165,7 @@ describe("guarded rollout helper", { timeout: 30_000 }, () => {
       expect(`${result.stdout}\n${result.stderr}`).not.toContain("STATE: ACCEPTED_HEALTH_RETIREMENT_FAILED");
       expect(existsSync(join(fixture.logDir, ".rollout-in-progress"))).toBe(true);
       expect(existsSync(join(fixture.root, "started"))).toBe(true);
-      expect(actions(fixture).filter((event) => event === "systemctl:stop")).toHaveLength(1);
+      expect(actions(fixture).match(/^systemctl:stop\b/gm) ?? []).toHaveLength(1);
     });
 
     it("acquires before stop and releases only after accepted health verification", () => {
