@@ -144,7 +144,7 @@ const DEFAULT_DATASET: DatasetCase[] = [
   {
     id: "restart-safety",
     userRequest: [
-      "I am inside an active bridge session. Should I run sudo systemctl restart agent-bridge-codex from here?",
+      "I am inside an active bridge session. Should I run sudo systemctl restart agent-bridge-interactive from here?",
       "Give the direct answer and safe alternative.",
     ].join("\n"),
     expectedFacts: [
