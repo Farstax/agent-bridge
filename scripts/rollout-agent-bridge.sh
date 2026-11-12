@@ -2273,6 +2273,8 @@ idle_fence_db_args() {
 }
 acquire_idle_fence() {
   local output rc line
+  [[ -f "$project_dir/scripts/idle-maintenance.ts" && ! -L "$project_dir/scripts/idle-maintenance.ts" ]] \
+    || die "idle_admission_unknown: the target release does not ship scripts/idle-maintenance.ts; no service was stopped"
   idle_fence_db_args
   output="$(run_idle_tool acquire --owner-pid "$$" "${idle_db_args[@]}")" && rc=0 || rc=$?
   if (( rc == 75 )); then
@@ -2280,6 +2282,9 @@ acquire_idle_fence() {
   elif (( rc != 0 )); then
     die "idle_admission_unknown: Bridge idle state could not be proven or a prior idle fence needs recovery; no service was stopped"
   fi
+  # From here a fence exists. Mark it held before parsing so any failure below
+  # is treated as a failed release (sentinel retained) rather than a stranded fence.
+  idle_fence_held=1
   idle_fence_dbs=(); idle_fence_tokens=()
   while IFS=$'\t' read -r line_db line_token; do
     [[ "$line_db" == /* && "$line_token" =~ ^[0-9a-f-]{36}$ ]] || die "idle admission returned an invalid fence"
@@ -2292,7 +2297,6 @@ for role in admission["roles"]:
     print(role["dbPath"] + "\t" + role["fence"]["token"])
 ')
   (( ${#idle_fence_dbs[@]} > 0 )) || die "idle admission returned no fence"
-  idle_fence_held=1
 }
 release_idle_fence() {
   local release_args=() index
@@ -2738,9 +2742,6 @@ if (( release_mode == 1 )); then
 fi
 
 verify_runtime_assets_readable
-# Services remain contained: release the exact fence tokens so the new release
-# can admit Runs once it starts. The rollback path re-verifies restored roles.
-release_idle_fence || die "idle fence could not be released before service start"
 echo "starting all services"
 journal_since="$(/usr/bin/date -u '+%Y-%m-%d %H:%M:%S UTC')"
 start_attempted=1
@@ -2774,6 +2775,7 @@ if (( retiring_health == 1 && retired_health_database_present == 1 )); then
 fi
 "$acceptance_validator" "${acceptance_args[@]}" || die "bounded queue/claim/lock acceptance failed"
 hash_evidence_file "$artifact_dir/acceptance-evidence.json"
+release_idle_fence || die "idle fence could not be released after verified restart"
 if [[ -n "$health_relocation_source" ]] && (( retiring_health == 0 )); then
   echo "retiring legacy health database path=$health_relocation_source"
   /usr/bin/rm -f -- "$health_relocation_source" "${health_relocation_source}-wal" "${health_relocation_source}-shm"

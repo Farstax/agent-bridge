@@ -88,7 +88,19 @@ describe("protected rollout idle-fence admission (#1207)", () => {
     expect(actions(fixture)).not.toContain("systemctl:stop");
   }, 60_000);
 
-  it("blocks new Bridge work at the service-stop boundary and releases the fence before the new release starts", () => {
+  it("refuses without a service stop when the target release does not ship the idle admission tool", () => {
+    const fixture = createFixture();
+    rmSync(join(fixture.project, "scripts", "idle-maintenance.ts"));
+    prepareImmutableRelease(fixture, fixture.previousCommit);
+
+    const result = runRollout(fixture);
+    execFileSync("find", [join(fixture.root, "releases"), "-type", "d", "-exec", "chmod", "u+w", "{}", "+"]);
+    expect(result.status).not.toBe(0);
+    expect(`${result.stdout}\n${result.stderr}`).toMatch(/idle_admission_unknown: the target release does not ship/);
+    expect(actions(fixture)).not.toContain("systemctl:stop");
+  }, 60_000);
+
+  it("blocks new Bridge work through service restart and releases the fence after acceptance", () => {
     const fixture = createFixture();
     useCurrentSchemaDatabases(fixture);
     const { releaseDir } = prepareImmutableRelease(fixture, fixture.previousCommit);
@@ -105,10 +117,15 @@ try {
     const hook = join(fixture.root, "on-first-stop");
     writeFileSync(hook, `#!/usr/bin/env bash\ncd ${JSON.stringify(process.cwd())} && exec ${JSON.stringify(process.execPath)} ${JSON.stringify(probe)}\n`);
     chmodSync(hook, 0o755);
+    const startHook = join(fixture.root, "on-service-start");
+    const stopResult = join(fixture.root, "stop-probe-result");
+    writeFileSync(startHook, `#!/usr/bin/env bash\ncp ${JSON.stringify(probeResult)} ${JSON.stringify(stopResult)}\nexec ${JSON.stringify(hook)}\n`);
+    chmodSync(startHook, 0o755);
 
-    const result = runRollout(fixture, undefined, undefined, { ...realIdle, FAKE_ON_FIRST_STOP: hook });
+    const result = runRollout(fixture, undefined, undefined, { ...realIdle, FAKE_ON_FIRST_STOP: hook, FAKE_ON_SERVICE_START: startHook });
     execFileSync("find", [releaseDir, "-type", "d", "-exec", "chmod", "u+w", "{}", "+"]);
     expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
+    expect(readFileSync(stopResult, "utf8")).toContain("agent_bridge_idle_maintenance_deferred_busy");
     expect(readFileSync(probeResult, "utf8")).toContain("agent_bridge_idle_maintenance_deferred_busy");
     expect(fenceRows(fixture)).toBe(0);
   }, 60_000);

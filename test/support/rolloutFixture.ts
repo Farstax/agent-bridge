@@ -297,6 +297,7 @@ echo "systemctl:$*" >> "${fixture.actionLog}"
       exit 1
     fi
     if [ "\${FAKE_FAIL_PHASE:-}" = start ]; then exit 1; fi
+    if [ -n "\${FAKE_ON_SERVICE_START:-}" ]; then "$FAKE_ON_SERVICE_START" || true; fi
     printf '%s\n' "$@" > "${fixture.stateFile}"
     : > "${fixture.root}/started"
     if [ "\${FAKE_RECOVERY_JOURNAL_ERROR:-}" = 1 ] || [ "\${FAKE_RECOVERY_EXIT_DURING_SMOKE:-}" = 1 ]; then

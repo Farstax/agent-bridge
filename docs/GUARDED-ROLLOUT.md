@@ -157,7 +157,7 @@ migration, pointer activation, restart, acceptance and rollback sequencing.
    deployment request is resumed by the existing handoff owner once idle. An
    unprovable state (`idle_admission_unknown`) fails closed. The fence blocks
    new Bridge Run/claim admission through the stop boundary and is released by
-   exact token before the new release starts, or after a verified restore. It
+   exact token after restart acceptance, or after a verified restore. It
    is never cleared by elapsed time; if a rollout process is killed, a root
    operator recovers it with `idle-maintenance recover --containment-verified`
    only after proving containment ended. Then stop the configured services and

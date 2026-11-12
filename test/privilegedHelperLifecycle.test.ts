@@ -1,9 +1,13 @@
 import { createHash } from "node:crypto";
 import { execFileSync, spawn, spawnSync, type ChildProcessWithoutNullStreams } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
+import { openDb } from "../src/db.js";
+import { actions, cleanupRoots, createFixture, prepareImmutableRelease } from "./support/rolloutFixture.js";
+
+afterEach(cleanupRoots);
 
 const DEPLOYER = "scripts/agent-bridge-deploy.py";
 const COMMIT = "4".repeat(40);
@@ -263,9 +267,18 @@ describe("privileged helper lifecycle", () => {
     writeFileSync(configFile, "runtime_user=content-crawler\nenvironment=production-content-crawler\nrelease_stage_sha256=bootstrap-trust-anchor\n");
     const runnerProbe = join(installedRoot, "runner-saw-helper");
     const runner = join(installedRoot, "runner.sh");
-    // The deployer's next step is to execute the installed helper path; capture
-    // exactly what is installed at that boundary.
-    writeFileSync(runner, `#!/usr/bin/env bash\nset -euo pipefail\ncp ${JSON.stringify(installedRollout)} ${JSON.stringify(runnerProbe)}\n`);
+    const fixture = createFixture();
+    for (const path of fixture.dbPaths) {
+      for (const suffix of ["", "-wal", "-shm"]) rmSync(`${path}${suffix}`, { force: true });
+      openDb(path).close();
+    }
+    const db = openDb(fixture.dbPaths[3]);
+    db.insertRun("desk-run", { surfaceIdentity: "acp:outward", chatKey: "desk-run" }, "claude");
+    db.acquireLock("acp:outward", "desk-run");
+    db.close();
+    prepareImmutableRelease(fixture, fixture.previousCommit);
+    // Execute the helper installed by the deployer, against the real rollout fixture.
+    writeFileSync(runner, `#!/usr/bin/env bash\nset -euo pipefail\ncp ${JSON.stringify(installedRollout)} ${JSON.stringify(runnerProbe)}\nexec bash ${JSON.stringify(installedRollout)} --expected-commit ${JSON.stringify(fixture.expectedCommit)}\n`);
     chmodSync(runner, 0o755);
 
     const result = spawnSync("python3", [DEPLOYER, "--release", release.archive, "--approval", release.approval], {
@@ -277,10 +290,15 @@ describe("privileged helper lifecycle", () => {
         AGENT_BRIDGE_DEPLOY_TEST_HELPER_ROOT: installedRoot,
         AGENT_BRIDGE_DEPLOY_TEST_ROLLOUT_CONFIG: configFile,
         AGENT_BRIDGE_DEPLOY_TEST_RUNNER: runner,
+        AGENT_BRIDGE_ROLLOUT_TEST_ROOT: fixture.root,
+        FAKE_REAL_IDLE: "1",
+        FAKE_CORRUPT_DB: fixture.dbPaths[0],
       },
     });
 
-    expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
+    expect(result.status).not.toBe(0);
+    expect(`${result.stdout}\n${result.stderr}`).toMatch(/provider_sessions_active/);
+    expect(actions(fixture)).not.toContain("systemctl:stop");
     const executed = readFileSync(runnerProbe, "utf8");
     expect(executed).not.toContain("defective e3ec3791");
     expect(executed).toBe(readFileSync("scripts/rollout-agent-bridge.sh", "utf8"));
