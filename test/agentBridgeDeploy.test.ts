@@ -17,13 +17,19 @@ function sha256(value: Buffer | string): string {
 
 afterEach(cleanupRoots);
 
-function makeRelease(commit = COMMIT): { archive: string; approval: string; root: string; releaseSha: string } {
+function makeRelease(commit = COMMIT, includeRolloutHelpers = false): { archive: string; approval: string; root: string; releaseSha: string } {
   const root = mkdtempSync(join(tmpdir(), "agent-bridge-deploy-release-"));
   const payload = Buffer.from("runtime\n");
   const lock = Buffer.from("lock\n");
   const qualification = Buffer.from(JSON.stringify({ commit, tree: TREE, checks: ["test", "typecheck", "architecture-lint"] }) + "\n");
   writeFileSync(join(root, "runtime.js"), payload);
   writeFileSync(join(root, "package-lock.json"), lock);
+  const helpers = includeRolloutHelpers ? [
+    "scripts/rollout-agent-bridge.sh", "scripts/release-activate.py",
+    "scripts/rollout-restore.py", "scripts/rollout-authorization.py", "scripts/rollout-acceptance.py",
+  ] : [];
+  if (helpers.length) mkdirSync(join(root, "scripts"));
+  for (const path of helpers) copyFileSync(path, join(root, path));
   const manifest = {
     schema_version: 1,
     commit,
@@ -32,13 +38,14 @@ function makeRelease(commit = COMMIT): { archive: string; approval: string; root
       { path: "package-lock.json", sha256: sha256(lock), size: lock.length },
       { path: "qualification-evidence.json", sha256: sha256(qualification), size: qualification.length },
       { path: "runtime.js", sha256: sha256(payload), size: payload.length },
+      ...helpers.map((path) => ({ path, sha256: sha256(readFileSync(join(root, path))), size: readFileSync(join(root, path)).length })),
     ],
     package_lock_sha256: sha256(lock),
   };
   writeFileSync(join(root, "manifest.json"), `${JSON.stringify(manifest)}\n`);
   writeFileSync(join(root, "qualification-evidence.json"), qualification);
   const archive = join(root, `agent-bridge-${commit}.tar.gz`);
-  execFileSync("tar", ["-czf", archive, "-C", root, "manifest.json", "package-lock.json", "qualification-evidence.json", "runtime.js"]);
+  execFileSync("tar", ["-czf", archive, "-C", root, "manifest.json", "package-lock.json", "qualification-evidence.json", "runtime.js", ...helpers]);
   const approval = join(root, "production-approval.json");
   const releaseSha = sha256(readFileSync(archive));
   writeFileSync(approval, `${JSON.stringify({
@@ -991,6 +998,49 @@ except RuntimeError as error:
     expect(result.stdout).toContain(`deployed ${COMMIT}`);
     expect(readFileSync(join(releaseRoot, COMMIT, "runtime.js"), "utf8")).toBe("runtime\n");
   });
+
+  it("replaces an older installed rollout helper with the staged fenced helper before its first stop (#1207)", () => {
+    const fixture = createFixture();
+    const release = makeRelease(fixture.expectedCommit, true);
+    const releaseRoot = mkdtempSync(join(tmpdir(), "agent-bridge-deploy-upgrade-"));
+    const installedRoot = mkdtempSync(join(tmpdir(), "agent-bridge-deploy-old-"));
+    const installedDeployer = join(installedRoot, "agent-bridge-deploy");
+    copyFileSync(DEPLOYER, installedDeployer);
+    mkdirSync(join(installedRoot, "usr/local/sbin"), { recursive: true });
+    mkdirSync(join(installedRoot, "usr/local/libexec"), { recursive: true });
+    const installedHelpers = [
+      "usr/local/sbin/rollout-agent-bridge",
+      "usr/local/libexec/agent-bridge-release-activate",
+      "usr/local/libexec/agent-bridge-rollout-restore",
+      "usr/local/libexec/agent-bridge-rollout-authorization.py",
+      "usr/local/libexec/agent-bridge-rollout-acceptance.py",
+    ];
+    for (const path of installedHelpers) {
+      writeFileSync(join(installedRoot, path), "#!/bin/sh\necho 'unsafe old rollout helper invoked'\nexit 96\n", { mode: 0o755 });
+    }
+    const installedRollout = join(installedRoot, installedHelpers[0]);
+    const result = spawnSync("python3", [installedDeployer, "--release", release.archive, "--approval", release.approval], {
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        AGENT_BRIDGE_DEPLOY_TEST: "1",
+        AGENT_BRIDGE_DEPLOY_TEST_STAGE_HELPER: resolve("scripts/release-stage.py"),
+        AGENT_BRIDGE_DEPLOY_TEST_RELEASE_ROOT: releaseRoot,
+        AGENT_BRIDGE_DEPLOY_TEST_HELPER_ROOT: installedRoot,
+        AGENT_BRIDGE_DEPLOY_TEST_ROLLOUT_CONFIG: fixture.configFile,
+        AGENT_BRIDGE_DEPLOY_TEST_RUNNER: installedRollout,
+        AGENT_BRIDGE_ROLLOUT_TEST_ROOT: fixture.root,
+        FAKE_IDLE_UPGRADE_STATE: "deferred_busy",
+      },
+    });
+    expect(result.status).not.toBe(0);
+    expect(`${result.stdout}\n${result.stderr}`).toContain("provider_sessions_active");
+    expect(`${result.stdout}\n${result.stderr}`).not.toContain("unsafe old rollout helper invoked");
+    expect(readFileSync(installedRollout, "utf8")).toContain("release_rollout_idle_fence");
+    const actions = readFileSync(fixture.actionLog, "utf8");
+    expect(actions).toContain("scripts/idle-maintenance.ts acquire");
+    expect(actions).not.toContain("systemctl:stop");
+  }, 15_000);
 
   it("hands the one-command deployment into the existing containment and acceptance state machine", () => {
     const fixture = createFixture();

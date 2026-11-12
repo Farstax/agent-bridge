@@ -144,6 +144,60 @@ function runAuthorizedRollout(fixture: Fixture, authorizationFile: string, overr
 }
 
 describe("guarded rollout helper", { timeout: 30_000 }, () => {
+  describe("protected all-role idle fence (#1207)", () => {
+    it.each(["deferred_busy", "unknown"] as const)("never stops services when all-role admission is %s", (state) => {
+      const fixture = createFixture();
+      const result = runRollout(fixture, undefined, undefined, { FAKE_IDLE_UPGRADE_STATE: state });
+      expect(result.status).not.toBe(0);
+      expect(`${result.stdout}\n${result.stderr}`).toContain(
+        state === "deferred_busy" ? "provider_sessions_active" : "protected_idle_upgrade_admission_unknown",
+      );
+      const events = actions(fixture);
+      expect(events).toContain("scripts/idle-maintenance.ts acquire");
+      expect(events).not.toContain("systemctl:stop");
+    });
+
+    it("retains the sentinel and healthy accepted services if exact-token fence release fails", () => {
+      const fixture = createFixture();
+      const result = runRollout(fixture, undefined, undefined, { FAKE_IDLE_FENCE_RELEASE_FAIL: "1" });
+      expect(result.status).not.toBe(0);
+      expect(`${result.stdout}\n${result.stderr}`).toContain("STATE: ACCEPTED_IDLE_FENCE_RELEASE_FAILED");
+      expect(`${result.stdout}\n${result.stderr}`).not.toContain("STATE: ACCEPTED_HEALTH_RETIREMENT_FAILED");
+      expect(existsSync(join(fixture.logDir, ".rollout-in-progress"))).toBe(true);
+      expect(existsSync(join(fixture.root, "started"))).toBe(true);
+      expect(actions(fixture).match(/^systemctl:stop\b/gm) ?? []).toHaveLength(1);
+    });
+
+    it("releases both original and copied health database fences after relocation acceptance", () => {
+      const fixture = createFixture();
+      const relocatedPath = join(dirname(fixture.dbPaths[2]), "health-relocated.sqlite");
+      writeFileSync(join(fixture.envDir, "agent-bridge-health"), `HEALTH_DB_PATH=${relocatedPath}\n`, { mode: 0o600 });
+      rewriteConfig(fixture, (lines) => [...lines, `legacy_database=${fixture.dbPaths[2]}`]);
+      const result = runRollout(fixture);
+      expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
+      expect(existsSync(relocatedPath)).toBe(true);
+      expect(existsSync(fixture.dbPaths[2])).toBe(false);
+      const release = actions(fixture).split("\n").find((event) => event.includes("scripts/idle-maintenance.ts release"));
+      expect(release).toContain(`--db ${fixture.dbPaths[2]} --token `);
+      expect(release).toContain(`--db ${relocatedPath} --token `);
+    }, 15_000);
+
+    it("acquires before stop and releases only after accepted health verification", () => {
+      const fixture = createFixture();
+      const result = runRollout(fixture);
+      expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
+      const events = actions(fixture);
+      const acquire = events.indexOf("scripts/idle-maintenance.ts acquire");
+      const stop = events.indexOf("systemctl:stop");
+      const release = events.indexOf("scripts/idle-maintenance.ts release");
+      expect(acquire).toBeGreaterThan(-1);
+      expect(readFileSync(fixture.actionLog, "utf8")).toMatch(/idle-maintenance\.ts acquire --owner-pid [1-9][0-9]+ --db/);
+      expect(stop).toBeGreaterThan(acquire);
+      expect(release).toBeGreaterThan(stop);
+      expect(events.slice(release)).toContain("release");
+    });
+  });
+
   it.each(["missing", "extra", "reordered"])("rejects %s EnvironmentFiles inventory before stopping services", (mode) => {
     const fixture = createFixture();
     prepareImmutableRelease(fixture, fixture.previousCommit);
@@ -498,6 +552,11 @@ describe("guarded rollout helper", { timeout: 30_000 }, () => {
     expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
     expect(existsSync(fixture.dbPaths[2])).toBe(false);
     expect(existsSync(healthDefaults)).toBe(false);
+    // The obsolete role must still exist when its exact fence token is released.
+    const retirementEvents = actions(fixture);
+    expect(retirementEvents.indexOf("scripts/idle-maintenance.ts release")).toBeGreaterThan(-1);
+    expect(retirementEvents.indexOf("systemctl:disable agent-bridge-health.service"))
+      .toBeGreaterThan(retirementEvents.indexOf("scripts/idle-maintenance.ts release"));
     expect(readFileSync(fixture.stateFile, "utf8")).not.toContain("agent-bridge-health.service");
     const config = readFileSync(fixture.configFile, "utf8");
     expect(config).not.toContain("unit=agent-bridge-health.service");
