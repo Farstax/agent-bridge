@@ -1104,6 +1104,61 @@ export class BridgeDb {
     });
   }
 
+  /**
+   * An ACP steering acknowledgement is irreversible. Retire the injected
+   * pending rows and retain their original accepted text/time in ONE SQLite
+   * transaction, even if the execution lock expired while the RPC was in
+   * flight. Deletion is the idempotency key: a retired row cannot be recorded
+   * or delivered a second time by another recovery pass.
+   *
+   * Returns false when the original claim/lease no longer belongs to caller;
+   * the agent must stop steering, but the injected rows are still retired.
+   */
+  retainInjectedPendingMsgs(
+    handle: ExecutionLaneHandle,
+    ids: readonly number[],
+    cli: string,
+    provenance: ConversationTurnProvenance,
+    originalPrompt?: string,
+  ): { continuedOwnership: boolean; originalRecorded: boolean } {
+    if (ids.length === 0) return { continuedOwnership: this.locks.owns(handle), originalRecorded: false };
+    const { surface, chatKey } = handle;
+    assertExecutionScope(surface, chatKey);
+    return this.runInImmediateTransaction(() => {
+      const rows = ids.map((id) => this.raw.prepare(`
+        SELECT id, prompt, created_at AS createdAt, state, claim_run_id AS claimRunId,
+          claim_acquisition_id AS claimAcquisitionId
+        FROM pending_messages WHERE id = ? AND surface = ? AND chat_key = ?
+      `).get(id, surface, chatKey) as {
+        id: number; prompt: string; createdAt: string; state: string;
+        claimRunId: string | null; claimAcquisitionId: string | null;
+      } | undefined);
+      const allFound = rows.every((row) => row !== undefined);
+      const continuedOwnership = this.locks.owns(handle) && allFound && rows.every((row) =>
+        row!.state === "claimed" && row!.claimRunId === handle.runId
+          && row!.claimAcquisitionId === handle.acquisitionId);
+      // A stop or competing recovery may have removed one of the rows.
+      // The live agent may nevertheless have consumed it; never resurrect it.
+      if (!allFound) {
+        for (const id of ids) this.raw.prepare(
+          "DELETE FROM pending_messages WHERE id = ? AND surface = ? AND chat_key = ?",
+        ).run(id, surface, chatKey);
+        return { continuedOwnership: false, originalRecorded: false };
+      }
+      if (originalPrompt !== undefined) {
+        this.addConvTurn(chatKey, "user", originalPrompt, cli, provenance);
+      }
+      for (const row of rows) {
+        const removed = this.raw.prepare(
+          "DELETE FROM pending_messages WHERE id = ? AND surface = ? AND chat_key = ?",
+        ).run(row!.id, surface, chatKey).changes;
+        if (removed !== 1) throw new Error("injected pending row retirement lost race");
+        this.addConvTurn(chatKey, "user", row!.prompt, cli, provenance, row!.createdAt);
+      }
+      return { continuedOwnership, originalRecorded: originalPrompt !== undefined };
+    });
+  }
+
   completePendingMsgs(handle: ExecutionLaneHandle, ids: number[]): boolean {
     if (ids.length === 0) return true;
     const { surface, chatKey } = handle;
