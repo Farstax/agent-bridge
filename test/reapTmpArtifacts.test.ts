@@ -104,6 +104,21 @@ describe("reap-tmp-artifacts.sh", () => {
     expect(result.stderr).toContain("integrity check failed");
   });
 
+  it("fails instead of silently skipping retention when an installed interactive database is required", () => {
+    const { root, env } = telemetryFixture("exit 0");
+    const result = run({ ...env, BRIDGE_DB_PATH: "", DB_PATH: "", REAP_REQUIRE_INTERACTIVE_DB: "1" });
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("ACP telemetry retention failed: configured interactive database path is unset");
+    expect(existsSync(join(root, "calls"))).toBe(false);
+  });
+
+  it("rejects an unsafe configured interactive database path rather than reporting retention success", () => {
+    const { root, env } = telemetryFixture("exit 0");
+    const result = run({ ...env, BRIDGE_DB_PATH: join(root, "missing.db"), REAP_REQUIRE_INTERACTIVE_DB: "1" });
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("ACP telemetry retention failed: database path is unsafe");
+  });
+
   it("skips ACP telemetry retention when no database is configured", () => {
     const { root, env } = telemetryFixture("exit 0");
     const result = run({ ...env, BRIDGE_DB_PATH: "" });
