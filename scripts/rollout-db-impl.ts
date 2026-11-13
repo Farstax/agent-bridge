@@ -575,6 +575,21 @@ function pruneAcpTelemetry(path: string, resolvingUnits: string[] = [], role: Da
  * This operation does not prune, migrate, or change retention policy.
  */
 function compactDatabase(path: string, resolvingUnits: string[] = [], role: DatabaseRole = "shared", allowRetiredHealthTable = false): DbEvidence {
+  // The normal deployer supplies the real fixed-unit inventory after its
+  // all-role idle fence and cgroup containment. Refuse an unowned/manual
+  // compaction or any still-active matching execution unit.
+  if (resolvingUnits.length === 0) throw new Error("offline compaction requires an owning stopped service");
+  if (process.env.NODE_ENV !== "test") {
+    for (const unit of resolvingUnits) {
+      if (!/^agent-bridge-[a-z-]+\\.service$/.test(unit)) throw new Error("invalid offline compaction service identity");
+      const state = execFileSync("systemctl", ["show", unit, "--property=ActiveState", "--value"], {
+        encoding: "utf8", timeout: 5_000,
+      }).trim();
+      if (state !== "inactive" && state !== "failed") {
+        throw new Error(`offline compaction requires stopped service ${unit}: ${state}`);
+      }
+    }
+  }
   const before = inspectDatabase(path, false, resolvingUnits, role, allowRetiredHealthTable);
   const storage = before.sqliteStorage!;
   const reclaimable = storage.freePages * storage.pageSize;
