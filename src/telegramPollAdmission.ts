@@ -4,13 +4,13 @@
  * the unique idempotency key remains after settled payload retention.
  */
 import type { BridgeDb, EventReceipt } from "./db.js";
-import type { TelegramUpdate } from "./types.js";
+import type { BotKind, TelegramUpdate } from "./types.js";
 
 export const INTERACTIVE_POLL_RECEIPT_SOURCE = "telegram";
 
 export function admitInteractivePolledUpdate(
   db: BridgeDb,
-  pollKind: string,
+  pollKind: BotKind,
   update: TelegramUpdate,
 ): { receipt: EventReceipt; created: boolean } {
   if (!Number.isSafeInteger(update.update_id) || update.update_id < 0) {
@@ -18,6 +18,7 @@ export function admitInteractivePolledUpdate(
   }
   return db.runInTransaction(() => {
     const receivedAt = new Date().toISOString();
+    const messageDate = update.message && "date" in update.message ? update.message.date : undefined;
     const identity = `telegram:interactive:${update.update_id}`;
     const admitted = db.admitEventReceipt({
       event_id: identity,
@@ -25,7 +26,8 @@ export function admitInteractivePolledUpdate(
       event_kind: update.message ? "message" : update.callback_query ? "callback_query" : "update",
       idempotency_key: identity,
       received_at: receivedAt,
-      occurred_at: update.message?.date ? new Date(update.message.date * 1000).toISOString() : receivedAt,
+      occurred_at: typeof messageDate === "number" && Number.isSafeInteger(messageDate) && messageDate > 0
+        ? new Date(messageDate * 1000).toISOString() : receivedAt,
       payload_json: JSON.stringify(update),
       authority_scope: "telegram:interactive",
     });
