@@ -48,7 +48,7 @@ describe("rollout disk admission", { timeout: 30_000 }, () => {
     expect(before).toBeGreaterThan(64 * 1024 * 1024);
 
     const result = runRollout(fixture, undefined, undefined, {
-      AGENT_BRIDGE_ROLLOUT_AVAILABLE_BYTES: "100000000",
+      AGENT_BRIDGE_ROLLOUT_AVAILABLE_BYTES: "115000000",
       AGENT_BRIDGE_ROLLOUT_SAFETY_RESERVE_BYTES: "1048576",
     });
     const output = result.stdout + "\n" + result.stderr;
@@ -73,7 +73,7 @@ describe("rollout disk admission", { timeout: 30_000 }, () => {
     const previous = readFileSync(fixture.stateFile, "utf8");
 
     const result = runRollout(fixture, undefined, undefined, {
-      AGENT_BRIDGE_ROLLOUT_AVAILABLE_BYTES: "100000000",
+      AGENT_BRIDGE_ROLLOUT_AVAILABLE_BYTES: "115000000",
       AGENT_BRIDGE_ROLLOUT_SAFETY_RESERVE_BYTES: "1048576",
       FAKE_FAIL_PHASE: "compact",
     });
@@ -107,7 +107,7 @@ describe("rollout disk admission", { timeout: 30_000 }, () => {
     db.close();
     const before = statSync(fixture.dbPaths[0]).size;
     const result = runRollout(fixture, undefined, undefined, {
-      AGENT_BRIDGE_ROLLOUT_AVAILABLE_BYTES: "100000000",
+      AGENT_BRIDGE_ROLLOUT_AVAILABLE_BYTES: "115000000",
       AGENT_BRIDGE_ROLLOUT_SAFETY_RESERVE_BYTES: "1048576",
       FAKE_IDLE_UPGRADE_STATE: "deferred_busy",
     });
