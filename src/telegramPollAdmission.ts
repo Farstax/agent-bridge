@@ -6,7 +6,7 @@
 import type { BridgeDb, EventReceipt } from "./db.js";
 import type { TelegramUpdate } from "./types.js";
 
-export const INTERACTIVE_POLL_RECEIPT_SOURCE = "telegram:interactive:poll";
+export const INTERACTIVE_POLL_RECEIPT_SOURCE = "telegram";
 
 export function admitInteractivePolledUpdate(
   db: BridgeDb,
