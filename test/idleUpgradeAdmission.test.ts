@@ -119,14 +119,14 @@ describe("atomic generic idle-only upgrade admission (#1161)", () => {
     const pending = JSON.stringify({ version: 1, state: "pending" });
     db.setSetting(key, pending);
     expect(readIdleUpgradeState(path)).toBe("idle");
-    const fence = admit();
+    const wakeFence = admit();
     expect(db.getSetting(key)).toBe(pending);
     expect(() => db.setSetting(key, JSON.stringify({ version: 1, state: "claimed" })))
       .toThrow("agent_bridge_idle_maintenance_deferred_busy");
     expect(() => db.insertRun("continuation-wake", identity, "claude"))
       .toThrow("agent_bridge_idle_maintenance_deferred_busy");
     expect(db.getSetting(key)).toBe(pending);
-    expect(releaseIdleUpgrade(path, fence.token)).toBe(true);
+    expect(releaseIdleUpgrade(path, wakeFence.token)).toBe(true);
     db.setSetting(key, JSON.stringify({ version: 1, state: "claimed" }));
     expect(tryAdmitIdleUpgrade(path)).toEqual({ state: "deferred_busy" });
     db.setSetting(key, JSON.stringify({ version: 1, state: "completed" }));
