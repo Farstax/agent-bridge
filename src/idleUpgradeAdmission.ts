@@ -15,6 +15,7 @@ import Database from "better-sqlite3";
 import { randomUUID } from "node:crypto";
 import { readFileSync, realpathSync } from "node:fs";
 import { readProcessStartTicks } from "./cliSupervisor.js";
+import { parseRunContinuation } from "./runContinuation.js";
 
 export const IDLE_UPGRADE_FENCE_KEY = "agent-bridge:idle-maintenance:v1";
 export type IdleUpgradeState = "idle" | "deferred_busy" | "unknown";
@@ -114,7 +115,14 @@ function idleState(db: Database.Database): IdleUpgradeState {
       const continuation: unknown = JSON.parse(value);
       if (!continuation || typeof continuation !== "object") return "unknown";
       const state = (continuation as { state?: unknown }).state;
-      if (state === "pending" || state === "claimed") return "deferred_busy";
+      // A pending wake is dormant durable work, like a queued message. The
+      // atomic fence below prevents it being claimed or starting during rollout.
+      if (state === "pending") {
+        // Only a valid dormant record can be exempted from upgrade admission.
+        if (!parseRunContinuation(value)) return "unknown";
+        continue;
+      }
+      if (state === "claimed") return "deferred_busy";
       if (!["completed", "failed", "expired", "cancelled"].includes(String(state))) return "unknown";
     } catch { return "unknown"; }
   }

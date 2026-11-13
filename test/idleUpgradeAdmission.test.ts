@@ -33,6 +33,19 @@ function admit() {
   return result.fence;
 }
 
+// A real persisted continuation, accepted by the canonical continuation parser.
+function continuation(id: string, state: "pending" | "claimed" | "completed"): string {
+  return JSON.stringify({
+    version: 1, id, originRunId: `run-${id}`,
+    surfaceIdentity: identity.surfaceIdentity, chatKey: identity.chatKey,
+    provider: "claude", reason: "Verify deployment",
+    requestedAt: "2026-11-13T16:00:00.000Z",
+    dueAt: "2026-11-13T16:01:00.000Z",
+    expiresAt: "2026-11-13T18:00:00.000Z",
+    state, delivery: { chatId: "isolated", chatType: "acp" },
+  });
+}
+
 describe("atomic generic idle-only upgrade admission (#1161)", () => {
   it("serializes the idle check with older Run, queue, capacity and receipt writers", () => {
     expect(readIdleUpgradeState(path)).toBe("idle");
@@ -115,10 +128,46 @@ describe("atomic generic idle-only upgrade admission (#1161)", () => {
     db.raw.prepare("UPDATE pending_messages SET state = 'claimed' WHERE id = ?").run(id);
     expect(tryAdmitIdleUpgrade(path).state).toBe("deferred_busy");
     db.deletePendingMsg(id);
-    db.setSetting("run-continuation:v1:delayed", JSON.stringify({ version: 1, state: "pending" }));
-    expect(tryAdmitIdleUpgrade(path).state).toBe("deferred_busy");
-    db.setSetting("run-continuation:v1:delayed", JSON.stringify({ version: 1, state: "completed" }));
-    expect(tryAdmitIdleUpgrade(path).state).toBe("admitted");
+    const key = "run-continuation:v1:delayed";
+    const pending = continuation("delayed", "pending");
+    db.setSetting(key, pending);
+    expect(readIdleUpgradeState(path)).toBe("idle");
+    const wakeFence = admit();
+    expect(db.getSetting(key)).toBe(pending);
+    expect(() => db.setSetting(key, continuation("delayed", "claimed")))
+      .toThrow("agent_bridge_idle_maintenance_deferred_busy");
+    expect(() => db.insertRun("continuation-wake", identity, "claude"))
+      .toThrow("agent_bridge_idle_maintenance_deferred_busy");
+    expect(db.getSetting(key)).toBe(pending);
+    expect(releaseIdleUpgrade(path, wakeFence.token)).toBe(true);
+    db.setSetting(key, continuation("delayed", "claimed"));
+    expect(tryAdmitIdleUpgrade(path)).toEqual({ state: "deferred_busy" });
+    db.setSetting(key, continuation("delayed", "completed"));
+    const recovered = admit();
+    expect(releaseIdleUpgrade(path, recovered.token)).toBe(true);
+  });
+
+  it("admits all database roles with a dormant wake but fences a racing claim", () => {
+    const workerPath = join(dir, "worker.sqlite");
+    const worker = openDb(workerPath);
+    try {
+      const key = "run-continuation:v1:future";
+      const pending = continuation("future", "pending");
+      db.setSetting(key, pending);
+      expect(readIdleUpgradeRolesState([path, workerPath])).toBe("idle");
+      const admitted = tryAdmitIdleUpgradeRoles([path, workerPath]);
+      expect(admitted.state).toBe("admitted");
+      if (admitted.state !== "admitted") throw new Error("dormant continuation blocked idle cohort");
+      expect(() => db.raw.prepare("UPDATE settings SET value = ? WHERE key = ?")
+        .run(continuation("future", "claimed"), key))
+        .toThrow("agent_bridge_idle_maintenance_deferred_busy");
+      expect(() => worker.insertRun("racing-run", identity, "codex"))
+        .toThrow("agent_bridge_idle_maintenance_deferred_busy");
+      expect(db.getSetting(key)).toBe(pending);
+      expect(releaseIdleUpgradeRoles(admitted.roles)).toBe(true);
+      expect(db.getSetting(key)).toBe(pending);
+      expect(readIdleUpgradeRolesState([path, workerPath])).toBe("idle");
+    } finally { worker.close(); }
   });
 
   it("releases only after exact token; survives reopening other runtime connections", () => {
@@ -172,6 +221,9 @@ describe("atomic generic idle-only upgrade admission (#1161)", () => {
     db.raw.prepare("DELETE FROM settings WHERE key = ?").run(IDLE_UPGRADE_FENCE_KEY);
     db.setSetting("run-continuation:v1:broken", "{not-json");
     expect(tryAdmitIdleUpgrade(path).state).toBe("unknown");
+    db.raw.prepare("DELETE FROM settings WHERE key = ?").run("run-continuation:v1:broken");
+    db.setSetting("run-continuation:v1:incomplete", JSON.stringify({ version: 1, state: "pending" }));
+    expect(tryAdmitIdleUpgrade(path)).toEqual({ state: "unknown" });
     expect(db.raw.prepare("SELECT COUNT(*) AS n FROM sqlite_master WHERE type='trigger' AND name LIKE 'ab_idle_maintenance_%'").get())
       .toMatchObject({ n: 0 });
   });

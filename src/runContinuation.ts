@@ -1068,3 +1068,6 @@ export function buildDiscordRunContinuationTurn(
     verificationOnly: isRollout ? true : undefined,
   };
 }
+
+// Reuse the same persisted-record validity contract at upgrade admission.
+export { parse as parseRunContinuation };
