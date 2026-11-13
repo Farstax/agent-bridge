@@ -581,7 +581,7 @@ function compactDatabase(path: string, resolvingUnits: string[] = [], role: Data
   if (resolvingUnits.length === 0) throw new Error("offline compaction requires an owning stopped service");
   if (process.env.NODE_ENV !== "test") {
     for (const unit of resolvingUnits) {
-      if (!/^agent-bridge-[a-z-]+\\.service$/.test(unit)) throw new Error("invalid offline compaction service identity");
+      if (!/^agent-bridge-[a-z-]+\.service$/.test(unit)) throw new Error("invalid offline compaction service identity");
       const state = execFileSync("systemctl", ["show", unit, "--property=ActiveState", "--value"], {
         encoding: "utf8", timeout: 5_000,
       }).trim();
