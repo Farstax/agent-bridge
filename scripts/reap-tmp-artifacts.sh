@@ -22,19 +22,28 @@ fi
 log() { echo "[reap-tmp-artifacts] $*"; }
 
 # The daily cleanup timer is the existing bounded service lifecycle for host
-# housekeeping.  It may prune only the configured interactive database and
-# only through rollout-db's terminal-run ACP predicate.  A missing or unsafe
-# path is a no-op: cleanup must never discover databases by scanning disk.
+# housekeeping. It may prune only the configured interactive database and only
+# through rollout-db's terminal-run ACP predicate; never discover DBs on disk.
+# A genuinely unconfigured interactive service is optional, but configured
+# installations must not silently report retention success when wiring breaks.
+retention_unavailable() {
+  if [[ "${REAP_REQUIRE_INTERACTIVE_DB:-0}" == "1" ]]; then
+    log "ACP telemetry retention failed: $1" >&2
+    FAILURES=$((FAILURES + 1))
+  else
+    log "ACP telemetry retention skipped: $1"
+  fi
+}
 prune_acp_telemetry() {
   local database="${BRIDGE_DB_PATH:-${DB_PATH:-}}" release node_bin
-  [[ -n "$database" ]] || { log "ACP telemetry retention skipped: BRIDGE_DB_PATH is unset"; return 0; }
-  [[ "$database" == /* && -f "$database" && ! -L "$database" ]] || { log "ACP telemetry retention skipped: database path is unsafe"; return 0; }
+  [[ -n "$database" ]] || { retention_unavailable "configured interactive database path is unset"; return 0; }
+  [[ "$database" == /* && -f "$database" && ! -L "$database" ]] || { retention_unavailable "database path is unsafe"; return 0; }
   release="${BRIDGE_CURRENT_RELEASE_DIR:-}"
-  [[ -L "$release" ]] || { log "ACP telemetry retention skipped: active release pointer is unavailable"; return 0; }
-  release="$(realpath -e "$release")" || return 1
+  [[ -L "$release" ]] || { retention_unavailable "active release pointer is unavailable"; return 0; }
+  release="$(realpath -e "$release")" || { retention_unavailable "active release pointer is unresolved"; return 0; }
   node_bin="${NODE_BIN:-node}"
-  command -v "$node_bin" >/dev/null 2>&1 || { log "ACP telemetry retention skipped: node is unavailable"; return 0; }
-  [[ -f "$release/node_modules/tsx/dist/cli.mjs" && -f "$release/scripts/rollout-db.ts" ]] || { log "ACP telemetry retention skipped: active retention tooling is unavailable"; return 0; }
+  command -v "$node_bin" >/dev/null 2>&1 || { retention_unavailable "node is unavailable"; return 0; }
+  [[ -f "$release/node_modules/tsx/dist/cli.mjs" && -f "$release/scripts/rollout-db.ts" ]] || { retention_unavailable "active retention tooling is unavailable"; return 0; }
   local prune_error
   if prune_error="$("$node_bin" "$release/node_modules/tsx/dist/cli.mjs" "$release/scripts/rollout-db.ts" prune --db "$database" --database-role "$database=interactive" 2>&1 >/dev/null)"; then
     return 0
