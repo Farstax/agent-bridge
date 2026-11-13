@@ -1986,6 +1986,10 @@ admit_rollout_disk() {
   [[ "$reserve_bytes" =~ ^[0-9]+$ && "$evidence_bytes" =~ ^[0-9]+$ ]] || die "disk admission budget is not numeric"
   local post_checkpoint relocation_bytes=0
   local -A device_required=() device_available=() device_path=() device_categories=()
+  disk_shortfall_device=""
+  disk_shortfall_bytes=0
+  disk_shortfall_available=0
+  local insufficient_devices=0
   for database in "${databases[@]}"; do
     main_bytes="$(regular_file_bytes "$database")"
     wal_bytes="$(regular_file_bytes "${database}-wal")"
@@ -2034,9 +2038,17 @@ admit_rollout_disk() {
     device_available[$device]="$available"
     echo "disk admission device=$device path=${device_path[$device]} available=$available required=$required reserve=$reserve_bytes categories=${device_categories[$device]}"
     if (( available < required )); then
-      die "insufficient disk for rollout and rollback on device=$device: available=$available required=$required"
+      echo "insufficient disk for rollout and rollback on device=$device: available=$available required=$required" >&2
+      insufficient_devices=$((insufficient_devices + 1))
+      disk_shortfall_device="$device"
+      disk_shortfall_bytes=$((required - available))
+      disk_shortfall_available="$available"
     fi
   done
+  if (( insufficient_devices > 0 )); then
+    (( insufficient_devices == 1 )) || disk_shortfall_device=""
+    return 1
+  fi
   record_phase DISK_ADMITTED
 }
 
@@ -2061,6 +2073,73 @@ admit_host_preparation() {
     (( available >= required )) || die "insufficient disk for host-component preparation on device=$device: available=$available required=$required"
   done
   record_phase HOST_PREPARATION_ADMITTED
+}
+
+# Only existing freelist pages on the refused device justify an offline VACUUM.
+# The candidate inventory is pinned by the already-validated DB preflight.
+select_disk_rescue_compaction() {
+  [[ -n "$disk_shortfall_device" && "$disk_shortfall_bytes" =~ ^[1-9][0-9]*$ ]] || return 1
+  local reserve_bytes="$ROLLOUT_SAFETY_RESERVE_BYTES"
+  [[ -n "${AGENT_BRIDGE_ROLLOUT_SAFETY_RESERVE_BYTES:-}" ]] && reserve_bytes="$AGENT_BRIDGE_ROLLOUT_SAFETY_RESERVE_BYTES"
+  local candidates="$artifact_dir/sqlite-compaction-candidates.txt"
+  if ! /usr/bin/python3 - "$artifact_dir/preflight-evidence.json" "$disk_shortfall_device" "$disk_shortfall_bytes" "$disk_shortfall_available" "$reserve_bytes" "${databases[@]}" > "$candidates" <<'PY'
+import json, os, stat, sys
+try:
+    evidence, device, shortfall, available, reserve, *inventory = sys.argv[1:]
+    shortfall, available, reserve = int(shortfall), int(available), int(reserve)
+    rows = json.load(open(evidence, encoding="utf-8"))["databases"]
+    if len(rows) != len(inventory) or {r["path"] for r in rows} != set(inventory):
+        raise ValueError("database preflight inventory mismatch")
+    selected = []
+    recovered = 0
+    peak_temp = 0
+    for row in rows:
+        path = row["path"]
+        st = os.lstat(path)
+        if not stat.S_ISREG(st.st_mode) or str(st.st_dev) != device:
+            continue
+        info = row.get("sqliteStorage") or {}
+        page, pages, free, size = (info[k] for k in ("pageSize", "pageCount", "freePages", "fileBytes"))
+        if not all(type(x) is int and x >= 0 for x in (page, pages, free, size)) or page == 0 or free > pages or size != st.st_size:
+            raise ValueError("invalid SQLite storage evidence")
+        reclaim = page * free
+        if reclaim < 64 * 1024 * 1024 or free * 5 < pages:
+            continue
+        wal = path + "-wal"
+        wal_bytes = os.lstat(wal).st_size if os.path.isfile(wal) and not os.path.islink(wal) else 0
+        compact_bytes = max(page, size - reclaim + wal_bytes)
+        peak_temp = max(peak_temp, 2 * compact_bytes + wal_bytes)
+        recovered += 2 * reclaim  # conservative backup + restore scratch
+        selected.append(path)
+    if not selected or recovered < shortfall or available < reserve + peak_temp:
+        raise ValueError("insufficient reclaimable pages or VACUUM temporary headroom")
+    print("\n".join(selected))
+except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError) as error:
+    print(f"disk compaction not admitted: {error}", file=sys.stderr)
+    sys.exit(1)
+PY
+  then
+    /usr/bin/rm -f -- "$candidates"
+    return 1
+  fi
+  mapfile -t compaction_databases < "$candidates"
+  (( ${#compaction_databases[@]} > 0 )) || return 1
+  compaction_db_args=()
+  local database unit
+  for database in "${compaction_databases[@]}"; do
+    compaction_db_args+=(--db "$database")
+    for unit in "${!unit_databases[@]}"; do
+      if [[ "${unit_databases[$unit]}" == "$database" ]]; then
+        compaction_db_args+=(--resolving-unit "$database=$unit" --database-role "$database=${unit_roles[$unit]}")
+      fi
+    done
+    for unit in "${!unit_autonomy_databases[@]}"; do
+      if [[ "${unit_autonomy_databases[$unit]}" == "$database" ]]; then
+        compaction_db_args+=(--resolving-unit "$database=$unit" --database-role "$database=interactive")
+      fi
+    done
+  done
+  echo "disk compaction admitted database_count=${#compaction_databases[@]} deficit=$disk_shortfall_bytes"
 }
 
 stop_and_verify_all_services() {
@@ -2394,7 +2473,7 @@ on_exit() {
         # release before any new service can start; partial backup artifacts
         # are never used as a restore source.
         if (( release_mode == 1 )) && restore_previous_release_and_start && record_phase PRE_BACKUP_RECOVERED; then
-          echo "STATE: PRE_BACKUP_RECOVERED — unchanged databases retained; previous release restored and healthy; partial backup artifacts under $backup_set are not trusted" >&2
+          echo "STATE: PRE_BACKUP_RECOVERED — existing database records retained (file layout may be compacted); previous release restored and healthy; partial backup artifacts under $backup_set are not trusted" >&2
           sentinel_removable=1
         else
           status=1
@@ -2630,7 +2709,16 @@ if (( release_mode == 1 )); then
   hash_evidence_file "$artifact_dir/host-components-previous-prepared.json"
   record_phase HOST_COMPONENTS_PREPARED
 fi
-admit_rollout_disk
+compaction_needed=0
+compaction_databases=()
+compaction_db_args=()
+if ! admit_rollout_disk; then
+  if select_disk_rescue_compaction; then
+    compaction_needed=1
+  else
+    die "insufficient disk for rollout and rollback; no safe, useful offline compaction available"
+  fi
+fi
 
 # This is the last pre-stop boundary. All canonical managed database roles
 # are known, and this shell will own the fence until acceptance or a proven
@@ -2704,6 +2792,16 @@ run_db_tool checkpoint "${inspect_db_flags[@]}" --evidence - "${db_args[@]}" > "
 hash_evidence_file "$artifact_dir/checkpoint-evidence.json"
 clear_stale_sqlite_sidecars
 record_phase WAL_DRAINED
+
+if (( compaction_needed == 1 )); then
+  echo "compacting eligible SQLite databases offline before final disk admission"
+  run_db_tool compact "${inspect_db_flags[@]}" --evidence - "${compaction_db_args[@]}" > "$artifact_dir/sqlite-compaction-evidence.json"
+  hash_evidence_file "$artifact_dir/sqlite-compaction-evidence.json"
+  validate_sqlite_sidecars
+  clear_stale_sqlite_sidecars
+  record_phase DISK_COMPACTED
+  admit_rollout_disk || die "insufficient disk for rollout and rollback after verified offline compaction"
+fi
 
 echo "backing up all databases"
 backup_databases
