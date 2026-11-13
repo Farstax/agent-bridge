@@ -2081,11 +2081,12 @@ select_disk_rescue_compaction() {
   [[ -n "$disk_shortfall_device" && "$disk_shortfall_bytes" =~ ^[1-9][0-9]*$ ]] || return 1
   local reserve_bytes="$ROLLOUT_SAFETY_RESERVE_BYTES"
   [[ -n "${AGENT_BRIDGE_ROLLOUT_SAFETY_RESERVE_BYTES:-}" ]] && reserve_bytes="$AGENT_BRIDGE_ROLLOUT_SAFETY_RESERVE_BYTES"
-  local candidates="$artifact_dir/sqlite-compaction-candidates.txt"
-  if ! /usr/bin/python3 - "$artifact_dir/preflight-evidence.json" "$disk_shortfall_device" "$disk_shortfall_bytes" "$disk_shortfall_available" "$reserve_bytes" "${databases[@]}" > "$candidates" <<'PY'
+  local candidates="$artifact_dir/sqlite-compaction-candidates.txt" backup_device
+  backup_device="$(filesystem_identity "$backup_dir")" || return 1
+  if ! /usr/bin/python3 - "$artifact_dir/preflight-evidence.json" "$disk_shortfall_device" "$disk_shortfall_bytes" "$disk_shortfall_available" "$reserve_bytes" "$backup_device" "${databases[@]}" > "$candidates" <<'PY'
 import json, os, stat, sys
 try:
-    evidence, device, shortfall, available, reserve, *inventory = sys.argv[1:]
+    evidence, device, shortfall, available, reserve, backup_device, *inventory = sys.argv[1:]
     shortfall, available, reserve = int(shortfall), int(available), int(reserve)
     rows = json.load(open(evidence, encoding="utf-8"))["databases"]
     if len(rows) != len(inventory) or {r["path"] for r in rows} != set(inventory):
@@ -2106,10 +2107,14 @@ try:
         if reclaim < 64 * 1024 * 1024 or free * 5 < pages:
             continue
         wal = path + "-wal"
-        wal_bytes = os.lstat(wal).st_size if os.path.isfile(wal) and not os.path.islink(wal) else 0
+        if os.path.islink(wal):
+            raise ValueError("unsafe SQLite WAL sidecar")
+        wal_bytes = os.lstat(wal).st_size if os.path.isfile(wal) else 0
         compact_bytes = max(page, size - reclaim + wal_bytes)
         peak_temp = max(peak_temp, 2 * compact_bytes + wal_bytes)
-        recovered += 2 * reclaim  # conservative backup + restore scratch
+        # Restore scratch is on the DB device. Backup savings apply only
+        # when the backup directory shares that same filesystem.
+        recovered += (2 if backup_device == device else 1) * (reclaim * 9 // 10)
         selected.append(path)
     if not selected or recovered < shortfall or available < reserve + peak_temp:
         raise ValueError("insufficient reclaimable pages or VACUUM temporary headroom")
