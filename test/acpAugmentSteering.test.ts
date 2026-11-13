@@ -63,6 +63,30 @@ afterEach(async () => {
 });
 
 describe("ACP steering as the augment primitive (issue #748)", () => {
+  it("retains a confirmed injected instruction even when /stop has already retired the pending row", () => {
+    const db = openDb(":memory:");
+    const handle = db.acquireLock("telegram:interactive", "100:7");
+    expect(handle).not.toBeNull();
+    if (!handle) return;
+    db.enqueueMsg("telegram:interactive", "100:7", {
+      prompt: "injected before stop", chatId: 100, threadId: 7,
+      chatType: "private", userId: 42, attachments: [],
+    });
+    const rows = db.claimPendingMsgs(handle);
+    expect(rows).toHaveLength(1);
+    db.deletePendingMsg(rows[0].id); // /stop wins after the agent consumed steering
+    const retained = db.retainInjectedPendingMsgs(
+      handle, rows.map(({ id, prompt, createdAt }) => ({ id, prompt, createdAt })),
+      "claude", { surfaceIdentity: "telegram:interactive" }, "live original",
+    );
+    expect(retained.continuedOwnership).toBe(false);
+    expect(db.pendingMsgCount("telegram:interactive", "100:7")).toBe(0);
+    expect(db.getRecentConvTurns("100:7", 10, undefined, "telegram:interactive").map((turn) => [turn.role, turn.text]))
+      .toEqual([["user", "live original"], ["user", "injected before stop"]]);
+    db.close();
+  });
+
+
   it("injects the augmenting message into the live turn instead of cancelling and restarting", async () => {
     const dbPath = join(tmpdir(), `acp-steer-augment-${Date.now()}-${Math.random()}.sqlite`);
     const db = openDb(dbPath);
