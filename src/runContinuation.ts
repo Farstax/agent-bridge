@@ -102,7 +102,7 @@ export interface RequestRunContinuationInput {
   afterSeconds?: number;
   /** Absolute one-shot wake instant (epoch ms). Expiry is measured from this instant. */
   dueAtMs?: number;
-  /** Transport delivery coordinates, persisted as-is at request time. Omit only for legacy/test callers that rely on the one-time decode fallback in parse(). */
+  /** Transport delivery coordinates, persisted as-is at request time. Omit only for legacy/test callers that rely on the one-time decode fallback in parseRunContinuation(). */
   delivery?: { chatId: string | number; chatType: string; threadId?: string | number };
   capacityWait?: boolean;
   retainedPendingMessageIds?: number[];
@@ -132,15 +132,15 @@ function runChainDepth(db: BridgeDb, runId: string): number {
   const rows = db.raw.prepare("SELECT value FROM settings WHERE key LIKE ?").all(`${PREFIX}%`) as Array<{ value: string }>;
   let depth = 0;
   for (const row of rows) {
-    const record = parse(row.value);
+    const record = parseRunContinuation(row.value);
     if (record?.successorRunId === runId) depth = Math.max(depth, record.depth ?? 0);
   }
   return depth;
 }
 
-function parse(value: string): RunContinuation | null {
+export function parseRunContinuation(value: string): RunContinuation | null {
   try {
-    const candidate = JSON.parse(value) as RunContinuation;
+    const candidate = JSON.parseRunContinuation(value) as RunContinuation;
     if (
       candidate?.version !== 1
       || !candidate.id
@@ -265,7 +265,7 @@ export function requestRunContinuation(
 
   return db.runInTransaction(() => {
     const existingRow = db.raw.prepare("SELECT value FROM settings WHERE key = ?").get(key(id)) as { value: string } | undefined;
-    const existing = existingRow ? parse(existingRow.value) : null;
+    const existing = existingRow ? parseRunContinuation(existingRow.value) : null;
     if (existing?.state === "claimed" && !(input.capacityWait && existing.capacityWait)) throw new Error("continuation already claimed for this Run");
     if (input.capacityWait && existing?.capacityWait && (
       existing.surfaceIdentity !== surfaceIdentity || existing.chatKey !== chatKey
@@ -299,7 +299,7 @@ export function requestRunContinuation(
         ? { retainedPendingMessageIds: input.retainedPendingMessageIds ?? existing!.retainedPendingMessageIds! }
         : {}),
     };
-    const persisted = parse(JSON.stringify(continuation));
+    const persisted = parseRunContinuation(JSON.stringify(continuation));
     if (!persisted) throw new Error("continuation delivery coordinates are invalid");
     db.raw.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)").run(key(id), JSON.stringify(persisted));
     return persisted;
@@ -323,8 +323,8 @@ export function peekContinuationLimitNotice(db: BridgeDb, surfaceIdentity: strin
   const row = db.raw.prepare("SELECT value FROM settings WHERE key = ?").get(noticeKey) as { value: string } | undefined;
   if (!row) return null;
   try {
-    const parsed = JSON.parse(row.value) as { runId?: string; at?: string };
-    if (parsed.runId && parsed.at && nowMs - Date.parse(parsed.at) <= LIMIT_NOTICE_MAX_AGE_MS) return { runId: parsed.runId };
+    const parsed = JSON.parseRunContinuation(row.value) as { runId?: string; at?: string };
+    if (parsed.runId && parsed.at && nowMs - Date.parseRunContinuation(parsed.at) <= LIMIT_NOTICE_MAX_AGE_MS) return { runId: parsed.runId };
   } catch { /* fall through to discard */ }
   db.raw.prepare("DELETE FROM settings WHERE key = ?").run(noticeKey);
   return null;
@@ -338,7 +338,7 @@ export function clearContinuationLimitNotice(db: BridgeDb, surfaceIdentity: stri
 export function claimCapacityWaitNotice(db: BridgeDb, id: string): boolean {
   return db.runInTransaction(() => {
     const row = db.raw.prepare("SELECT value FROM settings WHERE key = ?").get(key(id)) as { value: string } | undefined;
-    const current = row ? parse(row.value) : null;
+    const current = row ? parseRunContinuation(row.value) : null;
     if (!current?.capacityWait || current.capacityNoticeSent) return false;
     db.raw.prepare("UPDATE settings SET value = ? WHERE key = ?")
       .run(JSON.stringify({ ...current, capacityNoticeSent: true }), key(id));
@@ -350,7 +350,7 @@ export function listRunContinuations(db: BridgeDb, surfaceIdentity?: string): Ru
   const rows = db.raw.prepare("SELECT value FROM settings WHERE key LIKE ? ORDER BY key ASC")
     .all(`${PREFIX}%`) as Array<{ value: string }>;
   return rows
-    .map((row) => parse(row.value))
+    .map((row) => parseRunContinuation(row.value))
     .filter((item): item is RunContinuation => !!item)
     .filter((item) => surfaceIdentity === undefined || item.surfaceIdentity === surfaceIdentity);
 }
@@ -402,13 +402,13 @@ export function claimDueRunContinuation(
 ): RunContinuation | null {
   return db.runInTransaction(() => {
     const row = db.raw.prepare("SELECT value FROM settings WHERE key = ?").get(key(id)) as { value: string } | undefined;
-    const current = row ? parse(row.value) : null;
+    const current = row ? parseRunContinuation(row.value) : null;
     if (!current) return null;
     const isPending = current.state === "pending";
     const isClaimedCapacity = current.state === "claimed" && current.capacityWait === true;
     if (!isPending && !isClaimedCapacity) return null;
 
-    if (Date.parse(current.expiresAt) <= nowMs) {
+    if (Date.parseRunContinuation(current.expiresAt) <= nowMs) {
       if (current.capacityWait) return null;
       const expired = { ...current, state: "expired" as const };
       db.raw.prepare("UPDATE settings SET value = ? WHERE key = ?").run(JSON.stringify(expired), key(id));
@@ -435,7 +435,7 @@ export function claimDueRunContinuation(
     }
 
     if (current.capacityWait) {
-      if (Date.parse(current.expiresAt) <= nowMs) {
+      if (Date.parseRunContinuation(current.expiresAt) <= nowMs) {
         return null;
       }
       if (db.hasChatLock(current.chatKey)) {
@@ -467,7 +467,7 @@ export function claimDueRunContinuation(
           return null;
         }
         const claimantRunId = current.claimRunId;
-        const claimExpiresAtMs = current.claimExpiresAt ? Date.parse(current.claimExpiresAt) : 0;
+        const claimExpiresAtMs = current.claimExpiresAt ? Date.parseRunContinuation(current.claimExpiresAt) : 0;
         if (options?.isProcessAlive && claimantRunId) {
           if (options.isProcessAlive(claimantRunId)) {
             return null;
@@ -482,7 +482,7 @@ export function claimDueRunContinuation(
         || originRun.chat_id !== current.chatKey
         || originRun.bot !== current.provider
       ) return cancel("capacity wait origin no longer matches its settled provider attempt");
-      if (isPending && Date.parse(current.dueAt) > nowMs) return null;
+      if (isPending && Date.parseRunContinuation(current.dueAt) > nowMs) return null;
       const claimRunId = options?.runId ?? (db as any).runId;
       const claimToken = options?.claimToken ?? randomUUID();
       const leaseMs = options?.leaseMs ?? (db as any).lockLeaseMs ?? 90_000;
@@ -551,7 +551,7 @@ export function claimDueRunContinuation(
       }
 
       try {
-        const before = JSON.parse(auditRow.before_json);
+        const before = JSON.parseRunContinuation(auditRow.before_json);
         if (before.containmentState !== "proven" || before.processState !== "absent") {
           return cancel("reconciliation containment not proven");
         }
@@ -579,7 +579,7 @@ export function claimDueRunContinuation(
         return cancel("originating Run cancelled or reset by user");
       }
 
-      if (Date.parse(current.dueAt) > nowMs) return null;
+      if (Date.parseRunContinuation(current.dueAt) > nowMs) return null;
 
       const claimed: RunContinuation = { ...current, state: "claimed", claimedAt: new Date(nowMs).toISOString() };
       db.raw.prepare("UPDATE settings SET value = ? WHERE key = ?").run(JSON.stringify(claimed), key(id));
@@ -609,7 +609,7 @@ export function claimDueRunContinuation(
                   : "originating provider session binding changed",
       );
     }
-    if (Date.parse(current.dueAt) > nowMs) return null;
+    if (Date.parseRunContinuation(current.dueAt) > nowMs) return null;
     const claimed = {
       ...current, state: "claimed" as const, claimedAt: new Date(nowMs).toISOString(),
       // ACP wakes must prove exact runner claim before the provider boundary.
@@ -632,7 +632,7 @@ export function cancelPendingRunContinuation(
 ): boolean {
   return db.runInTransaction(() => {
     const row = db.raw.prepare("SELECT value FROM settings WHERE key = ?").get(key(id)) as { value: string } | undefined;
-    const current = row ? parse(row.value) : null;
+    const current = row ? parseRunContinuation(row.value) : null;
     if (!current || (current.state !== "pending" && current.state !== "claimed")) return false;
     const cancelled: RunContinuation = {
       ...current,
@@ -676,7 +676,7 @@ export function settleRunContinuation(
 ): void {
   db.runInTransaction(() => {
     const row = db.raw.prepare("SELECT value FROM settings WHERE key = ?").get(key(id)) as { value: string } | undefined;
-    const current = row ? parse(row.value) : null;
+    const current = row ? parseRunContinuation(row.value) : null;
     if (!current) return;
     if (current.state === "completed" || current.state === "cancelled") return;
     if (outcome === "expired" && current.state === "expired") return;
@@ -702,7 +702,7 @@ export function settleRunContinuation(
 export function linkRunContinuationRun(db: BridgeDb, id: string, runId: string, claimantToken?: string): boolean {
   return db.runInTransaction(() => {
     const row = db.raw.prepare("SELECT value FROM settings WHERE key = ?").get(key(id)) as { value: string } | undefined;
-    const current = row ? parse(row.value) : null;
+    const current = row ? parseRunContinuation(row.value) : null;
     if (!current || current.capacityWait) return false;
     if (current.outwardSessionId) {
       const successor = db.getRun(runId);
@@ -722,7 +722,7 @@ export function linkRunContinuationRun(db: BridgeDb, id: string, runId: string, 
 export function linkCapacityContinuationRun(db: BridgeDb, id: string, claimToken: string, runId: string): boolean {
   return db.runInTransaction(() => {
     const row = db.raw.prepare("SELECT value FROM settings WHERE key = ?").get(key(id)) as { value: string } | undefined;
-    const current = row ? parse(row.value) : null;
+    const current = row ? parseRunContinuation(row.value) : null;
     const run = db.getRun(runId);
     if (!current?.capacityWait || current.state !== "claimed" || current.claimToken !== claimToken ||
         !run || run.surface_identity !== current.surfaceIdentity || run.chat_id !== current.chatKey) return false;
@@ -742,7 +742,7 @@ export function reconcileRunContinuations(db: BridgeDb, surfaceIdentity: string,
     if (continuation.capacityWait || continuation.state !== "claimed") continue;
     // A live outward worker may hold its claim before atomic successor admission.
     if (continuation.outwardSessionId && !continuation.successorRunId &&
-        continuation.claimExpiresAt && Date.parse(continuation.claimExpiresAt) > nowMs) continue;
+        continuation.claimExpiresAt && Date.parseRunContinuation(continuation.claimExpiresAt) > nowMs) continue;
     const correlationKey = `${PREFIX}${continuation.id}`;
     if (db.hasPendingMessageForCorrelationKey(continuation.surfaceIdentity, correlationKey)) continue;
     if (continuation.successorRunId) {
@@ -762,7 +762,7 @@ export function reconcileRunContinuations(db: BridgeDb, surfaceIdentity: string,
       }
     }
     if (continuation.outwardSessionId && !continuation.successorRunId &&
-        continuation.claimExpiresAt && Date.parse(continuation.claimExpiresAt) <= nowMs) {
+        continuation.claimExpiresAt && Date.parseRunContinuation(continuation.claimExpiresAt) <= nowMs) {
       // The existing atomic successor link is committed before any provider
       // execution. No successor + no queued occurrence proves this wake never
       // reached the provider boundary. Rotate its claim by requeueing; a
@@ -770,7 +770,7 @@ export function reconcileRunContinuations(db: BridgeDb, surfaceIdentity: string,
       db.runInTransaction(() => {
         const row = db.raw.prepare("SELECT value FROM settings WHERE key = ?")
           .get(key(continuation.id)) as { value: string } | undefined;
-        const current = row ? parse(row.value) : null;
+        const current = row ? parseRunContinuation(row.value) : null;
         if (!current || current.state !== "claimed" || !current.outwardSessionId ||
             current.claimToken !== continuation.claimToken || current.successorRunId ||
             db.hasPendingMessageForCorrelationKey(current.surfaceIdentity, `${PREFIX}${current.id}`)) return;
@@ -794,10 +794,10 @@ export function requeueClaimedCapacityWait(
 ): void {
   db.runInTransaction(() => {
     const row = db.raw.prepare("SELECT value FROM settings WHERE key = ?").get(key(id)) as { value: string } | undefined;
-    const current = row ? parse(row.value) : null;
+    const current = row ? parseRunContinuation(row.value) : null;
     if (!current?.capacityWait || current.state !== "claimed") return;
     if (!claimantToken || current.claimToken !== claimantToken) return;
-    if (Date.parse(current.expiresAt) <= nowMs) {
+    if (Date.parseRunContinuation(current.expiresAt) <= nowMs) {
       // Leave expiry finalisation to the expiry path so it can retire the
       // original receipt and deliver its durable final notification.
       return;
@@ -808,7 +808,7 @@ export function requeueClaimedCapacityWait(
     if ((ids.length > 0 && (!db.hasAnyPendingMessageId(current.surfaceIdentity, current.chatKey, ids)
       || db.isAnyPendingMessageClaimed(current.surfaceIdentity, current.chatKey, ids)))
       || db.hasChatLock(current.chatKey)) return;
-    const dueAt = new Date(Math.min(Date.parse(current.expiresAt), nowMs + 300_000)).toISOString();
+    const dueAt = new Date(Math.min(Date.parseRunContinuation(current.expiresAt), nowMs + 300_000)).toISOString();
     db.raw.prepare("UPDATE settings SET value = ? WHERE key = ?")
     .run(JSON.stringify({ ...current, state: "pending", dueAt, claimedAt: undefined, claimRunId: undefined, claimToken: undefined, claimExpiresAt: undefined }), key(id));
   });
@@ -825,14 +825,14 @@ export function requeueProvenOutwardCapacityRejection(
 ): boolean {
   return db.runInTransaction(() => {
     const row = db.raw.prepare("SELECT value FROM settings WHERE key = ?").get(key(id)) as { value: string } | undefined;
-    const current = row ? parse(row.value) : null;
+    const current = row ? parseRunContinuation(row.value) : null;
     if (!current?.outward || current.state !== "claimed" || current.claimToken !== claimantToken
         || !current.successorRunId || db.hasChatLock(current.chatKey)
-        || Date.parse(current.expiresAt) <= nowMs) return false;
+        || Date.parseRunContinuation(current.expiresAt) <= nowMs) return false;
     const successor = db.getRun(current.successorRunId);
     if (!successor || successor.status !== "failed"
         || successor.surface_identity !== current.surfaceIdentity || successor.chat_id !== current.chatKey) return false;
-    const dueAt = new Date(Math.min(Date.parse(current.expiresAt), nowMs + 300_000)).toISOString();
+    const dueAt = new Date(Math.min(Date.parseRunContinuation(current.expiresAt), nowMs + 300_000)).toISOString();
     db.raw.prepare("UPDATE settings SET value = ? WHERE key = ?").run(JSON.stringify({
       ...current, state: "pending", dueAt, successorRunId: undefined,
       claimedAt: undefined, claimRunId: undefined, claimToken: undefined, claimExpiresAt: undefined,
@@ -851,7 +851,7 @@ export async function scanRunContinuations(
   reconcileRunContinuations(db, surfaceIdentity, nowMs);
   for (const candidate of listRunContinuations(db, surfaceIdentity)) {
     if (candidate.state !== "pending" && !(candidate.state === "claimed" && candidate.capacityWait)) continue;
-    if (candidate.capacityWait && Date.parse(candidate.expiresAt) <= nowMs) {
+    if (candidate.capacityWait && Date.parseRunContinuation(candidate.expiresAt) <= nowMs) {
 // Candidate state is pending or claimed capacity wait
       const ids = candidate.retainedPendingMessageIds ?? [];
       if (!candidate.expiryDeliveryPending) {
@@ -874,11 +874,11 @@ export async function scanRunContinuations(
 
       const claimedExpiry = db.runInTransaction((): RunContinuation | null => {
         const row = db.raw.prepare("SELECT value FROM settings WHERE key = ?").get(key(candidate.id)) as { value: string } | undefined;
-        const current = row ? parse(row.value) : null;
+        const current = row ? parseRunContinuation(row.value) : null;
         if (!current || current.state === "completed" || current.state === "cancelled" || current.state === "expired") return null;
 
         if (current.expiryDeliveryPending) {
-          const claimExpiresAtMs = current.claimExpiresAt ? Date.parse(current.claimExpiresAt) : 0;
+          const claimExpiresAtMs = current.claimExpiresAt ? Date.parseRunContinuation(current.claimExpiresAt) : 0;
           const claimantAlive = current.claimRunId && options?.isProcessAlive?.(current.claimRunId);
           // A verified live claimant may still be inside an external delivery
           // call after its lease. Do not duplicate that delivery; only a
@@ -1021,9 +1021,9 @@ export function buildTelegramRunContinuationTurn(
   actorId: string,
 ): InteractiveTurnInput {
   // Delivery coordinates are persisted at request time (or recovered once, by
-  // parse(), from a legacy pre-delivery record) -- this builder must never
+  // parseRunContinuation(), from a legacy pre-delivery record) -- this builder must never
   // parse them back out of chatKey itself.
-  const delivery = continuation.delivery ?? parse(JSON.stringify(continuation))?.delivery;
+  const delivery = continuation.delivery ?? parseRunContinuation(JSON.stringify(continuation))?.delivery;
   if (!delivery) throw new Error("run continuation has no Telegram delivery coordinates");
   const isRollout = Boolean(continuation.rolloutProvenance);
   return {
@@ -1048,7 +1048,7 @@ export function buildDiscordRunContinuationTurn(
   continuation: RunContinuation,
   actorId: string,
 ): InteractiveTurnInput {
-  const delivery = continuation.delivery ?? parse(JSON.stringify(continuation))?.delivery;
+  const delivery = continuation.delivery ?? parseRunContinuation(JSON.stringify(continuation))?.delivery;
   if (!delivery) throw new Error("run continuation has no Discord delivery coordinates");
   const isRollout = Boolean(continuation.rolloutProvenance);
   return {
