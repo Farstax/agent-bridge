@@ -77,6 +77,9 @@ describe("rollout disk admission", { timeout: 30_000 }, () => {
       AGENT_BRIDGE_ROLLOUT_AVAILABLE_BYTES: "115000000",
       AGENT_BRIDGE_ROLLOUT_SAFETY_RESERVE_BYTES: "1048576",
       FAKE_FAIL_PHASE: "compact",
+      // The shared harness defaults to corrupting the DB on phase failures.
+      // This canary exercises an interrupted VACUUM with intact DB records.
+      FAKE_CORRUPT_DB: "",
     });
     const output = result.stdout + "\n" + result.stderr;
     expect(result.status).not.toBe(0);
