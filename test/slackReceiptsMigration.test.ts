@@ -13,7 +13,7 @@ describe("schema v20 slack receipts (#943)", () => {
   afterEach(() => rmSync(dir, { recursive: true, force: true }));
 
   it("upgrades a v19 database preserving health and autonomous receipts, then admits slack rows", () => {
-    expect(CURRENT_SCHEMA_VERSION).toBe(26);
+    expect(CURRENT_SCHEMA_VERSION).toBe(27);
     const path = join(dir, "bridge.sqlite");
     const raw = new Database(path);
     // Build a current v19 image by running the registered plan to v19 semantics.
@@ -62,7 +62,9 @@ describe("schema v20 slack receipts (#943)", () => {
 
   it("declares a copy-class disk-growth contract for the rebuild", () => {
     expect(migrationGrowthClass(19)).toBe("copy");
-    expect(migrationGrowthClass(20)).toBe("none");
+    expect(migrationGrowthClass(20)).toBe("copy");
+    expect(migrationGrowthClass(26)).toBe("copy");
+    expect(migrationGrowthClass(27)).toBe("none");
   });
 
   it("accepts the slack database role", async () => {

@@ -18,6 +18,7 @@ import { applyOutwardAcpSessionsMigration } from "./outwardAcpSessionsMigration.
 import { applyConversationIdentityMigration } from "./conversationIdentityMigration.js";
 import { applyLegacySettingsSurfaceMigration } from "./legacySettingsSurfaceMigration.js";
 import { applySlackReceiptsMigration } from "./slackReceiptsMigration.js";
+import { applyTelegramReceiptsMigration } from "./telegramReceiptsMigration.js";
 import { applyOutwardWorkstreamsMigration } from "./outwardWorkstreamsMigration.js";
 import { applyExecutionCapacityMigration } from "./executionCapacityMigration.js";
 import { applyExecutionCapacityNotificationMigration } from "./executionCapacityNotificationMigration.js";
@@ -26,7 +27,7 @@ import { applyRecoveryCopyIsolationMigration } from "./recoveryCopyIsolationMigr
 import { applyConversationDirectoriesMigration } from "./conversationDirectoriesMigration.js";
 
 /** The schema version reached after the complete registered migration plan. */
-export const CURRENT_SCHEMA_VERSION = 26;
+export const CURRENT_SCHEMA_VERSION = 27;
 
 export interface Migration {
   version: number;
@@ -45,7 +46,7 @@ const MIGRATION_GROWTH: Readonly<Record<number, "none" | "copy">> = {
   1: "copy", 2: "copy", 3: "copy", 4: "copy", 5: "copy", 6: "none",
   7: "copy", 8: "copy", 9: "copy", 10: "copy", 11: "copy", 12: "copy",
   13: "copy", 14: "copy", 15: "copy", 16: "copy", 17: "copy", 18: "copy",
-  19: "none", 20: "copy", 21: "none", 22: "none", 23: "none", 24: "none", 25: "none", 26: "none",
+  19: "none", 20: "copy", 21: "none", 22: "none", 23: "none", 24: "none", 25: "none", 26: "none", 27: "copy",
 };
 
 export function migrationGrowthClass(currentVersion: number): "none" | "copy" {
@@ -213,6 +214,7 @@ export function schemaTablesForRole(databaseRole = "shared"): readonly string[] 
  * Version 24 retains execution records fenced during recovery-copy isolation.
  * Version 25 adds Workstream title/archive metadata to outward ACP sessions (#1101).
  * Version 26 separates outward ACP workspace scope and per-conversation execution cwd (#1179).
+ * Version 27 extends the existing event receipt source constraint to Telegram polling (#1221).
  * Each step is transactional and user_version remains authoritative.
  */
 const DEFAULT_MIGRATIONS: readonly Migration[] = [
@@ -242,4 +244,5 @@ const DEFAULT_MIGRATIONS: readonly Migration[] = [
   { version: 24, name: "retain-recovery-copy-execution-evidence", up: applyRecoveryCopyIsolationMigration },
   { version: 25, name: "add-outward-workstream-metadata", up: applyOutwardWorkstreamsMigration },
   { version: 26, name: "add-conversation-execution-directories", up: applyConversationDirectoriesMigration },
+  { version: 27, name: "add-telegram-poll-receipts", up: applyTelegramReceiptsMigration },
 ];

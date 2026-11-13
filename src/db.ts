@@ -1047,7 +1047,7 @@ export class BridgeDb {
   }
 
   claimPendingMsgs(handle: ExecutionLaneHandle, onlyIds?: readonly number[]): Array<{
-    id: number; chatKey: string; prompt: string; chatId: number | string; threadId: number | string | null; chatType: string; userId: number | string | null; attachments: string[]; scheduledOccurrenceKey: string | null;
+    id: number; chatKey: string; prompt: string; chatId: number | string; threadId: number | string | null; chatType: string; userId: number | string | null; attachments: string[]; scheduledOccurrenceKey: string | null; createdAt: string;
   }> {
     const { surface, chatKey } = handle;
     assertExecutionScope(surface, chatKey);
@@ -1060,7 +1060,7 @@ export class BridgeDb {
       const rows = this.raw.prepare(`
         SELECT id, chat_key AS chatKey, prompt, chat_id AS chatId, thread_id AS threadId, chat_type AS chatType, user_id AS userId,
                state, claim_run_id AS claimRunId, claim_acquisition_id AS claimAcquisitionId, attachments_json AS attachmentsJson,
-               scheduled_occurrence_key AS scheduledOccurrenceKey
+               scheduled_occurrence_key AS scheduledOccurrenceKey, created_at AS createdAt
         FROM pending_messages
         WHERE surface = ? AND chat_key = ?
           AND (state = 'queued' OR (state = 'claimed' AND claim_run_id = ? AND claim_acquisition_id = ?))
@@ -1101,6 +1101,54 @@ export class BridgeDb {
         DELETE FROM pending_messages
         WHERE id = ? AND surface = ? AND chat_key = ? AND state = 'claimed' AND claim_run_id = ? AND claim_acquisition_id = ?
       `).run(id, surface, chatKey, handle.runId, handle.acquisitionId).changes === 1;
+    });
+  }
+
+  /**
+   * An ACP steering acknowledgement is irreversible. Retire the injected
+   * pending rows and retain their original accepted text/time in ONE SQLite
+   * transaction, even if the execution lock expired while the RPC was in
+   * flight. Deletion is the idempotency key: a retired row cannot be recorded
+   * or delivered a second time by another recovery pass.
+   *
+   * Returns false when the original claim/lease no longer belongs to caller;
+   * the agent must stop steering, but the injected rows are still retired.
+   */
+  retainInjectedPendingMsgs(
+    handle: ExecutionLaneHandle,
+    injected: readonly { id: number; prompt: string; createdAt: string }[],
+    cli: string,
+    provenance: ConversationTurnProvenance,
+    originalPrompt?: string,
+  ): { continuedOwnership: boolean; originalRecorded: boolean } {
+    if (injected.length === 0) return { continuedOwnership: this.locks.owns(handle), originalRecorded: false };
+    const { surface, chatKey } = handle;
+    assertExecutionScope(surface, chatKey);
+    return this.runInImmediateTransaction(() => {
+      const persisted = injected.map(({ id }) => this.raw.prepare(`
+        SELECT id, created_at AS createdAt, state, claim_run_id AS claimRunId,
+          claim_acquisition_id AS claimAcquisitionId
+        FROM pending_messages WHERE id = ? AND surface = ? AND chat_key = ?
+      `).get(id, surface, chatKey) as {
+        id: number; createdAt: string; state: string;
+        claimRunId: string | null; claimAcquisitionId: string | null;
+      } | undefined);
+      const continuedOwnership = this.locks.owns(handle) && persisted.every((row) =>
+        row?.state === "claimed" && row.claimRunId === handle.runId
+          && row.claimAcquisitionId === handle.acquisitionId);
+      if (originalPrompt !== undefined) {
+        this.addConvTurn(chatKey, "user", originalPrompt, cli, provenance);
+      }
+      for (const [index, item] of injected.entries()) {
+        // /stop can retire a pending row while the ACP injection acknowledgement
+        // is in flight. The captured queue submission remains authoritative
+        // evidence that this user instruction was sent exactly once.
+        this.raw.prepare(
+          "DELETE FROM pending_messages WHERE id = ? AND surface = ? AND chat_key = ?",
+        ).run(item.id, surface, chatKey);
+        this.addConvTurn(chatKey, "user", item.prompt, cli, provenance, persisted[index]?.createdAt ?? item.createdAt);
+      }
+      return { continuedOwnership, originalRecorded: originalPrompt !== undefined };
     });
   }
 

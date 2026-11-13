@@ -63,6 +63,30 @@ afterEach(async () => {
 });
 
 describe("ACP steering as the augment primitive (issue #748)", () => {
+  it("retains a confirmed injected instruction even when /stop has already retired the pending row", () => {
+    const db = openDb(":memory:");
+    const handle = db.acquireLock("telegram:interactive", "100:7");
+    expect(handle).not.toBeNull();
+    if (!handle) return;
+    db.enqueueMsg("telegram:interactive", "100:7", {
+      prompt: "injected before stop", chatId: 100, threadId: 7,
+      chatType: "private", userId: 42, attachments: [],
+    });
+    const rows = db.claimPendingMsgs(handle);
+    expect(rows).toHaveLength(1);
+    db.deletePendingMsg(rows[0].id); // /stop wins after the agent consumed steering
+    const retained = db.retainInjectedPendingMsgs(
+      handle, rows.map(({ id, prompt, createdAt }) => ({ id, prompt, createdAt })),
+      "claude", { surfaceIdentity: "telegram:interactive" }, "live original",
+    );
+    expect(retained.continuedOwnership).toBe(false);
+    expect(db.pendingMsgCount("telegram:interactive", "100:7")).toBe(0);
+    expect(db.getRecentConvTurns("100:7", 10, undefined, "telegram:interactive").map((turn) => [turn.role, turn.text]))
+      .toEqual([["user", "live original"], ["user", "injected before stop"]]);
+    db.close();
+  });
+
+
   it("injects the augmenting message into the live turn instead of cancelling and restarting", async () => {
     const dbPath = join(tmpdir(), `acp-steer-augment-${Date.now()}-${Math.random()}.sqlite`);
     const db = openDb(dbPath);
@@ -101,6 +125,8 @@ describe("ACP steering as the augment primitive (issue #748)", () => {
     expect((engine as any).laneCoordinator.augmentedTaskCount()).toBe(0);
     expect((engine as any).laneCoordinator.cancellationCount()).toBe(0);
     expect(c.sendMessage.mock.calls.some((call: any[]) => call[0]?.text === "first final")).toBe(true);
+    expect(db.getRecentConvTurns("100:7", 10, undefined, "telegram:interactive").map((turn) => [turn.role, turn.text]))
+      .toEqual([["user", "first request"], ["user", "second request"], ["assistant", "first final"]]);
 
     db.close();
     rmSync(dbPath, { force: true });
@@ -118,7 +144,11 @@ describe("ACP steering as the augment primitive (issue #748)", () => {
     // round's rows and completing them (e.g. a heartbeat failure): the
     // round's own injection already happened at the provider, but Bridge
     // can no longer safely trust this handle for a further round.
-    const completeSpy = vi.spyOn(db, "completePendingMsgs").mockReturnValueOnce(false);
+    const retain = db.retainInjectedPendingMsgs.bind(db);
+    const completeSpy = vi.spyOn(db, "retainInjectedPendingMsgs").mockImplementationOnce((...args) => ({
+      ...retain(...args),
+      continuedOwnership: false,
+    }));
 
     const mockRunProviderInvocation = vi.fn()
       .mockImplementationOnce(async (_bot: string, _invocation: any, _cwd: string, opts: any) => {
@@ -229,6 +259,8 @@ describe("ACP steering as the augment primitive (issue #748)", () => {
 
     expect(steerCalls).toEqual(["second request", "third request"]);
     expect(mockRunProviderInvocation).toHaveBeenCalledTimes(1);
+    expect(db.getRecentConvTurns("100:7", 10, undefined, "telegram:interactive").map((turn) => [turn.role, turn.text]))
+      .toEqual([["user", "first request"], ["user", "second request"], ["user", "third request"], ["assistant", "first final"]]);
     expect(db.pendingMsgCount("telegram:interactive", "100:7")).toBe(0);
     expect((engine as any).laneCoordinator.cancellationCount()).toBe(0);
 

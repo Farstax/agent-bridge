@@ -68,6 +68,7 @@ import {
 import { fetchCodexCapacityResetAt } from "./codexUsage.js";
 import { createCapacityFallbackRequestedHook } from "./providers/capacityFallbackHook.js";
 import { recoveryCopySurfaceIdentity } from "./db/recoveryCopyIsolation.js";
+import { admitInteractivePolledUpdate, INTERACTIVE_POLL_RECEIPT_SOURCE } from "./telegramPollAdmission.js";
 
 loadInteractiveEnvFile();
 
@@ -517,16 +518,12 @@ console.log("[interactive] starting polling...");
 let offset = db.getLastUpdateId("codex");
 const POLL_KIND = "codex";
 
-for (;;) {
+async function processAdmittedInteractiveUpdate(
+  update: TelegramUpdate,
+  onDeferred: (operation: Promise<unknown>) => void,
+  receiptId?: number,
+): Promise<void> {
   try {
-    const updates = await client.getUpdates({ offset: offset + 1, timeout: 30, allowed_updates: ["message", "callback_query"] });
-
-    for (const update of (updates.result as any) ?? []) {
-      const updateId: number = update.update_id;
-      offset = updateId;
-      db.setLastUpdateId(POLL_KIND, updateId);
-
-      try {
         let typedUpdate = update as TelegramUpdate;
         const isGroupUpdate = isGroupInteractiveUpdate(typedUpdate);
         if (isGroupUpdate) {
@@ -549,11 +546,11 @@ for (;;) {
               reason: typedUpdate.message?.sender_chat && !typedUpdate.message?.from ? "anonymous_sender_chat" : "unauthorized_user",
             }));
           }
-          continue;
+          return;
         }
 
         const targetedUpdate = targetTelegramAbortUpdate(typedUpdate, botUsername);
-        if (!targetedUpdate) continue;
+        if (!targetedUpdate) return;
         typedUpdate = targetedUpdate;
 
         const message = typedUpdate.message;
@@ -566,21 +563,21 @@ for (;;) {
           if (autonomyCommand) {
             if (!autonomyController) {
               await sendTelegramMessage({ client, kind: "interactive", chatId, body: { text: "Autonomy is not configured on this runtime.", message_thread_id: message.message_thread_id } });
-              continue;
+              return;
             }
             if (autonomyCommand === "status") {
               await sendTelegramMessage({ client, kind: "interactive", chatId, body: { text: autonomyController.statusText(), message_thread_id: message.message_thread_id } });
-              continue;
+              return;
             }
             if (autonomyCommand === "stop") {
               await autonomyController.stop("authenticated owner /autonomy stop");
               await sendTelegramMessage({ client, kind: "interactive", chatId, body: { text: autonomyController.statusText(), message_thread_id: message.message_thread_id } });
-              continue;
+              return;
             }
             const { pref } = resolveCredentialCheckedPreference(chatKey);
             if (!pref) {
               await sendTelegramMessage({ client, kind: "interactive", chatId, body: { text: "No authenticated CLI is available to start autonomy.", message_thread_id: message.message_thread_id } });
-              continue;
+              return;
             }
             if (!isFirstClassAutonomyBot(pref)) {
               await sendTelegramMessage({
@@ -592,7 +589,7 @@ for (;;) {
                   message_thread_id: message.message_thread_id,
                 },
               });
-              continue;
+              return;
             }
             const started = await autonomyController.start({
               bot: pref,
@@ -606,13 +603,13 @@ for (;;) {
             });
             const text = started.created ? `Autonomy started: ${started.goal.goalId}.` : `Autonomy already running: ${started.goal.goalId}.`;
             await sendTelegramMessage({ client, kind: "interactive", chatId, body: { text, message_thread_id: message.message_thread_id } });
-            continue;
+            return;
           }
 
           if (autonomyController && autonomyDb) {
             const supervisorReply = matchAutonomousTelegramSupervisorReply(autonomyDb, message);
             if (supervisorReply && autonomyController.recordSupervisorInput(supervisorReply)) {
-              continue;
+              return;
             }
           }
 
@@ -625,7 +622,7 @@ for (;;) {
             resolvePreference: resolveCredentialCheckedPreference,
             sendMessage: (body) => sendTelegramMessage({ client, kind: "interactive", chatId, body }),
           })) {
-            continue;
+            return;
           }
           if (isSensorsCommand(rawText, botUsername)) {
             await sendTelegramMessage({
@@ -638,7 +635,7 @@ for (;;) {
                 message_thread_id: message.message_thread_id,
               },
             });
-            continue;
+            return;
           }
         }
 
@@ -661,7 +658,7 @@ for (;;) {
               }).then(() => undefined);
             },
           })) {
-            continue;
+            return;
           }
 
           const newCli = handleCliSwitchCallback(cbq.data);
@@ -669,7 +666,7 @@ for (;;) {
             const available = getAvailableCliKinds();
             if (!available.has(newCli)) {
               await client.answerCallbackQuery({ callback_query_id: cbq.id, text: `${newCli} is not available on this box` });
-              continue;
+              return;
             }
 
             const chatId = cbq.message?.chat?.id;
@@ -693,7 +690,7 @@ for (;;) {
                 await registerGroupChatCommands(newCli, chatId);
               }
             }
-            continue;
+            return;
           }
         }
 
@@ -711,11 +708,11 @@ for (;;) {
                 body: { text: "No CLI is currently available on this box. Authenticate or install a CLI, then run /cli again.", message_thread_id: unavailableThreadId },
               });
             });
-            continue;
+            return;
           }
 
           if (chatId != null) {
-            dispatchUnifiedTelegramUpdate(typedUpdate, chatKey, surfaceIdentity, engines[pref], async (turn) => {
+            onDeferred(dispatchUnifiedTelegramUpdate(typedUpdate, chatKey, surfaceIdentity, engines[pref], async (turn) => {
               await dispatchInteractiveTurnWithFallback(turn, {
                 engines,
                 fallbackChain,
@@ -732,11 +729,11 @@ for (;;) {
                   }
                 },
               });
-            }).catch((err: unknown) => console.error("[interactive] dispatch error", err));
-            continue;
+            }, receiptId).catch((err: unknown) => { console.error("[interactive] dispatch error", err); throw err; }));
+            return;
           } else {
-            engines[pref].handleUpdate(typedUpdate, chatKey)
-              .catch((err: unknown) => console.error("[interactive] handleUpdate error", err));
+            onDeferred(engines[pref].handleUpdate(typedUpdate, chatKey)
+              .catch((err: unknown) => { console.error("[interactive] handleUpdate error", err); throw err; }));
           }
         } else {
           const pref = resolveAvailableCliPreference("codex", getAvailableCliKinds());
@@ -746,8 +743,74 @@ for (;;) {
             await handleUnavailableCliUpdate(typedUpdate, client, async () => {});
           }
         }
-      } catch (err) {
-        console.error("[interactive] update handling failed", err);
+  } catch (err) {
+    console.error("[interactive] update handling failed", err);
+    throw err;
+  }
+}
+
+/** A claimed but uncorrelated receipt is unsafe to blindly replay after a crash. */
+async function dispatchInteractivePollReceipt(receipt: { id: number; payload_json: string }): Promise<void> {
+  if (!db.claimEventReceiptDispatch(receipt.id)) return;
+  let handedOff = false;
+  const finish = (status: "completed" | "failed", errorClass?: string) => {
+    db.finishEventReceipt(receipt.id, {
+      status,
+      ...(errorClass ? { error_class: errorClass } : {}),
+    });
+  };
+  try {
+    const update = JSON.parse(receipt.payload_json) as TelegramUpdate;
+    await processAdmittedInteractiveUpdate(update, (operation) => {
+      handedOff = true;
+      void operation.then(
+        () => finish("completed"),
+        (error) => {
+          console.error("[interactive] deferred Telegram dispatch failed", error);
+          finish("failed", "telegram_dispatch_failed");
+        },
+      );
+    }, receipt.id);
+    if (!handedOff) finish("completed");
+  } catch (error) {
+    console.error("[interactive] Telegram receipt processing failed", error);
+    if (!handedOff) finish("failed", "telegram_processing_failed");
+  }
+}
+
+// A committed receipt never needs Telegram to redeliver it after restart.
+// Re-drive only never-started receipts; do not auto-resubmit a potentially
+// running/side-effecting dispatch after uncertain delivery.
+for (const receipt of db.listEventReceipts(INTERACTIVE_POLL_RECEIPT_SOURCE, ["received"])) {
+  await dispatchInteractivePollReceipt(receipt);
+}
+const uncertainPollReceipts = db.listEventReceipts(INTERACTIVE_POLL_RECEIPT_SOURCE, ["dispatching", "run_created"]);
+if (uncertainPollReceipts.length > 0) {
+  console.warn(`[interactive] ${uncertainPollReceipts.length} interrupted Telegram receipt(s) need authoritative Run/queue reconciliation; refusing duplicate automatic execution`);
+}
+
+for (;;) {
+  try {
+    const updates = await client.getUpdates({ offset: offset + 1, timeout: 30, allowed_updates: ["message", "callback_query"] });
+
+    for (const update of (updates.result as TelegramUpdate[]) ?? []) {
+      const updateId = update.update_id;
+      if (!isAuthorizedInteractiveUpdate(update, allowedUserIds)) {
+        // An unauthorized/no-actor update has no effect to recover; preserving
+        // the existing checkpoint and auth boundary is sufficient.
+        db.setLastUpdateId(POLL_KIND, updateId);
+        offset = updateId;
+        await processAdmittedInteractiveUpdate(update, () => undefined);
+        continue;
+      }
+      // The receipt and offset are a single durable transaction. Do not
+      // acknowledge Telegram or start a provider unless admission commits.
+      const admitted = admitInteractivePolledUpdate(db, POLL_KIND, update);
+      offset = updateId;
+      if (admitted.created || admitted.receipt.status === "received") {
+        // Command/callback work stays sequential. Provider Runs detach via
+        // onDeferred as soon as dispatch starts; polling never awaits the Run.
+        await dispatchInteractivePollReceipt(admitted.receipt);
       }
     }
   } catch (err) {

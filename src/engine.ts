@@ -1417,41 +1417,43 @@ export class BridgeEngine {
         console.warn(`[${this.kind}] ACP steering request failed on lane ${executionLane}, falling back to cancel+restart`, error);
       }
 
-      if (record.mode !== "augment") {
-        // A stop/interrupt escalated while this round's steering RPC was in
-        // flight. This round's message may already be irreversibly live in
-        // the turn if it returned "injected" — that can't be undone — but
-        // Bridge must still honor the escalation's kill/discard semantics
-        // instead of treating this as a completed, self-contained augment:
-        // fall through to the existing cancel path so it actually takes
-        // effect.
-        for (const row of augmentingRows) this.db.releasePendingClaim(handle, row.id);
-        return false;
-      }
-
       if (outcome?.outcome === "injected") {
-        if (!this.db.completePendingMsgs(handle, augmentingRows.map((row) => row.id))) {
-          // Lease lost between claiming and completing this round: the
-          // content was already delivered to the live turn (irreversible).
-          // completePendingMsgs's ownership-gated DELETE failed, but the
-          // row(s) MUST NOT be left behind: claimPendingMsgs/claimNextPendingMsg
-          // themselves requeue a stale-claimed row back to 'queued' on the
-          // very next call from anyone (this process's own stale-claim
-          // recovery, or a completely different one) — which would execute
-          // already-delivered content a second time. Delete unconditionally,
-          // by id, independent of claim ownership: it is exactly-once
-          // delivered already and must never become independently claimable
-          // again, regardless of who currently holds the lock. Also stop
-          // looping — this handle can no longer be trusted for a further
-          // round.
-          console.error(`[${this.kind}] ACP steering completed a round but lost the execution lease on lane ${executionLane}; deleting the delivered row(s) directly so stale-claim recovery cannot re-execute them, then stopping further steering for this call`);
+        // The provider has irreversibly consumed this exact text. Persist
+        // its accepted user turns before removing queue rows, even if /stop
+        // escalated while the RPC was in flight or the lane lease expired.
+        const ownerKey = this._conversationOwnerKey();
+        const provenance = { surfaceIdentity: this.surfaceIdentity, ...(ownerKey ? { ownerKey } : {}) };
+        let continuedOwnership = false;
+        try {
+          const retained = this.db.retainInjectedPendingMsgs(
+            handle,
+            augmentingRows.map((row) => ({ id: row.id, prompt: row.prompt, createdAt: row.createdAt })),
+            this.kind,
+            provenance,
+            augmentedTask.historyRecorded ? undefined : augmentedTask.prompt,
+          );
+          continuedOwnership = retained.continuedOwnership;
+          if (retained.originalRecorded) augmentedTask.historyRecorded = true;
+        } catch (error) {
+          // SQLite may reject the history write (e.g. disk exhaustion). The
+          // provider cannot be rolled back: fail closed against replay, then
+          // surface the lost evidence rather than submitting it twice.
+          console.error(`[${this.kind}] injected steering history commit failed; retiring delivered rows without replay`, error);
           for (const row of augmentingRows) this.db.deletePendingMsg(row.id);
           this._deleteQueuedAttachments(attachments);
           return false;
         }
         this._deleteQueuedAttachments(attachments);
+        if (!continuedOwnership || record.mode !== "augment") return false;
         injectedAtLeastOnce = true;
         continue;
+      }
+
+      if (record.mode !== "augment") {
+        // The steering RPC failed or was inconclusive and an interrupt/stop
+        // won the race. Preserve the ordinary cancellation/discard behavior.
+        for (const row of augmentingRows) this.db.releasePendingClaim(handle, row.id);
+        return false;
       }
 
       if (outcome?.outcome === "startedNewTurn") {
@@ -1857,7 +1859,8 @@ export class BridgeEngine {
         if (result.nativeSessionMode === "fresh") clearHandoffRequired(this.db, this.surfaceIdentity, chatKey, this.kind);
       }
       if (isManagedBotKind(this.kind)) this.db.resetFailures({ surfaceIdentity: this.surfaceIdentity, chatKey }, this.kind);
-      if (isRouteableKind(this.kind)) this._rememberTurn(chatKey, prompt, result.text);
+      if (isRouteableKind(this.kind)) this._rememberTurn(chatKey, prompt, result.text,
+        this.laneCoordinator.getAugmentedTask(this._executionLane(chatKey))?.historyRecorded === true);
     });
   }
 
@@ -1887,12 +1890,12 @@ export class BridgeEngine {
     return deriveConversationOwnerKey(this.surfaceIdentity, this.opts.allowedUserIds);
   }
 
-  private _rememberTurn(chatKey: string, userPrompt: string, assistantText: string): void {
+  private _rememberTurn(chatKey: string, userPrompt: string, assistantText: string, userAlreadyRecorded = false): void {
     const ownerKey = this._conversationOwnerKey();
     const provenance = { surfaceIdentity: this.surfaceIdentity, ...(ownerKey ? { ownerKey } : {}) };
     try {
       this.db.runInTransaction(() => {
-        this.db.addConvTurn(chatKey, "user", userPrompt, this.kind, provenance);
+        if (!userAlreadyRecorded) this.db.addConvTurn(chatKey, "user", userPrompt, this.kind, provenance);
         this.db.addConvTurn(chatKey, "assistant", assistantText, this.kind, provenance);
       });
     } catch (error) {

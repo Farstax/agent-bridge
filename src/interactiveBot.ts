@@ -10,7 +10,7 @@ import { buildTelegramCommands } from "./commands.js";
 import { ProviderFallbackChain } from "./providerFallback.js";
 import { markHandoffRequired } from "./handoffState.js";
 import type { ExecutionOutcome, PendingMessage, ProviderFallbackReason } from "./engine.js";
-import { adaptTelegramUpdate, type InteractiveSurroundingContextMessage, type InteractiveTurnInput } from "./interactiveIngress.js";
+import { adaptTelegramUpdate, EVENT_RECEIPT_CORRELATION_PREFIX, type InteractiveSurroundingContextMessage, type InteractiveTurnInput } from "./interactiveIngress.js";
 import { surfaceCapabilities, type MessagingPlatform } from "./platform.js";
 import { withPassiveSurroundingContext } from "./workspaceContext.js";
 import { persistProviderSession } from "./providers/sessionRuntime.js";
@@ -669,6 +669,7 @@ export async function dispatchUnifiedTelegramUpdate(
   surfaceIdentity: string,
   engine: UnifiedTelegramUpdateEngine,
   dispatchMessage: (turn: InteractiveTurnInput) => Promise<void>,
+  receiptId?: number,
 ): Promise<void> {
   if (update.callback_query) {
     const control = providerControlTarget(update);
@@ -683,7 +684,10 @@ export async function dispatchUnifiedTelegramUpdate(
     return;
   }
   const turn = adaptTelegramUpdate(update, surfaceIdentity, chatKey);
-  if (turn) await dispatchMessage(turn);
+  if (turn) {
+    if (receiptId !== undefined) turn.scheduledOccurrenceKey = `${EVENT_RECEIPT_CORRELATION_PREFIX}${receiptId}`;
+    await dispatchMessage(turn);
+  }
 }
 
 /** Compatibility boundary for legacy Telegram callers. New surfaces pass a neutral turn. */
