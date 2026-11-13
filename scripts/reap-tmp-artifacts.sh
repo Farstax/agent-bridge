@@ -35,7 +35,7 @@ retention_unavailable() {
   fi
 }
 prune_acp_telemetry() {
-  local database="${BRIDGE_DB_PATH:-${DB_PATH:-}}" release node_bin
+  local database="${DB_PATH:-${BRIDGE_DB_PATH:-}}" release node_bin
   [[ -n "$database" ]] || { retention_unavailable "configured interactive database path is unset"; return 0; }
   [[ "$database" == /* && -f "$database" && ! -L "$database" ]] || { retention_unavailable "database path is unsafe"; return 0; }
   release="${BRIDGE_CURRENT_RELEASE_DIR:-}"
@@ -62,7 +62,7 @@ prune_acp_telemetry() {
 # ACP session expiry and attachment cleanup share this existing timer.  Only
 # the explicitly configured database and workspace root are eligible.
 run_acp_maintenance() {
-  local database="${BRIDGE_DB_PATH:-${DB_PATH:-}}" release node_bin error
+  local database="${DB_PATH:-${BRIDGE_DB_PATH:-}}" release node_bin error
   (( DRY_RUN )) && return 0
   [[ "$database" == /* && -f "$database" && ! -L "$database" ]] || return 0
   release="${BRIDGE_CURRENT_RELEASE_DIR:-}"
