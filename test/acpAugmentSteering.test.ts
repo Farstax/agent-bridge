@@ -101,6 +101,8 @@ describe("ACP steering as the augment primitive (issue #748)", () => {
     expect((engine as any).laneCoordinator.augmentedTaskCount()).toBe(0);
     expect((engine as any).laneCoordinator.cancellationCount()).toBe(0);
     expect(c.sendMessage.mock.calls.some((call: any[]) => call[0]?.text === "first final")).toBe(true);
+    expect(db.getRecentConvTurns("100:7", 10, undefined, "telegram:interactive").map((turn) => [turn.role, turn.text]))
+      .toEqual([["user", "first request"], ["user", "second request"], ["assistant", "first final"]]);
 
     db.close();
     rmSync(dbPath, { force: true });
@@ -118,7 +120,11 @@ describe("ACP steering as the augment primitive (issue #748)", () => {
     // round's rows and completing them (e.g. a heartbeat failure): the
     // round's own injection already happened at the provider, but Bridge
     // can no longer safely trust this handle for a further round.
-    const completeSpy = vi.spyOn(db, "completePendingMsgs").mockReturnValueOnce(false);
+    const retain = db.retainInjectedPendingMsgs.bind(db);
+    const completeSpy = vi.spyOn(db, "retainInjectedPendingMsgs").mockImplementationOnce((...args) => ({
+      ...retain(...args),
+      continuedOwnership: false,
+    }));
 
     const mockRunProviderInvocation = vi.fn()
       .mockImplementationOnce(async (_bot: string, _invocation: any, _cwd: string, opts: any) => {
@@ -229,6 +235,8 @@ describe("ACP steering as the augment primitive (issue #748)", () => {
 
     expect(steerCalls).toEqual(["second request", "third request"]);
     expect(mockRunProviderInvocation).toHaveBeenCalledTimes(1);
+    expect(db.getRecentConvTurns("100:7", 10, undefined, "telegram:interactive").map((turn) => [turn.role, turn.text]))
+      .toEqual([["user", "first request"], ["user", "second request"], ["user", "third request"], ["assistant", "first final"]]);
     expect(db.pendingMsgCount("telegram:interactive", "100:7")).toBe(0);
     expect((engine as any).laneCoordinator.cancellationCount()).toBe(0);
 
