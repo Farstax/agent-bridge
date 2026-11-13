@@ -1427,7 +1427,7 @@ export class BridgeEngine {
         try {
           const retained = this.db.retainInjectedPendingMsgs(
             handle,
-            augmentingRows.map((row) => row.id),
+            augmentingRows.map((row) => ({ id: row.id, prompt: row.prompt, createdAt: row.createdAt })),
             this.kind,
             provenance,
             augmentedTask.historyRecorded ? undefined : augmentedTask.prompt,
