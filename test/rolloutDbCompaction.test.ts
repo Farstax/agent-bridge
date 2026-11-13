@@ -26,7 +26,7 @@ function fixture() {
 
 function run(path: string, mode: "compact" | "prune") {
   return JSON.parse(execFileSync(process.execPath, [getBundledRolloutDb(), mode, "--db", path,
-    "--database-role", `${path}=interactive`, "--evidence", "-"], { encoding: "utf8" }));
+    "--database-role", `${path}=interactive`, "--resolving-unit", `${path}=agent-bridge-interactive.service`, "--evidence", "-"], { encoding: "utf8" }));
 }
 
 describe("offline SQLite compaction", { timeout: 30_000 }, () => {
