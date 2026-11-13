@@ -92,6 +92,11 @@ describe("systemd templates", () => {
     expect(service).toContain("BRIDGE_CURRENT_RELEASE_DIR");
     expect(service).toContain("scripts/reap-tmp-artifacts.sh");
     expect(service).toContain("/etc/default/agent-bridge-interactive");
+    // Both paths are installed by existing supported interactive provisioning.
+    // The capacity DB is a fallback; explicit interactive config wins.
+    expect(service).toContain("EnvironmentFile=-/etc/default/agent-bridge-outward-capacity");
+    expect(service.indexOf("agent-bridge-outward-capacity")).toBeLessThan(service.indexOf("EnvironmentFile=-/etc/default/agent-bridge-interactive"));
+    expect(service).toContain("REAP_REQUIRE_INTERACTIVE_DB=1");
     expect(service).not.toContain("BRIDGE_REPO_DIR/scripts");
   });
 
