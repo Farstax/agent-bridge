@@ -1,8 +1,9 @@
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import Database from "better-sqlite3";
 import { afterEach, describe, expect, it } from "vitest";
-import { actions, cleanupRoots, createFixture, runRollout, useMinimalInventory } from "./support/rolloutFixture.js";
+import { actions, cleanupRoots, createFixture, prepareImmutableRelease, runRollout, useMinimalInventory } from "./support/rolloutFixture.js";
 
 afterEach(cleanupRoots);
 
@@ -35,6 +36,92 @@ function budget(fixture: ReturnType<typeof createFixture>, extra: { host?: numbe
 }
 
 describe("rollout disk admission", { timeout: 30_000 }, () => {
+
+  it("rescues a disk refusal once through fenced offline compaction before the backup", () => {
+    const fixture = useMinimalInventory(createFixture());
+    const db = new Database(fixture.dbPaths[0]);
+    db.exec("CREATE TABLE transient_bloat (value BLOB)");
+    db.exec("INSERT INTO transient_bloat VALUES (zeroblob(75 * 1024 * 1024))");
+    db.exec("DROP TABLE transient_bloat");
+    db.close();
+    const before = statSync(fixture.dbPaths[0]).size;
+    expect(before).toBeGreaterThan(64 * 1024 * 1024);
+
+    const result = runRollout(fixture, undefined, undefined, {
+      AGENT_BRIDGE_ROLLOUT_AVAILABLE_BYTES: "115000000",
+      AGENT_BRIDGE_ROLLOUT_SAFETY_RESERVE_BYTES: "1048576",
+    });
+    const output = result.stdout + "\n" + result.stderr;
+    expect(result.status, output).toBe(0);
+    expect(output).toContain("disk compaction admitted database_count=1");
+    expect(output).toContain("compacting eligible SQLite databases offline before final disk admission");
+    const log = actions(fixture);
+    expect(log).toContain(" compact ");
+    expect(log.indexOf("systemctl:stop")).toBeLessThan(log.indexOf(" compact "));
+    expect(log.indexOf(" compact ")).toBeLessThan(log.indexOf("root: backup "));
+    expect(statSync(fixture.dbPaths[0]).size).toBeLessThan(before);
+  }, 30_000);
+
+
+  it("recovers the previous healthy runtime when offline VACUUM fails before backup", () => {
+    const fixture = useMinimalInventory(createFixture());
+    prepareImmutableRelease(fixture, fixture.previousCommit);
+    const db = new Database(fixture.dbPaths[0]);
+    db.exec("CREATE TABLE transient_bloat (value BLOB)");
+    db.exec("INSERT INTO transient_bloat VALUES (zeroblob(75 * 1024 * 1024))");
+    db.exec("DROP TABLE transient_bloat");
+    db.close();
+    const previous = readFileSync(fixture.stateFile, "utf8");
+
+    const result = runRollout(fixture, undefined, undefined, {
+      AGENT_BRIDGE_ROLLOUT_AVAILABLE_BYTES: "115000000",
+      AGENT_BRIDGE_ROLLOUT_SAFETY_RESERVE_BYTES: "1048576",
+      FAKE_FAIL_PHASE: "compact",
+      // The shared harness defaults to corrupting the DB on phase failures.
+      // This canary exercises an interrupted VACUUM with intact DB records.
+      FAKE_CORRUPT_DB: "",
+    });
+    const output = result.stdout + "\n" + result.stderr;
+    expect(result.status).not.toBe(0);
+    expect(output).toContain("STATE: PRE_BACKUP_RECOVERED");
+    expect(readFileSync(fixture.stateFile, "utf8")).toBe(previous);
+    expect(readdirSync(fixture.backupDir)).toEqual([]);
+    expect(existsSync(join(fixture.logDir, ".rollout-in-progress"))).toBe(false);
+    expect(actions(fixture)).toContain(" compact ");
+    expect(actions(fixture)).toContain("systemctl:start");
+  }, 30_000);
+
+  it("refuses without stopping services if SQLite has too few reclaimable pages", () => {
+    const fixture = useMinimalInventory(createFixture());
+    const result = runRollout(fixture, undefined, undefined, {
+      AGENT_BRIDGE_ROLLOUT_AVAILABLE_BYTES: "1",
+      AGENT_BRIDGE_ROLLOUT_SAFETY_RESERVE_BYTES: "1048576",
+    });
+    expect(result.status).not.toBe(0);
+    expect(actions(fixture)).not.toContain("systemctl:stop");
+    expect(actions(fixture)).not.toContain(" compact ");
+  });
+
+  it("defers an eligible compaction while an ACP idle admission is busy", () => {
+    const fixture = useMinimalInventory(createFixture());
+    const db = new Database(fixture.dbPaths[0]);
+    db.exec("CREATE TABLE transient_bloat (value BLOB)");
+    db.exec("INSERT INTO transient_bloat VALUES (zeroblob(75 * 1024 * 1024))");
+    db.exec("DROP TABLE transient_bloat");
+    db.close();
+    const before = statSync(fixture.dbPaths[0]).size;
+    const result = runRollout(fixture, undefined, undefined, {
+      AGENT_BRIDGE_ROLLOUT_AVAILABLE_BYTES: "115000000",
+      AGENT_BRIDGE_ROLLOUT_SAFETY_RESERVE_BYTES: "1048576",
+      FAKE_IDLE_UPGRADE_STATE: "deferred_busy",
+    });
+    expect(result.status).not.toBe(0);
+    expect(result.stdout + result.stderr).toContain("provider_sessions_active");
+    expect(actions(fixture)).not.toContain("systemctl:stop");
+    expect(actions(fixture)).not.toContain(" compact ");
+    expect(statSync(fixture.dbPaths[0]).size).toBe(before);
+  });
+
   it("refuses before service stop when the transaction does not fit", () => {
     const fixture = useMinimalInventory(createFixture());
     const activeBefore = readFileSync(fixture.stateFile, "utf8");

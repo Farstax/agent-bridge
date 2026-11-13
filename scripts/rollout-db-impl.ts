@@ -21,7 +21,7 @@ import { sha256File } from "../src/fileDigest.js";
 /** The active database roles. */
 const VALID_ROLES = new Set(["shared", "discord", "health", "interactive", "slack"]);
 
-type Mode = "inspect" | "checkpoint" | "prune" | "migrate" | "validate" | "reconcile" | "growth" | "relocate" | "bootstrap" | "isolate-recovery-copy";
+type Mode = "inspect" | "checkpoint" | "prune" | "compact" | "migrate" | "validate" | "reconcile" | "growth" | "relocate" | "bootstrap" | "isolate-recovery-copy";
 
 interface Options {
   mode: Mode;
@@ -84,6 +84,8 @@ interface DbEvidence {
     freePagesAfter: number;
     fileBytesAfter: number;
   };
+  sqliteStorage?: { pageSize: number; pageCount: number; freePages: number; fileBytes: number };
+  compaction?: { fileBytesBefore: number; fileBytesAfter: number; reclaimableBytesBefore: number; freePagesAfter: number };
 }
 
 const REQUIRED_TABLES = new Set(["bridge_state", "pending_messages", "settings"]);
@@ -105,8 +107,8 @@ const CURRENT_LOCK_COLUMNS = new Set([
 
 function parseArgs(argv: string[]): Options {
   const mode = argv.shift() as Mode | undefined;
-  if (!mode || !["inspect", "checkpoint", "prune", "migrate", "validate", "reconcile", "growth", "relocate", "isolate-recovery-copy"].includes(mode)) {
-    throw new Error("usage: rollout-db.ts <inspect|checkpoint|prune|migrate|validate|reconcile|isolate-recovery-copy> --db PATH [--offline-staged] [options]");
+  if (!mode || !["inspect", "checkpoint", "prune", "compact", "migrate", "validate", "reconcile", "growth", "relocate", "isolate-recovery-copy"].includes(mode)) {
+    throw new Error("usage: rollout-db.ts <inspect|checkpoint|prune|compact|migrate|validate|reconcile|isolate-recovery-copy> --db PATH [--offline-staged] [options]");
   }
   const databases: string[] = [];
   let evidencePath: string | null = null;
@@ -430,6 +432,7 @@ function inspectDatabase(path: string, requireCurrent: boolean, resolvingUnits: 
       : [];
     return {
       path, sha256: sha256File(path), integrity, schemaVersion: userVersion, schema, legacyQueueCount, pendingQueueCount,
+      sqliteStorage: { pageSize: pragmaNumber(db, "page_size"), pageCount: pragmaNumber(db, "page_count"), freePages: pragmaNumber(db, "freelist_count"), fileBytes: statSync(path).size },
       tables, pendingColumns, lockColumns, resolvingUnits, queueStateCounts, claimStateCounts, executionLockState,
       claimRunAcquisitionCorrelation: digestRows({ queueRows, lockRows }),
       runLockCorrelation: { queue: queueRows, locks: lockRows as Array<Record<string, unknown>> }, deliveryState,
@@ -563,6 +566,54 @@ function pruneAcpTelemetry(path: string, resolvingUnits: string[] = [], role: Da
       pageCountAfter,
       freePagesAfter,
       fileBytesAfter: statSync(path).size,
+    },
+  };
+}
+
+/** Offline-only compaction. The rollout owner calls this after all-role idle
+ * fencing, verified service stop and WAL checkpoint, never from the daily janitor.
+ * This operation does not prune, migrate, or change retention policy.
+ */
+function compactDatabase(path: string, resolvingUnits: string[] = [], role: DatabaseRole = "shared", allowRetiredHealthTable = false): DbEvidence {
+  // The normal deployer supplies the real fixed-unit inventory after its
+  // all-role idle fence and cgroup containment. Refuse an unowned/manual
+  // compaction or any still-active matching execution unit.
+  if (resolvingUnits.length === 0) throw new Error("offline compaction requires an owning stopped service");
+  if (process.env.NODE_ENV !== "test") {
+    for (const unit of resolvingUnits) {
+      if (!/^agent-bridge-[a-z-]+\.service$/.test(unit)) throw new Error("invalid offline compaction service identity");
+      const state = execFileSync("systemctl", ["show", unit, "--property=ActiveState", "--value"], {
+        encoding: "utf8", timeout: 5_000,
+      }).trim();
+      if (state !== "inactive" && state !== "failed") {
+        throw new Error(`offline compaction requires stopped service ${unit}: ${state}`);
+      }
+    }
+  }
+  const before = inspectDatabase(path, false, resolvingUnits, role, allowRetiredHealthTable);
+  const storage = before.sqliteStorage!;
+  const reclaimable = storage.freePages * storage.pageSize;
+  // Mirror the rollout's useful-compaction floor; tiny or non-fragmented DBs are left alone.
+  if (reclaimable < 64 * 1024 * 1024 || storage.freePages * 5 < storage.pageCount) {
+    throw new Error(`offline SQLite compaction is not worthwhile for ${path}`);
+  }
+  const db = new Database(path, { fileMustExist: true });
+  try {
+    db.pragma("busy_timeout = 0");
+    db.exec("VACUUM");
+    const integrity = String(db.pragma("integrity_check", { simple: true }));
+    if (integrity !== "ok") throw new Error(`integrity check failed after SQLite compaction for ${path}: ${integrity}`);
+  } finally {
+    db.close();
+  }
+  const after = inspectDatabase(path, false, resolvingUnits, role, allowRetiredHealthTable);
+  return {
+    ...after,
+    compaction: {
+      fileBytesBefore: storage.fileBytes,
+      fileBytesAfter: after.sqliteStorage!.fileBytes,
+      reclaimableBytesBefore: reclaimable,
+      freePagesAfter: after.sqliteStorage!.freePages,
     },
   };
 }
@@ -1231,6 +1282,11 @@ async function main(): Promise<void> {
   }
   if (options.mode === "prune") {
     const evidence = options.databases.map((path) => pruneAcpTelemetry(path, unitsFor(path), roleFor(path), options.allowRetiredHealthTable));
+    writeEvidence(options.evidencePath, options.mode, evidence);
+    return;
+  }
+  if (options.mode === "compact") {
+    const evidence = options.databases.map((path) => compactDatabase(path, unitsFor(path), roleFor(path), options.allowRetiredHealthTable));
     writeEvidence(options.evidencePath, options.mode, evidence);
     return;
   }
