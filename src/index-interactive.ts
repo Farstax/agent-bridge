@@ -521,6 +521,7 @@ const POLL_KIND = "codex";
 async function processAdmittedInteractiveUpdate(
   update: TelegramUpdate,
   onDeferred: (operation: Promise<unknown>) => void,
+  receiptId?: number,
 ): Promise<void> {
   try {
         let typedUpdate = update as TelegramUpdate;
@@ -728,7 +729,7 @@ async function processAdmittedInteractiveUpdate(
                   }
                 },
               });
-            }).catch((err: unknown) => { console.error("[interactive] dispatch error", err); throw err; }));
+            }, receiptId).catch((err: unknown) => { console.error("[interactive] dispatch error", err); throw err; }));
             return;
           } else {
             onDeferred(engines[pref].handleUpdate(typedUpdate, chatKey)
@@ -769,7 +770,7 @@ async function dispatchInteractivePollReceipt(receipt: { id: number; payload_jso
           finish("failed", "telegram_dispatch_failed");
         },
       );
-    });
+    }, receipt.id);
     if (!handedOff) finish("completed");
   } catch (error) {
     console.error("[interactive] Telegram receipt processing failed", error);
