@@ -28,6 +28,8 @@ export interface AugmentedTask {
    * path, not by the augment that raced it.
    */
   activeRowIds?: number[];
+  /** The original user prompt was persisted when the first steering round injected. */
+  historyRecorded?: boolean;
 }
 
 export interface LaneDrainer {
