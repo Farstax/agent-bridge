@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, sym
 import { join } from "node:path";
 import Database from "better-sqlite3";
 import { afterEach, describe, expect, it } from "vitest";
-import { actions, cleanupRoots, createFixture, runRollout, useMinimalInventory } from "./support/rolloutFixture.js";
+import { actions, cleanupRoots, createFixture, prepareImmutableRelease, runRollout, useMinimalInventory } from "./support/rolloutFixture.js";
 
 afterEach(cleanupRoots);
 
@@ -65,6 +65,7 @@ describe("rollout disk admission", { timeout: 30_000 }, () => {
 
   it("recovers the previous healthy runtime when offline VACUUM fails before backup", () => {
     const fixture = useMinimalInventory(createFixture());
+    prepareImmutableRelease(fixture, fixture.previousCommit);
     const db = new Database(fixture.dbPaths[0]);
     db.exec("CREATE TABLE transient_bloat (value BLOB)");
     db.exec("INSERT INTO transient_bloat VALUES (zeroblob(75 * 1024 * 1024))");
