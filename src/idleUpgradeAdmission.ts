@@ -114,7 +114,10 @@ function idleState(db: Database.Database): IdleUpgradeState {
       const continuation: unknown = JSON.parse(value);
       if (!continuation || typeof continuation !== "object") return "unknown";
       const state = (continuation as { state?: unknown }).state;
-      if (state === "pending" || state === "claimed") return "deferred_busy";
+      // A pending wake is dormant durable work, like a queued message. The
+      // atomic fence below prevents it being claimed or starting during rollout.
+      if (state === "pending") continue;
+      if (state === "claimed") return "deferred_busy";
       if (!["completed", "failed", "expired", "cancelled"].includes(String(state))) return "unknown";
     } catch { return "unknown"; }
   }
