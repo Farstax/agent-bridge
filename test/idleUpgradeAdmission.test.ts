@@ -115,10 +115,46 @@ describe("atomic generic idle-only upgrade admission (#1161)", () => {
     db.raw.prepare("UPDATE pending_messages SET state = 'claimed' WHERE id = ?").run(id);
     expect(tryAdmitIdleUpgrade(path).state).toBe("deferred_busy");
     db.deletePendingMsg(id);
-    db.setSetting("run-continuation:v1:delayed", JSON.stringify({ version: 1, state: "pending" }));
-    expect(tryAdmitIdleUpgrade(path).state).toBe("deferred_busy");
-    db.setSetting("run-continuation:v1:delayed", JSON.stringify({ version: 1, state: "completed" }));
-    expect(tryAdmitIdleUpgrade(path).state).toBe("admitted");
+    const key = "run-continuation:v1:delayed";
+    const pending = JSON.stringify({ version: 1, state: "pending" });
+    db.setSetting(key, pending);
+    expect(readIdleUpgradeState(path)).toBe("idle");
+    const fence = admit();
+    expect(db.getSetting(key)).toBe(pending);
+    expect(() => db.setSetting(key, JSON.stringify({ version: 1, state: "claimed" })))
+      .toThrow("agent_bridge_idle_maintenance_deferred_busy");
+    expect(() => db.insertRun("continuation-wake", identity, "claude"))
+      .toThrow("agent_bridge_idle_maintenance_deferred_busy");
+    expect(db.getSetting(key)).toBe(pending);
+    expect(releaseIdleUpgrade(path, fence.token)).toBe(true);
+    db.setSetting(key, JSON.stringify({ version: 1, state: "claimed" }));
+    expect(tryAdmitIdleUpgrade(path)).toEqual({ state: "deferred_busy" });
+    db.setSetting(key, JSON.stringify({ version: 1, state: "completed" }));
+    const recovered = admit();
+    expect(releaseIdleUpgrade(path, recovered.token)).toBe(true);
+  });
+
+  it("admits all database roles with a dormant wake but fences a racing claim", () => {
+    const workerPath = join(dir, "worker.sqlite");
+    const worker = openDb(workerPath);
+    try {
+      const key = "run-continuation:v1:future";
+      const pending = JSON.stringify({ version: 1, state: "pending" });
+      db.setSetting(key, pending);
+      expect(readIdleUpgradeRolesState([path, workerPath])).toBe("idle");
+      const admitted = tryAdmitIdleUpgradeRoles([path, workerPath]);
+      expect(admitted.state).toBe("admitted");
+      if (admitted.state !== "admitted") throw new Error("dormant continuation blocked idle cohort");
+      expect(() => db.raw.prepare("UPDATE settings SET value = ? WHERE key = ?")
+        .run(JSON.stringify({ version: 1, state: "claimed" }), key))
+        .toThrow("agent_bridge_idle_maintenance_deferred_busy");
+      expect(() => worker.insertRun("racing-run", identity, "codex"))
+        .toThrow("agent_bridge_idle_maintenance_deferred_busy");
+      expect(db.getSetting(key)).toBe(pending);
+      expect(releaseIdleUpgradeRoles(admitted.roles)).toBe(true);
+      expect(db.getSetting(key)).toBe(pending);
+      expect(readIdleUpgradeRolesState([path, workerPath])).toBe("idle");
+    } finally { worker.close(); }
   });
 
   it("releases only after exact token; survives reopening other runtime connections", () => {
