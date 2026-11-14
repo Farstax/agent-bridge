@@ -84,8 +84,8 @@ jobs:
                     run.status !== "completed" || run.conclusion !== "success" ||
                     !Number.isInteger(run.run_attempt) || run.run_attempt < 1 ||
                     !((run.pull_requests?.some((item) => item.number === pr.number)) ||
-                      (run.head_branch === pr.head.ref &&
-                       run.head_repository?.id === pr.head.repo?.id))) continue;
+                      (pr.head.repo?.id != null && run.head_branch === pr.head.ref &&
+                       run.head_repository?.id === pr.head.repo.id))) continue;
                 // Inspect only this exact successful run attempt, not a stale retry.
                 const { data: jobs } = await github.rest.actions.listJobsForWorkflowRunAttempt({
                   owner, repo, run_id: run.id, attempt_number: run.run_attempt, per_page: 100,
@@ -93,7 +93,8 @@ jobs:
                 const qualified = jobs.jobs.filter((job) => job.name === "Test & Typecheck");
                 if (qualified.length !== 1 || qualified[0].status !== "completed" ||
                     qualified[0].conclusion !== "success" ||
-                    qualified[0].run_attempt !== run.run_attempt) continue;
+                    qualified[0].run_attempt !== run.run_attempt ||
+                    qualified[0].head_sha !== headSha) continue;
 
                 core.setOutput("reuse", "true");
                 core.setOutput("source_pr", String(pr.number));
