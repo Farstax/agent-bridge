@@ -125,7 +125,7 @@ describe("SOUL.md runtime context", () => {
   });
 
   it("re-reads a saved Soul into the effective fresh ACP provider prompt", () => {
-    const file = tempSoulFile("# Persona\\n\\nRespond with evidence first.");
+    const file = tempSoulFile("# Persona\n\nRespond with evidence first.");
     const freshPrompt = () => promptBlocks({
       prompt: "Summarise this status", sessionId: null, command: "claude",
       model: null, executionMode: "safe", outputFormat: "stream-json",
@@ -136,9 +136,9 @@ describe("SOUL.md runtime context", () => {
     const first = freshPrompt();
     expect(first).toHaveLength(1);
     expect(first[0]).toMatchObject({ type: "text", text: expect.stringContaining("Respond with evidence first.") });
-    expect(first[0]).toMatchObject({ type: "text", text: expect.stringContaining("User request:\\nSummarise this status") });
+    expect(first[0]).toMatchObject({ type: "text", text: expect.stringContaining("User request:\nSummarise this status") });
 
-    writeFileSync(file, "# Persona\\n\\nRespond with concise verification.", "utf8");
+    writeFileSync(file, "# Persona\n\nRespond with concise verification.", "utf8");
     const second = freshPrompt();
     expect(second[0]).toMatchObject({ type: "text", text: expect.stringContaining("Respond with concise verification.") });
     expect(second[0]).not.toMatchObject({ type: "text", text: expect.stringContaining("Respond with evidence first.") });
