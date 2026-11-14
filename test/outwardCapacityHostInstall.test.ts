@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -69,6 +69,65 @@ describe("outward ACP worker host component (#1181)", () => {
       writeFileSync(interactive, "");
       writeFileSync(bot, "");
       expect(render()).not.toContain("EXECUTION_MODE");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("scopes the protected-host privilege exception to exact managed workspace identity (#1228)", () => {
+    const source = readFileSync(installer, "utf8");
+    const unit = readFileSync("systemd/agent-bridge-outward-capacity.service", "utf8");
+    expect(unit).toContain("NoNewPrivileges=true");
+    expect(source).toContain('secure_file "$identity_file"');
+    expect(source).toContain('systemctl show agent-bridge-bot.service --property=NoNewPrivileges --value');
+    expect(source).toContain('systemctl show agent-bridge-outward-capacity.service --property=NoNewPrivileges --value');
+    expect(source).toContain('grep -Eq "^NoNewPrivs:[[:space:]]+$expected_proc_nnp$"');
+
+    const identityStart = source.indexOf("\nis_authorised_protected_host() {");
+    const identityEnd = source.indexOf("\n# Preserve the systemd EnvironmentFile", identityStart);
+    const policyStart = source.indexOf("\n# The shared OSS template stays restrictive");
+    const policyEnd = source.indexOf("\n[[ \"$unit_contents\" == *\"PartOf=agent-bridge-bot.service\"", policyStart);
+    expect(identityStart).toBeGreaterThan(-1);
+    expect(identityEnd).toBeGreaterThan(identityStart);
+    expect(policyStart).toBeGreaterThan(-1);
+    expect(policyEnd).toBeGreaterThan(policyStart);
+
+    // Exercise the production identity selector and unit rendering with an
+    // injected fixture path; no root paths or systemd state are modified.
+    const script = [
+      "set -Eeuo pipefail",
+      'secure_file() { [[ -f "$1" && ! -L "$1" ]] || exit 2; }',
+      'fail() { printf "%s\\n" "$*" >&2; exit 1; }',
+      'systemctl() { printf "no\\n"; }',
+      source.slice(identityStart, identityEnd),
+      'unit_contents="$2"',
+      source.slice(policyStart, policyEnd).replace(
+        "if is_authorised_protected_host; then", 'if is_authorised_protected_host "$1"; then',
+      ),
+      'printf "%s\\n" "$unit_contents"',
+    ].join("\n");
+    const root = mkdtempSync(join(tmpdir(), "outward-host-authority-"));
+    try {
+      const identity = join(root, "workspace.env");
+      const render = (path: string) => execFileSync("bash", ["-c", script, "bash", path, unit], { encoding: "utf8" });
+      const restricted = render(identity);
+      expect(restricted).toContain("NoNewPrivileges=true");
+      expect(restricted).not.toContain("NoNewPrivileges=no");
+
+      writeFileSync(identity, "WORKSPACE_ID=ws_another_customer\\n");
+      expect(render(identity)).toContain("NoNewPrivileges=true");
+      writeFileSync(identity, "WORKSPACE_ID=ws_71d729ce5ddb3673681a3143bb065cdc\\n");
+      const authorised = render(identity);
+      expect(authorised).toContain("NoNewPrivileges=no");
+      expect(authorised).not.toContain("NoNewPrivileges=true");
+      writeFileSync(identity, 'WORKSPACE_ID="ws_71d729ce5ddb3673681a3143bb065cdc"\\n');
+      expect(render(identity)).toContain("NoNewPrivileges=no");
+      writeFileSync(identity, "WORKSPACE_ID=ws_71d729ce5ddb3673681a3143bb065cdc\\nWORKSPACE_ID=ws_other\\n");
+      expect(render(identity)).toContain("NoNewPrivileges=true");
+
+      const alias = join(root, "workspace-link.env");
+      symlinkSync(identity, alias);
+      expect(() => render(alias)).toThrow();
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
