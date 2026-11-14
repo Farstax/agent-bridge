@@ -838,9 +838,11 @@ export function prepareImmutableRelease(fixture: Fixture, activeCommit = fixture
   for (const commit of new Set([fixture.previousCommit, fixture.expectedCommit])) {
     const directory = join(releaseRoot, commit);
     mkdirSync(directory, { recursive: true, mode: 0o755 });
-    for (const entry of readdirSync(fixture.project)) {
-      if (entry === ".git") continue;
-      execFileSync("cp", ["-a", join(fixture.project, entry), directory]);
+    // One cp process per release, not one per file, preserving -a semantics.
+    // Exclude .git exactly as before; every test still receives its own copy.
+    const entries = readdirSync(fixture.project).filter((entry) => entry !== ".git");
+    if (entries.length > 0) {
+      execFileSync("cp", ["-a", ...entries.map((entry) => join(fixture.project, entry)), directory]);
     }
     writeFileSync(join(directory, "manifest.json"), JSON.stringify({
       schema_version: 1,

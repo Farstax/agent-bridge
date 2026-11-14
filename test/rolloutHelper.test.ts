@@ -182,20 +182,6 @@ describe("guarded rollout helper", { timeout: 30_000 }, () => {
       expect(release).toContain(`--db ${relocatedPath} --token `);
     }, 15_000);
 
-    it("acquires before stop and releases only after accepted health verification", () => {
-      const fixture = createFixture();
-      const result = runRollout(fixture);
-      expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
-      const events = actions(fixture);
-      const acquire = events.indexOf("scripts/idle-maintenance.ts acquire");
-      const stop = events.indexOf("systemctl:stop");
-      const release = events.indexOf("scripts/idle-maintenance.ts release");
-      expect(acquire).toBeGreaterThan(-1);
-      expect(readFileSync(fixture.actionLog, "utf8")).toMatch(/idle-maintenance\.ts acquire --owner-pid [1-9][0-9]+ --db/);
-      expect(stop).toBeGreaterThan(acquire);
-      expect(release).toBeGreaterThan(stop);
-      expect(events.slice(release)).toContain("release");
-    });
   });
 
   it.each(["missing", "extra", "reordered"])("rejects %s EnvironmentFiles inventory before stopping services", (mode) => {
@@ -1185,37 +1171,6 @@ describe("guarded rollout helper", { timeout: 30_000 }, () => {
     expect(actions(fixture)).not.toContain("systemctl:stop");
   });
 
-  it("runs immutable release mode through containment and records release evidence", () => {
-    const fixture = createFixture();
-    const { currentPointer, releaseDir } = prepareImmutableRelease(fixture, fixture.previousCommit);
-
-    const result = runRollout(fixture);
-    execFileSync("find", [releaseDir, "-type", "d", "-exec", "chmod", "u+w", "{}", "+"]);
-
-    expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
-    const artifacts = readFileSync(join(fixture.logDir, "latest"), "utf8").trim();
-    const releaseEvidence = JSON.parse(readFileSync(join(artifacts, "release-evidence.json"), "utf8"));
-    expect(releaseEvidence).toEqual(expect.objectContaining({
-      expectedCommit: fixture.expectedCommit,
-      currentPointer,
-      releaseDir,
-      rolloutHelperSha256: sha256(helperPath),
-    }));
-    expect(readFileSync(join(artifacts, "release-evidence.sha256"), "utf8")).toContain("release-evidence.json");
-    const log = actions(fixture);
-    expect(log.indexOf("systemctl:stop")).toBeGreaterThanOrEqual(0);
-    expect(log.indexOf("systemctl:stop")).toBeLessThan(log.indexOf(" backup "));
-    expect(existsSync(join(artifacts, "containment-evidence.json"))).toBe(true);
-    expect(existsSync(join(artifacts, "stopped-evidence.sha256"))).toBe(true);
-    expect(existsSync(join(artifacts, "post-start-evidence.sha256"))).toBe(true);
-    expect(JSON.parse(readFileSync(join(artifacts, "post-start-evidence.json"), "utf8")).restartBoundary).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/);
-    expect(existsSync(join(artifacts, "phase-ledger.log"))).toBe(true);
-    const ledger = readFileSync(join(artifacts, "phase-ledger.log"), "utf8");
-    expect(ledger).toMatch(/phase=PRECHECK_STARTED/);
-    expect(ledger).toMatch(/phase=SERVICES_STARTING/);
-    expect(ledger).toMatch(/phase=COMPLETE/);
-    expect(ledger.indexOf("phase=SERVICES_STARTING")).toBeLessThan(ledger.indexOf("phase=ACCEPTED"));
-  }, 15_000);
 
   it("refuses host preparation capacity before invoking preparation or stopping services", () => {
     const fixture = createFixture();
@@ -1316,9 +1271,9 @@ if [ -e ${JSON.stringify(`${fixture.dbPaths[0]}-wal`)} ]; then printf '1\\n'; el
     }
   }, 20_000);
 
-  it("atomically activates the staged release after migration and before service start", () => {
+  it("activates the immutable release, records evidence and installs its cleanup timer", () => {
     const fixture = createFixture();
-    const { currentPointer } = prepareImmutableRelease(fixture, fixture.previousCommit);
+    const { currentPointer, releaseDir } = prepareImmutableRelease(fixture, fixture.previousCommit);
 
     const result = runRollout(fixture);
 
@@ -1363,16 +1318,30 @@ if [ -e ${JSON.stringify(`${fixture.dbPaths[0]}-wal`)} ]; then printf '1\\n'; el
     }));
     expect(JSON.parse(readFileSync(join(artifacts, "post-start-evidence.json"), "utf8")).databases[0].claimRunAcquisitionCorrelation)
       .toBe(beforeEvidence.databases[0].claimRunAcquisitionCorrelation);
-  }, 15_000);
+    // The same successful immutable rollout also proves the release evidence,
+    // all-role idle fence, and cleanup timer invariants without repeating it.
+    const releaseEvidence = JSON.parse(readFileSync(join(artifacts, "release-evidence.json"), "utf8"));
+    expect(releaseEvidence).toEqual(expect.objectContaining({
+      expectedCommit: fixture.expectedCommit,
+      currentPointer,
+      releaseDir,
+      rolloutHelperSha256: sha256(helperPath),
+    }));
+    expect(readFileSync(join(artifacts, "release-evidence.sha256"), "utf8")).toContain("release-evidence.json");
+    expect(log.indexOf("systemctl:stop")).toBeGreaterThanOrEqual(0);
+    expect(log.indexOf("systemctl:stop")).toBeLessThan(log.indexOf(" backup "));
+    expect(existsSync(join(artifacts, "containment-evidence.json"))).toBe(true);
+    expect(existsSync(join(artifacts, "stopped-evidence.sha256"))).toBe(true);
+    expect(existsSync(join(artifacts, "post-start-evidence.sha256"))).toBe(true);
+    expect(JSON.parse(readFileSync(join(artifacts, "post-start-evidence.json"), "utf8")).restartBoundary)
+      .toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/);
+    expect(existsSync(join(artifacts, "phase-ledger.log"))).toBe(true);
+    const ledger = readFileSync(join(artifacts, "phase-ledger.log"), "utf8");
+    expect(ledger).toMatch(/phase=PRECHECK_STARTED/);
+    expect(ledger).toMatch(/phase=SERVICES_STARTING/);
+    expect(ledger).toMatch(/phase=COMPLETE/);
+    expect(ledger.indexOf("phase=SERVICES_STARTING")).toBeLessThan(ledger.indexOf("phase=ACCEPTED"));
 
-  it("installs and verifies the cleanup timer separately after release activation", () => {
-    const fixture = createFixture();
-    prepareImmutableRelease(fixture, fixture.previousCommit);
-
-    const result = runRollout(fixture);
-
-    execFileSync("find", [join(fixture.root, "releases"), "-type", "d", "-exec", "chmod", "u+w", "{}", "+"]);
-    expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
     const systemdDir = join(fixture.root, "etc", "systemd", "system");
     expect(readFileSync(join(systemdDir, "agent-bridge-tmp-cleanup.service"), "utf8")).toContain("BRIDGE_CURRENT_RELEASE_DIR");
     expect(readFileSync(join(systemdDir, "agent-bridge-tmp-cleanup.timer"), "utf8")).toContain("OnCalendar=");
@@ -1382,11 +1351,12 @@ if [ -e ${JSON.stringify(`${fixture.dbPaths[0]}-wal`)} ]; then printf '1\\n'; el
     expect(existsSync(join(fixture.root, "daemon-reloaded"))).toBe(true);
     expect(existsSync(join(fixture.root, "cleanup-timer-enabled"))).toBe(true);
     expect(existsSync(join(fixture.root, "cleanup-timer-active"))).toBe(true);
-    const log = actions(fixture);
     expect(log).toContain("systemctl:daemon-reload");
     expect(log).toContain("systemctl:enable agent-bridge-tmp-cleanup.timer");
     expect(log).toContain("systemctl:show agent-bridge-tmp-cleanup.timer --property=TimersCalendar --value");
+
   }, 15_000);
+
 
   it("rejects an installed cleanup service unit whose bytes were modified after being written", () => {
     const fixture = createFixture();
@@ -1624,6 +1594,15 @@ if [ -e ${JSON.stringify(`${fixture.dbPaths[0]}-wal`)} ]; then printf '1\\n'; el
     expect(existsSync(join(artifacts, "backup-manifest.tsv"))).toBe(true);
     expect(existsSync(join(artifacts, "migration-evidence.json"))).toBe(true);
     expect(readFileSync(join(artifacts, "rollout.log"), "utf8")).toContain("rollout completed");
+    const acquire = log.indexOf("scripts/idle-maintenance.ts acquire");
+    const stop = log.indexOf("systemctl:stop");
+    const release = log.indexOf("scripts/idle-maintenance.ts release");
+    expect(acquire).toBeGreaterThan(-1);
+    expect(log).toMatch(/idle-maintenance\.ts acquire --owner-pid [1-9][0-9]+ --db/);
+    expect(stop).toBeGreaterThan(acquire);
+    expect(release).toBeGreaterThan(stop);
+    expect(log.slice(release)).toContain("release");
+
   }, 15_000);
 
   it("accepts a cohort that is already stopped and still proves containment before migration", () => {
