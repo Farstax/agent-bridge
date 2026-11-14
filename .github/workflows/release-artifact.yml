@@ -12,6 +12,8 @@ on:
 
 permissions:
   contents: read
+  actions: read
+  pull-requests: read
 
 concurrency:
   group: release-artifact-${{ github.ref }}
@@ -47,7 +49,72 @@ jobs:
       - name: Run real offline recovery isolation test
         run: RUN_NSPAWN_QUALIFICATION=1 npm test -- --run test/recoveryCopyIsolation.test.ts
 
+      - name: Reuse exact-tree successful PR qualification
+        id: reuse
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const mainSha = context.sha;
+            try {
+              const { data: main } = await github.rest.repos.getCommit({ owner, repo, ref: mainSha });
+              const tree = main.commit.tree.sha;
+              const { data: associated } = await github.rest.repos.listPullRequestsAssociatedWithCommit({
+                owner, repo, commit_sha: mainSha,
+              });
+              // The source PR must uniquely identify this merge commit.
+              const candidates = associated.filter((pr) =>
+                pr.merged_at && pr.base?.ref === "main" &&
+                pr.base?.repo?.full_name === owner + "/" + repo &&
+                pr.merge_commit_sha === mainSha && pr.head?.sha
+              );
+              if (candidates.length !== 1) throw new Error("merged PR identity missing or ambiguous");
+              const pr = candidates[0];
+              const headSha = pr.head.sha;
+              const { data: head } = await github.rest.repos.getCommit({ owner, repo, ref: headSha });
+              if (head.commit.tree.sha !== tree) throw new Error("merged and qualified PR trees differ");
+
+              const { data: result } = await github.rest.actions.listWorkflowRuns({
+                owner, repo, workflow_id: "ci.yml", event: "pull_request",
+                head_sha: headSha, per_page: 100,
+              });
+              for (const run of result.workflow_runs) {
+                if (run.head_sha !== headSha || run.event !== "pull_request" ||
+                    run.status !== "completed" || run.conclusion !== "success" ||
+                    !Number.isInteger(run.run_attempt) || run.run_attempt < 1 ||
+                    !((run.pull_requests?.some((item) => item.number === pr.number)) ||
+                      (pr.head.repo?.id != null && run.head_branch === pr.head.ref &&
+                       run.head_repository?.id === pr.head.repo.id))) continue;
+                // Inspect only this exact successful run attempt, not a stale retry.
+                const { data: jobs } = await github.rest.actions.listJobsForWorkflowRunAttempt({
+                  owner, repo, run_id: run.id, attempt_number: run.run_attempt, per_page: 100,
+                });
+                const qualified = jobs.jobs.filter((job) => job.name === "Test & Typecheck");
+                if (qualified.length !== 1 || qualified[0].status !== "completed" ||
+                    qualified[0].conclusion !== "success" ||
+                    qualified[0].run_attempt !== run.run_attempt ||
+                    qualified[0].head_sha !== headSha) continue;
+
+                core.setOutput("reuse", "true");
+                core.setOutput("source_pr", String(pr.number));
+                core.setOutput("source_run_id", String(run.id));
+                core.setOutput("source_run_attempt", String(run.run_attempt));
+                core.setOutput("source_head_sha", headSha);
+                core.notice("Reusing PR #" + pr.number + " CI run " + run.id +
+                  " attempt " + run.run_attempt + " for identical tree " + tree);
+                return;
+              }
+              throw new Error("no successful exact-head PR CI job/attempt");
+            } catch (error) {
+              core.setOutput("reuse", "false");
+              core.warning("Cannot prove identical-tree PR qualification: " +
+                (error instanceof Error ? error.message : String(error)) +
+                "; running full release qualification");
+            }
+
       - name: Run repository qualification gate
+        if: github.event_name != 'push' || steps.reuse.outputs.reuse != 'true'
         run: npm run qualify:local
         env:
           NODE_OPTIONS: "--max-old-space-size=3072"
@@ -75,6 +142,12 @@ jobs:
           root="$RUNNER_TEMP/agent-bridge-release"
           archive="$RUNNER_TEMP/agent-bridge-${commit}.tar.gz"
           checks_json='["test","typecheck","architecture-lint","compile","manifest"]'
+          qualification_source_json='{"kind":"release_gate"}'
+          if [[ "${{ steps.reuse.outputs.reuse }}" == "true" ]]; then
+            qualification_source_json="$(node -e 'process.stdout.write(JSON.stringify({kind:"reused_pr_ci",pr:Number(process.argv[1]),run_id:Number(process.argv[2]),attempt:Number(process.argv[3]),head_sha:process.argv[4]}))' \
+              "${{ steps.reuse.outputs.source_pr }}" "${{ steps.reuse.outputs.source_run_id }}" \
+              "${{ steps.reuse.outputs.source_run_attempt }}" "${{ steps.reuse.outputs.source_head_sha }}")"
+          fi
           mkdir -p "$root"
           cp -a dist src package.json package-lock.json node_modules "$root/"
           mkdir -p "$root/scripts" "$root/bin" "$root/skills"
@@ -127,7 +200,8 @@ jobs:
             "tree": "${tree}",
             "workflow_run": "${GITHUB_RUN_ID}",
             "workflow_head": "${builder_head}",
-            "checks": ${checks_json}
+            "checks": ${checks_json},
+            "qualification_source": ${qualification_source_json}
           }
           EOF
           release_args=()
