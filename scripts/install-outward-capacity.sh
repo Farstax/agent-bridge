@@ -61,6 +61,22 @@ runtime_user="$(sed -n 's/^runtime_user=//p' "$rollout_config")"
 [[ "$(systemctl show agent-bridge-bot.service --property=User --value)" == "$runtime_user" ]] ||
   fail "legacy bot runtime identity mismatch"
 
+# This root-owned workspace identity is also the Platform host's existing
+# protected-workspace guard. Never infer host sudo authority from execution
+# mode, the generic bot service, or the presence of the outward worker.
+is_authorised_protected_host() {
+  local identity_file="${1:-/etc/agent-bridge/workspace.env}"
+  [[ -e "$identity_file" || -L "$identity_file" ]] || return 1
+  secure_file "$identity_file"
+  local workspace_id
+  workspace_id="$(sed -n 's/^WORKSPACE_ID=//p' "$identity_file")"
+  case "$workspace_id" in
+    ws_71d729ce5ddb3673681a3143bb065cdc|'"ws_71d729ce5ddb3673681a3143bb065cdc"'|"'ws_71d729ce5ddb3673681a3143bb065cdc'")
+      return 0 ;;
+  esac
+  return 1
+}
+
 # Preserve the systemd EnvironmentFile syntax, without sourcing untrusted
 # shell text. Only operational keys are passed; never copy chat/API tokens.
 allowed=(
@@ -120,6 +136,20 @@ unit_contents="# Managed by Agent Bridge outward-capacity host component
 $(sed "s/BRIDGE_USER/$runtime_user/g" "$template")"
 unit_contents="${unit_contents/After=network-online.target/After=network-online.target agent-bridge-bot.service$'\n'PartOf=agent-bridge-bot.service$'\n'ConditionPathExists=$current_pointer\/scripts\/install-outward-capacity.sh}"
 unit_contents="${unit_contents/WantedBy=multi-user.target/WantedBy=agent-bridge-bot.service}"
+# The shared OSS template stays restrictive on ordinary hosts. Only the
+# exact root-attested protected Platform workspace inherits its bot's sudo
+# authority; the existing host-component installer owns this rendering.
+expected_nnp=yes
+expected_proc_nnp=1
+if is_authorised_protected_host; then
+  [[ "$(systemctl show agent-bridge-bot.service --property=NoNewPrivileges --value)" == no ]] ||
+    fail "protected bot privilege policy differs from ordinary Desk Runs"
+  [[ "$unit_contents" == *"NoNewPrivileges=true"* ]] ||
+    fail "outward worker template lost its restrictive default"
+  unit_contents="${unit_contents/NoNewPrivileges=true/NoNewPrivileges=no}"
+  expected_nnp=no
+  expected_proc_nnp=0
+fi
 [[ "$unit_contents" == *"PartOf=agent-bridge-bot.service"* &&
    "$unit_contents" == *"WantedBy=agent-bridge-bot.service"* ]] ||
   fail "unable to bind auxiliary worker lifecycle"
@@ -148,6 +178,13 @@ if [[ "$phase" == verify ]]; then
     fail "capacity unit is not enabled"
   systemctl is-active --quiet agent-bridge-outward-capacity.service ||
     fail "capacity worker is not active"
+  [[ "$(systemctl show agent-bridge-outward-capacity.service --property=NoNewPrivileges --value)" == "$expected_nnp" ]] ||
+    fail "capacity worker effective privilege policy differs from managed unit"
+  worker_pid="$(systemctl show agent-bridge-outward-capacity.service --property=MainPID --value)"
+  [[ "$worker_pid" =~ ^[1-9][0-9]*$ && -r "/proc/$worker_pid/status" ]] ||
+    fail "capacity worker running process unavailable"
+  grep -Eq "^NoNewPrivs:[[:space:]]+$expected_proc_nnp$" "/proc/$worker_pid/status" ||
+    fail "capacity worker running process has stale privilege policy"
   healthy
   exit 0
 fi
