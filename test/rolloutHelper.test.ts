@@ -1334,7 +1334,7 @@ if [ -e ${JSON.stringify(`${fixture.dbPaths[0]}-wal`)} ]; then printf '1\\n'; el
     expect(existsSync(join(artifacts, "stopped-evidence.sha256"))).toBe(true);
     expect(existsSync(join(artifacts, "post-start-evidence.sha256"))).toBe(true);
     expect(JSON.parse(readFileSync(join(artifacts, "post-start-evidence.json"), "utf8")).restartBoundary)
-      .toMatch(/^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$/);
+      .toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/);
     expect(existsSync(join(artifacts, "phase-ledger.log"))).toBe(true);
     const ledger = readFileSync(join(artifacts, "phase-ledger.log"), "utf8");
     expect(ledger).toMatch(/phase=PRECHECK_STARTED/);
@@ -1598,7 +1598,7 @@ if [ -e ${JSON.stringify(`${fixture.dbPaths[0]}-wal`)} ]; then printf '1\\n'; el
     const stop = log.indexOf("systemctl:stop");
     const release = log.indexOf("scripts/idle-maintenance.ts release");
     expect(acquire).toBeGreaterThan(-1);
-    expect(log).toMatch(/idle-maintenance\\.ts acquire --owner-pid [1-9][0-9]+ --db/);
+    expect(log).toMatch(/idle-maintenance\.ts acquire --owner-pid [1-9][0-9]+ --db/);
     expect(stop).toBeGreaterThan(acquire);
     expect(release).toBeGreaterThan(stop);
     expect(log.slice(release)).toContain("release");
