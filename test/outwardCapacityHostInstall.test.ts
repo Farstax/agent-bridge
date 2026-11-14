@@ -120,7 +120,7 @@ describe("outward ACP worker host component (#1181)", () => {
       const authorised = render(identity);
       expect(authorised).toContain("NoNewPrivileges=no");
       expect(authorised).not.toContain("NoNewPrivileges=true");
-      writeFileSync(identity, 'WORKSPACE_ID="ws_71d729ce5ddb3673681a3143bb065cdc"\\n');
+      writeFileSync(identity, 'WORKSPACE_ID="ws_71d729ce5ddb3673681a3143bb065cdc"\n');
       expect(render(identity)).toContain("NoNewPrivileges=no");
       writeFileSync(identity, "WORKSPACE_ID=ws_71d729ce5ddb3673681a3143bb065cdc\nWORKSPACE_ID=ws_other\n");
       expect(render(identity)).toContain("NoNewPrivileges=true");
