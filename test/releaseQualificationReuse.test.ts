@@ -31,7 +31,7 @@ const run = {
   conclusion: "success",
   run_attempt: 2,
 };
-const job = { name: "Test & Typecheck", status: "completed", conclusion: "success", run_attempt: 2 };
+const job = { name: "Test & Typecheck", status: "completed", conclusion: "success", run_attempt: 2, head_sha: headSha };
 
 type Options = {
   sourceTree?: string;
@@ -97,6 +97,8 @@ describe("release artifact exact-tree PR qualification reuse", () => {
     ["missing run", { runs: [] }],
     ["failed CI", { runs: [{ ...run, conclusion: "failure" }] }],
     ["stale successful retry", { jobs: [{ ...job, run_attempt: 1 }] }],
+    ["wrong job commit", { jobs: [{ ...job, head_sha: mainSha }] }],
+    ["missing source repository", { runs: [{ ...run, head_repository: null }] }],
     ["skipped test job", { jobs: [{ ...job, conclusion: "skipped" }] }],
     ["failed test job", { jobs: [{ ...job, conclusion: "failure" }] }],
     ["wrong source branch", { runs: [{ ...run, head_branch: "other" }] }],
