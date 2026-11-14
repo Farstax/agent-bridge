@@ -141,6 +141,12 @@ jobs:
           root="$RUNNER_TEMP/agent-bridge-release"
           archive="$RUNNER_TEMP/agent-bridge-${commit}.tar.gz"
           checks_json='["test","typecheck","architecture-lint","compile","manifest"]'
+          qualification_source_json='{"kind":"release_gate"}'
+          if [[ "${{ steps.reuse.outputs.reuse }}" == "true" ]]; then
+            qualification_source_json="$(node -e 'process.stdout.write(JSON.stringify({kind:"reused_pr_ci",pr:Number(process.argv[1]),run_id:Number(process.argv[2]),attempt:Number(process.argv[3]),head_sha:process.argv[4]}))' \
+              "${{ steps.reuse.outputs.source_pr }}" "${{ steps.reuse.outputs.source_run_id }}" \
+              "${{ steps.reuse.outputs.source_run_attempt }}" "${{ steps.reuse.outputs.source_head_sha }}")"
+          fi
           mkdir -p "$root"
           cp -a dist src package.json package-lock.json node_modules "$root/"
           mkdir -p "$root/scripts" "$root/bin" "$root/skills"
@@ -193,7 +199,8 @@ jobs:
             "tree": "${tree}",
             "workflow_run": "${GITHUB_RUN_ID}",
             "workflow_head": "${builder_head}",
-            "checks": ${checks_json}
+            "checks": ${checks_json},
+            "qualification_source": ${qualification_source_json}
           }
           EOF
           release_args=()
