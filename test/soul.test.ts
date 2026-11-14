@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { buildCliInvocation } from "../src/cli.js";
 import { wrapPromptContext } from "../src/promptWrapping.js";
+import { promptBlocks } from "../src/providers/acpRuntime.js";
 import { defaultSoulPath, loadSoulContext, renderSoulContract } from "../src/soul.js";
 
 const tempDirs: string[] = [];
@@ -121,6 +122,26 @@ describe("SOUL.md runtime context", () => {
     // and each provider's acpRuntime test) rather than through
     // buildCliInvocation. No provider wraps Soul context at invocation time
     // any more, so there is nothing left for this loop to exercise.
+  });
+
+  it("re-reads a saved Soul into the effective fresh ACP provider prompt", () => {
+    const file = tempSoulFile("# Persona\\n\\nRespond with evidence first.");
+    const freshPrompt = () => promptBlocks({
+      prompt: "Summarise this status", sessionId: null, command: "claude",
+      model: null, executionMode: "safe", outputFormat: "stream-json",
+      soulContext: loadSoulContext({ mode: "full", path: file }),
+      attachments: [], outputDir: null, effort: null, toolMode: "default",
+    });
+
+    const first = freshPrompt();
+    expect(first).toHaveLength(1);
+    expect(first[0]).toMatchObject({ type: "text", text: expect.stringContaining("Respond with evidence first.") });
+    expect(first[0]).toMatchObject({ type: "text", text: expect.stringContaining("User request:\\nSummarise this status") });
+
+    writeFileSync(file, "# Persona\\n\\nRespond with concise verification.", "utf8");
+    const second = freshPrompt();
+    expect(second[0]).toMatchObject({ type: "text", text: expect.stringContaining("Respond with concise verification.") });
+    expect(second[0]).not.toMatchObject({ type: "text", text: expect.stringContaining("Respond with evidence first.") });
   });
 
   it("loads existing multi-section Markdown without modification or errors", () => {
