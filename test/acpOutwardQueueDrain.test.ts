@@ -15,7 +15,7 @@ import { QUEUED_ATTACHMENT_MARKER, retainOutwardAcpAttachmentsForWait, stageOutw
 
 // Issue #1130: durable queue drained by a supervised owner, and augment steering.
 
-function fixture() {
+function fixture(stopWaitMs?: number) {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "outward-queue-drain-")));
   const db = openDb(join(root, "bridge.sqlite"), { databaseRole: "interactive" });
   const sessions = new OutwardAcpSessionRepository(db.raw);
@@ -27,6 +27,7 @@ function fixture() {
   executor = new BridgeOutwardAcpPromptExecutor({
     db,
     providerChain: ["codex"] as const,
+    ...(stopWaitMs === undefined ? {} : { remoteStopWaitMs: stopWaitMs }),
     lookupSession: (id) => sessions.get(id),
     discardPendingMessages: (owner, before, after) => core.discardPendingMessages(owner.conversationId, before, after),
     createEngine: () => ({
@@ -61,6 +62,49 @@ function coreQueueOwner(db: ReturnType<typeof openDb>, handler: (message: Pendin
 }
 
 describe("outward ACP durable queue ownership", () => {
+  it.each(["queue", "augment", "interrupt"] as const)(
+    "preserves a post-Stop %s message without executing before containment", async (mode) => {
+      const f = fixture(120);
+      let release!: () => void;
+      const blocked = new Promise<void>((resolve) => { release = resolve; });
+      try {
+        f.hold(blocked);
+        const first = f.executor.execute(base(f.session, "running before Stop"));
+        for (let i = 0; i < 100 && f.db.listRunningRuns(OUTWARD_ACP_SURFACE).length === 0; i += 1) {
+          await new Promise((resolve) => setTimeout(resolve, 10));
+        }
+        expect(f.db.listRunningRuns(OUTWARD_ACP_SURFACE)).toHaveLength(1);
+        setLaneBusyMessageMode(f.db, OUTWARD_ACP_SURFACE, f.session.conversationId, mode, "queue");
+        if (mode === "queue") {
+          const before = await f.executor.execute(base(f.session, "queued before Stop", {
+            busyMessages: true, requestId: "before-stop",
+          }));
+          expect((before._meta as any)["agent-bridge"].outcome).toBe("queued");
+        }
+        expect(await f.executor.cancel(f.session)).toBe("pending");
+        if (mode === "queue") {
+          expect(JSON.parse(f.db.getSetting("outward-queue-receipt:acp-request:s1:before-stop")!))
+            .toMatchObject({ status: "cancelled", reason: "stopped" });
+        }
+        const submitted = base(f.session, "new after Stop", { busyMessages: true, requestId: "after-stop" });
+        const accepted = await f.executor.execute(submitted);
+        expect((accepted._meta as any)["agent-bridge"]).toMatchObject({ outcome: "queued", mode });
+        const replay = await f.executor.execute(submitted);
+        expect((replay._meta as any)["agent-bridge"].queueId).toBe((accepted._meta as any)["agent-bridge"].queueId);
+        expect(f.db.pendingMsgCount(OUTWARD_ACP_SURFACE, f.session.conversationId)).toBe(1);
+        await f.executor.drainAllQueued();
+        expect(f.ran).toEqual(["running before Stop"]);
+        expect(f.db.getSetting(`outward-stop-fence:${f.session.conversationId}`)).toBeTruthy();
+        release();
+        await first;
+        await f.executor.drainAllQueued();
+        expect(f.ran).toEqual(["running before Stop", "new after Stop"]);
+        expect(f.db.pendingMsgCount(OUTWARD_ACP_SURFACE, f.session.conversationId)).toBe(0);
+        expect(f.db.getSetting(`outward-stop-fence:${f.session.conversationId}`)).toBeNull();
+      } finally { release(); f.cleanup(); }
+    },
+  );
+
   it("does not replace an expired ACP lane lease while a live Run still owns it", async () => {
     const f = fixture();
     let release!: () => void;
