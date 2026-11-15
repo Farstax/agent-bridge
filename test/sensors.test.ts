@@ -63,6 +63,17 @@ describe("sensors", { timeout: 30_000 }, () => {
     expect(report.checks.find((check) => check.name === "db-read")).toMatchObject({ status: "red" });
   });
 
+  it("does not present historical conversation failures as global health", async () => {
+    const dbPath = temporary("sensor-historical-failure.sqlite");
+    const db = openDb(dbPath, { serviceId: "sensor-test", runId: "sensor-test" });
+    const identity = { surfaceIdentity: "telegram:interactive", chatKey: "chat:old-conversation" };
+    db.incrementFailures(identity, "codex");
+    const report = await new AgentBridgeSensor(db, dbPath).check();
+    expect(report.checks.some((check) => check.name === "circuit-breaker")).toBe(false);
+    expect(db.getMaxConsecutiveFailures()).toContainEqual({ bot: "codex", count: 1 });
+    db.close();
+  });
+
   it("surfaces runtime authentication degradation separately from adapter installation", async () => {
     markProviderRuntimeAuthDegraded("grok");
     try {

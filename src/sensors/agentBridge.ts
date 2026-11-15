@@ -59,28 +59,6 @@ export class AgentBridgeSensor implements Sensor {
       }
     }
 
-    // Circuit breaker state
-    let cbStatus: "green" | "amber" | "red" = "green";
-    let cbMessage = "No consecutive failures";
-    try {
-      const failures = this.db?.getMaxConsecutiveFailures() ?? [];
-      if (failures.length > 0) {
-        const tripped = failures.filter(f => f.count >= 2);
-        const warned = failures.filter(f => f.count === 1);
-        if (tripped.length > 0) {
-          cbStatus = "red";
-          cbMessage = `Circuit breaker tripped: ${tripped.map(f => `${f.bot}(${f.count})`).join(", ")}`;
-        } else if (warned.length > 0) {
-          cbStatus = "amber";
-          cbMessage = `1 failure recorded: ${warned.map(f => f.bot).join(", ")}`;
-        }
-      }
-    } catch {
-      cbStatus = "amber";
-      cbMessage = "Could not read circuit breaker state";
-    }
-    checks.push({ name: "circuit-breaker", status: cbStatus, message: cbMessage });
-
     // Release-locked ACP adapters are checked against the installed release
     // manifest. They never use mutable global npm package state.
     const runtimeVersions = readInstalledProviderVersions();
