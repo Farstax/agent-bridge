@@ -694,6 +694,9 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
       this.reconcileStopFences();
     }
     if (db.getSetting(stopFenceKey(conversationId))) {
+      // Stop cancelled earlier work, not fresh opted-in user instructions.
+      // Keep their admission durable; Run creation stays fenced until containment.
+      if (optedIn && !input.ordinaryResume) return this.queueBehindActive(input);
       throw new acp.RequestError(OUTWARD_ACP_BUSY_ERROR, "outward ACP Stop is still pending", { sessionId: input.session.sessionId });
     }
     if (hasPendingCapacityWait(db, OUTWARD_ACP_SURFACE, input.session.conversationId, input.capacityResume?.id)) {
@@ -1344,17 +1347,22 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
       await retainOutwardAcpAttachmentsForWait(session.cwd, attachments, retainedId);
     }
     let admission: ReturnType<BridgeDb["admitQueuedMessageOnce"]>;
+    let stopPendingAtAdmission = false;
     try {
       // Authorisation for a queued Run commits with its single queue admission;
       // an independent worker cannot drain it between enqueue and consent.
       admission = db.runInImmediateTransaction(() => {
+        stopPendingAtAdmission = Boolean(db.getSetting(stopFenceKey(session.conversationId)));
         const accepted = db.admitQueuedMessageOnce(OUTWARD_ACP_SURFACE, session.conversationId, {
           prompt: input.prompt,
           chatId: session.sessionId,
           chatType: "acp",
           attachments: attachments.length > 0 ? [`${RETAINED_ATTACHMENT_MARKER}${retainedId}`] : [],
           scheduledOccurrenceKey: key,
-        }, MAX_QUEUE_DEPTH, queueReceiptKey(key), queueRunLinkKey(key), queueReservationKey(key), reservationToken ?? "", stopFenceKey(session.conversationId));
+        }, MAX_QUEUE_DEPTH, queueReceiptKey(key), queueRunLinkKey(key), queueReservationKey(key), reservationToken ?? "",
+        // Only an existing continuation is barred by Stop. User submissions
+        // serialize against the Stop discard transaction and can follow it.
+        input.ordinaryResume ? stopFenceKey(session.conversationId) : undefined);
         if (accepted.kind === "queued") {
           if (input.requestId && !input.ordinaryResume) {
             rememberQueuedDisplay(db, session.sessionId, input.requestId, input.prompt, attachments.length);
@@ -1390,8 +1398,10 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
     }
     const queueId = admission.id;
     let steered = false;
-    if (!input.ordinaryResume && mode === "interrupt") await this.cancelRun(session);
-    else if (!input.ordinaryResume && mode === "augment") steered = await this.trySteerQueued(session, queueId);
+    // Stop already owns cancellation. Do not cancel the newly accepted
+    // successor or steer it into a provider being stopped.
+    if (!input.ordinaryResume && !stopPendingAtAdmission && mode === "interrupt") await this.cancelRun(session);
+    else if (!input.ordinaryResume && !stopPendingAtAdmission && mode === "augment") steered = await this.trySteerQueued(session, queueId);
     this.scheduleDrain(session);
     // A late injected result after claim loss is uncertain, not a new queue
     // admission. Surface the durable verdict instead of claiming it is queued.
@@ -1618,6 +1628,11 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
   /** BridgeEngine claims, executes, settles and fences the shared durable queue. */
   async drainQueued(session: OutwardAcpSessionRecord): Promise<void> {
     if (this.closing || !this.options.db.raw.open) return;
+    if (this.options.db.getSetting(stopFenceKey(session.conversationId))) {
+      await recoverOutwardLanes(this.options.db);
+      // Post-Stop rows stay unclaimed until the old Run/lock has settled.
+      if (!this.clearSettledStopFence(session)) return;
+    }
     await this.options.createEngine(session, this.selectedProvider(session))
       // A transient ACP client must not replace an expired lease while its
       // previous owner may still be executing an external provider process.
@@ -1685,8 +1700,9 @@ function clearSetting(db: BridgeDb, key: string): void {
 function clearSettledStopFence(db: BridgeDb, conversationId: string): boolean {
   return db.runInImmediateTransaction(() => {
     const running = db.listRunningRuns(OUTWARD_ACP_SURFACE).some((run) => run.chat_id === conversationId);
+    // Queue rows admitted after Stop belong to the next Run, not the stopped
+    // one. They must not prevent this execution fence from clearing.
     if (running || db.hasChatLock(conversationId)
-        || db.pendingMsgCount(OUTWARD_ACP_SURFACE, conversationId) > 0
         || hasPendingCapacityWait(db, OUTWARD_ACP_SURFACE, conversationId)) return false;
     clearSetting(db, stopFenceKey(conversationId));
     return true;
