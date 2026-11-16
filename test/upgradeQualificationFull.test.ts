@@ -56,7 +56,7 @@ exec "${process.execPath}" "${join(process.cwd(), "node_modules/tsx/dist/cli.mjs
 `);
       script(agy, `
 printf '%s\\n' "$0 $*" >> "${qualificationLog}"
-if [ "\${1:-}" = --version ]; then echo 'agy 1.5.2'; exit 0; fi
+if [ "\${1:-}" = --version ]; then echo 'agy 1.5.9'; exit 0; fi
 exec "${process.execPath}" "${join(process.cwd(), "node_modules/tsx/dist/cli.mjs")}" "${join(process.cwd(), "test/support/fakeAcpAgent.ts")}"
 `);
       script(agyHarness, "exit 0\n");
@@ -152,7 +152,7 @@ exit 97
       expect(evidence.providers).toMatchObject({
         claude: { overall: "pass", providerVersion: "0.99.1" },
         codex: { overall: "pass", providerVersion: "2.6.0" },
-        agy: { overall: "pass", providerVersion: "1.5.2" },
+        agy: { overall: "pass", providerVersion: "1.5.9" },
         cursor: { overall: "pass", providerVersion: "2026.10.22-27dcf5f" },
       });
     } finally {
