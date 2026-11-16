@@ -151,7 +151,7 @@ describe("provider qualification contract", () => {
     const previousCommand = process.env.AGY_ACP_COMMAND;
     const previousArgs = process.env.AGY_ACP_ARGS;
     const acp = executable(join(root, "agy"), `
-if [[ "\${1:-}" == "--version" ]]; then echo "agy 1.5.2"; exit 0; fi
+if [[ "\${1:-}" == "--version" ]]; then echo "agy 1.5.9"; exit 0; fi
 echo "acp should not be oneshot-parsed" >&2
 exit 7
 `);
@@ -177,8 +177,8 @@ exit 7
         AGY_ACP_COMMAND: acp,
         AGY_ACP_ARGS: "acp",
       }).runtimeIdentity);
-      expect(result.providerVersion).toBe("1.5.2");
-      expect(result.checks.find((check) => check.name === "version")?.diagnostic).toMatch(/agy 1\.5\.2/);
+      expect(result.providerVersion).toBe("1.5.9");
+      expect(result.checks.find((check) => check.name === "version")?.diagnostic).toMatch(/agy 1\.5\.9/);
     } finally {
       if (previousCommand === undefined) delete process.env.AGY_ACP_COMMAND;
       else process.env.AGY_ACP_COMMAND = previousCommand;
@@ -189,7 +189,7 @@ exit 7
 
   describe("candidate binding (issue 997)", () => {
     const agyScript = `
-if [[ "\${1:-}" == "--version" ]]; then echo "agy 1.5.2"; exit 0; fi
+if [[ "\${1:-}" == "--version" ]]; then echo "agy 1.5.9"; exit 0; fi
 exit 7
 `;
 
@@ -232,7 +232,7 @@ exit 7
       const deployed = executable(join(root, "deployed_agy"), agyScript);
       const staged = executable(join(root, "staged_agy"), `${agyScript}\n# staged candidate\n`);
       const record = await qualifyAgy(staged, staged, true);
-      expect(record.providerVersion).toBe("1.5.2");
+      expect(record.providerVersion).toBe("1.5.9");
       expect(record.candidate).toMatchObject({ executable: realpathSync(staged), staged: true });
       expect(record.candidate?.sha256).toBe(createHash("sha256").update(readFileSync(staged)).digest("hex"));
       expect(record.candidate?.sha256).not.toBe(createHash("sha256").update(readFileSync(deployed)).digest("hex"));
@@ -294,11 +294,11 @@ exit 7
           timeoutMs: 5_000,
           env: { ...process.env, AGY_ACP_COMMAND: acp, AGY_ACP_ARGS: "acp" },
         });
-        expect(isQualificationCurrent(initial, "agy", "1.5.2", process.env)).toBe(true);
+        expect(isQualificationCurrent(initial, "agy", "1.5.9", process.env)).toBe(true);
 
         // Mutate the executable bytes while keeping the reported version identical
         writeFileSync(acp, `${agyScript}\n# modified binary bytes\n`, { encoding: "utf8", mode: 0o755 });
-        expect(isQualificationCurrent(initial, "agy", "1.5.2", process.env)).toBe(false);
+        expect(isQualificationCurrent(initial, "agy", "1.5.9", process.env)).toBe(false);
 
         // qualifyProviderIfNeeded must not reuse the stale record when bytes changed
         const recheck = await qualifyProviderIfNeeded({
@@ -350,11 +350,11 @@ exit 7
       const runtimeIdentity = currentQualificationRuntime("agy");
       const record = passingRecord({
         provider: "agy",
-        providerVersion: "1.5.2",
+        providerVersion: "1.5.9",
         executionRuntime: runtimeIdentity,
         candidate: { executable: "/usr/bin/agy", sha256: "abc", staged: true },
       });
-      expect(isQualificationCurrent(record, "agy", "1.5.2")).toBe(false);
+      expect(isQualificationCurrent(record, "agy", "1.5.9")).toBe(false);
     });
   });
 

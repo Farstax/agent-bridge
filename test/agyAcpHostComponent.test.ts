@@ -56,7 +56,7 @@ describe("Agy ACP managed host component", () => {
     }
 
     it("is present in the installer", () => { expect(snippet).toBeTruthy(); });
-    it("accepts the official 1.5.2 layout, where the executable is named `antigravity`", () => {
+    it("accepts the official 1.5.9 layout, where the executable is named `antigravity`", () => {
       expect(extract(["antigravity"])).toMatchObject({ status: 0, out: "binary:antigravity" });
     });
     it("still accepts a single `agy` member", () => {

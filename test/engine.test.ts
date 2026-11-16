@@ -1537,7 +1537,7 @@ describe("BridgeEngine", () => {
       db.putAcpSessionBinding({
         surfaceIdentity: "test",
         conversationId: topicKey,
-        providerId: "agy@cli:1.5.2",
+        providerId: "agy@cli:1.5.9",
         acpSessionId: staleId,
         runId: null,
       });
@@ -1561,8 +1561,8 @@ describe("BridgeEngine", () => {
 
       await engine.handleMessages([makePrivateTopicMessage("resume topic", 7)]);
       expect(runProviderInvocation.mock.calls[0][4].sessionId).toBe(staleId);
-      expect(db.getAcpSessionBinding({ surfaceIdentity: "test", chatKey: topicKey }, "agy@cli:1.5.2")?.acpSessionId).toBe(replacementId);
-      expect(db.getAcpSessionBinding({ surfaceIdentity: "test", chatKey: "100" }, "agy@cli:1.5.2")).toBeNull();
+      expect(db.getAcpSessionBinding({ surfaceIdentity: "test", chatKey: topicKey }, "agy@cli:1.5.9")?.acpSessionId).toBe(replacementId);
+      expect(db.getAcpSessionBinding({ surfaceIdentity: "test", chatKey: "100" }, "agy@cli:1.5.9")).toBeNull();
       expect(client.sendMessage).toHaveBeenCalledWith(expect.objectContaining({
         chat_id: 100,
         message_thread_id: "7",
