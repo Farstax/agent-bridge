@@ -46,7 +46,7 @@ exit 97
 
       script(claude, `
 printf '%s\n' "$0 $*" >> "${qualificationLog}"
-if [ "\${1:-}" = --version ]; then echo '@agentclientprotocol/claude-agent-acp 0.99.1'; exit 0; fi
+if [ "\${1:-}" = --version ]; then echo '@agentclientprotocol/claude-agent-acp 0.107.1'; exit 0; fi
 exec "${process.execPath}" "${join(process.cwd(), "node_modules/tsx/dist/cli.mjs")}" "${join(process.cwd(), "test/support/fakeAcpAgent.ts")}"
 `);
       script(codex, `
@@ -150,7 +150,7 @@ exit 97
         providers?: Record<string, { overall?: string; providerVersion?: string }>;
       };
       expect(evidence.providers).toMatchObject({
-        claude: { overall: "pass", providerVersion: "0.99.1" },
+        claude: { overall: "pass", providerVersion: "0.107.1" },
         codex: { overall: "pass", providerVersion: "2.6.0" },
         agy: { overall: "pass", providerVersion: "1.5.9" },
         cursor: { overall: "pass", providerVersion: "2026.10.22-27dcf5f" },
