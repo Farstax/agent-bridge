@@ -4,10 +4,10 @@ Agent Bridge uses Agent Client Protocol (ACP) v1 as the canonical inward
 provider-runtime contract for providers that have completed ACP migration.
 This is not a second agent runtime and not a proprietary wrapper around ACP.
 
-Pinned SDK: `@agentclientprotocol/sdk@1.7.0` (stable ACP v1 entry point).
+Pinned SDK: `@agentclientprotocol/sdk@2.7.0` (stable ACP v1 entry point).
 Pinned Codex ACP adapter: `@agentclientprotocol/codex-acp@1.10.0`
 (maintained implementation; bundled in the active Agent Bridge release).
-Pinned Claude ACP adapter: `@agentclientprotocol/claude-agent-acp@0.95.0`
+Pinned Claude ACP adapter: `@agentclientprotocol/claude-agent-acp@0.107.1`
 (official Registry distribution; bundled in the active Agent Bridge release).
 Pinned Grok ACP distribution: `@xai-official/grok@1.0.46` (`grok agent stdio`;
 official Registry `grok-build` 1.0.46). The package bin symlink is rewritten
@@ -138,7 +138,7 @@ CLAUDE_ACP_COMMAND=...              # optional override of the bundled adapter
 CLAUDE_ACP_ARGS=...                 # optional extra adapter argv
 ```
 
-The release owns `@agentclientprotocol/claude-agent-acp@0.95.0` and resolves
+The release owns `@agentclientprotocol/claude-agent-acp@0.107.1` and resolves
 the default executable as
 `$BRIDGE_CURRENT_RELEASE_DIR/node_modules/.bin/claude-agent-acp`. Session
 mode stays `default` for safe and trusted runs because Agent Bridge answers
