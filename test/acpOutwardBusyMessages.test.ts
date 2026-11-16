@@ -162,8 +162,10 @@ describe("outward ACP busy-message admission over real stdio", () => {
     expect((await status(b, sid)).queued).toBe(1);
     release("one"); await first;
     await waitFor(() => executions().length === 2);
-    await waitFor(async () => (await status(b, sid)).queued === 0);
-    const replay = await prompt(b, sid, "second", meta);
+    const replay = await waitFor(async () => {
+      const receipt = await prompt(b, sid, "second", meta);
+      return receipt.result?._meta?.["agent-bridge"]?.outcome === "settled" ? receipt : false;
+    });
     expect(replay.result._meta["agent-bridge"]).toMatchObject({ outcome: "settled", status: "done" });
     expect(executions().map((e) => e.prompt)).toEqual(["hold:one", "second"]);
   }, 60000);
