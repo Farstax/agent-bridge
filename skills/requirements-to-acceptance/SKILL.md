@@ -18,6 +18,18 @@ Keep only what changes engineering decisions:
 5. Express acceptance as user/system-observable behavior and meaningful failure behavior. Prescribe implementation only for a real architecture, security, compatibility, or operational invariant.
 6. Name the evidence that will prove the contract before selecting the implementation or red test.
 
+## Qualification feasibility
+
+For each **material** acceptance criterion, specify an achievable proof path and observable pass evidence **before implementation**:
+
+- **A — Automated (preferred):** a deterministic unit, integration, browser, or isolated system test, with assertions that cover the consequential outcome; inject faults in a safe fixture instead of awaiting rare production failures.
+- **R — Agent runtime:** a bounded agent-executable check against an identified environment and installed identity, with available access, tools, and observable read-back. Use disposable targets for controlled mutations.
+- **U — User validation (exception):** a specific owner observation only when an agent cannot reasonably establish the result; say why. Do not ask the owner to repeat evidence already obtained.
+
+Combine methods when the actual contract needs both deterministic safety assertions and real runtime or third-party integration evidence. A mock or code-shape check is not proof of actual external delivery, authorization, isolation, or deployed behaviour.
+
+Check whether an independent agent can safely obtain **every mandatory proof** with available tools, credentials and environments. If not, make the invariant testable using an equivalent controlled scenario, identify the authorised prerequisite, or mark the genuine external dependency as **blocked**; never silently waive mandatory safety or claim a PASS. Separate finite initial acceptance from recurring monitoring, future vendor upgrades and naturally occurring incidents. Keep the issue concise: criterion → applicable A/R/U method → expected evidence; no new form or mandatory process for trivial changes.
+
 For security, identity, credential, account/repository selection, installation, or permission changes, trace:
 
 `actor -> authentication -> selection -> durable state -> credential -> target -> operation`
