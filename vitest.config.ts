@@ -13,7 +13,9 @@ export default defineConfig({
     pool: "forks",
     // Bound aggregate memory without serializing the entire suite. Tests that
     // genuinely require ordering must scope it locally with sequential APIs.
-    maxWorkers: 2,
+    // Three workers fit the 4-vCPU hosted runner inside the 3 GiB per-process
+    // heap envelope; the rollout suites are subprocess-bound, not heap-bound.
+    maxWorkers: 3,
   },
   plugins: [
     {
