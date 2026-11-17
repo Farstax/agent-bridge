@@ -68,6 +68,8 @@ export interface OutwardAcpPromptExecutionInput {
   onUpdate: (update: OutwardUpdate) => void | Promise<void>;
   /** Request-scoped opt-in for transient, safe answer previews. */
   answerPreview?: boolean;
+  /** Request-scoped opt-in for explicitly classified, safe interim commentary. */
+  interimCommentary?: boolean;
   /** ACP v1 caller opted into the deferred capacity extension. */
   deferCapacity?: boolean;
   /** Trusted, claimed continuation only; not supplied by an ACP client. */
@@ -912,6 +914,16 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
         updateChain = updateChain.then(() => input.onUpdate(update));
       };
       let previewEmitted = false;
+      let commentaryEmitted = false;
+      const resetCommentary = (): void => {
+        if (!commentaryEmitted) return;
+        commentaryEmitted = false;
+        enqueueUpdate({
+          sessionUpdate: "agent_message_chunk",
+          content: { type: "text", text: "" },
+          _meta: { "agent-bridge/interim-commentary": { clear: 1 } },
+        } as OutwardUpdate);
+      };
       const resetPreview = (): void => {
         if (!previewEmitted) return;
         previewEmitted = false;
@@ -923,6 +935,10 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
         } as OutwardUpdate);
       };
       clearLivePreview = resetPreview;
+      const resetAttemptPresentation = (): void => {
+        resetPreview();
+        resetCommentary();
+      };
       settleLiveUpdates = () => updateChain;
       const collect = (event: BridgeEvent): void => {
         if (event.type === "run.started") activeProvider = event.bot;
@@ -958,11 +974,22 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
         collect,
         ...(ordinaryWorkstreamId ? { ordinaryWorkstreamId } : {}),
         ...(input.ordinaryResume ? { requireBoundProviderSession: true } : {}),
-        onProviderExecutionStarted: resetPreview,
+        onProviderExecutionStarted: resetAttemptPresentation,
         onAnswerDelta: input.answerPreview === true ? (delta) => {
           if (!delta || active?.cancelRequested || input.signal.aborted) return;
           previewEmitted = true;
           enqueueUpdate({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: delta } });
+        } : undefined,
+        onProviderRecoveryDecision: (reason, exhausted, transition) => {
+        onInterimCommentary: input.interimCommentary === true ? (text) => {
+          if (active?.cancelRequested || input.signal.aborted || text.length === 0 || text.length > 280
+            || /[\u0000-\u001f\u007f\u2028\u2029]/.test(text)) return;
+          commentaryEmitted = true;
+          enqueueUpdate({
+            sessionUpdate: "agent_message_chunk",
+            content: { type: "text", text: "" },
+            _meta: { "agent-bridge/interim-commentary": { id: "1", text } },
+          } as OutwardUpdate);
         } : undefined,
         onProviderRecoveryDecision: (reason, exhausted, transition) => {
           if (reason !== null) resetPreview();
@@ -978,6 +1005,7 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
       });
 
       const cancelled = active.cancelRequested || result.stopReason === "cancelled";
+      if (cancelled) resetCommentary();
       // The router may have fallen back to a different provider mid-turn;
       // attribute persistence to whichever provider actually produced the
       // terminal event, or at minimum the latest surviving run.started event.

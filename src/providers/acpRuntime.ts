@@ -87,6 +87,7 @@ export interface AcpProviderPolicy {
     readonly createPreview?: (
       onAnswerDelta: (text: string) => void,
       secrets: readonly string[],
+      onCommentary?: (text: string) => void,
     ) => AcpAnswerPreview;
   };
   /** Provider-owned child environment policy applied by the shared supervisor path. */
@@ -565,7 +566,7 @@ export async function runResolvedAcpProviderTurn(
   const secretValues = getProviderApiKeySecretValues(redactionEnv);
   const liveRedactor = createStreamingSecretRedactor(secretValues);
   const newAnswerPreview = () => options.onAnswerDelta && runtime.provisionalAnswers
-    ? (policy.presentation.createPreview?.(options.onAnswerDelta, secretValues)
+    ? (policy.presentation.createPreview?.(options.onAnswerDelta, secretValues, options.onInterimCommentary)
       ?? createStandardAnswerPreview(options.onAnswerDelta, secretValues))
     : null;
   let answerPreview = newAnswerPreview();

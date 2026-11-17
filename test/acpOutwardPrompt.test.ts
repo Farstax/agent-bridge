@@ -409,6 +409,50 @@ describe("outward ACP prompt execution", () => {
     }
   });
 
+  it("forwards only opted-in transient interim commentary as an empty Bridge-owned marker", async () => {
+    const root = mkdtempSync(join(tmpdir(), "agent-bridge-outward-commentary-"));
+    const db = openDb(join(root, "bridge.sqlite"), { databaseRole: "interactive" });
+    try {
+      const sessions = new OutwardAcpSessionRepository(db.raw);
+      const session = sessions.create({ sessionId: "commentary-session", conversationId: "acp:commentary", cwd: root });
+      const executor = new BridgeOutwardAcpPromptExecutor({
+        db, providerChain: ["codex"] as const, runId: () => "run-commentary",
+        createEngine: () => ({
+          executeSurfaceNeutralTurn: async (input) => {
+            input.onInterimCommentary?.("Reading the router configuration.");
+            input.onInterimCommentary?.("x".repeat(281));
+            return { text: "authoritative answer", sessionId: "provider-commentary", stopReason: "end_turn" };
+          },
+        }),
+      });
+      const updates: acp.SessionNotification[] = [];
+      const client = acp.client({ name: "farstax-desk-test" })
+        .onNotification(acp.methods.client.session.update, (ctx) => updates.push(ctx.params));
+      const response = await connectWithAcpInitialization(
+        client, createOutwardAcpAgent({ sessions, promptExecutor: executor, workspaceRoot: root }),
+        async (agent) => {
+          await agent.request(acp.methods.agent.initialize, { protocolVersion: acp.PROTOCOL_VERSION, clientCapabilities: {} });
+          return agent.request(acp.methods.agent.session.prompt, {
+            sessionId: session.sessionId, prompt: [{ type: "text", text: "hello" }],
+            _meta: { "agent-bridge/interim-commentary": 1 },
+          });
+        },
+      );
+      expect(response.stopReason).toBe("end_turn");
+      expect(updates.map(({ update }) => update)).toContainEqual({
+        sessionUpdate: "agent_message_chunk",
+        content: { type: "text", text: "" },
+        _meta: { "agent-bridge/interim-commentary": { id: "1", text: "Reading the router configuration." } },
+      });
+      expect(JSON.stringify(updates)).not.toContain("x".repeat(281));
+      expect(db.getRecentConvTurns("acp:commentary", 5, undefined, OUTWARD_ACP_SURFACE)
+        .map((turn) => turn.text)).toEqual(["hello", "authoritative answer"]);
+    } finally {
+      db.close();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("resets a safe preview on retry and cancellation without exposing a stale final", async () => {
     const root = mkdtempSync(join(tmpdir(), "agent-bridge-preview-reset-"));
     const db = openDb(join(root, "bridge.sqlite"), { databaseRole: "interactive" });
