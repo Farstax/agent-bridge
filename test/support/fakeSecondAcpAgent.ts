@@ -61,6 +61,22 @@ acp.agent({ name: "fake-second-acp-provider" })
         usage: { inputTokens: 5, outputTokens: 2 },
       };
     }
+    if (prompt.includes("COMMENTARY_PROBE")) {
+      const send = (sessionId: string, update: acp.SessionNotification["update"]) =>
+        ctx.client.notify(acp.methods.client.session.update, { sessionId, update });
+      const root = ctx.params.sessionId;
+      await send(root, { sessionUpdate: "agent_thought_chunk", content: { type: "text", text: "private chain of thought" } });
+      await send(root, { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "Reading the router configuration." } });
+      await send(root, { sessionUpdate: "tool_call", toolCallId: "t1", title: "cat ~/.ssh/id_rsa", kind: "execute", status: "in_progress" });
+      await send(root, { sessionUpdate: "tool_call_update", toolCallId: "t1", status: "completed",
+        content: [{ type: "content", content: { type: "text", text: "TOKEN=leaky-tool-output" } }] });
+      await send("fixture-child-session", { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "child commentary" } });
+      await send("fixture-child-session", { sessionUpdate: "tool_call", toolCallId: "c1", title: "child tool", kind: "execute", status: "in_progress" });
+      await send(root, { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "Using fixture-xai-secret-value to call the API." } });
+      await send(root, { sessionUpdate: "tool_call", toolCallId: "t2", title: "curl api", kind: "execute", status: "in_progress" });
+      await send(root, { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "Final answer: the router is healthy." } });
+      return { stopReason: "end_turn", usage: { inputTokens: 7, outputTokens: 3 } };
+    }
     await ctx.client.notify(acp.methods.client.session.update, {
       sessionId: "fixture-child-session",
       update: {

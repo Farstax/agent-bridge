@@ -280,6 +280,64 @@ describe("outward ACP prompt execution", () => {
     } finally { db.close(); rmSync(root, { recursive: true, force: true }); }
   });
 
+  it("delivers opted-in interim commentary live over ACP, never as an assistant turn", async () => {
+    const root = mkdtempSync(join(tmpdir(), "agent-bridge-outward-commentary-"));
+    const db = openDb(join(root, "bridge.sqlite"), { databaseRole: "interactive" });
+    let release!: () => void;
+    const providerFinished = new Promise<void>((resolve) => { release = resolve; });
+    try {
+      const sessions = new OutwardAcpSessionRepository(db.raw);
+      const session = sessions.create({ sessionId: "commentary-session", conversationId: "acp:commentary", cwd: root });
+      const optIns: boolean[] = [];
+      const executor = new BridgeOutwardAcpPromptExecutor({
+        db, providerChain: ["codex"] as const, runId: () => "run-commentary",
+        createEngine: () => ({
+          executeSurfaceNeutralTurn: async (input) => {
+            optIns.push(typeof input.onInterimCommentary === "function");
+            input.onInterimCommentary?.({ id: "1", text: "Checking the focused suites." });
+            await providerFinished;
+            return { text: "authoritative answer", sessionId: "provider-commentary", stopReason: "end_turn" };
+          },
+        }),
+      });
+      const updates: acp.SessionNotification[] = [];
+      let seen!: () => void;
+      const gotCommentary = new Promise<void>((resolve) => { seen = resolve; });
+      const client = acp.client({ name: "farstax-desk-test" })
+        .onNotification(acp.methods.client.session.update, (ctx) => {
+          updates.push(ctx.params);
+          if ((ctx.params.update as { _meta?: Record<string, unknown> })._meta?.["agent-bridge/interim-commentary"]) seen();
+        });
+      const response = await connectWithAcpInitialization(
+        client, createOutwardAcpAgent({ sessions, promptExecutor: executor, workspaceRoot: root }),
+        async (agent) => {
+          await agent.request(acp.methods.agent.initialize, { protocolVersion: acp.PROTOCOL_VERSION, clientCapabilities: {} });
+          const running = agent.request(acp.methods.agent.session.prompt, {
+            sessionId: session.sessionId, prompt: [{ type: "text", text: "hello" }],
+            _meta: { "agent-bridge/interim-commentary": 1 },
+          });
+          try {
+            await Promise.race([
+              gotCommentary,
+              new Promise<never>((_, reject) => setTimeout(() => reject(new Error("commentary was not streamed before completion")), 2500)),
+            ]);
+            expect(db.getRun("run-commentary")?.status).toBe("running");
+          } finally { release(); }
+          return running;
+        },
+      );
+      expect(response.stopReason).toBe("end_turn");
+      expect(optIns).toEqual([true]);
+      const meta = (u: acp.SessionNotification) => (u.update as { _meta?: Record<string, unknown> })._meta?.["agent-bridge/interim-commentary"];
+      expect(updates.map(meta).filter(Boolean)).toEqual([{ id: "1", text: "Checking the focused suites." }, { clear: 1 }]);
+      expect(JSON.stringify(db.getRecentConvTurns("acp:commentary", 10, undefined, OUTWARD_ACP_SURFACE))).not.toContain("Checking the focused suites");
+    } finally {
+      release();
+      db.close();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("forwards safe opted-in answer chunks over ACP before completion without duplicating the final answer", async () => {
     const root = mkdtempSync(join(tmpdir(), "agent-bridge-outward-preview-"));
     const db = openDb(join(root, "bridge.sqlite"), { databaseRole: "interactive" });

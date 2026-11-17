@@ -31,6 +31,7 @@ import {
   markProviderRuntimeAuthDegraded,
 } from "./runtimeAvailability.js";
 import { buildAcpFailureDiagnosticEvent } from "./acpFailureDiagnostic.js";
+import { createInterimCommentary } from "../acp/interimCommentary.js";
 import { attachProviderFailureEvidence } from "./failureEvidence.js";
 import { hasCustomAcpConfiguration, resolveCustomAcpLaunch } from "./externalAcpLaunch.js";
 import {
@@ -569,6 +570,9 @@ export async function runResolvedAcpProviderTurn(
       ?? createStandardAnswerPreview(options.onAnswerDelta, secretValues))
     : null;
   let answerPreview = newAnswerPreview();
+  const interimCommentary = options.onInterimCommentary
+    ? createInterimCommentary(options.onInterimCommentary, secretValues)
+    : null;
   const activityProjector = options.onProgress?.activity && policy.createActivityProjector
     ? policy.createActivityProjector()
     : null;
@@ -581,7 +585,7 @@ export async function runResolvedAcpProviderTurn(
   let promptEverSubmitted = false;
   const runTurn = async (attempt: 1 | 2): Promise<AcpTurnResult> => {
     // Never reuse a preview classifier or its buffered text across an ACP retry.
-    if (attempt === 2) answerPreview = newAnswerPreview();
+    if (attempt === 2) { answerPreview = newAnswerPreview(); interimCommentary?.reset(); }
     const credentialExecutionLock = policy.credentialExecutionLock?.(effectiveEnv, attempt) ?? null;
     const turn = await runSupervisedStdioSession(
       runtime.executable,
@@ -619,11 +623,15 @@ export async function runResolvedAcpProviderTurn(
             if (safe) options.onProgress?.(safe);
           }
           : undefined,
-        onEvent: answerPreview || activityProjector || (eventContext && onEvent)
+        onEvent: answerPreview || interimCommentary || activityProjector || (eventContext && onEvent)
           ? (event) => {
             const runActivity = activityProjector?.observe(event);
             if (runActivity) options.onProgress?.activity?.(runActivity);
             answerPreview?.observe(event);
+            if (interimCommentary && !event.presentationSuppressed && event.kind === "session_update"
+              && event.channel === "live" && event.notification && event.notification.sessionId === event.acpSessionId) {
+              interimCommentary.observe(event.notification.update);
+            }
             if (!eventContext || !onEvent || !event.sessionMode) return;
             onEvent(bridgeEventType.acpEvent({
               runId: eventContext.runId,
@@ -700,6 +708,7 @@ export async function runResolvedAcpProviderTurn(
   const flushed = liveRedactor.flush();
   if (flushed) options.onProgress?.(flushed);
   answerPreview?.finish(result.stopReason);
+  interimCommentary?.reset();
   // A side question must not replace the active provider model/effort discovery snapshot.
   if (!request.readOnlySideQuestion) replaceAcpSessionConfigSnapshot(providerBotKind(providerId), result.configOptions, result.staleSessionConfig);
   let parsed: CliResult;

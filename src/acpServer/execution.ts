@@ -25,6 +25,7 @@ import { QUEUED_ATTACHMENT_MARKER, readRetainedOutwardAcpAttachments, retainOutw
 import { rememberQueuedDisplay, settleQueuedDisplay, retireQueuedDisplay } from "./queuedDisplay.js";
 import { resolveLaneBusyMessageMode } from "../busyMessageMode.js";
 import { discardDeskRunArtifacts, retainDeskArtifacts } from "./artifacts.js";
+import { INTERIM_COMMENTARY_META, type InterimCommentarySignal } from "../acp/interimCommentary.js";
 import { hasPendingCapacityWait, listRunContinuations, linkCapacityContinuationRun, linkRunContinuationRun, RUN_CONTINUATION_PREFIX, requestRunContinuation, cancelPendingRunContinuation, settleRunContinuation, type RunContinuation } from "../runContinuation.js";
 
 
@@ -68,6 +69,8 @@ export interface OutwardAcpPromptExecutionInput {
   onUpdate: (update: OutwardUpdate) => void | Promise<void>;
   /** Request-scoped opt-in for transient, safe answer previews. */
   answerPreview?: boolean;
+  /** Request-scoped opt-in for bounded, presentation-only interim commentary (never history). */
+  interimCommentary?: boolean;
   /** ACP v1 caller opted into the deferred capacity extension. */
   deferCapacity?: boolean;
   /** Trusted, claimed continuation only; not supplied by an ACP client. */
@@ -222,6 +225,14 @@ function liveRootProviderUpdate(event: BridgeEvent): OutwardUpdate | null {
   // Inward notices are diagnostics, never outward ACP answer or activity.
   // Do not forward them to clients that have not negotiated session.notices.
   return update.sessionUpdate === "notice" || isBridgeAuthoritativeTextUpdate(update) ? null : update;
+}
+
+function interimCommentaryUpdate(signal: InterimCommentarySignal): OutwardUpdate {
+  return {
+    sessionUpdate: "agent_message_chunk",
+    content: { type: "text", text: "" },
+    _meta: { [INTERIM_COMMENTARY_META]: signal },
+  } as OutwardUpdate;
 }
 
 function normalizeStopReason(value: string | undefined): acp.StopReason {
@@ -922,7 +933,14 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
           _meta: { "agent-bridge/preview-reset": 1 },
         } as OutwardUpdate);
       };
-      clearLivePreview = resetPreview;
+      // Transient commentary is cleared with the preview whenever an attempt is abandoned.
+      let interimShown = false;
+      const clearInterim = (): void => {
+        if (!interimShown) return;
+        interimShown = false;
+        enqueueUpdate(interimCommentaryUpdate({ clear: 1 }));
+      };
+      clearLivePreview = () => { resetPreview(); clearInterim(); };
       settleLiveUpdates = () => updateChain;
       const collect = (event: BridgeEvent): void => {
         if (event.type === "run.started") activeProvider = event.bot;
@@ -958,14 +976,19 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
         collect,
         ...(ordinaryWorkstreamId ? { ordinaryWorkstreamId } : {}),
         ...(input.ordinaryResume ? { requireBoundProviderSession: true } : {}),
-        onProviderExecutionStarted: resetPreview,
+        onProviderExecutionStarted: () => { resetPreview(); clearInterim(); },
+        onInterimCommentary: input.interimCommentary === true ? (signal) => {
+          if (active?.cancelRequested || input.signal.aborted) return;
+          interimShown = !("clear" in signal);
+          enqueueUpdate(interimCommentaryUpdate(signal));
+        } : undefined,
         onAnswerDelta: input.answerPreview === true ? (delta) => {
           if (!delta || active?.cancelRequested || input.signal.aborted) return;
           previewEmitted = true;
           enqueueUpdate({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: delta } });
         } : undefined,
         onProviderRecoveryDecision: (reason, exhausted, transition) => {
-          if (reason !== null) resetPreview();
+          if (reason !== null) { resetPreview(); clearInterim(); }
           // A Bridge-authored, metadata-only transition; never provider text or transcript.
           if (reason !== null && transition) enqueueUpdate({
             sessionUpdate: "agent_message_chunk",
@@ -987,6 +1010,7 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
         persistProviderSession(db, { surfaceIdentity: OUTWARD_ACP_SURFACE, chatKey: input.session.conversationId }, actualProvider, result.sessionId, runId);
       });
 
+      clearInterim();
       if (cancelled || !result.text) resetPreview();
       await updateChain;
 

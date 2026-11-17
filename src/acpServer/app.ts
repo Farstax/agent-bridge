@@ -458,6 +458,7 @@ export function createOutwardAcpAgent(options: OutwardAcpAgentOptions = {}): Age
         busyMessages,
         requestId,
         answerPreview: ctx.params._meta?.["agent-bridge/answer-preview"] === 1,
+        interimCommentary: ctx.params._meta?.["agent-bridge/interim-commentary"] === 1,
         onUpdate: (update) => ctx.client.notify(acp.methods.client.session.update, {
           sessionId: session.sessionId,
           update,

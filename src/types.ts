@@ -132,6 +132,8 @@ export interface CliOptions {
   onProgress?: ProgressReporter;
   /** Safe provisional assistant-answer text for transient presentation only. */
   onAnswerDelta?: (text: string) => void;
+  /** Opt-in, bounded, presentation-only interim commentary signals (outward ACP Desk). */
+  onInterimCommentary?: (signal: import("./acp/interimCommentary.js").InterimCommentarySignal) => void;
   /** Provider-owned observation hook for structured presentation decoders. */
   onProviderOutputChunk?: (text: string) => void;
   chatId?: number | string;
