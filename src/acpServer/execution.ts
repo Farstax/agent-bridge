@@ -992,7 +992,7 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
           } as OutwardUpdate);
         } : undefined,
         onProviderRecoveryDecision: (reason, exhausted, transition) => {
-          if (reason !== null) resetPreview();
+          if (reason !== null) resetAttemptPresentation();
           // A Bridge-authored, metadata-only transition; never provider text or transcript.
           if (reason !== null && transition) enqueueUpdate({
             sessionUpdate: "agent_message_chunk",

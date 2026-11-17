@@ -244,7 +244,10 @@ describe("outward ACP prompt execution", () => {
               runId: input.runId, bot: provider, chatId: String(input.chatId),
               chatKey: input.chatKey, command: provider, cwd: root, model: null,
             }));
-            if (provider === "claude") throw new Error("rate limit capacity exhausted");
+            if (provider === "claude") {
+              input.onInterimCommentary?.("Checking the current provider response.");
+              throw new Error("rate limit capacity exhausted");
+            }
             if (provider === "codex") throw new Error("authentication required");
             input.collect(eventType.runCompleted({
               runId: input.runId, bot: provider, chatId: String(input.chatId),
@@ -263,6 +266,7 @@ describe("outward ACP prompt execution", () => {
           await agent.request(acp.methods.agent.initialize, { protocolVersion: acp.PROTOCOL_VERSION, clientCapabilities: {} });
           return agent.request(acp.methods.agent.session.prompt, {
             sessionId: session.sessionId, prompt: [{ type: "text", text: "ship task" }],
+            _meta: { "agent-bridge/interim-commentary": 1 },
           });
         },
       );
@@ -273,6 +277,11 @@ describe("outward ACP prompt execution", () => {
         { fromProvider: "codex", toProvider: "grok", reason: "auth_required" },
       ]);
       expect(markers.every((item) => (item.update as any).content?.text === "")).toBe(true);
+      const interimIndex = updates.findIndex((item) => (item.update as any)._meta?.["agent-bridge/interim-commentary"]?.text === "Checking the current provider response.");
+      const clearIndex = updates.findIndex((item) => (item.update as any)._meta?.["agent-bridge/interim-commentary"]?.clear === 1);
+      expect(interimIndex).toBeGreaterThanOrEqual(0);
+      expect(clearIndex).toBeGreaterThan(interimIndex);
+      expect(clearIndex).toBeLessThan(updates.indexOf(markers[0]));
       expect(updates[updates.length - 1].update).toMatchObject({ sessionUpdate: "agent_message_chunk", content: { text: "completed" } });
       expect(JSON.stringify(updates)).not.toContain("rate limit capacity exhausted");
       expect(JSON.stringify(updates)).not.toContain("authentication required");
