@@ -184,6 +184,84 @@ describe("guarded rollout helper", { timeout: 30_000 }, () => {
 
   });
 
+  describe("interruptible release with SQLite writer containment (#1207)", () => {
+    const repoRoot = fileURLToPath(new URL("..", import.meta.url));
+    const holders: ChildProcess[] = [];
+    afterEach(() => {
+      for (const holder of holders.splice(0)) {
+        try { process.kill(-holder.pid!, "SIGKILL"); } catch { /* already gone */ }
+      }
+    });
+    const holderScript = "const D=require('better-sqlite3');const d=new D(process.argv[1]);d.exec('BEGIN IMMEDIATE;ROLLBACK');setInterval(()=>d.prepare('select 1').get(),50)";
+    function startWriter(dbPath: string, respawn: boolean): ChildProcess {
+      const child = respawn
+        ? spawn("bash", ["-c", `while true; do ${JSON.stringify(process.execPath)} -e "$0" "$1"; done`, holderScript, dbPath], { cwd: repoRoot, stdio: "ignore", detached: true })
+        : spawn(process.execPath, ["-e", holderScript, dbPath], { cwd: repoRoot, stdio: "ignore", detached: true });
+      holders.push(child);
+      return child;
+    }
+    async function waitForHolder(dbPath: string): Promise<void> {
+      for (let i = 0; i < 100; i += 1) {
+        const out = spawnSync("bash", ["-c", `for f in /proc/[0-9]*/fd/*; do [ "$(readlink "$f" 2>/dev/null)" = ${JSON.stringify(dbPath)} ] && exit 0; done; exit 1`]);
+        if (out.status === 0) return;
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+      throw new Error("writer never opened the database");
+    }
+
+    it("interrupts a live outward writer outside the stopped units, then completes the release", async () => {
+      const fixture = createFixture();
+      const bridge = openDb(fixture.dbPaths[0], { serviceId: "telegram:interactive", runId: "bot-run" });
+      bridge.insertRun("bot-run", { surfaceIdentity: "telegram:interactive", chatKey: "chat-1" }, "codex");
+      expect(bridge.acquireLock("telegram:interactive", "chat-1")).not.toBeNull();
+      bridge.close();
+      prepareImmutableRelease(fixture, fixture.previousCommit);
+      const writer = startWriter(fixture.dbPaths[0], false);
+      await waitForHolder(fixture.dbPaths[0]);
+
+      const result = runRollout(fixture);
+      expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
+      // spawnSync blocked the exit event, so an interrupted child is a zombie or gone.
+      const state = (() => { try { const raw = readFileSync(`/proc/${writer.pid}/stat`, "utf8"); return raw.slice(raw.lastIndexOf(")") + 2, raw.lastIndexOf(")") + 3); } catch { return "gone"; } })();
+      expect(["Z", "gone"]).toContain(state);
+      const evidence = execFileSync("bash", ["-c", `cat ${JSON.stringify(fixture.logDir)}/*/containment-evidence-sqlite-writers.json`], { encoding: "utf8" });
+      expect(JSON.parse(evidence)).toMatchObject({ result: "contained", terminated: [expect.objectContaining({ pid: writer.pid })] });
+      expect(actions(fixture)).toMatch(/idle-maintenance\.ts acquire .*--interrupt-active/);
+      // The interrupted Run and its lock were reconciled by the existing controlled-rollout step.
+      const after = new Database(fixture.dbPaths[0], { readonly: true });
+      try {
+        expect(after.prepare("SELECT COUNT(*) AS count FROM execution_locks").get()).toEqual({ count: 0 });
+        expect(after.prepare("SELECT status FROM bridge_runs WHERE run_id = 'bot-run'").get()).toEqual({ status: "failed" });
+      } finally { after.close(); }
+    }, 60_000);
+
+    it("never interrupts the release caller chain even if it holds a managed database open", () => {
+      const fixture = createFixture();
+      prepareImmutableRelease(fixture, fixture.previousCommit);
+      const callerHandle = new Database(fixture.dbPaths[0]);
+      try {
+        callerHandle.exec("select 1");
+        const result = runRollout(fixture);
+        expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
+        expect(callerHandle.prepare("select 1 as ok").get()).toEqual({ ok: 1 });
+      } finally { callerHandle.close(); }
+    }, 60_000);
+
+    it("fails closed before any offline database operation when a writer keeps reappearing", async () => {
+      const fixture = createFixture();
+      prepareImmutableRelease(fixture, fixture.previousCommit);
+      startWriter(fixture.dbPaths[0], true);
+      await waitForHolder(fixture.dbPaths[0]);
+      const before = sha256(fixture.dbPaths[0]);
+
+      const result = runRollout(fixture);
+      expect(result.status).not.toBe(0);
+      expect(`${result.stdout}\n${result.stderr}`).toContain("SQLite writers could not be contained");
+      expect(actions(fixture)).not.toMatch(/runuser:.* (checkpoint|backup|migrate)\b/);
+      expect(sha256(fixture.dbPaths[0])).toBe(before);
+    }, 60_000);
+  });
+
   it.each(["missing", "extra", "reordered"])("rejects %s EnvironmentFiles inventory before stopping services", (mode) => {
     const fixture = createFixture();
     prepareImmutableRelease(fixture, fixture.previousCommit);

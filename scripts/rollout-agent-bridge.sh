@@ -2147,6 +2147,106 @@ PY
   echo "disk compaction admitted database_count=${#compaction_databases[@]} deficit=$disk_shortfall_bytes"
 }
 
+# Service-unit containment does not prove exclusive SQLite access: a live outward
+# ACP process can sit outside the stopped bot cgroup and keep writing. A release
+# interrupts in-process Runs, so after the units stop every process still holding
+# a managed database (or its WAL/SHM) open is terminated if it belongs to the
+# database owner, and containment is proven only when no holder remains. A
+# holder that cannot be terminated, belongs to another account, or reappears
+# fails closed before any checkpoint, backup, migration or restore. Any
+# same-owner process holding the database (including an operator's sqlite3
+# shell) is terminated: exclusive access is the point of the boundary.
+contain_sqlite_writers() {
+  local evidence="$artifact_dir/${1%.json}-sqlite-writers.json"
+  /usr/bin/python3 - "$$" "$evidence" "${databases[@]}" <<'PY'
+import json, os, signal, sys, time
+self_pid, evidence_path, dbs = int(sys.argv[1]), sys.argv[2], sys.argv[3:]
+targets = {}
+for db in dbs:
+    real = os.path.realpath(db)
+    owner = os.stat(real).st_uid if os.path.exists(real) else None
+    for suffix in ("", "-wal", "-shm"):
+        targets[real + suffix] = owner
+def ppid(pid):
+    try:
+        raw = open(f"/proc/{pid}/stat").read()
+        return int(raw[raw.rindex(")") + 2:].split()[1])
+    except (OSError, ValueError):
+        return 0
+def ours(pid):
+    seen = 0
+    while pid > 1 and seen < 64:
+        if pid == self_pid:
+            return True
+        pid, seen = ppid(pid), seen + 1
+    return False
+# The caller chain (deployer/handoff owner) is part of the release transaction,
+# not a database writer to interrupt.
+ancestors, walk, seen = set(), self_pid, 0
+while walk > 1 and seen < 64:
+    ancestors.add(walk)
+    walk, seen = ppid(walk), seen + 1
+def holders():
+    found, unreadable = {}, []
+    for entry in os.listdir("/proc"):
+        if not entry.isdigit():
+            continue
+        pid = int(entry)
+        if pid == os.getpid() or pid in ancestors or ours(pid):
+            continue
+        try:
+            for fd in os.listdir(f"/proc/{pid}/fd"):
+                try:
+                    link = os.readlink(f"/proc/{pid}/fd/{fd}").removesuffix(" (deleted)")
+                except OSError:
+                    continue
+                if link in targets:
+                    found[pid] = (targets[link], link)
+        except PermissionError:
+            if os.geteuid() == 0:
+                unreadable.append(pid)
+        except OSError:
+            continue
+    return found, unreadable
+evidence = {"terminated": [], "result": "contained"}
+def finish(code):
+    with open(evidence_path, "w") as handle:
+        json.dump(evidence, handle)
+    sys.exit(code)
+for attempt in range(3):
+    found, unreadable = holders()
+    if unreadable:
+        evidence["result"] = "unreadable_process_table"; finish(1)
+    if not found:
+        finish(0)
+    for pid, (owner, link) in found.items():
+        try:
+            uid = os.stat(f"/proc/{pid}").st_uid
+        except OSError:
+            continue
+        if owner is None or uid != owner:
+            evidence["result"] = "foreign_writer"; evidence["pid"] = pid; finish(1)
+        if not any(item["pid"] == pid for item in evidence["terminated"]):
+            evidence["terminated"].append({"pid": pid, "file": link})
+        try: os.kill(pid, signal.SIGTERM)
+        except OSError: pass
+    deadline = time.time() + 3
+    while time.time() < deadline and holders()[0]:
+        time.sleep(0.2)
+    for pid in holders()[0]:
+        try: os.kill(pid, signal.SIGKILL)
+        except OSError: pass
+    time.sleep(0.3)
+found, _ = holders()
+evidence["result"] = "uncontained_writer"
+evidence["pids"] = sorted(found)
+finish(1)
+PY
+  local status=$?
+  [[ -f "$evidence" ]] && /usr/bin/sha256sum "$evidence" > "${evidence%.json}.sha256"
+  return "$status"
+}
+
 stop_and_verify_all_services() {
   local stop_ok=1 verify_ok=1 unit active_state sub_state result exec_main_code exec_main_status
   local main_pid control_pid control_group cgroup_path cgroup_file pid pair_ok value index
@@ -2239,6 +2339,7 @@ stop_and_verify_all_services() {
     printf ']}' >> "$evidence_file"
   done
   printf '\n  ]\n}\n' >> "$evidence_file"
+  contain_sqlite_writers "$evidence_name" || { echo "SQLite writers could not be contained" >&2; verify_ok=0; }
   if ! /usr/bin/sha256sum "$evidence_file" > "$artifact_dir/${evidence_name%.json}.sha256"; then
     verify_ok=0
   fi
@@ -2727,12 +2828,14 @@ fi
 
 # This is the last pre-stop boundary. All canonical managed database roles
 # are known, and this shell will own the fence until acceptance or a proven
-# healthy recovery. A live outward ACP Run is not necessarily in the stopped
-# bot unit's cgroup, so systemd-only containment is not sufficient.
+# healthy recovery. The fence stops every NEW Run/claim but does not defer to a
+# Run already in progress (--interrupt-active): the release interrupts it. A
+# live outward ACP writer is not necessarily in the stopped bot unit's cgroup,
+# so contain_sqlite_writers proves exclusive database access after the stop.
 [[ -f "$project_dir/scripts/idle-maintenance.ts" ]] || die "protected idle admission helper missing from staged release"
 idle_db_args=()
 for database in "${databases[@]}"; do idle_db_args+=(--db "$database"); done
-if ! run_as_runtime "$node_bin" "$project_dir/node_modules/tsx/dist/cli.mjs" "$project_dir/scripts/idle-maintenance.ts" acquire --owner-pid "$$" "${idle_db_args[@]}" > "$artifact_dir/idle-upgrade-admission.json"; then
+if ! run_as_runtime "$node_bin" "$project_dir/node_modules/tsx/dist/cli.mjs" "$project_dir/scripts/idle-maintenance.ts" acquire --owner-pid "$$" "${idle_db_args[@]}" --interrupt-active > "$artifact_dir/idle-upgrade-admission.json"; then
   idle_refusal="$(/usr/bin/python3 - "$artifact_dir/idle-upgrade-admission.json" <<'PY'
 import json, sys
 try:

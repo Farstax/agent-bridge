@@ -20,7 +20,7 @@ function values(flag: string): string[] {
 }
 const dbPaths = values("--db");
 if (dbPaths.length === 0 || !["status", "acquire", "release", "recover"].includes(action ?? "")) {
-  console.error("Usage: idle-maintenance <status|acquire|release|recover> --db <existing-db> [--db <next-db> ...] [--owner-pid <live-maintenance-pid> (acquire)] [--token <exact-token> ... (release)] [--containment-verified (root-only recover)]");
+  console.error("Usage: idle-maintenance <status|acquire|release|recover> --db <existing-db> [--db <next-db> ...] [--owner-pid <live-maintenance-pid> (acquire)] [--interrupt-active (acquire; admit with Runs in progress, caller must contain writers)] [--token <exact-token> ... (release)] [--containment-verified (root-only recover)]");
   process.exit(2);
 }
 try {
@@ -31,7 +31,7 @@ try {
   } else if (action === "acquire") {
     const rawOwner = values("--owner-pid");
     if (rawOwner.length !== 1 || !/^[1-9]\d*$/.test(rawOwner[0])) throw new Error("live maintenance --owner-pid is required");
-    const result = tryAdmitIdleUpgradeRoles(dbPaths, Number(rawOwner[0]));
+    const result = tryAdmitIdleUpgradeRoles(dbPaths, Number(rawOwner[0]), { interruptActive: args.includes("--interrupt-active") });
     console.log(JSON.stringify(result));
     if (result.state !== "admitted") process.exitCode = result.state === "deferred_busy" ? 75 : 2;
   } else if (action === "recover") {
