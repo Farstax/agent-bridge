@@ -235,6 +235,18 @@ describe("guarded rollout helper", { timeout: 30_000 }, () => {
       } finally { after.close(); }
     }, 60_000);
 
+    it("never interrupts the release caller chain even if it holds a managed database open", () => {
+      const fixture = createFixture();
+      prepareImmutableRelease(fixture, fixture.previousCommit);
+      const callerHandle = new Database(fixture.dbPaths[0]);
+      try {
+        callerHandle.exec("select 1");
+        const result = runRollout(fixture);
+        expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
+        expect(callerHandle.prepare("select 1 as ok").get()).toEqual({ ok: 1 });
+      } finally { callerHandle.close(); }
+    }, 60_000);
+
     it("fails closed before any offline database operation when a writer keeps reappearing", async () => {
       const fixture = createFixture();
       prepareImmutableRelease(fixture, fixture.previousCommit);

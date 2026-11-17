@@ -2180,13 +2180,19 @@ def ours(pid):
             return True
         pid, seen = ppid(pid), seen + 1
     return False
+# The caller chain (deployer/handoff owner) is part of the release transaction,
+# not a database writer to interrupt.
+ancestors, walk, seen = set(), self_pid, 0
+while walk > 1 and seen < 64:
+    ancestors.add(walk)
+    walk, seen = ppid(walk), seen + 1
 def holders():
     found, unreadable = {}, []
     for entry in os.listdir("/proc"):
         if not entry.isdigit():
             continue
         pid = int(entry)
-        if pid == os.getpid() or ours(pid):
+        if pid == os.getpid() or pid in ancestors or ours(pid):
             continue
         try:
             for fd in os.listdir(f"/proc/{pid}/fd"):
