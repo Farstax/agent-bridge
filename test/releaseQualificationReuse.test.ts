@@ -5,7 +5,7 @@ import { describe, expect, it } from "vitest";
 
 const workflow = readFileSync(fileURLToPath(new URL("../.github/workflows/release-artifact.yml", import.meta.url)), "utf8");
 const marker = "          script: |\n";
-const start = workflow.indexOf(marker);
+const start = workflow.indexOf(marker, workflow.indexOf("        id: reuse"));
 const end = workflow.indexOf("\n      - name: Run repository qualification gate", start);
 if (start < 0 || end < 0) throw new Error("release qualification script moved");
 const script = workflow.slice(start + marker.length, end).split("\n")
@@ -110,11 +110,111 @@ describe("release artifact exact-tree PR qualification reuse", () => {
 
   it("always retains the real nspawn isolation check and release-specific verification", () => {
     expect(workflow).toContain("RUN_NSPAWN_QUALIFICATION=1 npm test -- --run test/recoveryCopyIsolation.test.ts");
-    expect(workflow).toContain("if: github.event_name != 'push' || steps.reuse.outputs.reuse != 'true'");
+    expect(workflow).toContain("(github.event_name != 'push' || steps.reuse.outputs.reuse != 'true')");
+    expect(workflow).toContain("(github.event_name != 'workflow_dispatch' || steps.main_reuse.outputs.reuse != 'true')");
+    expect(workflow).toContain("if: github.event_name != 'workflow_dispatch' || steps.main_reuse.outputs.reuse != 'true'");
     expect(workflow).toContain("npm run qualify:local");
     expect(workflow).toContain("npm run build");
     expect(workflow).toContain("scripts/releaseManifest.mjs");
     expect(workflow).toContain("tar -xzf");
+    expect(workflow).toContain("sha256sum");
+  });
+});
+
+const mainStart = workflow.indexOf(marker, workflow.indexOf("        id: main_reuse"));
+const mainEnd = workflow.indexOf("\n      - name: Install offline recovery integration runtime", mainStart);
+if (mainStart < 0 || mainEnd < 0) throw new Error("main release qualification reuse script moved");
+const mainScript = workflow.slice(mainStart + marker.length, mainEnd).split("\n")
+  .map((line) => line.startsWith("            ") ? line.slice(12) : line).join("\n");
+
+const qualifiedMainRun = {
+  id: 456,
+  name: "Release Artifact",
+  path: ".github/workflows/release-artifact.yml",
+  repository: { full_name: "Farstax/agent-bridge" },
+  event: "push",
+  head_branch: "main",
+  head_sha: mainSha,
+  status: "completed",
+  conclusion: "success",
+  run_attempt: 2,
+};
+const qualifiedMainJob = {
+  name: "Qualify and build immutable release artifact",
+  head_sha: mainSha,
+  status: "completed",
+  conclusion: "success",
+  run_attempt: 2,
+};
+
+type MainOptions = { runs?: unknown[]; jobs?: unknown[]; failLookup?: boolean };
+async function checkMain(options: MainOptions = {}) {
+  const outputs: Record<string, string> = {};
+  const attempts: number[] = [];
+  const github = {
+    rest: {
+      actions: {
+        listWorkflowRuns: async () => {
+          if (options.failLookup) throw new Error("API unavailable");
+          return { data: { workflow_runs: options.runs ?? [qualifiedMainRun] } };
+        },
+        listJobsForWorkflowRunAttempt: async ({ attempt_number }: { attempt_number: number }) => {
+          attempts.push(attempt_number);
+          return { data: { jobs: options.jobs ?? [qualifiedMainJob] } };
+        },
+      },
+    },
+  };
+  const core = {
+    setOutput: (key: string, value: string) => { outputs[key] = value; },
+    notice: () => {},
+    warning: () => {},
+  };
+  await runInNewContext("(async () => {\n" + mainScript + "\n})()", {
+    github, core, context: { repo: { owner: "Farstax", repo: "agent-bridge" }, sha: mainSha },
+  });
+  return { outputs, attempts };
+}
+
+describe("tag-bound release qualification reuse from an exact-main successful run", () => {
+  it("reuses a single exact successful main workflow job and records its attempt", async () => {
+    const { outputs, attempts } = await checkMain();
+    expect(outputs).toEqual({
+      reuse: "true",
+      source_run_id: "456",
+      source_run_attempt: "2",
+      source_head_sha: mainSha,
+    });
+    expect(attempts).toEqual([2]);
+    expect(workflow).toContain("kind:\"reused_main_release\"");
+  });
+
+  it.each([
+    ["missing main run", { runs: [] }],
+    ["multiple eligible main runs", { runs: [qualifiedMainRun, qualifiedMainRun] }],
+    ["wrong main commit", { runs: [{ ...qualifiedMainRun, head_sha: headSha }] }],
+    ["wrong workflow", { runs: [{ ...qualifiedMainRun, path: ".github/workflows/ci.yml" }] }],
+    ["wrong repository", { runs: [{ ...qualifiedMainRun, repository: { full_name: "other/repo" } }] }],
+    ["wrong event", { runs: [{ ...qualifiedMainRun, event: "workflow_dispatch" }] }],
+    ["wrong branch", { runs: [{ ...qualifiedMainRun, head_branch: "feature" }] }],
+    ["failed main run", { runs: [{ ...qualifiedMainRun, conclusion: "failure" }] }],
+    ["pending main run", { runs: [{ ...qualifiedMainRun, status: "in_progress" }] }],
+    ["skipped job", { jobs: [{ ...qualifiedMainJob, conclusion: "skipped" }] }],
+    ["failed job", { jobs: [{ ...qualifiedMainJob, conclusion: "failure" }] }],
+    ["stale attempt", { jobs: [{ ...qualifiedMainJob, run_attempt: 1 }] }],
+    ["wrong job commit", { jobs: [{ ...qualifiedMainJob, head_sha: headSha }] }],
+    ["missing job", { jobs: [] }],
+    ["API error", { failLookup: true }],
+  ])("falls back to complete tagged-release qualification on %s", async (_case, options) => {
+    const { outputs } = await checkMain(options);
+    expect(outputs.reuse).toBe("false");
+  });
+
+  it("retains tag-specific build and validates the fallback's real nspawn isolation", () => {
+    expect(workflow).toContain("RUN_NSPAWN_QUALIFICATION=1 npm test -- --run test/recoveryCopyIsolation.test.ts");
+    expect(workflow).toContain("npm run qualify:local");
+    expect(workflow).toContain("scripts/stampReleaseVersion.mjs");
+    expect(workflow).toContain("scripts/releaseManifest.mjs");
     expect(workflow).toContain("sha256sum");
   });
 });
