@@ -19,6 +19,13 @@ import { parseRunContinuation } from "./runContinuation.js";
 
 export const IDLE_UPGRADE_FENCE_KEY = "agent-bridge:idle-maintenance:v1";
 export type IdleUpgradeState = "idle" | "deferred_busy" | "unknown";
+/**
+ * `interruptActive` admits a protected release that will interrupt in-process
+ * Runs: the durable fence and triggers still stop every NEW Run/claim, but
+ * existing Run/lock/claimed-continuation rows no longer defer it. Writer
+ * exclusion is then the caller's responsibility at the offline boundary.
+ */
+export interface IdleUpgradeAdmissionOptions { interruptActive?: boolean }
 export interface IdleUpgradeFence {
   version: 1;
   token: string;
@@ -102,10 +109,10 @@ function storedFence(db: Database.Database): { exists: boolean; fence: IdleUpgra
   return { exists: !!row, fence: parseFence(row?.value ?? null) };
 }
 
-function idleState(db: Database.Database): IdleUpgradeState {
+function idleState(db: Database.Database, options: IdleUpgradeAdmissionOptions = {}): IdleUpgradeState {
   const marker = storedFence(db);
   if (marker.exists) return marker.fence ? "deferred_busy" : "unknown";
-  for (const sql of ACTIVE_QUERIES) if (db.prepare(sql).get()) return "deferred_busy";
+  if (!options.interruptActive) for (const sql of ACTIVE_QUERIES) if (db.prepare(sql).get()) return "deferred_busy";
   const continuationRows = db.prepare(
     "SELECT value FROM settings WHERE key LIKE 'run-continuation:v1:%'",
   ).all() as Array<{ value: string | null }>;
@@ -122,7 +129,7 @@ function idleState(db: Database.Database): IdleUpgradeState {
         if (!parseRunContinuation(value)) return "unknown";
         continue;
       }
-      if (state === "claimed") return "deferred_busy";
+      if (state === "claimed") { if (options.interruptActive) continue; return "deferred_busy"; }
       if (!["completed", "failed", "expired", "cancelled"].includes(String(state))) return "unknown";
     } catch { return "unknown"; }
   }
@@ -167,7 +174,7 @@ export function readIdleUpgradeState(dbPath: string): IdleUpgradeState {
 }
 
 /** Atomically install one durable owner fence, or return a retryable busy state. */
-export function tryAdmitIdleUpgrade(dbPath: string, ownerPid = process.pid): IdleUpgradeAdmission {
+export function tryAdmitIdleUpgrade(dbPath: string, ownerPid = process.pid, options: IdleUpgradeAdmissionOptions = {}): IdleUpgradeAdmission {
   let db: Database.Database | undefined;
   try {
     if (!Number.isSafeInteger(ownerPid) || ownerPid <= 0) return { state: "unknown" };
@@ -176,7 +183,7 @@ export function tryAdmitIdleUpgrade(dbPath: string, ownerPid = process.pid): Idl
     if (!startTicks || !bootId) return { state: "unknown" };
     db = openExisting(dbPath, false);
     return withImmediate(db, () => {
-      const state = idleState(db!);
+      const state = idleState(db!, options);
       if (state !== "idle") return { state };
       const fence: IdleUpgradeFence = {
         version: 1, token: randomUUID(), pid: ownerPid,
@@ -237,13 +244,13 @@ export function readIdleUpgradeRolesState(dbPaths: readonly string[]): IdleUpgra
 }
 
 /** All-or-none admission. On failed partial release, return unknown (fail closed). */
-export function tryAdmitIdleUpgradeRoles(dbPaths: readonly string[], ownerPid = process.pid): IdleUpgradeRolesAdmission {
+export function tryAdmitIdleUpgradeRoles(dbPaths: readonly string[], ownerPid = process.pid, options: IdleUpgradeAdmissionOptions = {}): IdleUpgradeRolesAdmission {
   const owned: IdleUpgradeRoleFence[] = [];
   let state: IdleUpgradeState = "unknown";
   try {
     const paths = distinctRolePaths(dbPaths);
     for (const dbPath of paths) {
-      const result = tryAdmitIdleUpgrade(dbPath, ownerPid);
+      const result = tryAdmitIdleUpgrade(dbPath, ownerPid, options);
       if (result.state !== "admitted") {
         state = result.state;
         break;
