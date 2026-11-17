@@ -104,6 +104,10 @@ describe("atomic generic idle-only upgrade admission (#1161)", () => {
     expect(db.acquireLock(identity.surfaceIdentity, identity.chatKey)).not.toBeNull();
     db.raw.prepare("INSERT INTO settings (key, value) VALUES (?, ?)").run("run-continuation:v1:c1", continuation("c1", "claimed"));
     expect(tryAdmitIdleUpgrade(path)).toEqual({ state: "deferred_busy" });
+    // Transient dispatch/capacity states are not reconciled by a controlled rollout: they still defer.
+    db.raw.prepare("INSERT INTO settings (key, value) VALUES (?, ?)").run("outward-queue-reservation:x", "{}");
+    expect(tryAdmitIdleUpgrade(path, process.pid, { interruptActive: true })).toEqual({ state: "deferred_busy" });
+    db.raw.prepare("DELETE FROM settings WHERE key = ?").run("outward-queue-reservation:x");
     const result = tryAdmitIdleUpgrade(path, process.pid, { interruptActive: true });
     expect(result.state).toBe("admitted");
     expect(() => db.insertRun("run-2", identity, "claude")).toThrow("agent_bridge_idle_maintenance_deferred_busy");

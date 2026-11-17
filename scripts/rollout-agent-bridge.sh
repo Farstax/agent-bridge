@@ -2153,9 +2153,12 @@ PY
 # a managed database (or its WAL/SHM) open is terminated if it belongs to the
 # database owner, and containment is proven only when no holder remains. A
 # holder that cannot be terminated, belongs to another account, or reappears
-# fails closed before any checkpoint, backup, migration or restore.
+# fails closed before any checkpoint, backup, migration or restore. Any
+# same-owner process holding the database (including an operator's sqlite3
+# shell) is terminated: exclusive access is the point of the boundary.
 contain_sqlite_writers() {
-  /usr/bin/python3 - "$$" "$artifact_dir/sqlite-writer-containment.json" "${databases[@]}" <<'PY'
+  local evidence="$artifact_dir/${1%.json}-sqlite-writers.json"
+  /usr/bin/python3 - "$$" "$evidence" "${databases[@]}" <<'PY'
 import json, os, signal, sys, time
 self_pid, evidence_path, dbs = int(sys.argv[1]), sys.argv[2], sys.argv[3:]
 targets = {}
@@ -2217,7 +2220,8 @@ for attempt in range(3):
             continue
         if owner is None or uid != owner:
             evidence["result"] = "foreign_writer"; evidence["pid"] = pid; finish(1)
-        evidence["terminated"].append({"pid": pid, "file": link})
+        if not any(item["pid"] == pid for item in evidence["terminated"]):
+            evidence["terminated"].append({"pid": pid, "file": link})
         try: os.kill(pid, signal.SIGTERM)
         except OSError: pass
     deadline = time.time() + 3
@@ -2232,6 +2236,9 @@ evidence["result"] = "uncontained_writer"
 evidence["pids"] = sorted(found)
 finish(1)
 PY
+  local status=$?
+  [[ -f "$evidence" ]] && /usr/bin/sha256sum "$evidence" > "${evidence%.json}.sha256"
+  return "$status"
 }
 
 stop_and_verify_all_services() {
@@ -2326,7 +2333,7 @@ stop_and_verify_all_services() {
     printf ']}' >> "$evidence_file"
   done
   printf '\n  ]\n}\n' >> "$evidence_file"
-  contain_sqlite_writers || { echo "SQLite writers could not be contained" >&2; verify_ok=0; }
+  contain_sqlite_writers "$evidence_name" || { echo "SQLite writers could not be contained" >&2; verify_ok=0; }
   if ! /usr/bin/sha256sum "$evidence_file" > "$artifact_dir/${evidence_name%.json}.sha256"; then
     verify_ok=0
   fi

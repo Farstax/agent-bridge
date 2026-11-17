@@ -22,8 +22,9 @@ export type IdleUpgradeState = "idle" | "deferred_busy" | "unknown";
 /**
  * `interruptActive` admits a protected release that will interrupt in-process
  * Runs: the durable fence and triggers still stop every NEW Run/claim, but
- * existing Run/lock/claimed-continuation rows no longer defer it. Writer
- * exclusion is then the caller's responsibility at the offline boundary.
+ * existing running-Run, lock, claimed-message and claimed-wake rows no longer
+ * defer it (the controlled-rollout reconciliation resolves them after writer
+ * containment). Transient capacity/reservation/dispatch states still defer.
  */
 export interface IdleUpgradeAdmissionOptions { interruptActive?: boolean }
 export interface IdleUpgradeFence {
@@ -65,13 +66,21 @@ const GATED_TABLES = [
   ["continuation_update", "settings", "UPDATE", "NEW.key LIKE 'run-continuation:v1:%' OR NEW.key LIKE 'outward-queue-reservation:%'"],
 ] as const;
 
-const ACTIVE_QUERIES = [
+// Active work the controlled-rollout reconciliation (db.reconcileControlledRollout)
+// explicitly handles after writers are contained: running Runs, execution locks
+// and claimed queue messages. An interruptible release does not defer to these.
+const INTERRUPTIBLE_QUERIES = [
   "SELECT 1 FROM bridge_runs WHERE status = 'running' LIMIT 1",
   "SELECT 1 FROM execution_locks LIMIT 1",
+  "SELECT 1 FROM pending_messages WHERE state <> 'queued' LIMIT 1",
+] as const;
+
+// Short transient dispatch/capacity states with no controlled-rollout
+// reconciliation: even an interruptible release defers (retryably) on these.
+const TRANSIENT_QUERIES = [
   // Durable queued messages are retained across the release transaction. The
   // fence's UPDATE trigger prevents a queued message becoming claimed after
   // admission, and the INSERT trigger prevents fresh submissions.
-  "SELECT 1 FROM pending_messages WHERE state <> 'queued' LIMIT 1",
   "SELECT 1 FROM execution_capacity_claims LIMIT 1",
   "SELECT 1 FROM settings WHERE key LIKE 'outward-queue-reservation:%' LIMIT 1",
   // Ambiguous is already a terminal receipt state, not an active dispatch.
@@ -79,6 +88,7 @@ const ACTIVE_QUERIES = [
   // forbids dispatching/run_created while the maintenance fence is held.
   "SELECT 1 FROM event_receipts WHERE status IN ('dispatching', 'run_created') LIMIT 1",
 ] as const;
+const ACTIVE_QUERIES = [...INTERRUPTIBLE_QUERIES, ...TRANSIENT_QUERIES] as const;
 
 function openExisting(path: string, readonly: boolean): Database.Database {
   if (!path || path === ":memory:") throw new Error("a persistent existing Bridge database is required");
@@ -112,7 +122,7 @@ function storedFence(db: Database.Database): { exists: boolean; fence: IdleUpgra
 function idleState(db: Database.Database, options: IdleUpgradeAdmissionOptions = {}): IdleUpgradeState {
   const marker = storedFence(db);
   if (marker.exists) return marker.fence ? "deferred_busy" : "unknown";
-  if (!options.interruptActive) for (const sql of ACTIVE_QUERIES) if (db.prepare(sql).get()) return "deferred_busy";
+  for (const sql of options.interruptActive ? TRANSIENT_QUERIES : ACTIVE_QUERIES) if (db.prepare(sql).get()) return "deferred_busy";
   const continuationRows = db.prepare(
     "SELECT value FROM settings WHERE key LIKE 'run-continuation:v1:%'",
   ).all() as Array<{ value: string | null }>;

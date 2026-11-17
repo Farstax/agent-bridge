@@ -224,9 +224,15 @@ describe("guarded rollout helper", { timeout: 30_000 }, () => {
       // spawnSync blocked the exit event, so an interrupted child is a zombie or gone.
       const state = (() => { try { const raw = readFileSync(`/proc/${writer.pid}/stat`, "utf8"); return raw.slice(raw.lastIndexOf(")") + 2, raw.lastIndexOf(")") + 3); } catch { return "gone"; } })();
       expect(["Z", "gone"]).toContain(state);
-      const evidence = execFileSync("bash", ["-c", `cat ${JSON.stringify(fixture.logDir)}/*/sqlite-writer-containment.json`], { encoding: "utf8" });
+      const evidence = execFileSync("bash", ["-c", `cat ${JSON.stringify(fixture.logDir)}/*/containment-evidence-sqlite-writers.json`], { encoding: "utf8" });
       expect(JSON.parse(evidence)).toMatchObject({ result: "contained", terminated: [expect.objectContaining({ pid: writer.pid })] });
       expect(actions(fixture)).toMatch(/idle-maintenance\.ts acquire .*--interrupt-active/);
+      // The interrupted Run and its lock were reconciled by the existing controlled-rollout step.
+      const after = new Database(fixture.dbPaths[0], { readonly: true });
+      try {
+        expect(after.prepare("SELECT COUNT(*) AS count FROM execution_locks").get()).toEqual({ count: 0 });
+        expect(after.prepare("SELECT status FROM bridge_runs WHERE run_id = 'bot-run'").get()).toEqual({ status: "failed" });
+      } finally { after.close(); }
     }, 60_000);
 
     it("fails closed before any offline database operation when a writer keeps reappearing", async () => {
