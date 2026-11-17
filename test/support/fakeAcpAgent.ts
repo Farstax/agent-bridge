@@ -223,6 +223,18 @@ export function createFakeAcpAgent(options: FakeAcpAgentOptions = {}): acp.Agent
         await new Promise<void>(() => {});
       }
 
+      if (text.includes("GATED_ANSWER")) {
+        // Completes normally only after the test releases the gate file; a provider cancel still ends it.
+        const gate = process.env.FAKE_ACP_GATE_FILE;
+        if (!gate) throw new Error("FAKE_ACP_GATE_FILE is required for GATED_ANSWER");
+        let cancelled = false;
+        const markCancelled = () => { cancelled = true; };
+        session.pending?.signal.addEventListener("abort", markCancelled, { once: true });
+        ctx.signal.addEventListener("abort", markCancelled, { once: true });
+        while (!existsSync(gate) && !cancelled) await new Promise((resolve) => setTimeout(resolve, 50));
+        if (cancelled) return { stopReason: "cancelled" };
+      }
+
       if (text.includes("HANG")) {
         await new Promise<void>((resolve) => {
           const done = () => resolve();

@@ -983,40 +983,121 @@ describe("outward ACP stdio boundary", { timeout: 30_000 }, () => {
     }
   });
 
-  it("cancels and fully settles an active Run before closing the database on client disconnect", async () => {
-    const root = mkdtempSync(join(tmpdir(), "agent-bridge-outward-acp-disconnect-"));
-    const dbPath = join(root, "bridge.sqlite");
-    const providerStore = join(root, "provider-sessions.json");
-    openDb(dbPath, { databaseRole: "interactive" }).close();
+  describe("accepted Run continuity across client disconnect (#1248)", () => {
+    const turnsOf = (dbPath: string, conversationId: string) => {
+      const db = openDb(dbPath, { databaseRole: "interactive" });
+      try {
+        return db.raw.prepare("SELECT role, text FROM conversation_turns WHERE chat_key LIKE ? ORDER BY id").all(`%${conversationId}`) as Array<{ role: string; text: string }>;
+      } finally { db.close(); }
+    };
+    const runStatus = (dbPath: string, conversationId: string) => {
+      const db = openDb(dbPath, { databaseRole: "interactive" });
+      try {
+        return (db.raw.prepare("SELECT status FROM bridge_runs WHERE chat_id = ? ORDER BY started_at DESC LIMIT 1").get(conversationId) as { status: string } | undefined)?.status;
+      } finally { db.close(); }
+    };
 
-    let server: RunningOutwardAcp | null = null;
-    try {
-      server = startOutwardAcpProcess(dbPath, providerEnv(providerStore));
-      await initialize(server, 1);
-      const created = await newSession(server, 2, root);
-      const outwardSessionId = created.result?.sessionId;
-      expect(outwardSessionId).toEqual(expect.any(String));
-      const conversationId = conversationIdForSession(dbPath, outwardSessionId!);
+    it("lets an accepted Run finish after the client transport closes, retaining exactly one answer", async () => {
+      const root = mkdtempSync(join(tmpdir(), "agent-bridge-outward-acp-continuity-"));
+      const dbPath = join(root, "bridge.sqlite");
+      const providerStore = join(root, "provider-sessions.json");
+      const gate = join(root, "release-gate");
+      openDb(dbPath, { databaseRole: "interactive" }).close();
 
-      writePromptSession(server, 3, outwardSessionId!, "HANG");
-      await waitForRunningRun(dbPath, conversationId);
-      server.child.stdin.end();
-      await waitForExit(server);
-      server.output.close();
-      server = null;
+      let server: RunningOutwardAcp | null = null;
+      let reconnect: RunningOutwardAcp | null = null;
+      try {
+        server = startOutwardAcpProcess(dbPath, providerEnv(providerStore, { FAKE_ACP_GATE_FILE: gate }));
+        await initialize(server, 1);
+        const created = await newSession(server, 2, root);
+        const outwardSessionId = created.result?.sessionId;
+        expect(outwardSessionId).toEqual(expect.any(String));
+        const conversationId = conversationIdForSession(dbPath, outwardSessionId!);
 
-      const persisted = openDb(dbPath, { databaseRole: "interactive" });
-      expect(persisted.raw.prepare(`
-        SELECT status
-        FROM bridge_runs
-        WHERE chat_id = ?
-        ORDER BY started_at DESC
-        LIMIT 1
-      `).get(conversationId)).toEqual({ status: "cancelled" });
-      persisted.close();
-    } finally {
-      if (server) await stopProcess(server);
-      rmSync(root, { recursive: true, force: true });
-    }
+        writePromptSession(server, 3, outwardSessionId!, "GATED_ANSWER question");
+        await waitForRunningRun(dbPath, conversationId);
+        server.child.stdin.end(); // the Platform-owned transport goes away mid-Run
+        await delay(1_500);
+        expect(processExited(server.child)).toBe(false); // the process still owns the Run
+        expect(runStatus(dbPath, conversationId)).toBe("running"); // not cancelled by the disconnect
+
+        // A reconnecting client must not take over or reconcile the live owner.
+        reconnect = startOutwardAcpProcess(dbPath, providerEnv(providerStore, { FAKE_ACP_GATE_FILE: gate }));
+        await initialize(reconnect, 1);
+        expect(runStatus(dbPath, conversationId)).toBe("running");
+
+        writeFileSync(gate, "go"); // the provider now completes
+        await waitForExit(server, 10_000); // the detached process exits only after the Run settles
+        expect(runStatus(dbPath, conversationId)).toBe("done");
+        const turns = turnsOf(dbPath, conversationId);
+        expect(turns.filter((turn) => turn.role === "user")).toHaveLength(1);
+        expect(turns.filter((turn) => turn.role === "assistant")).toHaveLength(1);
+        expect(turns.find((turn) => turn.role === "assistant")?.text).toMatch(/^live:/);
+
+        // The reconnected client recovers the original Run from history; nothing is resubmitted.
+        const loaded = await loadSession(reconnect, 2, outwardSessionId!, root);
+        expect(JSON.stringify(loaded)).toContain("question");
+        expect(turnsOf(dbPath, conversationId)).toHaveLength(turns.length);
+      } finally {
+        if (reconnect) await stopProcess(reconnect);
+        if (server) await stopProcess(server);
+        rmSync(root, { recursive: true, force: true });
+      }
+    }, 60_000);
+
+    it("still cancels an active Run on an explicit session/cancel (Stop) after reconnect semantics", async () => {
+      const root = mkdtempSync(join(tmpdir(), "agent-bridge-outward-acp-stop-"));
+      const dbPath = join(root, "bridge.sqlite");
+      const providerStore = join(root, "provider-sessions.json");
+      openDb(dbPath, { databaseRole: "interactive" }).close();
+      let server: RunningOutwardAcp | null = null;
+      try {
+        server = startOutwardAcpProcess(dbPath, providerEnv(providerStore, { FAKE_ACP_GATE_FILE: join(root, "never") }));
+        await initialize(server, 1);
+        const created = await newSession(server, 2, root);
+        const outwardSessionId = created.result?.sessionId!;
+        const conversationId = conversationIdForSession(dbPath, outwardSessionId);
+        writePromptSession(server, 3, outwardSessionId, "GATED_ANSWER stop me");
+        await waitForRunningRun(dbPath, conversationId);
+        server.child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", method: "session/cancel", params: { sessionId: outwardSessionId } })}\n`);
+        const turn = await readThroughResponse(server, 3);
+        expect(turn.response).toMatchObject({ result: { stopReason: "cancelled" } });
+        expect(runStatus(dbPath, conversationId)).toBe("cancelled");
+      } finally {
+        if (server) await stopProcess(server);
+        rmSync(root, { recursive: true, force: true });
+      }
+    }, 60_000);
+
+    it("leaves an intentionally killed detached owner to the existing controlled-rollout reconciliation", async () => {
+      const root = mkdtempSync(join(tmpdir(), "agent-bridge-outward-acp-interrupt-"));
+      const dbPath = join(root, "bridge.sqlite");
+      const providerStore = join(root, "provider-sessions.json");
+      openDb(dbPath, { databaseRole: "interactive" }).close();
+      let server: RunningOutwardAcp | null = null;
+      try {
+        server = startOutwardAcpProcess(dbPath, providerEnv(providerStore, { FAKE_ACP_GATE_FILE: join(root, "never") }));
+        await initialize(server, 1);
+        const created = await newSession(server, 2, root);
+        const conversationId = conversationIdForSession(dbPath, created.result?.sessionId!);
+        writePromptSession(server, 3, created.result?.sessionId!, "GATED_ANSWER interrupt me");
+        await waitForRunningRun(dbPath, conversationId);
+        server.child.stdin.end();
+        await delay(500);
+        expect(processExited(server.child)).toBe(false);
+        const killed = once(server.child, "exit");
+        server.child.kill("SIGKILL"); // intentional upgrade interruption
+        await killed;
+        const db = openDb(dbPath, { databaseRole: "interactive" });
+        try {
+          const result = db.reconcileControlledRollout({ reason: "interrupted_by_controlled_rollout", isProcessAlive: () => false });
+          expect(result.reconciledRunIds).toHaveLength(1);
+        } finally { db.close(); }
+        expect(runStatus(dbPath, conversationId)).not.toBe("running");
+      } finally {
+        if (server) await stopProcess(server);
+        rmSync(root, { recursive: true, force: true });
+      }
+    }, 60_000);
   });
 });

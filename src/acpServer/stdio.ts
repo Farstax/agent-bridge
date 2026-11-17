@@ -27,6 +27,10 @@ const OUTWARD_ACP_HISTORY_LIMIT = 200;
 console.log = (...args: unknown[]) => console.error(...args);
 console.info = (...args: unknown[]) => console.error(...args);
 
+// A client that disconnects while a Run is still executing must not kill this
+// process: writes to the dead pipe are dropped, not fatal.
+process.stdout.on("error", () => undefined);
+
 // Independent Workstreams share one Git worktree lock. Report a held worktree as
 // busy after a short bound instead of waiting silently behind another Run.
 process.env.BRIDGE_WORKSPACE_LOCK_WAIT_SECONDS ??= "5";
@@ -107,6 +111,10 @@ try {
   });
   const connection = createOutwardAcpAgent({ sessions, promptExecutor, workstreams: promptExecutor, commands, workspaceRoot }).connect(stream);
   await connection.closed;
+  // The client transport is gone (e.g. a Platform restart). A durably accepted
+  // Run keeps running in this process until it settles; only an explicit Stop
+  // or an intentional interruption of this process ends it earlier.
+  await promptExecutor.settleActive();
 } finally {
   try {
     await promptExecutor?.shutdown();

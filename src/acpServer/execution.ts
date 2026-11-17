@@ -668,6 +668,15 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
   }
 
   /** Cancel all active requests and wait until their outer Run persistence settles. */
+  /**
+   * The client connection closed: let in-flight Runs finish (no new drains or
+   * starts) instead of cancelling them. Explicit Stop and `shutdown()` are unchanged.
+   */
+  async settleActive(): Promise<void> {
+    this.closing = true;
+    while (this.active.size > 0) await Promise.all([...this.active.values()].map((record) => record.done));
+  }
+
   async shutdown(): Promise<void> {
     this.closing = true;
     const records = [...this.active.values()];
@@ -782,6 +791,11 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
     reservationToken?: string,
   ): Promise<acp.PromptResponse> {
     const { db } = this.options;
+    // A client that disconnected mid-Run can no longer receive updates; that must not fail an
+    // accepted Run. The answer is retained durably regardless of delivery.
+    const deliverUpdate = async (update: OutwardUpdate): Promise<void> => {
+      try { await input.onUpdate(update); } catch (error) { if (!input.signal.aborted) throw error; }
+    };
     const idempotencyKey = queued?.key
       ?? (input.busyMessages === true && input.requestId ? requestKey(input.session, input.requestId) : null);
     const provider = input.ordinaryResume?.provider ?? this.selectedProvider(input.session);
@@ -870,6 +884,11 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
       };
       this.active.set(input.session.conversationId, active);
       signalAbort = () => {
+        // A closed client connection (e.g. a Platform restart severing the stdio
+        // transport) aborts the signal with a plain Error and must NOT cancel a
+        // durably accepted Run: this process stays its owner until it settles.
+        // Only an explicit ACP request cancellation (a RequestError) cancels.
+        if (!(input.signal.reason instanceof acp.RequestError)) return;
         void this.cancelRun(input.session, "shutdown").catch(() => {
           console.warn("[acp:outward] cancellation cleanup failed");
         });
@@ -909,7 +928,7 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
       let providerCancelled: RunCancelledEvent | null = null;
       let updateChain = Promise.resolve();
       const enqueueUpdate = (update: OutwardUpdate): void => {
-        updateChain = updateChain.then(() => input.onUpdate(update));
+        updateChain = updateChain.then(() => deliverUpdate(update));
       };
       let previewEmitted = false;
       const resetPreview = (): void => {
@@ -1028,7 +1047,7 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
       }));
       if (!cancelled && result.text && actualProvider !== provider) this.routers.delete(input.session.conversationId);
       if (!cancelled && result.text && !previewEmitted) {
-        await input.onUpdate({
+        await deliverUpdate({
           sessionUpdate: "agent_message_chunk",
           content: { type: "text", text: result.text },
         });
