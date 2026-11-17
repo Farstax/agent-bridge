@@ -217,6 +217,7 @@ function writePromptSession(
   id: number,
   sessionId: string,
   text: string,
+  metadata: Record<string, unknown> = {},
 ): void {
   process.child.stdin.write(`${JSON.stringify({
     jsonrpc: "2.0",
@@ -225,6 +226,7 @@ function writePromptSession(
     params: {
       sessionId,
       prompt: [{ type: "text", text }],
+      _meta: metadata,
     },
   })}\n`);
 }
@@ -983,8 +985,8 @@ describe("outward ACP stdio boundary", { timeout: 30_000 }, () => {
     }
   });
 
-  it("cancels and fully settles an active Run before closing the database on client disconnect", async () => {
-    const root = mkdtempSync(join(tmpdir(), "agent-bridge-outward-acp-disconnect-"));
+  it("honors JSON-RPC request cancellation while transport loss alone preserves an accepted Run", async () => {
+    const root = mkdtempSync(join(tmpdir(), "agent-bridge-outward-acp-request-cancel-"));
     const dbPath = join(root, "bridge.sqlite");
     const providerStore = join(root, "provider-sessions.json");
     openDb(dbPath, { databaseRole: "interactive" }).close();
@@ -994,28 +996,98 @@ describe("outward ACP stdio boundary", { timeout: 30_000 }, () => {
       server = startOutwardAcpProcess(dbPath, providerEnv(providerStore));
       await initialize(server, 1);
       const created = await newSession(server, 2, root);
+      const sessionId = created.result?.sessionId!;
+      const conversationId = conversationIdForSession(dbPath, sessionId);
+      writePromptSession(server, 3, sessionId, "HANG");
+      await waitForRunningRun(dbPath, conversationId);
+      server.child.stdin.write(`${JSON.stringify({
+        jsonrpc: "2.0", method: "$/cancel_request", params: { requestId: 3 },
+      })}\n`);
+      const cancelled = await readThroughResponse(server, 3);
+      expect(cancelled.response.error?.code === -32800 || cancelled.response.result?.stopReason === "cancelled").toBe(true);
+
+      const db = openDb(dbPath, { databaseRole: "interactive" });
+      expect(db.raw.prepare(`
+        SELECT status FROM bridge_runs WHERE chat_id = ? ORDER BY started_at DESC LIMIT 1
+      `).get(conversationId)).toEqual({ status: "cancelled" });
+      db.close();
+    } finally {
+      if (server) await stopProcess(server);
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("finishes an accepted Run and retains its answer after the ACP client disconnects", async () => {
+    const root = mkdtempSync(join(tmpdir(), "agent-bridge-outward-acp-disconnect-"));
+    const dbPath = join(root, "bridge.sqlite");
+    const providerStore = join(root, "provider-sessions.json");
+    const providerStarted = join(root, "provider-started");
+    const providerRelease = join(root, "provider-release");
+    openDb(dbPath, { databaseRole: "interactive" }).close();
+
+    let server: RunningOutwardAcp | null = null;
+    let reconnect: RunningOutwardAcp | null = null;
+    try {
+      server = startOutwardAcpProcess(dbPath, providerEnv(providerStore, {
+        FAKE_ACP_STARTED_FILE: providerStarted,
+        FAKE_ACP_RELEASE_FILE: providerRelease,
+      }));
+      await initialize(server, 1);
+      const created = await newSession(server, 2, root);
       const outwardSessionId = created.result?.sessionId;
       expect(outwardSessionId).toEqual(expect.any(String));
       const conversationId = conversationIdForSession(dbPath, outwardSessionId!);
 
-      writePromptSession(server, 3, outwardSessionId!, "HANG");
+      const requestId = "desk-operation-continuity-1";
+      writePromptSession(server, 3, outwardSessionId!, "WAIT_FOR_RELEASE", { "agent-bridge/request-id": requestId });
       await waitForRunningRun(dbPath, conversationId);
+      const startDeadline = Date.now() + 2_000;
+      while (!existsSync(providerStarted) && Date.now() < startDeadline) await delay(10);
+      expect(existsSync(providerStarted)).toBe(true);
       server.child.stdin.end();
-      await waitForExit(server);
-      server.output.close();
-      server = null;
+      await delay(100);
+      expect(processExited(server.child)).toBe(false);
+      writeFileSync(providerRelease, "continue");
+      await waitForExit(server, 5_000);
 
       const persisted = openDb(dbPath, { databaseRole: "interactive" });
-      expect(persisted.raw.prepare(`
+      const run = persisted.raw.prepare(`
         SELECT status
         FROM bridge_runs
         WHERE chat_id = ?
         ORDER BY started_at DESC
         LIMIT 1
-      `).get(conversationId)).toEqual({ status: "cancelled" });
+      `).get(conversationId);
+      expect(run).toEqual({ status: "done" });
+      expect(persisted.raw.prepare(`
+        SELECT COUNT(*) AS count FROM conversation_turns
+        WHERE chat_key = ? AND surface_identity = 'acp:outward' AND role = 'assistant'
+      `).get(conversationId)).toEqual({ count: 1 });
+      expect(persisted.raw.prepare(`
+        SELECT COUNT(*) AS count FROM conversation_turns
+        WHERE chat_key = ? AND surface_identity = 'acp:outward' AND role = 'user'
+      `).get(conversationId)).toEqual({ count: 1 });
+      expect(persisted.raw.prepare(`
+        SELECT COUNT(*) AS count FROM settings
+        WHERE key LIKE 'outward-user-turn-operation:v1:%' AND value = ?
+      `).get(requestId)).toEqual({ count: 1 });
       persisted.close();
+
+      server.output.close();
+      server = null;
+      reconnect = startOutwardAcpProcess(dbPath, providerEnv(providerStore));
+      await initialize(reconnect, 4);
+      const loaded = await loadSession(reconnect, 5, outwardSessionId!, root);
+      expect(loaded.response).toMatchObject({ jsonrpc: "2.0", id: 5, result: {} });
+      expect(JSON.stringify(loaded.notifications)).toContain("WAIT_FOR_RELEASE");
+      expect(JSON.stringify(loaded.notifications)).toContain("continue");
+      const sameRunCount = openDb(dbPath, { databaseRole: "interactive" });
+      expect(sameRunCount.raw.prepare("SELECT COUNT(*) AS count FROM bridge_runs WHERE chat_id = ?").get(conversationId))
+        .toEqual({ count: 1 });
+      sameRunCount.close();
     } finally {
       if (server) await stopProcess(server);
+      if (reconnect) await stopProcess(reconnect);
       rmSync(root, { recursive: true, force: true });
     }
   });

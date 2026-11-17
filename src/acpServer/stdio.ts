@@ -109,7 +109,7 @@ try {
   await connection.closed;
 } finally {
   try {
-    await promptExecutor?.shutdown();
+    await promptExecutor?.finishAcceptedRuns();
   } finally {
     db.close();
   }
