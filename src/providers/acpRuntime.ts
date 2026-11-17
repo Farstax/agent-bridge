@@ -87,6 +87,7 @@ export interface AcpProviderPolicy {
     readonly createPreview?: (
       onAnswerDelta: (text: string) => void,
       secrets: readonly string[],
+      onCommentary?: (text: string) => void,
     ) => AcpAnswerPreview;
   };
   /** Provider-owned child environment policy applied by the shared supervisor path. */
@@ -565,7 +566,7 @@ export async function runResolvedAcpProviderTurn(
   const secretValues = getProviderApiKeySecretValues(redactionEnv);
   const liveRedactor = createStreamingSecretRedactor(secretValues);
   const newAnswerPreview = () => options.onAnswerDelta && runtime.provisionalAnswers
-    ? (policy.presentation.createPreview?.(options.onAnswerDelta, secretValues)
+    ? (policy.presentation.createPreview?.(options.onAnswerDelta, secretValues, options.onInterimCommentary)
       ?? createStandardAnswerPreview(options.onAnswerDelta, secretValues))
     : null;
   let answerPreview = newAnswerPreview();
@@ -581,7 +582,10 @@ export async function runResolvedAcpProviderTurn(
   let promptEverSubmitted = false;
   const runTurn = async (attempt: 1 | 2): Promise<AcpTurnResult> => {
     // Never reuse a preview classifier or its buffered text across an ACP retry.
-    if (attempt === 2) answerPreview = newAnswerPreview();
+    if (attempt === 2) {
+      options.onInterimCommentary?.(null);
+      answerPreview = newAnswerPreview();
+    }
     const credentialExecutionLock = policy.credentialExecutionLock?.(effectiveEnv, attempt) ?? null;
     const turn = await runSupervisedStdioSession(
       runtime.executable,

@@ -33,13 +33,21 @@ export interface CodexAcpAnswerPreview {
 export function createCodexAcpAnswerPreview(
   onAnswerDelta: (text: string) => void,
   secrets: readonly string[],
+  onCommentary?: (text: string) => void,
 ): CodexAcpAnswerPreview {
   const redactor = createStreamingSecretRedactor(secrets);
+  const commentaryRedactor = createStreamingSecretRedactor(secrets);
   let phaseSemanticsSeen = false;
   let allowChunk = false;
+  let commentaryText = "";
+  let allowCommentary = false;
   const nextText = createLogicalPreviewTextStream({
     groupOf: (update) => validUpdatePhase(update),
     accept: () => allowChunk,
+  });
+  const nextCommentary = createLogicalPreviewTextStream({
+    groupOf: (update) => validUpdatePhase(update),
+    accept: () => allowCommentary,
   });
 
   const emit = (text: string): void => {
@@ -71,12 +79,17 @@ export function createCodexAcpAnswerPreview(
       // Every parent-session update feeds boundary reconstruction; only the
       // decision below controls whether a text chunk may be shown.
       allowChunk = false;
+      allowCommentary = false;
       if (update.sessionUpdate === "agent_message_chunk" && update.content.type === "text") {
         // A Codex marker on the notification envelope is misplaced. Its presence
         // is still explicit phase semantics, so fail closed for this and later
         // unphased chunks.
         if (misplacedCodexMarker) allowChunk = false;
-        else if (updateCodexMarker) allowChunk = validUpdatePhase(update) === "final_answer";
+        else if (updateCodexMarker) {
+          const phase = validUpdatePhase(update);
+          allowChunk = phase === "final_answer";
+          allowCommentary = phase === "commentary" && onCommentary !== undefined;
+        }
         // ACP exposes thoughts on agent_thought_chunk, so an unphased live
         // agent_message_chunk is safe provisional answer text until Codex phase
         // semantics appear. After that point, missing phase is ambiguous.
@@ -84,6 +97,14 @@ export function createCodexAcpAnswerPreview(
       }
       const text = nextText(update);
       if (text) emit(text);
+      const commentaryDelta = nextCommentary(update);
+      if (commentaryDelta) {
+        const safe = commentaryRedactor.push(commentaryDelta);
+        if (safe) {
+          commentaryText += safe;
+          onCommentary?.(commentaryText);
+        }
+      }
     },
 
     finish(stopReason): void {
@@ -92,6 +113,11 @@ export function createCodexAcpAnswerPreview(
       if (stopReason === "cancelled") return;
       const safe = redactor.flush();
       if (safe) onAnswerDelta(safe);
+      const safeCommentary = commentaryRedactor.flush();
+      if (safeCommentary) {
+        commentaryText += safeCommentary;
+        onCommentary?.(commentaryText);
+      }
     },
   };
 }

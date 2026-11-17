@@ -35,12 +35,18 @@ describe("Codex ACP provisional answer classification", () => {
     channel = "live",
     sessionUpdate = "agent_message_chunk",
     text = "",
+    acpSessionId = "acp-1",
+    sessionId = "acp-1",
+    presentationSuppressed = false,
     updateMeta,
     notificationMeta,
   }: {
     channel?: "live" | "replay";
     sessionUpdate?: string;
     text?: string;
+    acpSessionId?: string;
+    sessionId?: string;
+    presentationSuppressed?: boolean;
     updateMeta?: unknown;
     notificationMeta?: unknown;
   }) {
@@ -48,15 +54,16 @@ describe("Codex ACP provisional answer classification", () => {
       ? { sessionUpdate, content: { type: "text", text } }
       : { sessionUpdate, text };
     if (updateMeta !== undefined) update._meta = updateMeta;
-    const notification: any = { sessionId: "acp-1", update };
+    const notification: any = { sessionId, update };
     if (notificationMeta !== undefined) notification._meta = notificationMeta;
-    return { kind: "session_update" as const, channel, notification } as any;
+    return { kind: "session_update" as const, channel, acpSessionId, presentationSuppressed, notification } as any;
   }
 
   function previewCollector(secrets: string[] = []) {
     const chunks: string[] = [];
-    const preview = createCodexAcpAnswerPreview((text) => chunks.push(text), secrets);
-    return { chunks, preview };
+    const commentary: string[] = [];
+    const preview = createCodexAcpAnswerPreview((text) => chunks.push(text), secrets, (text) => commentary.push(text));
+    return { chunks, commentary, preview };
   }
 
   it("previews unphased live agent messages", () => {
@@ -71,6 +78,43 @@ describe("Codex ACP provisional answer classification", () => {
     preview.observe(event({ text: "answer", updateMeta: { codex: { phase: "final_answer" } } }));
     preview.finish("end_turn");
     expect(chunks.join("")).toBe("answer");
+  });
+
+  it("emits only explicitly classified commentary separately from final answers", () => {
+    const { chunks, commentary, preview } = previewCollector();
+    preview.observe(event({ text: "Reading the router configuration.", updateMeta: { codex: { phase: "commentary" } } }));
+    preview.observe(event({ text: "private thought", sessionUpdate: "agent_thought_chunk" }));
+    preview.observe(event({ text: "unclassified" }));
+    preview.observe(event({ text: "final answer", updateMeta: { codex: { phase: "final_answer" } } }));
+    preview.finish("end_turn");
+    expect(commentary.join("\n")).toBe("Reading the router configuration.");
+    expect(chunks.join("" )).toBe("final answer");
+  });
+
+  it("rejects commentary outside the unsuppressed root live session", () => {
+    const { commentary, preview } = previewCollector();
+    const meta = { codex: { phase: "commentary" } };
+    preview.observe(event({ text: "replay", channel: "replay", updateMeta: meta }));
+    preview.observe(event({ text: "child", sessionId: "acp-child", updateMeta: meta }));
+    preview.observe(event({ text: "suppressed", presentationSuppressed: true, updateMeta: meta }));
+    preview.finish("end_turn");
+    expect(commentary).toEqual([]);
+  });
+
+  it("redacts secrets from commentary across chunk boundaries and drops it on cancellation", () => {
+    const secret = "commentary-split-secret-123";
+    const { commentary, preview } = previewCollector([secret]);
+    preview.observe(event({ text: "Safe commentary-split-", updateMeta: { codex: { phase: "commentary" } } }));
+    preview.observe(event({ text: "secret-", updateMeta: { codex: { phase: "commentary" } } }));
+    preview.observe(event({ text: "123 end", updateMeta: { codex: { phase: "commentary" } } }));
+    preview.finish("end_turn");
+    expect(commentary.at(-1)).toBe("Safe [REDACTED_PROVIDER_CREDENTIAL] end");
+    expect(commentary.join(" ")).not.toContain(secret);
+
+    const cancelled = previewCollector(["secret"]);
+    cancelled.preview.observe(event({ text: "sec", updateMeta: { codex: { phase: "commentary" } } }));
+    cancelled.preview.finish("cancelled");
+    expect(cancelled.commentary).toEqual([]);
   });
 
   it("suppresses commentary and unphased chunks after phase semantics begin", () => {
