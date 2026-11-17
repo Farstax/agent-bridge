@@ -1017,6 +1017,8 @@ describe("outward ACP stdio boundary", { timeout: 30_000 }, () => {
         writePromptSession(server, 3, outwardSessionId!, "GATED_ANSWER question");
         await waitForRunningRun(dbPath, conversationId);
         server.child.stdin.end(); // the Platform-owned transport goes away mid-Run
+        server.child.stdout.destroy(); // all three pipes are severed, as when the SSH session dies
+        server.child.stderr.destroy();
         await delay(1_500);
         expect(processExited(server.child)).toBe(false); // the process still owns the Run
         expect(runStatus(dbPath, conversationId)).toBe("running"); // not cancelled by the disconnect
@@ -1025,6 +1027,17 @@ describe("outward ACP stdio boundary", { timeout: 30_000 }, () => {
         reconnect = startOutwardAcpProcess(dbPath, providerEnv(providerStore, { FAKE_ACP_GATE_FILE: gate }));
         await initialize(reconnect, 1);
         expect(runStatus(dbPath, conversationId)).toBe("running");
+        // It can open the live Workstream but not start a second concurrent Run on the lane.
+        await loadSession(reconnect, 2, outwardSessionId!, root);
+        writePromptSession(reconnect, 3, outwardSessionId!, "second prompt while the first Run is live");
+        const refused = await readThroughResponse(reconnect, 3);
+        expect(refused.response.error ?? refused.response.result).toBeDefined();
+        expect(JSON.stringify(refused.response)).not.toContain("end_turn");
+        {
+          const db = openDb(dbPath, { databaseRole: "interactive" });
+          try { expect(db.raw.prepare("SELECT COUNT(*) AS n FROM bridge_runs").get()).toEqual({ n: 1 }); } finally { db.close(); }
+        }
+        expect(processExited(server.child)).toBe(false);
 
         writeFileSync(gate, "go"); // the provider now completes
         await waitForExit(server, 10_000); // the detached process exits only after the Run settles
@@ -1035,7 +1048,7 @@ describe("outward ACP stdio boundary", { timeout: 30_000 }, () => {
         expect(turns.find((turn) => turn.role === "assistant")?.text).toMatch(/^live:/);
 
         // The reconnected client recovers the original Run from history; nothing is resubmitted.
-        const loaded = await loadSession(reconnect, 2, outwardSessionId!, root);
+        const loaded = await loadSession(reconnect, 4, outwardSessionId!, root);
         expect(JSON.stringify(loaded)).toContain("question");
         expect(turnsOf(dbPath, conversationId)).toHaveLength(turns.length);
       } finally {
@@ -1045,7 +1058,7 @@ describe("outward ACP stdio boundary", { timeout: 30_000 }, () => {
       }
     }, 60_000);
 
-    it("still cancels an active Run on an explicit session/cancel (Stop) after reconnect semantics", async () => {
+    it("still cancels an active Run on an explicit session/cancel (Stop)", async () => {
       const root = mkdtempSync(join(tmpdir(), "agent-bridge-outward-acp-stop-"));
       const dbPath = join(root, "bridge.sqlite");
       const providerStore = join(root, "provider-sessions.json");

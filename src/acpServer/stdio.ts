@@ -28,8 +28,9 @@ console.log = (...args: unknown[]) => console.error(...args);
 console.info = (...args: unknown[]) => console.error(...args);
 
 // A client that disconnects while a Run is still executing must not kill this
-// process: writes to the dead pipe are dropped, not fatal.
+// process: writes to the dead pipes (stdout and stderr) are dropped, not fatal.
 process.stdout.on("error", () => undefined);
+process.stderr.on("error", () => undefined);
 
 // Independent Workstreams share one Git worktree lock. Report a held worktree as
 // busy after a short bound instead of waiting silently behind another Run.
