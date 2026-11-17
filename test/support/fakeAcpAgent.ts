@@ -232,6 +232,17 @@ export function createFakeAcpAgent(options: FakeAcpAgentOptions = {}): acp.Agent
         return { stopReason: "cancelled" };
       }
 
+      if (text.includes("WAIT_FOR_RELEASE")) {
+        const startedFile = process.env.FAKE_ACP_STARTED_FILE;
+        const releaseFile = process.env.FAKE_ACP_RELEASE_FILE;
+        if (!startedFile || !releaseFile) throw new Error("WAIT_FOR_RELEASE requires start and release files");
+        writeFileSync(startedFile, "started");
+        while (!existsSync(releaseFile)) {
+          if (session.pending?.signal.aborted || ctx.signal.aborted) return { stopReason: "cancelled" };
+          await new Promise((resolve) => setTimeout(resolve, 10));
+        }
+      }
+
       if (options.permissionOn && text.includes(options.permissionOn)) {
         await ctx.client.request(acp.methods.client.session.requestPermission, {
           sessionId: ctx.params.sessionId,

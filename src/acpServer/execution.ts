@@ -239,6 +239,18 @@ function normalizeStopReason(value: string | undefined): acp.StopReason {
   }
 }
 
+function isAcpRequestCancelled(signal: AbortSignal): boolean {
+  if (!signal.aborted) return false;
+  if (signal.reason instanceof acp.RequestError) return signal.reason.code === -32800;
+  // Preserve direct executor callers that use AbortController.abort() while
+  // distinguishing the SDK's plain connection-close error from request Stop.
+  return signal.reason instanceof Error && signal.reason.name === "AbortError";
+}
+
+function isAcpTransportClosed(signal: AbortSignal): boolean {
+  return signal.aborted && !isAcpRequestCancelled(signal);
+}
+
 function outwardFailureMessage(error: unknown): string {
   // Use the existing bounded, credential-redacted provider error presentation.
   return toUserMessage(error instanceof Error ? error : new Error(String(error)));
@@ -286,6 +298,8 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
   // A router is rebuilt only when the Workstream's durable provider selection
   // changes, which can only happen while no Run holds the conversation lane.
   private readonly routers = new Map<string, { provider: BotKind; router: SurfaceNeutralProviderRouter }>();
+  private pendingPrompts = 0;
+  private pendingPromptsDone: (() => void) | null = null;
 
   constructor(private readonly options: BridgeOutwardAcpPromptExecutorOptions) {}
 
@@ -679,7 +693,29 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
     }));
   }
 
+  /** Finish accepted Runs after the ACP transport closes, without treating disconnect as Stop. */
+  async finishAcceptedRuns(): Promise<void> {
+    this.closing = true;
+    if (this.pendingPrompts > 0) {
+      await new Promise<void>((resolve) => { this.pendingPromptsDone = resolve; });
+    }
+  }
+
   async execute(input: OutwardAcpPromptExecutionInput): Promise<acp.PromptResponse> {
+    if (this.closing) throw new acp.RequestError(OUTWARD_ACP_BUSY_ERROR, "outward ACP server is closing");
+    this.pendingPrompts += 1;
+    try {
+      return await this.executePrompt(input);
+    } finally {
+      this.pendingPrompts -= 1;
+      if (this.pendingPrompts === 0) {
+        this.pendingPromptsDone?.();
+        this.pendingPromptsDone = null;
+      }
+    }
+  }
+
+  private async executePrompt(input: OutwardAcpPromptExecutionInput): Promise<acp.PromptResponse> {
     const { db } = this.options;
     // Only a client that opted into the advertised busy-message extension may
     // submit during an active Run; every other client keeps ACP v1 fail-fast.
@@ -784,6 +820,15 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
     reservationToken?: string,
   ): Promise<acp.PromptResponse> {
     const { db } = this.options;
+    const sendUpdate = async (update: OutwardUpdate): Promise<void> => {
+      try {
+        await input.onUpdate(update);
+      } catch (error) {
+        if (!isAcpTransportClosed(input.signal)) throw error;
+        // A disconnected ACP client cannot receive progress; the Run and its
+        // final answer remain owned by the durable Bridge event/transcript path.
+      }
+    };
     const idempotencyKey = queued?.key
       ?? (input.busyMessages === true && input.requestId ? requestKey(input.session, input.requestId) : null);
     const provider = input.ordinaryResume?.provider ?? this.selectedProvider(input.session);
@@ -861,8 +906,8 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
       const done = new Promise<void>((resolve) => { finishDone = resolve; });
       active = {
         session: input.session,
-        cancelRequested: input.signal.aborted,
-        cancelReason: input.signal.aborted ? "shutdown" : null,
+        cancelRequested: isAcpRequestCancelled(input.signal),
+        cancelReason: isAcpRequestCancelled(input.signal) ? "shutdown" : null,
         cancelPromise: null,
         settled: false,
         lane,
@@ -872,6 +917,10 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
       };
       this.active.set(input.session.conversationId, active);
       signalAbort = () => {
+        // The SDK aborts request signals on both explicit JSON-RPC cancellation
+        // and transport loss. Only the former means the caller asked to stop;
+        // a closed Desk connection must not cancel an already accepted Run.
+        if (!isAcpRequestCancelled(input.signal)) return;
         void this.cancelRun(input.session, "shutdown").catch(() => {
           console.warn("[acp:outward] cancellation cleanup failed");
         });
@@ -893,11 +942,11 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
       // This metadata-only update is never an assistant answer or transcript.
       if (!queued && !input.ordinaryResume && !input.capacityResume && input.requestId) {
         try {
-          void Promise.resolve(input.onUpdate({
+          void sendUpdate({
             sessionUpdate: "agent_message_chunk",
             content: { type: "text", text: "" },
             _meta: { "agent-bridge/prompt-accepted": { requestId: input.requestId, runId } },
-          } as OutwardUpdate)).catch(() => undefined);
+          } as OutwardUpdate).catch(() => undefined);
         } catch { /* A lost notification cannot undo a durably admitted Run. */ }
       }
 
@@ -911,7 +960,7 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
       let providerCancelled: RunCancelledEvent | null = null;
       let updateChain = Promise.resolve();
       const enqueueUpdate = (update: OutwardUpdate): void => {
-        updateChain = updateChain.then(() => input.onUpdate(update));
+        updateChain = updateChain.then(() => sendUpdate(update));
       };
       let previewEmitted = false;
       let commentaryEmitted = false;
@@ -1056,7 +1105,7 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
       }));
       if (!cancelled && result.text && actualProvider !== provider) this.routers.delete(input.session.conversationId);
       if (!cancelled && result.text && !previewEmitted) {
-        await input.onUpdate({
+        await sendUpdate({
           sessionUpdate: "agent_message_chunk",
           content: { type: "text", text: result.text },
         });
