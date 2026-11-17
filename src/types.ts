@@ -133,7 +133,7 @@ export interface CliOptions {
   /** Safe provisional assistant-answer text for transient presentation only. */
   onAnswerDelta?: (text: string) => void;
   /** Explicitly classified, provider-authored interim commentary for transient presentation only. */
-  onInterimCommentary?: (text: string) => void;
+  onInterimCommentary?: (text: string | null) => void;
   /** Provider-owned observation hook for structured presentation decoders. */
   onProviderOutputChunk?: (text: string) => void;
   chatId?: number | string;

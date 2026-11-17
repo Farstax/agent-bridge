@@ -420,6 +420,7 @@ describe("outward ACP prompt execution", () => {
         createEngine: () => ({
           executeSurfaceNeutralTurn: async (input) => {
             input.onInterimCommentary?.("Reading the router configuration.");
+            input.onInterimCommentary?.(null);
             input.onInterimCommentary?.("x".repeat(281));
             return { text: "authoritative answer", sessionId: "provider-commentary", stopReason: "end_turn" };
           },
@@ -443,6 +444,11 @@ describe("outward ACP prompt execution", () => {
         sessionUpdate: "agent_message_chunk",
         content: { type: "text", text: "" },
         _meta: { "agent-bridge/interim-commentary": { id: "1", text: "Reading the router configuration." } },
+      });
+      expect(updates.map(({ update }) => update)).toContainEqual({
+        sessionUpdate: "agent_message_chunk",
+        content: { type: "text", text: "" },
+        _meta: { "agent-bridge/interim-commentary": { clear: 1 } },
       });
       expect(JSON.stringify(updates)).not.toContain("x".repeat(281));
       expect(db.getRecentConvTurns("acp:commentary", 5, undefined, OUTWARD_ACP_SURFACE)

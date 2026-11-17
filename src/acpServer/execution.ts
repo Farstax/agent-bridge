@@ -934,11 +934,11 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
           _meta: { "agent-bridge/preview-reset": 1 },
         } as OutwardUpdate);
       };
-      clearLivePreview = resetPreview;
       const resetAttemptPresentation = (): void => {
         resetPreview();
         resetCommentary();
       };
+      clearLivePreview = resetAttemptPresentation;
       settleLiveUpdates = () => updateChain;
       const collect = (event: BridgeEvent): void => {
         if (event.type === "run.started") activeProvider = event.bot;
@@ -980,8 +980,8 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
           previewEmitted = true;
           enqueueUpdate({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: delta } });
         } : undefined,
-        onProviderRecoveryDecision: (reason, exhausted, transition) => {
         onInterimCommentary: input.interimCommentary === true ? (text) => {
+          if (text === null) { resetCommentary(); return; }
           if (active?.cancelRequested || input.signal.aborted || text.length === 0 || text.length > 280
             || /[\u0000-\u001f\u007f\u2028\u2029]/.test(text)) return;
           commentaryEmitted = true;

@@ -582,7 +582,10 @@ export async function runResolvedAcpProviderTurn(
   let promptEverSubmitted = false;
   const runTurn = async (attempt: 1 | 2): Promise<AcpTurnResult> => {
     // Never reuse a preview classifier or its buffered text across an ACP retry.
-    if (attempt === 2) answerPreview = newAnswerPreview();
+    if (attempt === 2) {
+      options.onInterimCommentary?.(null);
+      answerPreview = newAnswerPreview();
+    }
     const credentialExecutionLock = policy.credentialExecutionLock?.(effectiveEnv, attempt) ?? null;
     const turn = await runSupervisedStdioSession(
       runtime.executable,
