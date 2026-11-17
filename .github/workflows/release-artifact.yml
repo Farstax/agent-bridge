@@ -43,10 +43,61 @@ jobs:
       - name: Install locked dependencies
         run: npm ci
 
+      - name: Reuse successful exact-commit main release qualification
+        id: main_reuse
+        if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const commitSha = context.sha;
+            try {
+              const { data } = await github.rest.actions.listWorkflowRuns({
+                owner, repo, workflow_id: "release-artifact.yml",
+                event: "push", head_sha: commitSha, per_page: 100,
+              });
+              const qualifiedRuns = data.workflow_runs.filter((run) =>
+                run.repository?.full_name === owner + "/" + repo &&
+                run.name === "Release Artifact" &&
+                run.path === ".github/workflows/release-artifact.yml" &&
+                run.event === "push" && run.head_branch === "main" &&
+                run.head_sha === commitSha &&
+                run.status === "completed" && run.conclusion === "success" &&
+                Number.isInteger(run.run_attempt) && run.run_attempt >= 1
+              );
+              if (qualifiedRuns.length !== 1) {
+                throw new Error("expected exactly one successful exact-commit main release run");
+              }
+              const run = qualifiedRuns[0];
+              const { data: jobs } = await github.rest.actions.listJobsForWorkflowRunAttempt({
+                owner, repo, run_id: run.id, attempt_number: run.run_attempt, per_page: 100,
+              });
+              const qualified = jobs.jobs.filter((job) => job.name === "Qualify and build immutable release artifact");
+              if (qualified.length !== 1 || qualified[0].status !== "completed" ||
+                  qualified[0].conclusion !== "success" ||
+                  qualified[0].head_sha !== commitSha ||
+                  qualified[0].run_attempt !== run.run_attempt) {
+                throw new Error("successful release qualification job/attempt not proved");
+              }
+              core.setOutput("reuse", "true");
+              core.setOutput("source_run_id", String(run.id));
+              core.setOutput("source_run_attempt", String(run.run_attempt));
+              core.setOutput("source_head_sha", commitSha);
+              core.notice("Reusing exact-main Release Artifact qualification from run " +
+                run.id + " attempt " + run.run_attempt);
+            } catch (error) {
+              core.setOutput("reuse", "false");
+              core.warning("Cannot prove successful exact-main release qualification: " +
+                (error instanceof Error ? error.message : String(error)) +
+                "; running full tagged-release qualification");
+            }
+
       - name: Install offline recovery integration runtime
+        if: github.event_name != 'workflow_dispatch' || steps.main_reuse.outputs.reuse != 'true'
         run: sudo apt-get update && sudo apt-get install --yes systemd-container
 
       - name: Run real offline recovery isolation test
+        if: github.event_name != 'workflow_dispatch' || steps.main_reuse.outputs.reuse != 'true'
         run: RUN_NSPAWN_QUALIFICATION=1 npm test -- --run test/recoveryCopyIsolation.test.ts
 
       - name: Reuse exact-tree successful PR qualification
@@ -114,7 +165,7 @@ jobs:
             }
 
       - name: Run repository qualification gate
-        if: github.event_name != 'push' || steps.reuse.outputs.reuse != 'true'
+        if: (github.event_name != 'push' || steps.reuse.outputs.reuse != 'true') && (github.event_name != 'workflow_dispatch' || steps.main_reuse.outputs.reuse != 'true')
         run: npm run qualify:local
         env:
           NODE_OPTIONS: "--max-old-space-size=3072"
@@ -143,7 +194,11 @@ jobs:
           archive="$RUNNER_TEMP/agent-bridge-${commit}.tar.gz"
           checks_json='["test","typecheck","architecture-lint","compile","manifest"]'
           qualification_source_json='{"kind":"release_gate"}'
-          if [[ "${{ steps.reuse.outputs.reuse }}" == "true" ]]; then
+          if [[ "${{ steps.main_reuse.outputs.reuse }}" == "true" ]]; then
+            qualification_source_json="$(node -e 'process.stdout.write(JSON.stringify({kind:"reused_main_release",run_id:Number(process.argv[1]),attempt:Number(process.argv[2]),head_sha:process.argv[3]}))' \
+              "${{ steps.main_reuse.outputs.source_run_id }}" "${{ steps.main_reuse.outputs.source_run_attempt }}" \
+              "${{ steps.main_reuse.outputs.source_head_sha }}")"
+          elif [[ "${{ steps.reuse.outputs.reuse }}" == "true" ]]; then
             qualification_source_json="$(node -e 'process.stdout.write(JSON.stringify({kind:"reused_pr_ci",pr:Number(process.argv[1]),run_id:Number(process.argv[2]),attempt:Number(process.argv[3]),head_sha:process.argv[4]}))' \
               "${{ steps.reuse.outputs.source_pr }}" "${{ steps.reuse.outputs.source_run_id }}" \
               "${{ steps.reuse.outputs.source_run_attempt }}" "${{ steps.reuse.outputs.source_head_sha }}")"
