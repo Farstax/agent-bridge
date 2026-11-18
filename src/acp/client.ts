@@ -611,7 +611,7 @@ export async function runAcpTurn(input: AcpTurnInput): Promise<AcpTurnResult> {
     });
 
   const execute = async (agent: ClientContext): Promise<AcpTurnResult> => {
-    const initialize = await agent.request(acp.methods.agent.initialize, bridgeInitializeRequest());
+    const initialize = await agent.request(acp.methods.agent.initialize, bridgeInitializeRequest(input.providerId));
     if (input.authenticateMethodId) {
       const method = initialize.authMethods?.find((candidate) => candidate.id === input.authenticateMethodId);
       if (!method) {

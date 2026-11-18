@@ -3,20 +3,43 @@ import { createLogicalPreviewTextStream } from "../acp/logicalMessages.js";
 import { createStreamingSecretRedactor } from "./streamingSecretRedactor.js";
 
 type MetaCarrier = { _meta?: unknown };
+type CodexPhase = "commentary" | "final_answer";
 
-function hasOwnCodexMarker(meta: unknown): boolean {
-  return meta !== null
-    && typeof meta === "object"
-    && Object.prototype.hasOwnProperty.call(meta, "codex");
+function record(value: unknown): Record<string, unknown> | null {
+  return value !== null && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown> : null;
 }
 
-function validUpdatePhase(update: unknown): "commentary" | "final_answer" | undefined {
+function owns(value: Record<string, unknown> | null, key: string): boolean {
+  return value !== null && Object.prototype.hasOwnProperty.call(value, key);
+}
+
+/** Recognize either supported metadata namespace, including malformed markers. */
+export function hasCodexAcpPhaseMarker(meta: unknown): boolean {
+  const root = record(meta);
+  const jetbrains = record(root?.jetbrains);
+  return owns(root, "codex") || owns(jetbrains, "air")
+    || (owns(root, "jetbrains") && jetbrains === null);
+}
+
+/** The installed codex-acp adapter emits phases only under jetbrains.air. */
+export function codexAcpUpdatePhase(update: unknown): CodexPhase | undefined {
   if (update === null || typeof update !== "object") return undefined;
-  const meta = (update as MetaCarrier)._meta;
-  if (meta === null || typeof meta !== "object") return undefined;
-  const codex = (meta as { codex?: unknown }).codex;
-  if (codex === null || typeof codex !== "object") return undefined;
-  const phase = (codex as { phase?: unknown }).phase;
+  const root = record((update as MetaCarrier)._meta);
+  if (!root) return undefined;
+  const jetbrains = record(root.jetbrains);
+  const hasLegacy = owns(root, "codex");
+  const hasAir = owns(jetbrains, "air");
+  // Conflicting metadata sources cannot authorize presenting text.
+  if (hasLegacy && (hasAir || owns(root, "jetbrains"))) return undefined;
+  let phase: unknown;
+  if (hasAir) {
+    const air = record(jetbrains?.air);
+    if (air?.version !== 1) return undefined;
+    phase = air.phase;
+  } else if (hasLegacy) {
+    phase = record(root.codex)?.phase;
+  }
   return phase === "commentary" || phase === "final_answer" ? phase : undefined;
 }
 
@@ -42,11 +65,11 @@ export function createCodexAcpAnswerPreview(
   let commentaryText = "";
   let allowCommentary = false;
   const nextText = createLogicalPreviewTextStream({
-    groupOf: (update) => validUpdatePhase(update),
+    groupOf: (update) => codexAcpUpdatePhase(update),
     accept: () => allowChunk,
   });
   const nextCommentary = createLogicalPreviewTextStream({
-    groupOf: (update) => validUpdatePhase(update),
+    groupOf: (update) => codexAcpUpdatePhase(update),
     accept: () => allowCommentary,
   });
 
@@ -66,13 +89,13 @@ export function createCodexAcpAnswerPreview(
       if (event.acpSessionId && event.notification.sessionId !== event.acpSessionId) return;
       const notification = event.notification as typeof event.notification & MetaCarrier;
       const update = notification.update as typeof notification.update & MetaCarrier;
-      const misplacedCodexMarker = hasOwnCodexMarker(notification._meta);
-      const updateCodexMarker = hasOwnCodexMarker(update._meta);
+      const misplacedCodexMarker = hasCodexAcpPhaseMarker(notification._meta);
+      const updateCodexMarker = hasCodexAcpPhaseMarker(update._meta);
       const answerChunk = update.sessionUpdate === "agent_message_chunk" && update.content.type === "text";
       // A session_info_update may carry Codex metadata without announcing
       // phase-aware answer text. Only an explicit phase or a malformed marker
       // on an answer chunk changes the safety classification.
-      if (validUpdatePhase(update) !== undefined || (answerChunk && (misplacedCodexMarker || updateCodexMarker))) {
+      if (codexAcpUpdatePhase(update) !== undefined || (answerChunk && (misplacedCodexMarker || updateCodexMarker))) {
         phaseSemanticsSeen = true;
       }
 
@@ -86,7 +109,7 @@ export function createCodexAcpAnswerPreview(
         // unphased chunks.
         if (misplacedCodexMarker) allowChunk = false;
         else if (updateCodexMarker) {
-          const phase = validUpdatePhase(update);
+          const phase = codexAcpUpdatePhase(update);
           allowChunk = phase === "final_answer";
           allowCommentary = phase === "commentary" && onCommentary !== undefined;
         }
