@@ -8,7 +8,7 @@ import type { ProviderInvocationRequest } from "./types.js";
 import type { AcpProviderPolicy, AcpProviderSessionSettings } from "./acpRuntime.js";
 import { runAcpApiKeyProbe } from "./acpAuthProbe.js";
 import { resolveCodexAcpArgs, resolveCodexAcpCommand } from "./codexAcpConfig.js";
-import { createCodexAcpAnswerPreview } from "./codexAcpAnswerPreview.js";
+import { createCodexAcpAnswerPreview, codexAcpUpdatePhase, hasCodexAcpPhaseMarker } from "./codexAcpAnswerPreview.js";
 import { createCodexAcpRunActivityProjector } from "./codexAcpRunActivity.js";
 
 export class CodexAcpToolFreeUnsupportedError extends Error {
@@ -79,13 +79,6 @@ function sessionSettings(
 type CodexAgentMessageChunk =
   Extract<AcpObservedUpdate["notification"]["update"], { sessionUpdate: "agent_message_chunk" }>
   & { content: Extract<ContentBlock, { type: "text" }> };
-type MetaCarrier = { _meta?: unknown };
-
-function hasOwnCodexMarker(meta: unknown): boolean {
-  return meta !== null
-    && typeof meta === "object"
-    && Object.prototype.hasOwnProperty.call(meta, "codex");
-}
 
 function liveAgentMessageChunk(
   update: AcpObservedUpdate,
@@ -99,8 +92,8 @@ function liveAgentMessageChunk(
 }
 
 function hasCodexPhaseMarker(update: AcpObservedUpdate, payload: CodexAgentMessageChunk): boolean {
-  if (hasOwnCodexMarker((payload as MetaCarrier)._meta)) return true;
-  return hasOwnCodexMarker((update.notification as MetaCarrier)._meta);
+  if (hasCodexAcpPhaseMarker((payload as { _meta?: unknown })._meta)) return true;
+  return hasCodexAcpPhaseMarker((update.notification as { _meta?: unknown })._meta);
 }
 
 function turnHasCodexPhaseSemantics(
@@ -114,9 +107,7 @@ function turnHasCodexPhaseSemantics(
 }
 
 function codexPhaseGroup(update: SessionUpdate): string | undefined {
-  const codex = ((update as MetaCarrier)._meta as { codex?: unknown } | null | undefined)?.codex;
-  const phase = codex !== null && typeof codex === "object" ? (codex as { phase?: unknown }).phase : undefined;
-  return phase === "commentary" || phase === "final_answer" ? phase : undefined;
+  return codexAcpUpdatePhase(update);
 }
 
 /**

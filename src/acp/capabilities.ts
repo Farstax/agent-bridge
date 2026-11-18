@@ -30,10 +30,18 @@ export const BRIDGE_ACP_CLIENT_INFO = {
   version: "0.1.0",
 } as const;
 
-export function bridgeInitializeRequest(): InitializeRequest {
+export function bridgeInitializeRequest(providerId?: string): InitializeRequest {
   return {
     protocolVersion: PROTOCOL_VERSION,
-    clientCapabilities: BRIDGE_ACP_CLIENT_CAPABILITIES,
+    // codex-acp 2.6.0 requires AIR client negotiation for explicit message
+    // phases. No optional AIR capabilities: preserve baseline permissions and
+    // leave every other ACP provider's initialization unchanged.
+    clientCapabilities: providerId === "codex"
+      ? {
+          ...BRIDGE_ACP_CLIENT_CAPABILITIES,
+          _meta: { jetbrains: { air: { version: 1, capabilities: [] } } },
+        }
+      : BRIDGE_ACP_CLIENT_CAPABILITIES,
     clientInfo: { ...BRIDGE_ACP_CLIENT_INFO },
   };
 }

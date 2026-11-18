@@ -8,6 +8,7 @@ import { buildCliInvocation, runProviderInvocation } from "../src/cli.js";
 import { acpTurnResultToCliResult, runAcpProviderTurn } from "../src/providers/acpRuntime.js";
 import { codexAcpChildAuthEnv, codexAcpPolicy, initialAgentMode } from "../src/providers/codexAcpPolicy.js";
 import { createCodexAcpAnswerPreview } from "../src/providers/codexAcpAnswerPreview.js";
+import { bridgeInitializeRequest, BRIDGE_ACP_CLIENT_CAPABILITIES } from "../src/acp/capabilities.js";
 import { abortCliProcess, isChildRunning } from "../src/cliSupervisor.js";
 import { liveDeliveryText } from "../src/acp/index.js";
 import {
@@ -29,6 +30,18 @@ const runTurn = (
 
 const toCliResult = (result: Parameters<typeof acpTurnResultToCliResult>[1]) =>
   acpTurnResultToCliResult("codex", result, codexAcpPolicy);
+
+describe("Codex ACP AIR phase negotiation", () => {
+  it("advertises the minimal AIR extension only to Codex", () => {
+    expect(bridgeInitializeRequest("codex").clientCapabilities).toEqual({
+      ...BRIDGE_ACP_CLIENT_CAPABILITIES,
+      _meta: { jetbrains: { air: { version: 1, capabilities: [] } } },
+    });
+    expect(bridgeInitializeRequest("claude").clientCapabilities).toEqual(BRIDGE_ACP_CLIENT_CAPABILITIES);
+    expect(bridgeInitializeRequest("grok").clientCapabilities).toEqual(BRIDGE_ACP_CLIENT_CAPABILITIES);
+    expect(bridgeInitializeRequest().clientCapabilities).toEqual(BRIDGE_ACP_CLIENT_CAPABILITIES);
+  });
+});
 
 describe("Codex ACP provisional answer classification", () => {
   function event({
@@ -89,6 +102,36 @@ describe("Codex ACP provisional answer classification", () => {
     preview.finish("end_turn");
     expect(commentary.join("\n")).toBe("Reading the router configuration.");
     expect(chunks.join("" )).toBe("final answer");
+  });
+
+  it("classifies adapter-shaped AIR commentary across tool boundaries without previewing tools", () => {
+    const { chunks, commentary, preview } = previewCollector();
+    const air = (phase: string) => ({ jetbrains: { air: { version: 1, phase } } });
+    preview.observe(event({ text: "Checking workspace.", updateMeta: air("commentary") }));
+    preview.observe(event({ sessionUpdate: "tool_call", text: "sensitive tool input" }));
+    preview.observe(event({ text: "Confirming result.", updateMeta: air("commentary") }));
+    preview.observe(event({ text: "Verified result.", updateMeta: air("final_answer") }));
+    preview.finish("end_turn");
+    expect(commentary.at(-1)).toBe("Checking workspace.\n\nConfirming result.");
+    expect(chunks.join("")).toBe("Verified result.");
+    expect(commentary.join(" ")).not.toContain("sensitive tool input");
+  });
+
+  it("fails closed for malformed or conflicting AIR phase metadata", () => {
+    for (const meta of [
+      { jetbrains: { air: { version: 2, phase: "commentary" } } },
+      { jetbrains: { air: { version: 1, phase: "unknown" } } },
+      { jetbrains: { air: "malformed" } },
+      { jetbrains: "malformed" },
+      { jetbrains: { air: { version: 1, phase: "commentary" } }, codex: { phase: "commentary" } },
+    ]) {
+      const { chunks, commentary, preview } = previewCollector();
+      preview.observe(event({ text: "untrusted", updateMeta: meta }));
+      preview.observe(event({ text: "unphased after marker" }));
+      preview.finish("end_turn");
+      expect(commentary).toEqual([]);
+      expect(chunks.join("")).toBe("");
+    }
   });
 
   it("rejects commentary outside the unsuppressed root live session", () => {
@@ -243,7 +286,7 @@ describe("Codex ACP invocation", () => {
 
 describe("Codex ACP phase-aware final delivery", () => {
   function fixture(
-    updates: Array<{ channel: "live" | "replay"; phase?: "commentary" | "final_answer" | "bogus"; omitMeta?: boolean; text: string }>,
+    updates: Array<{ channel: "live" | "replay"; phase?: "commentary" | "final_answer" | "bogus"; metaStyle?: "air" | "legacy"; omitMeta?: boolean; text: string }>,
     stopReason = "end_turn",
   ): Parameters<typeof toCliResult>[0] {
     const observed = updates.map((u) => ({
@@ -253,7 +296,11 @@ describe("Codex ACP phase-aware final delivery", () => {
         update: {
           sessionUpdate: "agent_message_chunk" as const,
           content: { type: "text" as const, text: u.text },
-          ...(u.phase !== undefined ? { _meta: { codex: { phase: u.phase } } } : {}),
+          ...(u.phase !== undefined ? {
+            _meta: u.metaStyle === "air"
+              ? { jetbrains: { air: { version: 1, phase: u.phase } } }
+              : { codex: { phase: u.phase } },
+          } : {}),
         },
       },
     }));
@@ -270,6 +317,20 @@ describe("Codex ACP phase-aware final delivery", () => {
       initialize: { protocolVersion: 1, agentCapabilities: {} } as any,
     } as any;
   }
+
+  it("selects only the final answer for real adapter-shaped AIR metadata", () => {
+    const result = fixture([
+      { channel: "live", phase: "commentary", text: "Checking...", metaStyle: "air" },
+      { channel: "live", phase: "final_answer", text: "Verified.", metaStyle: "air" },
+    ]);
+    expect(toCliResult(result).text).toBe("Verified.");
+  });
+
+  it("fails closed when AIR metadata is malformed and no final_answer follows", () => {
+    const invalid = fixture([{ channel: "live", text: "preliminary update" }]) as any;
+    invalid.updates[0].notification.update._meta = { jetbrains: { air: { version: 9, phase: "commentary" } } };
+    expect(() => toCliResult(invalid)).toThrow(/final_answer/);
+  });
 
   it("excludes commentary-phase chunks from the final delivered answer", () => {
     const result = toCliResult(fixture([
