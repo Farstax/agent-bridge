@@ -146,7 +146,7 @@ describe("Codex ACP provisional answer classification", () => {
     expect([...lastByKey.values()]).toEqual(messages);
     expect([...lastByKey.keys()]).toHaveLength(7);
     expect(records.every(({ text }) => text.length > 0 && text.length <= 280
-      && !/[\\u0000-\\u001f\\u007f\\u2028\\u2029]/.test(text))).toBe(true);
+      && !/[\u0000-\u001f\u007f\u2028\u2029]/.test(text))).toBe(true);
     expect(records.some(({ text }) => text.includes("tool output"))).toBe(false);
     expect(chunks.join("")).toBe("Verified summary.");
   });
