@@ -48,6 +48,7 @@ describe("Codex ACP provisional answer classification", () => {
     channel = "live",
     sessionUpdate = "agent_message_chunk",
     text = "",
+    messageId,
     acpSessionId = "acp-1",
     sessionId = "acp-1",
     presentationSuppressed = false,
@@ -57,6 +58,7 @@ describe("Codex ACP provisional answer classification", () => {
     channel?: "live" | "replay";
     sessionUpdate?: string;
     text?: string;
+    messageId?: string;
     acpSessionId?: string;
     sessionId?: string;
     presentationSuppressed?: boolean;
@@ -66,6 +68,7 @@ describe("Codex ACP provisional answer classification", () => {
     const update: any = sessionUpdate === "agent_message_chunk" || sessionUpdate === "agent_thought_chunk"
       ? { sessionUpdate, content: { type: "text", text } }
       : { sessionUpdate, text };
+    if (messageId !== undefined) update.messageId = messageId;
     if (updateMeta !== undefined) update._meta = updateMeta;
     const notification: any = { sessionId, update };
     if (notificationMeta !== undefined) notification._meta = notificationMeta;
@@ -75,8 +78,12 @@ describe("Codex ACP provisional answer classification", () => {
   function previewCollector(secrets: string[] = []) {
     const chunks: string[] = [];
     const commentary: string[] = [];
-    const preview = createCodexAcpAnswerPreview((text) => chunks.push(text), secrets, (text) => commentary.push(text));
-    return { chunks, commentary, preview };
+    const records: Array<{ text: string; key?: string }> = [];
+    const preview = createCodexAcpAnswerPreview((text) => chunks.push(text), secrets, (text, key) => {
+      commentary.push(text);
+      records.push({ text, key });
+    });
+    return { chunks, commentary, records, preview };
   }
 
   it("previews unphased live agent messages", () => {
@@ -112,9 +119,47 @@ describe("Codex ACP provisional answer classification", () => {
     preview.observe(event({ text: "Confirming result.", updateMeta: air("commentary") }));
     preview.observe(event({ text: "Verified result.", updateMeta: air("final_answer") }));
     preview.finish("end_turn");
-    expect(commentary.at(-1)).toBe("Checking workspace.\n\nConfirming result.");
+    expect(commentary.at(-1)).toBe("Confirming result.");
     expect(chunks.join("")).toBe("Verified result.");
     expect(commentary.join(" ")).not.toContain("sensitive tool input");
+  });
+
+  it("streams seven independent, individually keyed Codex progress messages before one final", () => {
+    const { chunks, records, preview } = previewCollector();
+    const air = (phase: string) => ({ jetbrains: { air: { version: 1, phase } } });
+    const messages = [
+      "Checking UTC time.", "Listing workspace entries.", "Counting directories.",
+      "Finding the README.", "Reading the README.", "Checking file totals.",
+      "Preparing the summary.",
+    ];
+    for (const [i, message] of messages.entries()) {
+      const messageId = "codex-progress-" + (i + 1);
+      const mid = Math.floor(message.length / 2);
+      preview.observe(event({ messageId, text: message.slice(0, mid), updateMeta: air("commentary") }));
+      preview.observe(event({ messageId, text: message.slice(mid), updateMeta: air("commentary") }));
+      preview.observe(event({ sessionUpdate: "tool_call", text: "tool output must never appear" }));
+    }
+    preview.observe(event({ messageId: "codex-final", text: "Verified summary.", updateMeta: air("final_answer") }));
+    preview.finish("end_turn");
+
+    const lastByKey = new Map(records.map(({ text, key }) => [key, text]));
+    expect([...lastByKey.values()]).toEqual(messages);
+    expect([...lastByKey.keys()]).toHaveLength(7);
+    expect(records.every(({ text }) => text.length > 0 && text.length <= 280
+      && !/[\u0000-\u001f\u007f\u2028\u2029]/.test(text))).toBe(true);
+    expect(records.some(({ text }) => text.includes("tool output"))).toBe(false);
+    expect(chunks.join("")).toBe("Verified summary.");
+  });
+
+  it("does not flush partial secret prefixes across commentary message boundaries", () => {
+    const { records, preview } = previewCollector(["secret-credential-123"]);
+    const air = { jetbrains: { air: { version: 1, phase: "commentary" } } };
+    preview.observe(event({ messageId: "one", text: "Preparing secret-", updateMeta: air }));
+    preview.observe(event({ sessionUpdate: "tool_call", text: "tool" }));
+    preview.observe(event({ messageId: "two", text: "Next safe update.", updateMeta: air }));
+    preview.finish("end_turn");
+    expect(records.at(-1)?.text).toBe("Next safe update.");
+    expect(records.map(({ text }) => text).join(" ")).not.toContain("secret-");
   });
 
   it("fails closed for malformed or conflicting AIR phase metadata", () => {

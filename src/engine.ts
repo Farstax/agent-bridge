@@ -185,7 +185,7 @@ export interface SurfaceNeutralTurnInput {
   /** Only provider-qualified, redacted provisional answer text; not raw progress. */
   onAnswerDelta?: (text: string) => void;
   /** Only provider-qualified, redacted interim commentary; not raw progress. */
-  onInterimCommentary?: (text: string | null) => void;
+  onInterimCommentary?: (text: string | null, messageKey?: string) => void;
   /** Outward ACP owns generated files; never send them through a messaging client. */
   onOutputArtifacts?: (outDir: string) => Promise<{ retained: number; discarded: number }>;
   /** Per-Run provider recovery evidence for durable capacity decisions. */
@@ -2297,7 +2297,7 @@ export class BridgeEngine {
             onProgress,
             onProviderOutputChunk: (body as { onProviderOutputChunk?: (chunk: string) => void }).onProviderOutputChunk,
             onAnswerDelta: (body as { onAnswerDelta?: (text: string) => void }).onAnswerDelta,
-            onInterimCommentary: (body as { onInterimCommentary?: (text: string | null) => void }).onInterimCommentary,
+            onInterimCommentary: (body as { onInterimCommentary?: (text: string | null, messageKey?: string) => void }).onInterimCommentary,
             chatId: executionLane,
             stdin: invocation.stdin,
             contextEnv: promptForCli.contextEnv,

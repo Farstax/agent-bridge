@@ -428,7 +428,9 @@ describe("outward ACP prompt execution", () => {
         db, providerChain: ["codex"] as const, runId: () => "run-commentary",
         createEngine: () => ({
           executeSurfaceNeutralTurn: async (input) => {
-            input.onInterimCommentary?.("Reading the router configuration.");
+            input.onInterimCommentary?.("Reading the router", "1");
+            input.onInterimCommentary?.("Reading the router configuration.", "1");
+            input.onInterimCommentary?.("Checking the workspace.", "2");
             input.onInterimCommentary?.(null);
             input.onInterimCommentary?.("x".repeat(281));
             return { text: "authoritative answer", sessionId: "provider-commentary", stopReason: "end_turn" };
@@ -454,11 +456,15 @@ describe("outward ACP prompt execution", () => {
         content: { type: "text", text: "" },
         _meta: { "agent-bridge/interim-commentary": { id: "1", text: "Reading the router configuration." } },
       });
-      expect(updates.map(({ update }) => update)).toContainEqual({
-        sessionUpdate: "agent_message_chunk",
-        content: { type: "text", text: "" },
-        _meta: { "agent-bridge/interim-commentary": { clear: 1 } },
-      });
+      const interim = updates
+        .map(({ update }) => (update as any)._meta?.["agent-bridge/interim-commentary"])
+        .filter((marker) => marker !== undefined);
+      expect(interim).toEqual([
+        { id: "1", text: "Reading the router" },
+        { id: "1", text: "Reading the router configuration." },
+        { id: "2", text: "Checking the workspace." },
+        { clear: 1 },
+      ]);
       expect(JSON.stringify(updates)).not.toContain("x".repeat(281));
       expect(db.getRecentConvTurns("acp:commentary", 5, undefined, OUTWARD_ACP_SURFACE)
         .map((turn) => turn.text)).toEqual(["hello", "authoritative answer"]);
