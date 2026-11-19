@@ -87,7 +87,7 @@ export interface AcpProviderPolicy {
     readonly createPreview?: (
       onAnswerDelta: (text: string) => void,
       secrets: readonly string[],
-      onCommentary?: (text: string) => void,
+      onCommentary?: (text: string, messageKey?: string) => void,
     ) => AcpAnswerPreview;
   };
   /** Provider-owned child environment policy applied by the shared supervisor path. */

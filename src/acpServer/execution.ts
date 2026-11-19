@@ -1029,7 +1029,7 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
           previewEmitted = true;
           enqueueUpdate({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: delta } });
         } : undefined,
-        onInterimCommentary: input.interimCommentary === true ? (text) => {
+        onInterimCommentary: input.interimCommentary === true ? (text, messageKey) => {
           if (text === null) { resetCommentary(); return; }
           if (active?.cancelRequested || input.signal.aborted || text.length === 0 || text.length > 280
             || /[\u0000-\u001f\u007f\u2028\u2029]/.test(text)) return;
@@ -1037,7 +1037,7 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
           enqueueUpdate({
             sessionUpdate: "agent_message_chunk",
             content: { type: "text", text: "" },
-            _meta: { "agent-bridge/interim-commentary": { id: "1", text } },
+            _meta: { "agent-bridge/interim-commentary": { id: messageKey ?? "1", text } },
           } as OutwardUpdate);
         } : undefined,
         onProviderRecoveryDecision: (reason, exhausted, transition) => {

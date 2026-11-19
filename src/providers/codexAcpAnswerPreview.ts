@@ -1,5 +1,5 @@
 import type { AcpRetainedEvent } from "../acp/client.js";
-import { createLogicalPreviewTextStream } from "../acp/logicalMessages.js";
+import { AcpLogicalMessageReconstructor, createLogicalPreviewTextStream } from "../acp/logicalMessages.js";
 import { createStreamingSecretRedactor } from "./streamingSecretRedactor.js";
 
 type MetaCarrier = { _meta?: unknown };
@@ -56,21 +56,23 @@ export interface CodexAcpAnswerPreview {
 export function createCodexAcpAnswerPreview(
   onAnswerDelta: (text: string) => void,
   secrets: readonly string[],
-  onCommentary?: (text: string) => void,
+  onCommentary?: (text: string, messageKey?: string) => void,
 ): CodexAcpAnswerPreview {
   const redactor = createStreamingSecretRedactor(secrets);
-  const commentaryRedactor = createStreamingSecretRedactor(secrets);
+  let commentaryRedactor = createStreamingSecretRedactor(secrets);
   let phaseSemanticsSeen = false;
   let allowChunk = false;
   let commentaryText = "";
+  let commentaryKey: string | undefined;
   let allowCommentary = false;
   const nextText = createLogicalPreviewTextStream({
     groupOf: (update) => codexAcpUpdatePhase(update),
     accept: () => allowChunk,
   });
-  const nextCommentary = createLogicalPreviewTextStream({
+  // Reuse ACP message boundaries, but never concatenate distinct commentary
+  // messages into a single snapshot (the outward marker is single-line).
+  const commentaryMessages = new AcpLogicalMessageReconstructor({
     groupOf: (update) => codexAcpUpdatePhase(update),
-    accept: () => allowCommentary,
   });
 
   const emit = (text: string): void => {
@@ -120,12 +122,19 @@ export function createCodexAcpAnswerPreview(
       }
       const text = nextText(update);
       if (text) emit(text);
-      const commentaryDelta = nextCommentary(update);
-      if (commentaryDelta) {
-        const safe = commentaryRedactor.push(commentaryDelta);
+      const fragment = commentaryMessages.observe(update);
+      if (fragment?.startsMessage) {
+        // Do not flush a pending secret prefix across message boundaries.
+        commentaryRedactor = createStreamingSecretRedactor(secrets);
+        commentaryText = "";
+        commentaryKey = undefined;
+      }
+      if (fragment && allowCommentary) {
+        commentaryKey ??= String(fragment.messageIndex + 1);
+        const safe = commentaryRedactor.push(fragment.text);
         if (safe) {
           commentaryText += safe;
-          onCommentary?.(commentaryText);
+          onCommentary?.(commentaryText, commentaryKey);
         }
       }
     },
@@ -139,7 +148,7 @@ export function createCodexAcpAnswerPreview(
       const safeCommentary = commentaryRedactor.flush();
       if (safeCommentary) {
         commentaryText += safeCommentary;
-        onCommentary?.(commentaryText);
+        if (commentaryKey) onCommentary?.(commentaryText, commentaryKey);
       }
     },
   };
