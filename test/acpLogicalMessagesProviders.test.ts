@@ -146,11 +146,11 @@ describe("Grok structural interim commentary (OSS #1262)", () => {
   });
 
   it("retains ineligible multiline or oversized pre-tool text in the final answer", () => {
-    for (const preamble of ["Line one.\\nLine two.", "x".repeat(281), "```ts inline```"]) {
+    for (const preamble of ["Line one.\nLine two.", "x".repeat(281), "```ts inline```"]) {
       const updates = [say(preamble), tool(), say("Final.")];
       const { commentary, previewText, selected } = exercise(updates);
       expect(commentary).toEqual([]);
-      expect(selected).toBe(preamble + "\\n\\nFinal.");
+      expect(selected).toBe(preamble + "\n\nFinal.");
       expect(previewText).toBe(selected);
     }
   });
