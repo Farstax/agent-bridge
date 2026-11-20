@@ -81,8 +81,14 @@ function createGrokMessageSelection() {
       let interim: { text: string; key: string } | null = null;
       if (fragment.startsMessage && fragment.messageIndex > 0 && toolBetweenMessages) {
         const preceding = fragment.messageIndex - 1;
-        interimIndices.add(preceding);
-        interim = { text: logical.messages[preceding]!.text, key: String(preceding + 1) };
+        const text = logical.messages[preceding]!.text;
+        // Classify only messages the unchanged Desk marker can actually carry.
+        // An ineligible message must remain authoritative, not disappear.
+        if (preceding < 12 && text.length > 0 && text.length <= 280
+          && !/[\u0000-\u001f\u007f\u2028\u2029]/.test(text) && !text.includes("```")) {
+          interimIndices.add(preceding);
+          interim = { text, key: String(preceding + 1) };
+        }
       }
       // A tool inside one messageId is not a boundary; never classify from it.
       toolBetweenMessages = false;

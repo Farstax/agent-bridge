@@ -8,7 +8,8 @@ import { liveDeliveryText, type AcpObservedUpdate } from "../src/acp/replay.js";
 import type { AcpRetainedEvent } from "../src/acp/client.js";
 import { createCodexAcpAnswerPreview } from "../src/providers/codexAcpAnswerPreview.js";
 import { createClaudeAcpAnswerPreview } from "../src/providers/claudeAcpPolicy.js";
-import { createGrokAcpAnswerPreview, selectGrokAcpAnswer } from "../src/providers/grokAcpPolicy.js";
+import { createGrokAcpAnswerPreview, grokAcpPolicy, selectGrokAcpAnswer } from "../src/providers/grokAcpPolicy.js";
+import { acpTurnResultToCliResult } from "../src/providers/acpRuntime.js";
 import { selectCodexAcpAnswer } from "../src/providers/codexAcpPolicy.js";
 import type { AcpTurnResult } from "../src/acp/client.js";
 
@@ -101,6 +102,11 @@ describe("Grok structural interim commentary (OSS #1262)", () => {
     expect(commentary).toEqual([{ key: "1", text: "Reading the file." }]);
     expect(previewText).toBe("Step two done.");
     expect(selected).toBe(previewText);
+    const result = {
+      updates: observed(fixture.updates), acpSessionId: "root",
+      liveText: fixture.expected, stopReason: "end_turn",
+    } as AcpTurnResult;
+    expect(acpTurnResultToCliResult("grok", result, grokAcpPolicy).text).toBe(previewText);
     // The standard protocol reconstruction remains unchanged for other surfaces.
     expect(liveDeliveryText(observed(fixture.updates), "root")).toBe(fixture.expected);
   });
@@ -136,6 +142,16 @@ describe("Grok structural interim commentary (OSS #1262)", () => {
       expect(commentary).toEqual([]);
       expect(previewText).toBe(liveDeliveryText(observed(updates), "root"));
       expect(selected).toBe(previewText);
+    }
+  });
+
+  it("retains ineligible multiline or oversized pre-tool text in the final answer", () => {
+    for (const preamble of ["Line one.\\nLine two.", "x".repeat(281), "```ts inline```"]) {
+      const updates = [say(preamble), tool(), say("Final.")];
+      const { commentary, previewText, selected } = exercise(updates);
+      expect(commentary).toEqual([]);
+      expect(selected).toBe(preamble + "\\n\\nFinal.");
+      expect(previewText).toBe(selected);
     }
   });
 
