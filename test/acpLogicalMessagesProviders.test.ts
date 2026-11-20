@@ -160,6 +160,14 @@ describe("Grok structural interim commentary (OSS #1262)", () => {
     expect(selected).toBe("Completed.");
   });
 
+  it("never flushes a secret prefix from a completed interim message", () => {
+    const partial = [say("Checking secret-"), tool(), say("Final answer.")];
+    const { commentary, previewText } = exercise(partial, ["secret-credential-123"]);
+    expect(commentary).toEqual([{ key: "1", text: "Checking " }]);
+    expect(JSON.stringify(commentary)).not.toContain("secret-");
+    expect(previewText).toBe("Final answer.");
+  });
+
   it("ignores replay, child and presentation-suppressed events", () => {
     const commentary: string[] = [];
     const answer: string[] = [];

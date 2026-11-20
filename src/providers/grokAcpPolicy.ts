@@ -129,7 +129,9 @@ export function createGrokAcpAnswerPreview(
       if (!isLiveRootGrokUpdate(event)) return;
       const interim = selection.observe(event.notification.update);
       if (interim && onCommentary) {
-        const safe = redact(interim.text);
+        // A closed interim message must not flush a still-buffered credential
+        // prefix: the next message may complete the secret.
+        const safe = createStreamingSecretRedactor(secrets).push(interim.text);
         if (safe) onCommentary(safe, interim.key);
       }
     },
