@@ -1,9 +1,13 @@
 import { existsSync } from "node:fs";
+import type { SessionUpdate } from "@agentclientprotocol/sdk/unstable";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { acpSessionConfigIntents } from "../acp/sessionConfig.js";
+import { AcpLogicalMessageReconstructor, renderLogicalMessages } from "../acp/logicalMessages.js";
+import type { AcpRetainedEvent, AcpTurnResult } from "../acp/client.js";
 import { runAcpApiKeyProbe } from "./acpAuthProbe.js";
-import type { AcpProviderPolicy, AcpProviderSessionSettings } from "./acpRuntime.js";
+import type { AcpAnswerPreview, AcpProviderPolicy, AcpProviderSessionSettings } from "./acpRuntime.js";
+import { createStreamingSecretRedactor } from "./streamingSecretRedactor.js";
 import { resolveGrokAcpArgs, resolveGrokAcpCommand } from "./grokAcpConfig.js";
 import type { ProviderInvocationRequest } from "./types.js";
 
@@ -56,6 +60,97 @@ function sessionSettings(
   return config.length > 0 ? { config } : {};
 }
 
+/**
+ * Grok does not supply commentary phases or message IDs. Its observed ordinary
+ * Runs put a progress message before a tool, then start a new answer message.
+ * A tool alone is not enough: classify the earlier message only once the next
+ * logical assistant message actually begins. Otherwise preserve the full answer.
+ *
+ * This is Grok policy, not a provider-neutral inference from arbitrary prose.
+ */
+function createGrokMessageSelection() {
+  const logical = new AcpLogicalMessageReconstructor();
+  const interimIndices = new Set<number>();
+  let toolBetweenMessages = false;
+  return {
+    observe(update: SessionUpdate): { text: string; key: string } | null {
+      if ((update.sessionUpdate === "tool_call" || update.sessionUpdate === "tool_call_update")
+        && logical.messages.length > 0) toolBetweenMessages = true;
+      const fragment = logical.observe(update);
+      if (!fragment) return null;
+      let interim: { text: string; key: string } | null = null;
+      if (fragment.startsMessage && fragment.messageIndex > 0 && toolBetweenMessages) {
+        const preceding = fragment.messageIndex - 1;
+        const text = logical.messages[preceding]!.text;
+        // Classify only messages the unchanged Desk marker can actually carry.
+        // An ineligible message must remain authoritative, not disappear.
+        if (preceding < 12 && text.length > 0 && text.length <= 280
+          && !/[\u0000-\u001f\u007f\u2028\u2029]/.test(text) && !text.includes("```")) {
+          interimIndices.add(preceding);
+          interim = { text, key: String(preceding + 1) };
+        }
+      }
+      // A tool inside one messageId is not a boundary; never classify from it.
+      toolBetweenMessages = false;
+      return interim;
+    },
+    answer(): string {
+      return renderLogicalMessages(logical.messages.filter((_, index) => !interimIndices.has(index)));
+    },
+  };
+}
+
+function isLiveRootGrokUpdate(event: AcpRetainedEvent): event is AcpRetainedEvent & { notification: NonNullable<AcpRetainedEvent["notification"]> } {
+  return event.kind === "session_update" && event.channel === "live" && !event.presentationSuppressed
+    && event.notification !== undefined
+    && (!event.acpSessionId || event.notification.sessionId === event.acpSessionId);
+}
+
+/** Share exact boundary/authority semantics between provisional and final Grok text. */
+export function selectGrokAcpAnswer(result: AcpTurnResult): { text: string; missingDescription: string } {
+  const selection = createGrokMessageSelection();
+  for (const event of result.updates ?? []) {
+    if (event.channel === "live" && event.notification.sessionId === result.acpSessionId) {
+      selection.observe(event.notification.update);
+    }
+  }
+  return {
+    text: selection.answer() || result.liveText,
+    missingDescription: "live answer text",
+  };
+}
+
+export function createGrokAcpAnswerPreview(
+  onAnswerDelta: (text: string) => void,
+  secrets: readonly string[],
+  onCommentary?: (text: string, messageKey?: string) => void,
+): AcpAnswerPreview {
+  const selection = createGrokMessageSelection();
+  const redact = (text: string): string => {
+    const redactor = createStreamingSecretRedactor(secrets);
+    return redactor.push(text) + redactor.flush();
+  };
+  return {
+    observe(event): void {
+      if (!isLiveRootGrokUpdate(event)) return;
+      const interim = selection.observe(event.notification.update);
+      if (interim && onCommentary) {
+        // A closed interim message must not flush a still-buffered credential
+        // prefix: the next message may complete the secret.
+        const safe = createStreamingSecretRedactor(secrets).push(interim.text);
+        if (safe) onCommentary(safe, interim.key);
+      }
+    },
+    finish(stopReason): void {
+      if (stopReason === "cancelled") return;
+      // The last message is not known to be final until settlement. Never
+      // show an ambiguous pre-tool fragment as an irreversible answer preview.
+      const safe = redact(selection.answer());
+      if (safe) onAnswerDelta(safe);
+    },
+  };
+}
+
 const GROK_QUALIFICATION_ENV_KEYS = [
   "GROK_ACP_COMMAND",
   "GROK_ACP_ARGS",
@@ -78,7 +173,9 @@ export const grokAcpPolicy: AcpProviderPolicy = {
   steeringSupported: false,
   presentation: {
     provisionalAnswers: true,
+    createPreview: createGrokAcpAnswerPreview,
   },
+  selectAnswer: selectGrokAcpAnswer,
   resolveExecutable: resolveGrokAcpCommand,
   resolveArgs: (env, entry) => resolveGrokAcpArgs(env, entry),
   qualificationEnvKeys: GROK_QUALIFICATION_ENV_KEYS,
