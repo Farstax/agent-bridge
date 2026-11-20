@@ -8,6 +8,7 @@ import { liveDeliveryText, type AcpObservedUpdate } from "../src/acp/replay.js";
 import type { AcpRetainedEvent } from "../src/acp/client.js";
 import { createCodexAcpAnswerPreview } from "../src/providers/codexAcpAnswerPreview.js";
 import { createClaudeAcpAnswerPreview } from "../src/providers/claudeAcpPolicy.js";
+import { createGrokAcpAnswerPreview, selectGrokAcpAnswer } from "../src/providers/grokAcpPolicy.js";
 import { selectCodexAcpAnswer } from "../src/providers/codexAcpPolicy.js";
 import type { AcpTurnResult } from "../src/acp/client.js";
 
@@ -64,5 +65,126 @@ describe("provider-shaped fixtures", () => {
       (update as { _meta?: { codex?: { phase?: string } } })._meta?.codex?.phase !== "final_answer");
     const result = { updates: observed(only), acpSessionId: "root", liveText: "commentary" } as unknown as AcpTurnResult;
     expect(selectCodexAcpAnswer(result).text).toBe("");
+  });
+});
+
+
+describe("Grok structural interim commentary (OSS #1262)", () => {
+  const say = (text: string, messageId?: string): SessionUpdate => ({
+    sessionUpdate: "agent_message_chunk", content: { type: "text", text },
+    ...(messageId ? { messageId } : {}),
+  } as SessionUpdate);
+  const tool = (): SessionUpdate => ({
+    sessionUpdate: "tool_call", toolCallId: "step", title: "Run",
+    status: "pending",
+  } as SessionUpdate);
+  const thought = (): SessionUpdate => ({
+    sessionUpdate: "agent_thought_chunk", content: { type: "text", text: "private reasoning" },
+  } as SessionUpdate);
+  function exercise(updates: SessionUpdate[], secrets: string[] = []) {
+    const commentary: Array<{ text: string; key?: string }> = [];
+    const previewText: string[] = [];
+    const preview = createGrokAcpAnswerPreview((text) => previewText.push(text), secrets,
+      (text, key) => commentary.push({ text, key }));
+    for (const update of updates) preview.observe(retained(update));
+    preview.finish("end_turn");
+    const result = {
+      updates: observed(updates), acpSessionId: "root",
+      liveText: liveDeliveryText(observed(updates), "root"), stopReason: "end_turn",
+    } as AcpTurnResult;
+    return { commentary, previewText: previewText.join(""), selected: selectGrokAcpAnswer(result).text };
+  }
+
+  it("uses the recorded Grok tool boundary; retains only the later answer", () => {
+    const fixture = fixtures.find((entry) => entry.provider === "grok")!;
+    const { commentary, previewText, selected } = exercise(fixture.updates);
+    expect(commentary).toEqual([{ key: "1", text: "Reading the file." }]);
+    expect(previewText).toBe("Step two done.");
+    expect(selected).toBe(previewText);
+    // The standard protocol reconstruction remains unchanged for other surfaces.
+    expect(liveDeliveryText(observed(fixture.updates), "root")).toBe(fixture.expected);
+  });
+
+  it("emits two independently keyed messages before a separate final answer", () => {
+    const updates = [
+      say("Checking files."), tool(), say("Reading README."), tool(), say("Verified final."),
+    ];
+    const { commentary, previewText, selected } = exercise(updates);
+    expect(commentary).toEqual([
+      { key: "1", text: "Checking files." },
+      { key: "2", text: "Reading README." },
+    ]);
+    expect(previewText).toBe("Verified final.");
+    expect(selected).toBe("Verified final.");
+  });
+
+  it("does not discard an answer when a tool has no subsequent message", () => {
+    const updates = [say("Answer before tool."), tool()];
+    const { commentary, previewText, selected } = exercise(updates);
+    expect(commentary).toEqual([]);
+    expect(previewText).toBe("Answer before tool.");
+    expect(selected).toBe(previewText);
+  });
+
+  it("keeps a single answer and multiple messages without a tool unchanged", () => {
+    for (const updates of [
+      [say("Only answer.")],
+      [say("First.", "a"), say("Second.", "b")],
+      [say("First."), thought(), say("Second.")],
+    ]) {
+      const { commentary, previewText, selected } = exercise(updates);
+      expect(commentary).toEqual([]);
+      expect(previewText).toBe(liveDeliveryText(observed(updates), "root"));
+      expect(selected).toBe(previewText);
+    }
+  });
+
+  it("does not infer a tool boundary when one messageId spans the tool", () => {
+    const updates = [say("The ", "a"), tool(), say("answer.", "a")];
+    const { commentary, previewText, selected } = exercise(updates);
+    expect(commentary).toEqual([]);
+    expect(previewText).toBe("The answer.");
+    expect(selected).toBe(previewText);
+  });
+
+  it("redacts a provider secret across chunk boundaries without leaking tool/thought text", () => {
+    const secret = "secret-credential-123";
+    const updates = [
+      say("Checking secret-"), say("credential-"), say("123 now."),
+      thought(), tool(), say("Completed."),
+    ];
+    const { commentary, selected } = exercise(updates, [secret]);
+    expect(commentary).toEqual([{ key: "1", text: "Checking [REDACTED_PROVIDER_CREDENTIAL] now." }]);
+    expect(JSON.stringify(commentary)).not.toContain(secret);
+    expect(JSON.stringify(commentary)).not.toContain("private reasoning");
+    expect(selected).toBe("Completed.");
+  });
+
+  it("ignores replay, child and presentation-suppressed events", () => {
+    const commentary: string[] = [];
+    const answer: string[] = [];
+    const preview = createGrokAcpAnswerPreview((text) => answer.push(text), [],
+      (text) => commentary.push(text));
+    const discarded = say("Sensitive child/replay.");
+    preview.observe({ ...retained(discarded), channel: "replay" });
+    preview.observe({
+      ...retained(discarded),
+      notification: { sessionId: "child", update: discarded } as SessionNotification,
+    });
+    preview.observe({ ...retained(discarded), presentationSuppressed: true });
+    for (const update of [say("Visible commentary."), tool(), say("Visible final.")]) {
+      preview.observe(retained(update));
+    }
+    preview.finish("end_turn");
+    expect(commentary).toEqual(["Visible commentary."]);
+    expect(answer.join("")).toBe("Visible final.");
+  });
+
+  it("does not flush buffered final text after cancellation", () => {
+    const answer: string[] = [];
+    const preview = createGrokAcpAnswerPreview((text) => answer.push(text), []);
+    preview.observe(retained(say("Unfinished text.")));
+    preview.finish("cancelled");
+    expect(answer).toEqual([]);
   });
 });
