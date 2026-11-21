@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
@@ -270,8 +270,16 @@ describe("outward ACP commands", () => {
     });
   }
 
-  it("requires confirmation for /reset and clears history under the lane", async () => {
-    const { run, app, db } = setup();
+  it("requires confirmation for /reset and clears history but not persistent shared/Workstream context", async () => {
+    const { run, app, db, root } = setup();
+    const shared = join(root, ".agent-bridge/context/shared");
+    const workstream = join(root, ".agent-bridge/context/workstreams/s1");
+    mkdirSync(shared, { recursive: true });
+    mkdirSync(workstream, { recursive: true });
+    const sharedFile = join(shared, "README.md");
+    const workstreamFile = join(workstream, "README.md");
+    writeFileSync(sharedFile, "company context persists");
+    writeFileSync(workstreamFile, "workstream context persists");
     await connectWithAcpInitialization(acp.client({ name: "t" }), app, (agent) =>
       agent.request(acp.methods.agent.session.prompt, { sessionId: "s1", prompt: [{ type: "text", text: "hello" }] }));
     expect(db.getConvStatus("acp:c1", OUTWARD_ACP_SURFACE).turnCount).toBe(2);
@@ -279,6 +287,8 @@ describe("outward ACP commands", () => {
     expect(db.getConvStatus("acp:c1", OUTWARD_ACP_SURFACE).turnCount).toBe(2);
     expect((await run({ command: "reset", confirm: true })).text).toContain("session reset");
     expect(db.getConvStatus("acp:c1", OUTWARD_ACP_SURFACE).turnCount).toBe(0);
+    expect(readFileSync(sharedFile, "utf8")).toBe("company context persists");
+    expect(readFileSync(workstreamFile, "utf8")).toBe("workstream context persists");
   });
 
   it("switches provider through /cli options and rejects tokens that were not offered", async () => {

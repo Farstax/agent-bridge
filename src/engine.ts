@@ -59,7 +59,7 @@ import { resolveAcpTelegramConfigCallback } from "./acp/telegramConfigCallback.j
 import { getCodexUsageText } from "./codexUsage.js";
 import { clearHandoffRequired, isProviderFallbackHandoffRequired, markHandoffRequired } from "./handoffState.js";
 import { deriveConversationOwnerKey } from "./conversationOwnerKey.js";
-import { prependWorkspaceContext } from "./workspaceContext.js";
+import { contextSourcesSignpost, prependWorkspaceContext } from "./workspaceContext.js";
 import { conversationDirectoryPath, conversationDirectorySettingKey, ensureConversationDirectory } from "./conversationDirectory.js";
 import type { BridgeEvent } from "./events/types.js";
 import { type as eventType } from "./events/types.js";
@@ -192,6 +192,8 @@ export interface SurfaceNeutralTurnInput {
   onProviderRecoveryDecision?: (reason: ProviderFallbackReason | null, exhausted: boolean, transition?: { fromProvider: BotKind; toProvider: BotKind }) => void;
   /** Trusted, request-authorised Desk Workstream for ordinary outcomes/continuations. */
   ordinaryWorkstreamId?: string;
+  /** Stable, workspace-owned Workstream ID for optional on-demand context sources. */
+  contextWorkstreamId?: string;
   /** A claimed ordinary wake must not silently abandon its bound native session. */
   requireBoundProviderSession?: boolean;
 }
@@ -2007,7 +2009,7 @@ export class BridgeEngine {
     };
   }
 
-  private async _buildPromptForCli(chatKey: string, prompt: string, nativeSessionMode: "fresh" | "resume", model: string | null, runId: string | null, executionKind: RouteableBotKind, chatId?: number | string, threadId?: number | string, laneHandle?: ExecutionLaneHandle, outcomeEligible = false, ordinaryWorkstreamId?: string): Promise<{ prompt: string; contextEnv?: Record<string, string>; soulContext: string | null; includeResponseContract: boolean }> {
+  private async _buildPromptForCli(chatKey: string, prompt: string, nativeSessionMode: "fresh" | "resume", model: string | null, runId: string | null, executionKind: RouteableBotKind, chatId?: number | string, threadId?: number | string, laneHandle?: ExecutionLaneHandle, outcomeEligible = false, ordinaryWorkstreamId?: string, contextWorkstreamId?: string): Promise<{ prompt: string; contextEnv?: Record<string, string>; soulContext: string | null; includeResponseContract: boolean }> {
     const contextMode = this._contextMode(chatKey, nativeSessionMode);
     const includeFreshContext = contextMode !== "resume";
     const contextPrompt = this._buildRecentContextPrompt(chatKey, prompt, contextMode);
@@ -2027,8 +2029,10 @@ export class BridgeEngine {
       ? prependProviderFallbackContinuation(workspacePrompt)
       : workspacePrompt;
     const handoffPrompt = includeFreshContext ? prependHandoffModel(fallbackPrompt, model) : fallbackPrompt;
+    const sourceSignpost = contextSourcesSignpost(process.env, contextWorkstreamId);
+    const promptWithSources = sourceSignpost ? `${sourceSignpost}\n\n${handoffPrompt}` : handoffPrompt;
     const soulContext = includeFreshContext ? this.opts.soulContext ?? null : null;
-    if (!access) return { prompt: handoffPrompt, soulContext, includeResponseContract: includeFreshContext };
+    if (!access) return { prompt: promptWithSources, soulContext, includeResponseContract: includeFreshContext };
     // #972: the helper signpost on every Run, plus the full notes once per fresh
     // native session. Autonomous Runs get no execution contract, so their fresh
     // session carries the scratchpad guidance here.
@@ -2043,8 +2047,8 @@ export class BridgeEngine {
     ].join("");
     return {
       prompt: includeFreshContext
-        ? `${access.prompt}${access.continuationPrompt}${scratchPrompt}${handoffPrompt}`
-        : `${access.continuationPrompt}${scratchPrompt}${handoffPrompt}`,
+        ? `${access.prompt}${access.continuationPrompt}${scratchPrompt}${promptWithSources}`
+        : `${access.continuationPrompt}${scratchPrompt}${promptWithSources}`,
       contextEnv: access.env,
       soulContext,
       includeResponseContract: includeFreshContext,
@@ -2104,6 +2108,7 @@ export class BridgeEngine {
           onAnswerDelta: input.onAnswerDelta, onInterimCommentary: input.onInterimCommentary, publishArtifacts: false,
           onOutputArtifacts: input.onOutputArtifacts,
           ordinaryWorkstreamId: input.ordinaryWorkstreamId,
+          contextWorkstreamId: input.contextWorkstreamId,
           requireBoundProviderSession: input.requireBoundProviderSession === true },
         () => {},
         input.attachments ?? [],
@@ -2233,6 +2238,8 @@ export class BridgeEngine {
     const isVerificationOnly = (body as { verificationOnly?: boolean }).verificationOnly === true;
     const ordinaryWorkstreamId = this.surfaceIdentity === "acp:outward"
       ? (body as { ordinaryWorkstreamId?: string }).ordinaryWorkstreamId : undefined;
+    const contextWorkstreamId = this.surfaceIdentity === "acp:outward"
+      ? (body as { contextWorkstreamId?: string }).contextWorkstreamId : undefined;
     const authorisedOutcome = this.surfaceIdentity !== "acp:outward" || Boolean(ordinaryWorkstreamId);
     // A negotiated ordinary Desk Run has a durable objective owner even when
     // the ACP adapter does not provide a generated-artifact callback.
@@ -2257,7 +2264,7 @@ export class BridgeEngine {
       outputDir: null,
     }).nativeSessionMode;
     // Read-only verification turns get no scratch helper: its write and clear are mutations.
-    const promptForCli = await this._buildPromptForCli(chatKey, prompt, nativeSessionMode, model, runId, executionKind, chatId, threadId, isVerificationOnly ? undefined : laneHandle, authorisedOutcome && !isVerificationOnly && this.kind !== "autonomous" && dispositionEligible && Boolean(this.opts.fullConfig?.dbPath), ordinaryWorkstreamId);
+    const promptForCli = await this._buildPromptForCli(chatKey, prompt, nativeSessionMode, model, runId, executionKind, chatId, threadId, isVerificationOnly ? undefined : laneHandle, authorisedOutcome && !isVerificationOnly && this.kind !== "autonomous" && dispositionEligible && Boolean(this.opts.fullConfig?.dbPath), ordinaryWorkstreamId, contextWorkstreamId);
     const invocation = buildCliInvocation({
       bot: executionKind,
       command: this.opts.botConfig.command,
@@ -2397,7 +2404,7 @@ export class BridgeEngine {
         ].join("\n");
         const followup = await this._buildPromptForCli(
           chatKey, reconcilePrompt, "resume", model, runId, executionKind,
-          chatId, threadId, laneHandle, true, ordinaryWorkstreamId,
+          chatId, threadId, laneHandle, true, ordinaryWorkstreamId, contextWorkstreamId,
         );
         const followupInvocation = buildCliInvocation({
           bot: executionKind,

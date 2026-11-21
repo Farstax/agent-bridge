@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -56,6 +56,7 @@ function executor(db: BridgeDb, attempts: Attempt[], options: {
   available?: (p: BotKind) => boolean;
   availableProviders?: () => ReadonlySet<BotKind>;
   failCapacityOnce?: BotKind;
+  onContextWorkstreamId?: (value: string | undefined) => void;
 } = {}) {
   let n = 0;
   let capacityPending = options.failCapacityOnce;
@@ -68,6 +69,7 @@ function executor(db: BridgeDb, attempts: Attempt[], options: {
     runId: () => `${prefix}-${++n}`,
     createEngine: (_session, attemptProvider) => ({
       executeSurfaceNeutralTurn: async (input) => {
+        options.onContextWorkstreamId?.(input.contextWorkstreamId);
         const attempt: Attempt = { provider: attemptProvider };
         attempts.push(attempt);
         input.collect(eventType.runStarted({
@@ -108,6 +110,28 @@ async function call<T>(app: ReturnType<typeof createOutwardAcpAgent>, method: st
 }
 
 describe("outward ACP Workstreams (#1101)", () => {
+  it("preserves optional context across Workstream archive/restore and passes stable identity to the Run", async () => {
+    const f = fixture();
+    const seen: Array<string | undefined> = [];
+    const exec = executor(f.db, [], { onContextWorkstreamId: (id) => seen.push(id) });
+    const app = agent(f, { workstreams: exec, promptExecutor: exec });
+    const created = await call<{ sessionId: string }>(app, acp.methods.agent.session.new, { cwd: f.root, mcpServers: [] });
+    const folder = join(f.root, ".agent-bridge/context/workstreams", created.sessionId);
+    mkdirSync(folder, { recursive: true });
+    const contextFile = join(folder, "README.md");
+    writeFileSync(contextFile, "durable context outside resettable conversation");
+
+    await call(app, acp.methods.agent.session.prompt, { sessionId: created.sessionId, prompt: [{ type: "text", text: "First Run" }] });
+    expect(seen).toEqual([created.sessionId]);
+    await call(app, WORKSTREAM_METHODS.update, { sessionId: created.sessionId, cwd: f.root, archived: true });
+    expect(existsSync(contextFile)).toBe(true);
+    await call(app, WORKSTREAM_METHODS.update, { sessionId: created.sessionId, cwd: f.root, archived: false });
+    await call(app, acp.methods.agent.session.prompt, { sessionId: created.sessionId, prompt: [{ type: "text", text: "Second Run" }] });
+    expect(seen).toEqual([created.sessionId, created.sessionId]);
+    expect(existsSync(contextFile)).toBe(true);
+  });
+
+
   it("reads durable continuation state once for a Workstream list", async () => {
     const f = fixture();
     for (let index = 0; index < 60; index += 1) {

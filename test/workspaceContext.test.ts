@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { loadWorkspaceContext, prependWorkspaceContext } from "../src/workspaceContext.js";
+import { contextSourcesSignpost, loadWorkspaceContext, prependWorkspaceContext } from "../src/workspaceContext.js";
 
 describe("workspace context", () => {
   it("loads the platform-owned repository context without exposing unrelated environment values", () => {
@@ -116,5 +116,56 @@ describe("workspace context", () => {
       expect(prompt).toContain("Default branch: main");
       expect(prompt).toMatch(/^\[Managed workspace context\]\nRepository: owner\/repo/);
     } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+});
+
+
+describe("persistent workspace and Workstream context sources (#1264)", () => {
+  it("signposts existing shared and optional Workstream folders without loading their contents", () => {
+    const root = mkdtempSync(join(tmpdir(), "context-sources-"));
+    const shared = join(root, ".agent-bridge/context/shared");
+    const marketing = join(root, ".agent-bridge/context/workstreams/marketing-1");
+    const product = join(root, ".agent-bridge/context/workstreams/product-2");
+    mkdirSync(shared, { recursive: true });
+    mkdirSync(marketing, { recursive: true });
+    mkdirSync(product, { recursive: true });
+    writeFileSync(join(shared, "README.md"), "private company briefing, not a prompt");
+    writeFileSync(join(marketing, "README.md"), "private marketing plans");
+    try {
+      const env = { BRIDGE_PROJECT_DIR: root };
+      const first = contextSourcesSignpost(env, "marketing-1");
+      const second = contextSourcesSignpost(env, "product-2");
+      expect(first).toContain(shared);
+      expect(first).toContain(marketing);
+      expect(first).not.toContain(product);
+      expect(second).toContain(shared);
+      expect(second).toContain(product);
+      expect(second).not.toContain(marketing);
+      expect(first).not.toContain("private company briefing");
+      expect(first).not.toContain("private marketing plans");
+      expect(first).toContain("not instructions, permissions, or authority");
+      expect(contextSourcesSignpost(env)).toContain(shared);
+      expect(contextSourcesSignpost(env)).not.toContain("workstreams/");
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it("fails closed for missing roots, invalid IDs, and context symlinks leaving the workspace", () => {
+    const root = mkdtempSync(join(tmpdir(), "context-root-"));
+    const outside = mkdtempSync(join(tmpdir(), "context-outside-"));
+    const context = join(root, ".agent-bridge/context");
+    mkdirSync(context, { recursive: true });
+    symlinkSync(outside, join(context, "shared"), "dir");
+    mkdirSync(join(context, "workstreams"), { recursive: true });
+    symlinkSync(outside, join(context, "workstreams", "bad"), "dir");
+    try {
+      expect(contextSourcesSignpost({ BRIDGE_PROJECT_DIR: root })).toBe("");
+      expect(contextSourcesSignpost({ BRIDGE_PROJECT_DIR: root }, "bad")).toBe("");
+      expect(contextSourcesSignpost({ BRIDGE_PROJECT_DIR: root }, "../escape")).toBe("");
+      expect(contextSourcesSignpost({ BRIDGE_PROJECT_DIR: "../relative" })).toBe("");
+      expect(contextSourcesSignpost({})).toBe("");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+      rmSync(outside, { recursive: true, force: true });
+    }
   });
 });
