@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
@@ -53,7 +53,12 @@ describe("provider-native context lifecycle", () => {
     const workspaceMarker = "managed-workspace-marker-706";
     writeFileSync(file, `${workspaceMarker}\n`);
     const previousWorkspaceFile = process.env.AGENT_BRIDGE_WORKSPACE_CONTEXT_FILE;
+    const previousProjectDir = process.env.BRIDGE_PROJECT_DIR;
+    const sharedDir = join(dir, ".agent-bridge/context/shared");
+    mkdirSync(sharedDir, { recursive: true });
+    writeFileSync(join(sharedDir, "README.md"), "not-to-be-injected-company-details");
     process.env.AGENT_BRIDGE_WORKSPACE_CONTEXT_FILE = file;
+    process.env.BRIDGE_PROJECT_DIR = dir;
 
     try {
       const capturedPrompts: string[] = [];
@@ -80,9 +85,13 @@ describe("provider-native context lifecycle", () => {
 
       expect(capturedPrompts).toHaveLength(2);
       expect(capturedPrompts[0]).toContain(workspaceMarker);
+      expect(capturedPrompts[0]).toContain(sharedDir);
+      expect(capturedPrompts[0]).not.toContain("not-to-be-injected-company-details");
       expect(capturedPrompts[0]).toContain("fresh passive evidence");
       expect(capturedPrompts[0]).toContain("Agent Bridge execution contract:");
       expect(capturedPrompts[1]).not.toContain(workspaceMarker);
+      expect(capturedPrompts[1]).toContain(sharedDir);
+      expect(capturedPrompts[1]).not.toContain("not-to-be-injected-company-details");
       expect(capturedPrompts[1]).toContain("[Passive Discord surrounding context]");
       expect(capturedPrompts[1]).toContain("resumed passive evidence");
       expect(capturedPrompts[1]).toContain("[Current authenticated request]\nsecond request");
@@ -93,6 +102,8 @@ describe("provider-native context lifecycle", () => {
     } finally {
       if (previousWorkspaceFile === undefined) delete process.env.AGENT_BRIDGE_WORKSPACE_CONTEXT_FILE;
       else process.env.AGENT_BRIDGE_WORKSPACE_CONTEXT_FILE = previousWorkspaceFile;
+      if (previousProjectDir === undefined) delete process.env.BRIDGE_PROJECT_DIR;
+      else process.env.BRIDGE_PROJECT_DIR = previousProjectDir;
       database.close();
       rmSync(dir, { recursive: true, force: true });
     }
