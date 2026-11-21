@@ -1022,6 +1022,7 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
         eventContext,
         collect,
         ...(ordinaryWorkstreamId ? { ordinaryWorkstreamId } : {}),
+        contextWorkstreamId: input.session.sessionId,
         ...(input.ordinaryResume ? { requireBoundProviderSession: true } : {}),
         onProviderExecutionStarted: resetAttemptPresentation,
         onAnswerDelta: input.answerPreview === true ? (delta) => {
