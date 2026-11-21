@@ -157,9 +157,13 @@ describe("persistent workspace and Workstream context sources (#1264)", () => {
     symlinkSync(outside, join(context, "shared"), "dir");
     mkdirSync(join(context, "workstreams"), { recursive: true });
     symlinkSync(outside, join(context, "workstreams", "bad"), "dir");
+    mkdirSync(join(context, "workstreams", "another"), { recursive: true });
+    symlinkSync(join(context, "workstreams", "another"), join(context, "workstreams", "alias"), "dir");
     try {
       expect(contextSourcesSignpost({ BRIDGE_PROJECT_DIR: root })).toBe("");
       expect(contextSourcesSignpost({ BRIDGE_PROJECT_DIR: root }, "bad")).toBe("");
+      // A symlink to a *different Workstream inside the same workspace* must not be advertised.
+      expect(contextSourcesSignpost({ BRIDGE_PROJECT_DIR: root }, "alias")).toBe("");
       expect(contextSourcesSignpost({ BRIDGE_PROJECT_DIR: root }, "../escape")).toBe("");
       expect(contextSourcesSignpost({ BRIDGE_PROJECT_DIR: "../relative" })).toBe("");
       expect(contextSourcesSignpost({})).toBe("");

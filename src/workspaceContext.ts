@@ -82,7 +82,8 @@ export function contextSourcesSignpost(env: NodeJS.ProcessEnv = process.env, wor
     try {
       const canonical = realpathSync(candidate);
       const pathFromRoot = relative(root, canonical);
-      if (!pathFromRoot || pathFromRoot === ".." || pathFromRoot.startsWith(`..${sep}`)
+      // Do not advertise a symlink alias to another Workstream inside the same workspace.
+      if (canonical !== candidate || !pathFromRoot || pathFromRoot === ".." || pathFromRoot.startsWith(`..${sep}`)
         || isAbsolute(pathFromRoot) || !statSync(canonical).isDirectory()) return null;
       return canonical;
     } catch { return null; }
