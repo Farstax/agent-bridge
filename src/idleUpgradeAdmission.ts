@@ -183,7 +183,7 @@ function armInterruptedWorkstreamRecovery(db: Database.Database, nowMs: number):
     `).all(run.chatKey, acceptedSince) as Array<{ id: number; text: string; cli: string | null }>;
     if (turns.length !== 1 || turns[0].cli !== run.provider
       || !turns[0].text.trim() || turns[0].text.length > 160_000
-      || /^\\/(?:stop|cancel|reset)(?:\\s|$)/i.test(turns[0].text)) continue;
+      || /^\/(?:stop|cancel|reset)(?:\s|$)/i.test(turns[0].text)) continue;
     const continuation = {
       version: 1, id: run.runId, originRunId: run.runId,
       surfaceIdentity: "acp:outward", chatKey: run.chatKey,
