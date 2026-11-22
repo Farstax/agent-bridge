@@ -210,9 +210,14 @@ describe("controlled self-rollout continuation recovery (issue #964)", () => {
     expect(armed).toHaveLength(1);
     expect(armed[0]).toMatchObject({
       id: existing.id, reason: existing.reason, dueAt: existing.dueAt,
-      recoveryOriginalTurnId: accepted, rolloutRecoveryOnly: true,
     });
+    expect(armed[0].rolloutRecoveryOnly).toBeUndefined();
+    expect(armed[0].recoveryOriginalTurnId).toBeUndefined();
     expect(releaseIdleUpgrade(path, admitted.fence.token)).toBe(true);
+    // Without actual interruption, the agent's original wake remains intact.
+    expect(db.updateRunCompleted("existing-wake-run", "done", null)).toBe(true);
+    expect(claimDueRunContinuation(db, "existing-wake-run", Date.now() + 40_000)).toBeNull();
+    expect(listRunContinuations(db, "acp:outward")[0].rolloutRecoveryOnly).toBeUndefined();
 
     db.insertRun("ambiguous-run", { surfaceIdentity: "acp:outward", chatKey: "other" }, "codex");
     db.raw.prepare("INSERT INTO outward_acp_sessions (session_id, conversation_id, cwd) VALUES (?, ?, ?)")
