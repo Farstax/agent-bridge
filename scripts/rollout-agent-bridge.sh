@@ -2835,7 +2835,28 @@ fi
 [[ -f "$project_dir/scripts/idle-maintenance.ts" ]] || die "protected idle admission helper missing from staged release"
 idle_db_args=()
 for database in "${databases[@]}"; do idle_db_args+=(--db "$database"); done
-if ! run_as_runtime "$node_bin" "$project_dir/node_modules/tsx/dist/cli.mjs" "$project_dir/scripts/idle-maintenance.ts" acquire --owner-pid "$$" "${idle_db_args[@]}" --interrupt-active > "$artifact_dir/idle-upgrade-admission.json"; then
+# A transient capacity/reservation/dispatch state may settle while all
+# services are still running. Retry admission briefly BEFORE taking any fence;
+# unknown results and partial-fence failures are never retried automatically.
+idle_admitted=0
+for admission_attempt in 1 2 3; do
+  if run_as_runtime "$node_bin" "$project_dir/node_modules/tsx/dist/cli.mjs" "$project_dir/scripts/idle-maintenance.ts" acquire --owner-pid "$" "${idle_db_args[@]}" --interrupt-active > "$artifact_dir/idle-upgrade-admission.json"; then
+    idle_admitted=1
+    break
+  fi
+  admission_state="$(/usr/bin/python3 - "$artifact_dir/idle-upgrade-admission.json" <<'PY'
+import json, sys
+try:
+    record = json.load(open(sys.argv[1], encoding="utf-8"))
+    print(record.get("state", "unknown"))
+except (OSError, ValueError, TypeError, AttributeError):
+    print("unknown")
+PY
+)"
+  if [[ "$admission_state" != deferred_busy ]] || (( admission_attempt == 3 )); then break; fi
+  /usr/bin/sleep 1
+done
+if (( idle_admitted != 1 )); then
   idle_refusal="$(/usr/bin/python3 - "$artifact_dir/idle-upgrade-admission.json" <<'PY'
 import json, sys
 try:
