@@ -335,6 +335,32 @@ describe("outward ACP durable queue ownership", () => {
     } finally { f.cleanup(); }
   });
 
+  it("retains an actionable failure if a direct capacity wait cannot be persisted", async () => {
+    const f = fixture();
+    try {
+      f.db.raw.exec(`CREATE TRIGGER reject_capacity_wait BEFORE INSERT ON settings
+        WHEN NEW.key LIKE 'run-continuation:%'
+        BEGIN SELECT RAISE(ABORT, 'fixture capacity wait write refused'); END;`);
+      const executor = new BridgeOutwardAcpPromptExecutor({
+        db: f.db, providerChain: ["codex"] as const, enableDeferredCapacity: true,
+        createEngine: () => ({ executeSurfaceNeutralTurn: async (input) => {
+          input.collect(eventType.runStarted({
+            runId: input.runId, bot: "codex", chatId: String(input.chatId),
+            chatKey: input.chatKey, command: "fake", cwd: f.root, model: null,
+          }));
+          throw new Error("MODEL_CAPACITY_EXHAUSTED");
+        } }),
+      });
+      await expect(executor.execute(base(f.session, "capacity task", { deferCapacity: true })))
+        .rejects.toMatchObject({ code: -32001 });
+      expect(listRunContinuations(f.db, OUTWARD_ACP_SURFACE)).toHaveLength(0);
+      const history = f.db.getRecentConvTurns(f.session.conversationId, 10, undefined, OUTWARD_ACP_SURFACE);
+      expect(history.filter((turn) => turn.role === "assistant")).toHaveLength(1);
+      expect(history.find((turn) => turn.role === "assistant")?.text)
+        .toContain("could not schedule a provider-capacity retry");
+    } finally { f.cleanup(); }
+  });
+
   it("records and settles a direct capacity wait receipt by request identity", async () => {
     const f = fixture();
     try {

@@ -1182,8 +1182,8 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
       if (input.deferCapacity && this.supportsDeferredCapacity && !input.capacityResume && !active?.cancelRequested &&
           capacityWaitEligible) {
         const continuationId = `acp-capacity-wait:${runId}`;
-        await retainOutwardAcpAttachmentsForWait(input.session.cwd, input.attachments ?? [], continuationId);
         try {
+          await retainOutwardAcpAttachmentsForWait(input.session.cwd, input.attachments ?? [], continuationId);
           const persistWait = () => requestRunContinuation(db, {
             continuationId,
             originRunId: runId,
@@ -1218,6 +1218,15 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
             persistWait();
           }
         } catch (persistError) {
+          // An intended capacity deferral was not durably accepted. A direct
+          // request is terminal: retain its explanation instead of leaving a
+          // failed Run without an assistant history turn. Queued work stays
+          // owned by its existing retry receipt; do not fabricate a failure.
+          if (!queued) db.runWithLockFence(lane, () => {
+            db.addConvTurn(input.session.conversationId, "assistant",
+              "The agent could not schedule a provider-capacity retry. Existing work may be incomplete; inspect it before continuing.",
+              activeProvider, { surfaceIdentity: OUTWARD_ACP_SURFACE });
+          });
           // Leave a short-lived orphan for the bounded owner-marker cleanup;
           // never signal deferred admission if its durable record was not made.
           throw persistError;
