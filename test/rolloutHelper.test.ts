@@ -175,8 +175,8 @@ describe("guarded rollout helper", { timeout: 30_000 }, () => {
       const result = runRollout(fixture, undefined, undefined, { FAKE_IDLE_UPGRADE_DEFER_ONCE: "1" });
       expect(result.status).toBe(0);
       const events = actions(fixture);
-      expect(events.match(/scripts\\/idle-maintenance\\.ts acquire/g) ?? []).toHaveLength(2);
-      expect(events.match(/^systemctl:stop\\b/gm) ?? []).toHaveLength(1);
+      expect(events.match(/scripts\/idle-maintenance\.ts acquire/g) ?? []).toHaveLength(2);
+      expect(events.match(/^systemctl:stop\b/gm) ?? []).toHaveLength(1);
     });
 
     it("retains the sentinel and healthy accepted services if exact-token fence release fails", () => {
