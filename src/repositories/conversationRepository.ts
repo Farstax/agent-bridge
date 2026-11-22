@@ -160,6 +160,23 @@ export interface ConvSummaryRow {
 export class ConversationRepository {
   constructor(private readonly db: Database.Database) {}
 
+  /** Exact, single accepted outward user turn with no superseding instruction. */
+  getAcceptedOutwardTurn(chatKey: string, provider: string, turnId: number): { id: number; text: string } | null {
+    if (!Number.isSafeInteger(turnId) || turnId < 1) return null;
+    const turn = this.db.prepare(`
+      SELECT id, text FROM conversation_turns
+      WHERE id = ? AND chat_key = ? AND surface_identity = 'acp:outward'
+        AND role = 'user' AND cli = ?
+    `).get(turnId, chatKey, provider) as { id: number; text: string } | undefined;
+    if (!turn?.text?.trim() || turn.text.length > 160_000) return null;
+    const superseded = this.db.prepare(`
+      SELECT 1 FROM conversation_turns
+      WHERE chat_key = ? AND surface_identity = 'acp:outward'
+        AND role = 'user' AND id > ? LIMIT 1
+    `).get(chatKey, turn.id);
+    return superseded ? null : turn;
+  }
+
   addConvTurn(
     chatKey: string,
     role: "user" | "assistant",

@@ -12,6 +12,7 @@ import { lookupProviderSession } from "./providers/sessionRuntime.js";
 import { getRunOwnedProcessState } from "./runOwnedProcesses.js";
 
 export const RUN_CONTINUATION_PREFIX = "run-continuation:v1:";
+export const OUTWARD_RUN_ACCEPTED_TURN_PREFIX = "outward-run-accepted-turn:v1:";
 const PREFIX = RUN_CONTINUATION_PREFIX;
 const DEFAULT_SCAN_MS = 5_000;
 const MIN_DELAY_SECONDS = 5;
@@ -67,6 +68,9 @@ export interface RunContinuation {
   error?: string;
   delivery?: { chatId: string | number; chatType: string; threadId?: string | number };
   rolloutProvenance?: RolloutProvenance;
+  /** Qualified accepted origin captured before a controlled OSS rollout fence. */
+  rolloutRecoveryOnly?: true;
+  recoveryOriginalTurnId?: number;
   /** Ordinary continuation run admitted after its durable queue handoff. */
   successorRunId?: string;
   /**
@@ -153,6 +157,11 @@ function parse(value: string): RunContinuation | null {
     ) return null;
     if (candidate.depth !== undefined && (!Number.isSafeInteger(candidate.depth) || candidate.depth < 0)) return null;
     if (candidate.capacityWait !== undefined && candidate.capacityWait !== true) return null;
+    if (candidate.rolloutRecoveryOnly !== undefined && candidate.rolloutRecoveryOnly !== true) return null;
+    if (candidate.recoveryOriginalTurnId !== undefined
+      && (!Number.isSafeInteger(candidate.recoveryOriginalTurnId) || candidate.recoveryOriginalTurnId < 1)) return null;
+    if (candidate.rolloutRecoveryOnly && (candidate.surfaceIdentity !== "acp:outward" || !candidate.outwardSessionId
+      || !candidate.recoveryOriginalTurnId || candidate.capacityWait)) return null;
     if (candidate.capacityNoticeSent !== undefined && candidate.capacityNoticeSent !== true) return null;
     if (candidate.expiryDeliveryPending !== undefined && candidate.expiryDeliveryPending !== true) return null;
     if (candidate.claimToken !== undefined && (typeof candidate.claimToken !== "string" || !candidate.claimToken)) return null;
@@ -394,6 +403,80 @@ function capacityCompletionProven(db: BridgeDb, wait: RunContinuation): boolean 
     && (wait.outward !== undefined || !db.hasAnyPendingMessageId(wait.surfaceIdentity, wait.chatKey, wait.retainedPendingMessageIds!));
 }
 
+/** Accept only one exact persisted user turn with no later instructions. */
+export function acceptedRecoveryTurn(db: BridgeDb, wake: Pick<RunContinuation,
+  "surfaceIdentity" | "chatKey" | "provider" | "recoveryOriginalTurnId">): { id: number; text: string } | null {
+  if (!wake.recoveryOriginalTurnId || wake.surfaceIdentity !== "acp:outward") return null;
+  return db.getAcceptedOutwardTurn(wake.chatKey, wake.provider, wake.recoveryOriginalTurnId);
+}
+
+/**
+ * A failed rollout origin can be resumed only in its original Workstream and
+ * provider. The exact native session is reusable only if a previously DONE
+ * Run proved it before interruption. With no native binding the existing
+ * provider engine can start a fresh inspection-first session. An ambiguous
+ * native binding never gets cleared or silently replaced.
+ */
+export function rolloutRecoveryProviderAuthority(
+  db: BridgeDb,
+  wake: RunContinuation,
+): { providerSessionId?: string; rolloutRecovery: true } | null {
+  if (!wake.rolloutRecoveryOnly || !wake.rolloutProvenance || !acceptedRecoveryTurn(db, wake)
+    || wake.state !== "claimed" || !wake.claimToken || wake.surfaceIdentity !== "acp:outward") return null;
+  const audit = provenPostRolloutAudit(db, wake.originRunId);
+  if (!audit || audit.id !== wake.rolloutProvenance.reconciliationAuditId
+    || getRunOwnedProcessState(wake.originRunId) !== "absent") return null;
+  if (db.raw.prepare("SELECT 1 FROM settings WHERE key IN (?, ?) LIMIT 1")
+    .get(`outward-stop-fence:${wake.chatKey}`, `outward-cancel:${wake.originRunId}`)) return null;
+  const origin = db.getRun(wake.originRunId);
+  if (!origin || origin.status !== "failed" || origin.error !== "interrupted_by_controlled_rollout"
+    || origin.surface_identity !== wake.surfaceIdentity
+    || origin.chat_id !== wake.chatKey || origin.bot !== wake.provider) return null;
+  const bound = lookupProviderSession(db, {
+    surfaceIdentity: wake.surfaceIdentity, chatKey: wake.chatKey,
+  }, wake.provider);
+  if (!bound) return { rolloutRecovery: true };
+  const previouslySettled = db.raw.prepare(`
+    SELECT 1 FROM bridge_runs WHERE session_id = ? AND status = 'done'
+      AND surface_identity = ? AND chat_id = ? AND bot = ?
+      AND started_at < ? AND ended_at <= ? LIMIT 1
+  `).get(bound, wake.surfaceIdentity, wake.chatKey, wake.provider,
+    origin.started_at, origin.started_at);
+  return previouslySettled ? { providerSessionId: bound, rolloutRecovery: true } : null;
+}
+
+/** Strictly attribute an interrupted Run to exactly one accepted user turn. */
+function originalAcceptedTurnId(db: BridgeDb, origin: { run_id: string },
+  wake: Pick<RunContinuation, "chatKey" | "provider">): number | null {
+  const linked = db.raw.prepare("SELECT value FROM settings WHERE key = ?")
+    .get(OUTWARD_RUN_ACCEPTED_TURN_PREFIX + origin.run_id) as { value: string } | undefined;
+  if (!linked || !/^[1-9][0-9]*$/.test(linked.value)) return null;
+  const id = Number(linked.value);
+  return db.getAcceptedOutwardTurn(wake.chatKey, wake.provider, id)?.id ?? null;
+}
+
+/**
+ * Resolve completed, single-origin rollout audit only AFTER the release fence
+ * has gone. Never modify an existing continuation inside the fenced offline
+ * reconciliation phase; a healthy restart (or independently verified rollback)
+ * is the only owner allowed to resume durable work.
+ */
+function provenPostRolloutAudit(db: BridgeDb, originRunId: string): { id: string; completedAt: string } | null {
+  if (db.raw.prepare("SELECT 1 FROM settings WHERE key = 'agent-bridge:idle-maintenance:v1'").get()) return null;
+  const audits = db.raw.prepare(`
+    SELECT id, completed_at AS completedAt, before_json AS beforeJson
+    FROM reconciliation_audit WHERE kind = 'run' AND subject_id = ?
+      AND status = 'completed' AND reason = 'interrupted_by_controlled_rollout'
+    ORDER BY created_at DESC LIMIT 2
+  `).all(originRunId) as Array<{ id: string; completedAt: string | null; beforeJson: string }>;
+  if (audits.length !== 1 || !audits[0].completedAt || !Number.isFinite(Date.parse(audits[0].completedAt))) return null;
+  try {
+    const proof = JSON.parse(audits[0].beforeJson) as { containmentState?: unknown; processState?: unknown };
+    if (proof.containmentState !== "proven" || proof.processState !== "absent") return null;
+  } catch { return null; }
+  return { id: audits[0].id, completedAt: audits[0].completedAt };
+}
+
 export function claimDueRunContinuation(
   db: BridgeDb,
   id: string,
@@ -427,6 +510,16 @@ export function claimDueRunContinuation(
 
     const originRun = db.getRun(current.originRunId);
     if (!originRun) return null;
+    if (current.outwardSessionId && originRun.status === "failed"
+      && originRun.error === "interrupted_by_controlled_rollout"
+      && (originRun.outcome_status === "complete" || originRun.outcome_status === "blocked")) {
+      return cancel("originating objective already has a terminal provider disposition");
+    }
+    if (current.rolloutRecoveryOnly && originRun.status === "done") return cancel("originating objective completed normally");
+    if (current.rolloutRecoveryOnly && (originRun.status === "cancelled"
+      || (originRun.status === "failed" && originRun.error !== "interrupted_by_controlled_rollout"))) {
+      return cancel("originating objective was cancelled or not interrupted by controlled rollout");
+    }
     if (originRun.status === "running") {
       if (current.rolloutProvenance) {
         return cancel("originating Run process or descendant is still active");
@@ -499,8 +592,28 @@ export function claimDueRunContinuation(
       return claimed;
     }
 
-    if (current.rolloutProvenance) {
-      const prov = current.rolloutProvenance;
+    // A reconciler must never write a continuation under the all-role fence.
+    // Only the existing post-restart claimant can attach already completed
+    // audit proof. An unverified fence or missing/ambiguous audit leaves work
+    // dormant; no successor can be admitted without this exact proof.
+    let rolloutProvenance = current.rolloutProvenance;
+    if (!rolloutProvenance && originRun.status === "failed"
+      && originRun.error === "interrupted_by_controlled_rollout") {
+      const audit = provenPostRolloutAudit(db, current.originRunId);
+      if (!audit) return null;
+      rolloutProvenance = {
+        reconciledAt: audit.completedAt,
+        reason: "interrupted_by_controlled_rollout",
+        reconciliationAuditId: audit.id,
+        originRunId: current.originRunId,
+        surfaceIdentity: current.surfaceIdentity,
+        chatKey: current.chatKey,
+        provider: current.provider,
+      };
+    }
+    if (rolloutProvenance) {
+      if (db.raw.prepare("SELECT 1 FROM settings WHERE key = 'agent-bridge:idle-maintenance:v1'").get()) return null;
+      const prov = rolloutProvenance;
 
       const isProcessAlive = options?.isProcessAlive ?? ((runId: string) => getRunOwnedProcessState(runId) !== "absent");
       if (isProcessAlive(current.originRunId)) {
@@ -579,9 +692,37 @@ export function claimDueRunContinuation(
         return cancel("originating Run cancelled or reset by user");
       }
 
+      // Existing agent-requested Workstream wakes stay unchanged on an aborted
+      // rollout. Only after an audited interruption do they become eligible
+      // inspection-first recovery candidates, preserving their original due
+      // time and the same unique continuation record.
+      const originalId = !current.rolloutRecoveryOnly && current.outwardSessionId
+        && current.surfaceIdentity === "acp:outward"
+        ? originalAcceptedTurnId(db, originRun, current) : null;
+      const eligible = current.rolloutRecoveryOnly || originalId !== null;
+      const recoveryWake: RunContinuation = originalId === null ? current
+        : { ...current, rolloutRecoveryOnly: true, recoveryOriginalTurnId: originalId };
+      if (current.outwardSessionId && !eligible) {
+        return cancel("interrupted Workstream objective could not be attributed to one accepted user turn", "failed");
+      }
+      if (recoveryWake.rolloutRecoveryOnly && db.raw.prepare(
+        "SELECT 1 FROM settings WHERE key IN (?, ?) LIMIT 1",
+      ).get(`outward-stop-fence:${recoveryWake.chatKey}`, `outward-cancel:${recoveryWake.originRunId}`)) {
+        return cancel("originating Workstream was stopped by the user");
+      }
+      if (recoveryWake.rolloutRecoveryOnly && !acceptedRecoveryTurn(db, recoveryWake)) {
+        return cancel("accepted originating Workstream objective or authority changed", "failed");
+      }
       if (Date.parse(current.dueAt) > nowMs) return null;
 
-      const claimed: RunContinuation = { ...current, state: "claimed", claimedAt: new Date(nowMs).toISOString() };
+      const claimed: RunContinuation = {
+        ...recoveryWake, rolloutProvenance, state: "claimed", claimedAt: new Date(nowMs).toISOString(),
+        ...(current.outwardSessionId ? {
+          claimRunId: options?.runId ?? (db as any).runId,
+          claimToken: options?.claimToken ?? randomUUID(),
+          claimExpiresAt: new Date(nowMs + (options?.leaseMs ?? (db as any).lockLeaseMs ?? 90_000)).toISOString(),
+        } : {}),
+      };
       db.raw.prepare("UPDATE settings SET value = ? WHERE key = ?").run(JSON.stringify(claimed), key(id));
       return claimed;
     }
@@ -1004,6 +1145,16 @@ export function buildPostRolloutVerificationTurnText(reason: string): string {
 
 /** Shared instruction for unfinished objectives; never replay the original user request. */
 export function buildRunContinuationInstruction(continuation: RunContinuation): string {
+  if (continuation.rolloutRecoveryOnly) {
+    return [
+      "[Agent Bridge continuation]",
+      "A previously accepted Workstream objective has no verified final outcome.",
+      "Before acting, inspect the conversation, current files and commits, queued work, durable receipts and any external operations.",
+      "Determine what has actually completed. Do not replay the previous mutating request or duplicate external side effects.",
+      "Continue only the outstanding authorised work. Report normal meaningful progress, a verified result or a genuine blocker.",
+      "Do not announce or explain an infrastructure change unless it is itself relevant to a genuine blocker.",
+    ].join("\n");
+  }
   return [
     "[Agent Bridge continuation]",
     "A required bounded operation was still pending in the previous Run.",

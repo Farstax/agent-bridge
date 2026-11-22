@@ -25,7 +25,7 @@ import { QUEUED_ATTACHMENT_MARKER, readRetainedOutwardAcpAttachments, retainOutw
 import { rememberQueuedDisplay, settleQueuedDisplay, retireQueuedDisplay } from "./queuedDisplay.js";
 import { resolveLaneBusyMessageMode } from "../busyMessageMode.js";
 import { discardDeskRunArtifacts, retainDeskArtifacts } from "./artifacts.js";
-import { hasPendingCapacityWait, listRunContinuations, linkCapacityContinuationRun, linkRunContinuationRun, RUN_CONTINUATION_PREFIX, requestRunContinuation, cancelPendingRunContinuation, settleRunContinuation, type RunContinuation } from "../runContinuation.js";
+import { hasPendingCapacityWait, listRunContinuations, linkCapacityContinuationRun, linkRunContinuationRun, RUN_CONTINUATION_PREFIX, OUTWARD_RUN_ACCEPTED_TURN_PREFIX, requestRunContinuation, rolloutRecoveryProviderAuthority, cancelPendingRunContinuation, settleRunContinuation, type RunContinuation } from "../runContinuation.js";
 
 
 import { OUTWARD_ACP_SURFACE, outwardServiceId, recoverOutwardLanes } from "./recovery.js";
@@ -77,7 +77,7 @@ export interface OutwardAcpPromptExecutionInput {
   /** Explicit extension opt-in for ordinary objective outcomes and unattended wakes. */
   ordinaryContinuations?: boolean;
   /** Claimed and bound by the existing supervised worker, never ACP client input. */
-  ordinaryResume?: { id: string; claimToken: string; provider: BotKind; providerSessionId: string };
+  ordinaryResume?: { id: string; claimToken: string; provider: BotKind; providerSessionId?: string; rolloutRecovery?: true };
   /** ACP v1 caller opted into busy-message admission; otherwise a busy Workstream fails fast. */
   busyMessages?: boolean;
   /** Client idempotency token; a repeated submission never creates a second queue row or Run. */
@@ -858,10 +858,20 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
         }
         if (input.ordinaryResume) {
           const current = this.options.lookupSession?.(input.session.sessionId);
+          const boundProvider = lookupProviderSession(db, identity, provider);
+          const claimed = listRunContinuations(db, OUTWARD_ACP_SURFACE)
+            .find((wake) => wake.id === input.ordinaryResume!.id && wake.state === "claimed"
+              && wake.claimToken === input.ordinaryResume!.claimToken);
+          const recovery = claimed && input.ordinaryResume.rolloutRecovery
+            ? rolloutRecoveryProviderAuthority(db, claimed) : null;
+          const bindingMatches = input.ordinaryResume.rolloutRecovery
+            ? Boolean(recovery && (boundProvider ?? undefined) === recovery.providerSessionId)
+            : Boolean(input.ordinaryResume.providerSessionId
+              && boundProvider === input.ordinaryResume.providerSessionId);
           if (!current || current.conversationId !== input.session.conversationId ||
               current.cwd !== input.session.cwd || !isAbsolute(current.cwd) ||
               realpathSync(current.cwd) !== current.cwd || this.selectedProvider(current) !== provider ||
-              lookupProviderSession(db, identity, provider) !== input.ordinaryResume.providerSessionId) {
+              !bindingMatches) {
             throw new Error("outward ordinary continuation Workstream or provider authority changed");
           }
         }
@@ -890,6 +900,9 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
           const turnId = db.addConvTurn(input.session.conversationId, "user", input.prompt, provider, {
             surfaceIdentity: OUTWARD_ACP_SURFACE,
           }, queued ? queuedSubmittedAt(db, queued.id) : undefined);
+          // The exact Run-to-accepted-turn link commits with Run admission.
+          // Never infer it later from timestamps or replay a queued prompt.
+          db.setSetting(OUTWARD_RUN_ACCEPTED_TURN_PREFIX + runId, String(turnId));
           // Persist the real client operation ID in the same transaction as
           // the user turn. This metadata is for Desk reconciliation only and
           // never changes provider context, transcript text or execution.
@@ -1023,7 +1036,7 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
         collect,
         ...(ordinaryWorkstreamId ? { ordinaryWorkstreamId } : {}),
         contextWorkstreamId: input.session.sessionId,
-        ...(input.ordinaryResume ? { requireBoundProviderSession: true } : {}),
+        ...(input.ordinaryResume?.providerSessionId ? { requireBoundProviderSession: true } : {}),
         onProviderExecutionStarted: resetAttemptPresentation,
         onAnswerDelta: input.answerPreview === true ? (delta) => {
           if (!delta || active?.cancelRequested || input.signal.aborted) return;
@@ -1103,6 +1116,8 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
         if (db.getRun(runId)?.status !== (cancelled ? "cancelled" : "done")) {
           throw new Error("outward ACP terminal Run state was not persisted");
         }
+        db.raw.prepare("DELETE FROM settings WHERE key = ?")
+          .run(OUTWARD_RUN_ACCEPTED_TURN_PREFIX + runId);
       }));
       if (!cancelled && result.text && actualProvider !== provider) this.routers.delete(input.session.conversationId);
       if (!cancelled && result.text && !previewEmitted) {
@@ -1141,6 +1156,10 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
           });
           eventStore!.collect(failedEvent(runId, activeProvider, input.session, error));
           eventStore!.finalize();
+          if (db.getRun(runId)?.status === "failed") {
+            db.raw.prepare("DELETE FROM settings WHERE key = ?")
+              .run(OUTWARD_RUN_ACCEPTED_TURN_PREFIX + runId);
+          }
         }));
       }
       // An idempotent contender can lose the race before its own Run is
@@ -1333,12 +1352,16 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
     const origin = ordinaryWait ? this.options.db.getRun(ordinaryWait.originRunId) : null;
     const providerSessionId = ordinaryWait ? lookupProviderSession(this.options.db,
       this.identity(session), ordinaryWait.provider) : null;
+    const recovery = ordinaryWait?.rolloutRecoveryOnly && ordinaryWait.state === "claimed"
+      ? rolloutRecoveryProviderAuthority(this.options.db, ordinaryWait) : null;
+    const regular = !ordinaryWait?.rolloutRecoveryOnly && origin?.status === "done"
+      && origin.session_id && providerSessionId && origin.session_id === providerSessionId;
     const ordinaryResume = ordinaryWait?.state === "claimed" && ordinaryWait.claimToken &&
-      ordinaryWait.outwardSessionId === session.sessionId && origin?.status === "done" &&
-      origin.session_id && providerSessionId && origin.session_id === providerSessionId &&
-      this.selectedProvider(session) === ordinaryWait.provider
+      ordinaryWait.outwardSessionId === session.sessionId &&
+      this.selectedProvider(session) === ordinaryWait.provider &&
+      (regular || recovery)
       ? { id: ordinaryWait.id, claimToken: ordinaryWait.claimToken, provider: ordinaryWait.provider,
-          providerSessionId } : undefined;
+          ...(recovery ? recovery : { providerSessionId: providerSessionId! }) } : undefined;
     if (ordinaryId && !ordinaryResume) {
       if (ordinaryWait?.claimToken) {
         settleRunContinuation(this.options.db, ordinaryWait.id, "failed",

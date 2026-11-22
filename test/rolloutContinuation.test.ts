@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { openDb } from "../src/db.js";
+import { tryAdmitIdleUpgrade, releaseIdleUpgrade } from "../src/idleUpgradeAdmission.js";
 import { persistProviderSession } from "../src/providers/sessionRuntime.js";
 import {
   buildDiscordRunContinuationTurn,
@@ -10,6 +11,10 @@ import {
   cancelPendingRunContinuation,
   cancelPendingRunContinuationsForChat,
   claimDueRunContinuation,
+  acceptedRecoveryTurn,
+  rolloutRecoveryProviderAuthority,
+  buildRunContinuationInstruction,
+  OUTWARD_RUN_ACCEPTED_TURN_PREFIX,
   listRunContinuations,
   requestRunContinuation,
   scanRunContinuations,
@@ -18,10 +23,10 @@ import * as runOwnedProcesses from "../src/runOwnedProcesses.js";
 
 const paths: string[] = [];
 
-function setup() {
+function setup(databaseRole?: "interactive") {
   const path = join(tmpdir(), `rollout-continuation-${Date.now()}-${Math.random()}.sqlite`);
   paths.push(path);
-  const db = openDb(path, { serviceId: "rollout-continuation-test", runId: "test-process" });
+  const db = openDb(path, { serviceId: "rollout-continuation-test", runId: "test-process", ...(databaseRole ? { databaseRole } : {}) });
   return { db, path };
 }
 
@@ -65,11 +70,10 @@ describe("controlled self-rollout continuation recovery (issue #964)", () => {
     });
     expect(reconResult.reconciledRunIds).toContain(runId);
 
-    // Provenance stamped
+    // Reconciliation cannot stamp a continuation during the all-role fence.
+    // The existing worker claims the completed audit only after fence release.
     const contAfter = listRunContinuations(db)[0];
-    expect(contAfter.rolloutProvenance).toBeDefined();
-    expect(contAfter.rolloutProvenance?.originRunId).toBe(runId);
-    expect(contAfter.rolloutProvenance?.reason).toBe("interrupted_by_controlled_rollout");
+    expect(contAfter.rolloutProvenance).toBeUndefined();
 
     // Service restarts - simulate new service instance
     db.close();
@@ -94,9 +98,146 @@ describe("controlled self-rollout continuation recovery (issue #964)", () => {
     expect(dispatch).toHaveBeenCalledTimes(1);
 
     const settled = listRunContinuations(restartedDb)[0];
+    expect(settled.rolloutProvenance?.originRunId).toBe(runId);
+    expect(settled.rolloutProvenance?.reason).toBe("interrupted_by_controlled_rollout");
     expect(settled.state).toBe("completed");
 
     restartedDb.close();
+  });
+
+  it("reconciles an existing continuation while the exact SQLite fence is held and only claims after release", () => {
+    const { db, path } = setup();
+    const runId = "fenced-rollout-recovery";
+    db.insertRun(runId, { surfaceIdentity: "acp:outward", chatKey: "conversation-1" }, "codex");
+    requestRunContinuation(db, {
+      originRunId: runId, surfaceIdentity: "acp:outward",
+      chatKey: "conversation-1", provider: "codex",
+      reason: "inspect previous work before resuming", afterSeconds: 10,
+      outwardSessionId: "workstream-1",
+    }, 1_000);
+    const admitted = tryAdmitIdleUpgrade(path, process.pid, { interruptActive: true });
+    expect(admitted.state).toBe("admitted");
+    if (admitted.state !== "admitted") throw new Error("expected fence");
+    // The guarded trigger would reject the old reconciliation UPDATE settings.
+    expect(() => db.raw.prepare("UPDATE settings SET value = value WHERE key = ?")
+      .run("run-continuation:v1:" + runId)).toThrow("agent_bridge_idle_maintenance_deferred_busy");
+    const result = db.reconcileControlledRollout({
+      reason: "interrupted_by_controlled_rollout", nowMs: 2_000, isProcessAlive: () => false,
+    });
+    expect(result.reconciledRunIds).toEqual([runId]);
+    expect(listRunContinuations(db)[0].rolloutProvenance).toBeUndefined();
+    expect(claimDueRunContinuation(db, runId, 11_000)).toBeNull();
+    expect(releaseIdleUpgrade(path, admitted.fence.token)).toBe(true);
+    // Legacy/manual ACP Runs without the exact accepted-turn link are not
+    // recoverable merely because their timestamps look plausible.
+    const claimed = claimDueRunContinuation(db, runId, 11_000, { isProcessAlive: () => false });
+    expect(claimed).toBeNull();
+    expect(listRunContinuations(db)[0].state).toBe("failed");
+    expect(claimDueRunContinuation(db, runId, 11_000)).toBeNull();
+    db.close();
+  });
+
+  it("arms exactly one accepted ordinary Workstream objective before a guarded restart and resumes inspection first", () => {
+    const { db, path } = setup("interactive");
+    const runId = "accepted-workstream-run-1";
+    const conversation = "workstream-conversation-1";
+    db.raw.prepare("INSERT INTO outward_acp_sessions (session_id, conversation_id, cwd) VALUES (?, ?, ?)")
+      .run("workstream-1", conversation, process.cwd());
+    db.insertRun(runId, { surfaceIdentity: "acp:outward", chatKey: conversation }, "codex");
+    const originalId = db.addConvTurn(conversation, "user", "Implement the pending change safely", "codex",
+      { surfaceIdentity: "acp:outward" });
+    db.setSetting(OUTWARD_RUN_ACCEPTED_TURN_PREFIX + runId, String(originalId));
+    const admitted = tryAdmitIdleUpgrade(path, process.pid, { interruptActive: true });
+    expect(admitted.state).toBe("admitted");
+    if (admitted.state !== "admitted") throw new Error("expected guarded rollout");
+    const candidate = listRunContinuations(db, "acp:outward")[0];
+    expect(candidate).toMatchObject({
+      id: runId, originRunId: runId, rolloutRecoveryOnly: true,
+      recoveryOriginalTurnId: originalId, outwardSessionId: "workstream-1",
+      state: "pending",
+    });
+    expect(listRunContinuations(db, "acp:outward")).toHaveLength(1);
+    db.reconcileControlledRollout({
+      reason: "interrupted_by_controlled_rollout", isProcessAlive: () => false,
+    });
+    expect(claimDueRunContinuation(db, runId, Date.now() + 15_000, {
+      isProcessAlive: () => false,
+    })).toBeNull();
+    expect(releaseIdleUpgrade(path, admitted.fence.token)).toBe(true);
+    const claimed = claimDueRunContinuation(db, runId, Date.now() + 15_000, {
+      isProcessAlive: () => false, runId: "continuation-worker", claimToken: "exact-claim",
+    });
+    expect(claimed?.state).toBe("claimed");
+    expect(claimed?.claimToken).toBe("exact-claim");
+    expect(claimed?.rolloutProvenance?.originRunId).toBe(runId);
+    expect(acceptedRecoveryTurn(db, claimed!)).toMatchObject({ id: originalId });
+    expect(rolloutRecoveryProviderAuthority(db, claimed!)).toEqual({ rolloutRecovery: true });
+    expect(buildRunContinuationInstruction(claimed!)).toContain("Before acting, inspect");
+    expect(buildRunContinuationInstruction(claimed!)).toContain("Do not replay");
+    expect(claimDueRunContinuation(db, runId, Date.now() + 16_000)).toBeNull();
+    db.close();
+  });
+
+  it("does not wake a normally completed or user-cancelled accepted objective", () => {
+    const { db, path } = setup("interactive");
+    const conversation = "completed-workstream";
+    db.raw.prepare("INSERT INTO outward_acp_sessions (session_id, conversation_id, cwd) VALUES (?, ?, ?)")
+      .run("completed-workstream-session", conversation, process.cwd());
+    db.insertRun("normally-completed-run", { surfaceIdentity: "acp:outward", chatKey: conversation }, "codex");
+    const original = db.addConvTurn(conversation, "user", "Do a task", "codex", { surfaceIdentity: "acp:outward" });
+    db.setSetting(OUTWARD_RUN_ACCEPTED_TURN_PREFIX + "normally-completed-run", String(original));
+    const fence = tryAdmitIdleUpgrade(path, process.pid, { interruptActive: true });
+    expect(fence.state).toBe("admitted");
+    if (fence.state !== "admitted") throw new Error("fence unavailable");
+    expect(releaseIdleUpgrade(path, fence.fence.token)).toBe(true);
+    expect(db.updateRunCompleted("normally-completed-run", "Done", null)).toBe(true);
+    expect(claimDueRunContinuation(db, "normally-completed-run", Date.now() + 15_000)).toBeNull();
+    expect(listRunContinuations(db)[0].state).toBe("cancelled");
+    db.close();
+  });
+
+  it("reuses the only pending agent wake and never arms an ambiguous accepted user turn", () => {
+    const { db, path } = setup("interactive");
+    const workstream = "two-input-workstream";
+    db.raw.prepare("INSERT INTO outward_acp_sessions (session_id, conversation_id, cwd) VALUES (?, ?, ?)")
+      .run("two-input-session", workstream, process.cwd());
+    db.insertRun("existing-wake-run", { surfaceIdentity: "acp:outward", chatKey: workstream }, "claude");
+    const accepted = db.addConvTurn(workstream, "user", "Finish task", "claude", { surfaceIdentity: "acp:outward" });
+    db.setSetting(OUTWARD_RUN_ACCEPTED_TURN_PREFIX + "existing-wake-run", String(accepted));
+    const existing = requestRunContinuation(db, {
+      originRunId: "existing-wake-run", surfaceIdentity: "acp:outward",
+      chatKey: workstream, provider: "claude",
+      reason: "Agent requested follow-up", afterSeconds: 30,
+      outwardSessionId: "two-input-session",
+    });
+    const admitted = tryAdmitIdleUpgrade(path, process.pid, { interruptActive: true });
+    expect(admitted.state).toBe("admitted");
+    if (admitted.state !== "admitted") throw new Error("expected admission");
+    const armed = listRunContinuations(db, "acp:outward");
+    expect(armed).toHaveLength(1);
+    expect(armed[0]).toMatchObject({
+      id: existing.id, reason: existing.reason, dueAt: existing.dueAt,
+    });
+    expect(armed[0].rolloutRecoveryOnly).toBeUndefined();
+    expect(armed[0].recoveryOriginalTurnId).toBeUndefined();
+    expect(releaseIdleUpgrade(path, admitted.fence.token)).toBe(true);
+    // Without actual interruption, the agent's original wake remains intact.
+    expect(db.updateRunCompleted("existing-wake-run", "done", null)).toBe(true);
+    expect(claimDueRunContinuation(db, "existing-wake-run", Date.now() + 40_000)).toBeNull();
+    expect(listRunContinuations(db, "acp:outward")[0].rolloutRecoveryOnly).toBeUndefined();
+
+    db.insertRun("ambiguous-run", { surfaceIdentity: "acp:outward", chatKey: "other" }, "codex");
+    db.raw.prepare("INSERT INTO outward_acp_sessions (session_id, conversation_id, cwd) VALUES (?, ?, ?)")
+      .run("other-session", "other", process.cwd());
+    const first = db.addConvTurn("other", "user", "First request", "codex", { surfaceIdentity: "acp:outward" });
+    db.setSetting(OUTWARD_RUN_ACCEPTED_TURN_PREFIX + "ambiguous-run", String(first));
+    db.addConvTurn("other", "user", "Second request", "codex", { surfaceIdentity: "acp:outward" });
+    const admitted2 = tryAdmitIdleUpgrade(path, process.pid, { interruptActive: true });
+    expect(admitted2.state).toBe("admitted");
+    if (admitted2.state !== "admitted") throw new Error("expected admission");
+    expect(listRunContinuations(db, "acp:outward")).toHaveLength(1);
+    expect(releaseIdleUpgrade(path, admitted2.fence.token)).toBe(true);
+    db.close();
   });
 
   it("fails closed if restart occurs before trusted handoff / commit", async () => {
@@ -486,7 +627,7 @@ describe("controlled self-rollout continuation recovery (issue #964)", () => {
     });
 
     const cont = listRunContinuations(db)[0];
-    expect(cont.rolloutProvenance).toBeDefined();
+    expect(cont.rolloutProvenance).toBeUndefined(); // Audit is attached by the post-fence claimant.
 
     // Mock getRunOwnedProcessState returning live (descendant still running)
     const spy = vi.spyOn(runOwnedProcesses, "getRunOwnedProcessState").mockReturnValue("live");

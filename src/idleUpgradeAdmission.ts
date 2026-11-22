@@ -15,7 +15,8 @@ import Database from "better-sqlite3";
 import { randomUUID } from "node:crypto";
 import { readFileSync, realpathSync } from "node:fs";
 import { readProcessStartTicks } from "./cliSupervisor.js";
-import { parseRunContinuation } from "./runContinuation.js";
+import { parseRunContinuation, OUTWARD_RUN_ACCEPTED_TURN_PREFIX } from "./runContinuation.js";
+import { ConversationRepository } from "./repositories/conversationRepository.js";
 
 export const IDLE_UPGRADE_FENCE_KEY = "agent-bridge:idle-maintenance:v1";
 export type IdleUpgradeState = "idle" | "deferred_busy" | "unknown";
@@ -124,6 +125,60 @@ function storedFence(db: Database.Database): { exists: boolean; fence: IdleUpgra
   return { exists: !!row, fence: parseFence(row?.value ?? null) };
 }
 
+/**
+ * Capture only unambiguous, already accepted ordinary ACP objectives inside
+ * the same IMMEDIATE admission transaction, BEFORE the fence marker exists.
+ * Reuse any existing agent-requested continuation; never invent a second wake.
+ * No background owner, timer, database table, or mutating prompt replay.
+ */
+function armInterruptedWorkstreamRecovery(db: Database.Database, nowMs: number): void {
+  const hasSessions = db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'outward_acp_sessions'").get();
+  if (!hasSessions) return;
+  const runs = db.prepare(`
+    SELECT r.run_id AS runId, r.chat_id AS chatKey, r.bot AS provider, s.session_id AS sessionId
+    FROM bridge_runs r JOIN outward_acp_sessions s ON s.conversation_id = r.chat_id
+    WHERE r.status = 'running' AND r.outcome_status IS NULL
+      AND r.surface_identity = 'acp:outward' AND s.archived_at IS NULL
+  `).all() as Array<{ runId: string; chatKey: string; provider: string; sessionId: string }>;
+  const conversations = new ConversationRepository(db);
+  const successors = new Set<string>();
+  for (const row of db.prepare("SELECT value FROM settings WHERE key LIKE 'run-continuation:v1:%'")
+    .all() as Array<{ value: string }>) {
+    try {
+      const id = (JSON.parse(row.value) as { successorRunId?: unknown }).successorRunId;
+      if (typeof id === "string" && id.length > 0) successors.add(id);
+    } catch { /* Corrupt records do not authorise a successor. */ }
+  }
+  for (const run of runs) {
+    if (successors.has(run.runId) || !run.sessionId) continue;
+    if (db.prepare("SELECT 1 FROM settings WHERE key IN (?, ?) LIMIT 1")
+      .get(`outward-stop-fence:${run.chatKey}`, `outward-cancel:${run.runId}`)) continue;
+    const key = `run-continuation:v1:${run.runId}`;
+    // Existing scheduled work must retain its original terms when a rollout
+    // is deferred or aborted. The post-rollout claimant may upgrade it to a
+    // recovery wake only after a completed containment audit is proven.
+    if (db.prepare("SELECT 1 FROM settings WHERE key = ?").get(key)) continue;
+    const turnLink = db.prepare("SELECT value FROM settings WHERE key = ?")
+      .get(OUTWARD_RUN_ACCEPTED_TURN_PREFIX + run.runId) as { value: string } | undefined;
+    if (!turnLink || !/^[1-9][0-9]*$/.test(turnLink.value)) continue;
+    const turnId = Number(turnLink.value);
+    if (!Number.isSafeInteger(turnId)) continue;
+    const turn = conversations.getAcceptedOutwardTurn(run.chatKey, run.provider, turnId);
+    if (!turn || /^\/(?:stop|cancel|reset)(?:\s|$)/i.test(turn.text)) continue;
+    const continuation = {
+      version: 1, id: run.runId, originRunId: run.runId,
+      surfaceIdentity: "acp:outward", chatKey: run.chatKey,
+      provider: run.provider, reason: "Inspect accepted Workstream objective and finish only uncompleted work",
+      requestedAt: new Date(nowMs).toISOString(),
+      dueAt: new Date(nowMs + 10_000).toISOString(),
+      expiresAt: new Date(nowMs + 2 * 60 * 60_000).toISOString(),
+      state: "pending", depth: 1, outwardSessionId: run.sessionId,
+      rolloutRecoveryOnly: true, recoveryOriginalTurnId: turn.id,
+    };
+    db.prepare("INSERT INTO settings (key, value) VALUES (?, ?)").run(key, JSON.stringify(continuation));
+  }
+}
+
 function idleState(db: Database.Database, options: IdleUpgradeAdmissionOptions = {}): IdleUpgradeState {
   const marker = storedFence(db);
   if (marker.exists) return marker.fence ? "deferred_busy" : "unknown";
@@ -218,6 +273,7 @@ export function tryAdmitIdleUpgrade(dbPath: string, ownerPid = process.pid, opti
         startTicks, bootId, acquiredAt: new Date().toISOString(),
       };
       installGuard(db!);
+      if (options.interruptActive) armInterruptedWorkstreamRecovery(db!, Date.now());
       db!.prepare("INSERT INTO settings (key, value) VALUES (?, ?)")
         .run(IDLE_UPGRADE_FENCE_KEY, JSON.stringify(fence));
       return { state: "admitted" as const, fence };
