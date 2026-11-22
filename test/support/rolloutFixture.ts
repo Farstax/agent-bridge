@@ -458,7 +458,11 @@ fi
 if [[ "\${cmd[1]:-}" == */tsx/dist/cli.mjs && "\${cmd[2]:-}" == */scripts/idle-maintenance.ts ]]; then
   action="\${cmd[3]:-}"
   if [[ "$action" == acquire && "\${FAKE_IDLE_UPGRADE_STATE:-}" == deferred_busy ]]; then
-    echo '{"state":"deferred_busy"}'
+    if [[ -n "\${FAKE_IDLE_UPGRADE_REASON:-}" ]]; then
+      printf '{"state":"deferred_busy","reason":"%s"}\\n' "$FAKE_IDLE_UPGRADE_REASON"
+    else
+      echo '{"state":"deferred_busy"}'
+    fi
     exit 75
   fi
   if [[ "$action" == acquire && "\${FAKE_IDLE_UPGRADE_STATE:-}" == unknown ]]; then
