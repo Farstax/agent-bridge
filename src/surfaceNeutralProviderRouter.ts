@@ -3,7 +3,7 @@ import type { BridgeEngine, SurfaceNeutralTurnInput } from "./engine.js";
 import type { BridgeEvent } from "./events/types.js";
 import { ProviderFallbackChain } from "./providerFallback.js";
 import { RunRepository } from "./repositories/runRepository.js";
-import { resetAbandonedRunDisposition } from "./runOutcome.js";
+import { readRunOutcome, resetAbandonedRunDisposition } from "./runOutcome.js";
 import { providerIdForBotName } from "./providers/registry.js";
 import { decideProviderRecovery } from "./providers/recoveryVerdict.js";
 import { markHandoffRequired } from "./handoffState.js";
@@ -130,7 +130,9 @@ export function createSurfaceNeutralProviderRouter(
           // failure proven to precede prompt submission may advance the chain.
           const failure = error instanceof Error ? error : new Error(String(error));
           const decision = decideProviderRecovery(providerIdForBotName(provider), failure);
-          const recoverable = decision.reason !== null;
+          // Never abandon a Run that has already recorded a valid disposition.
+          // In particular, a missing final answer must not erase its continuation.
+          const recoverable = decision.reason !== null && !readRunOutcome(options.db, input.runId);
           if (!recoverable) {
             input.onProviderRecoveryDecision?.(null, false);
             for (const event of attemptEvents) input.collect(event);

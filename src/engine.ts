@@ -33,7 +33,7 @@ import {
   CliTimeoutError,
   ProviderStallError,
 } from "./cli.js";
-import { supportsProvisionalAnswers } from "./providers/acpRuntime.js";
+import { MissingAcpAnswerError, supportsProvisionalAnswers } from "./providers/acpRuntime.js";
 import { isAcpBackedBot, providerIdForBotName, supportsReadOnlyBtw } from "./providers/registry.js";
 import { decideProviderRecovery, type ProviderFallbackReason } from "./providers/recoveryVerdict.js";
 import {
@@ -2330,7 +2330,16 @@ export class BridgeEngine {
             preferProviderDefaults: this.opts.surfaceIdentity === "acp:outward",
           },
           { conversationId: chatKey, runId: runId ?? randomUUID() },
-        ));
+        )).catch((error: unknown) => {
+          // The agent may have recorded a disposition before returning no final
+          // answer. Preserve it and its wake without replaying side effects.
+          if (!(error instanceof MissingAcpAnswerError) || !runId) throw error;
+          const disposition = readRunOutcome(this.db, runId);
+          if (!disposition) throw error;
+          const text = "The agent recorded " + disposition.status
+            + " but did not provide a final answer. Recorded details: " + disposition.detail;
+          return { stdout: "", parsed: { text, sessionId: error.sessionId, stopReason: error.stopReason } };
+        });
         stdout = invoked.stdout;
         parsedAcp = invoked.parsed;
       } finally {
@@ -2489,9 +2498,10 @@ export class BridgeEngine {
         }
         const reported = readRunOutcome(this.db, runId!);
         if (!reported) {
-          throw new MissingRunOutcomeError(
+          // An inspection-first successor may reconcile the existing work. Do not replay it.
+          throw attachProviderFailureEvidence(new MissingRunOutcomeError(
             "The provider did not report an objective outcome after the single reconciliation attempt.",
-          );
+          ), { promptSubmitted: true });
         }
         // Keep artifacts from the first invocation, but use the reconciled
         // final answer: the first one may have claimed failure/completion

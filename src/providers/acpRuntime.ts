@@ -490,6 +490,14 @@ function telemetryFromUsage(providerId: string, usage: Usage | undefined): RunTe
   };
 }
 
+/** Non-cancelled ACP turn with no selected answer. An outcome may already exist. */
+export class MissingAcpAnswerError extends Error {
+  constructor(providerId: string, missingDescription: string, readonly sessionId: string, readonly stopReason: string) {
+    super(`${providerId} ACP completed without ${missingDescription} (stopReason=${stopReason})`);
+    this.name = "MissingAcpAnswerError";
+  }
+}
+
 export function acpTurnResultToCliResult(
   providerId: string,
   result: AcpTurnResult,
@@ -501,9 +509,7 @@ export function acpTurnResultToCliResult(
   };
   const text = selected.text.trim();
   if (!text && result.stopReason !== "cancelled") {
-    throw new Error(
-      `${providerId} ACP completed without ${selected.missingDescription} (stopReason=${result.stopReason})`,
-    );
+    throw new MissingAcpAnswerError(providerId, selected.missingDescription, result.acpSessionId, result.stopReason);
   }
   const telemetry = telemetryFromUsage(providerId, result.usage);
   return {

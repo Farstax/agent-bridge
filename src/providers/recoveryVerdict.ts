@@ -46,14 +46,20 @@ export function decideProviderRecovery(
   error: Error,
   priorEvidence?: ProviderFailureEvidence | null,
 ): ProviderRecoveryDecision {
-  const classification = provider ? classifyProviderError(provider, error) : classifyAnyProviderError(error);
-  const claudeContention = provider === "claude" && isClaudeOAuthRefreshContention(error);
+  // Classify the actual provider error even if missing-outcome reconciliation wrapped it.
+  // Validation-only errors have no provider cause and must remain terminal.
+  const providerError = error.name === "RunOutcomeReconciliationError" && error.cause instanceof Error
+    ? error.cause : error;
+  const classification = provider ? classifyProviderError(provider, providerError) : classifyAnyProviderError(providerError);
+  const claudeContention = provider === "claude" && isClaudeOAuthRefreshContention(providerError);
   const authRequired = classification.kind === "auth_required";
   // Capacity wording is shared across provider CLIs (e.g. "session limit"), so
   // the category check stays provider-agnostic as it was at every old call site.
   const capacityExhausted = isFallbackEligibleProviderError(classification)
-    || isFallbackEligibleProviderError(classifyAnyProviderError(error));
-  const evidence = mergeProviderFailureEvidence(readProviderFailureEvidence(error), priorEvidence);
+    || isFallbackEligibleProviderError(classifyAnyProviderError(providerError));
+  const evidence = mergeProviderFailureEvidence(
+    readProviderFailureEvidence(error), readProviderFailureEvidence(providerError), priorEvidence,
+  );
   if (error.name === "ProviderExecutionCapacityError" || error.name === "WorkspaceLockBusyError") {
     // Host-wide execution slots and the Git worktree lock are shared by every
     // provider. Switching CLIs cannot create either, so neither is provider quota.

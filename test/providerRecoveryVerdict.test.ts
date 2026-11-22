@@ -8,6 +8,7 @@ import {
   readProviderFailureEvidence,
 } from "../src/providers/failureEvidence.js";
 import { decideProviderRecovery } from "../src/providers/recoveryVerdict.js";
+import { RunOutcomeReconciliationError } from "../src/runOutcome.js";
 
 const weeklyLimit = "You've hit your weekly limit · resets 11am (Europe/London)";
 
@@ -32,6 +33,13 @@ describe("provider recovery verdict", () => {
     expect(decideProviderRecovery("codex", tagged("Internal error: boom", false)).reason)
       .toBe("provider_transport_failure");
     expect(decideProviderRecovery("codex", tagged("Internal error: boom", true)).reason).toBe("provider_transport_failure");
+  });
+
+  it("preserves provider quota classification through outcome reconciliation", () => {
+    const cause = tagged("Individual quota reached", true);
+    const wrapped = new RunOutcomeReconciliationError("outcome reconciliation failed", { cause });
+    expect(decideProviderRecovery("agy", wrapped)).toMatchObject({ reason: "capacity", capacityExhausted: true });
+    expect(decideProviderRecovery("agy", new RunOutcomeReconciliationError("validation-only")).reason).toBeNull();
   });
 
   it("never treats an untagged unknown error as a provider failure", () => {

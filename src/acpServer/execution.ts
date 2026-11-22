@@ -1127,8 +1127,17 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
         return { stopReason: "cancelled" };
       }
       if (eventStore && db.getRun(runId)?.status === "running") {
-        eventStore.collect(failedEvent(runId, activeProvider, input.session, error));
-        eventStore.finalize();
+        // Failed ACP requests are not assistant history. Persist a bounded,
+        // sanitized explanation with the failed Run so reconnects show it.
+        const explanation = "The agent could not finish this Run. " + outwardFailureMessage(error)
+          + " Existing work may be incomplete; inspect it before continuing.";
+        db.runWithLockFence(lane, () => db.runInTransaction(() => {
+          db.addConvTurn(input.session.conversationId, "assistant", explanation, activeProvider, {
+            surfaceIdentity: OUTWARD_ACP_SURFACE,
+          });
+          eventStore!.collect(failedEvent(runId, activeProvider, input.session, error));
+          eventStore!.finalize();
+        }));
       }
       // An idempotent contender can lose the race before its own Run is
       // persisted while another process commits the same request ID. Report

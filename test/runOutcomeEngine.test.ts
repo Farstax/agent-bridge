@@ -3,6 +3,8 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { BridgeEngine } from "../src/engine.js";
+import { MissingAcpAnswerError } from "../src/providers/acpRuntime.js";
+import { readProviderFailureEvidence } from "../src/providers/failureEvidence.js";
 import { openDb } from "../src/db.js";
 import { MissingRunOutcomeError, RunOutcomeReconciliationError, requestAgentBridgeOutcome } from "../src/runOutcome.js";
 import { listRunContinuations, RUN_CONTINUATION_PREFIX } from "../src/runContinuation.js";
@@ -13,7 +15,7 @@ afterEach(() => {
   for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
 });
 
-function fixture(mode: "complete-after-retry" | "continue-after-retry" | "blocked-after-retry" | "missing-twice" | "report-first" | "report-continue" | "continue-no-wake" | "continue-cancelled-wake" | "continue-mismatched-wake" | "continue-mismatched-binding" | "retry-throws" | "refusal" | "continue-then-invalid-session" | "continue-then-model-fallback" | "continue-then-internal-retry", surfaceIdentity = "telegram:interactive") {
+function fixture(mode: "complete-after-retry" | "continue-after-retry" | "blocked-after-retry" | "missing-twice" | "report-first" | "report-first-empty" | "report-continue" | "continue-no-wake" | "continue-cancelled-wake" | "continue-mismatched-wake" | "continue-mismatched-binding" | "retry-throws" | "refusal" | "continue-then-invalid-session" | "continue-then-model-fallback" | "continue-then-internal-retry", surfaceIdentity = "telegram:interactive") {
   const dir = mkdtempSync(join(tmpdir(), "run-outcome-engine-")); dirs.push(dir);
   const path = join(dir, "bridge.sqlite");
   const db = openDb(path, { serviceId: "outcome-engine-test", runId: "process" });
@@ -26,6 +28,10 @@ function fixture(mode: "complete-after-retry" | "continue-after-retry" | "blocke
   const invocation = vi.fn(async (_provider: unknown, _invocation: unknown, _cwd: unknown, options: any, request: any) => {
     calls += 1;
     if (mode === "retry-throws" && calls === 2) throw new Error("provider quota exhausted after initial work");
+    if (mode === "report-first-empty") {
+      requestAgentBridgeOutcome(["complete", "--evidence", "verified"], options.contextEnv);
+      throw new MissingAcpAnswerError("claude", "live text", "same-acp-session", "end_turn");
+    }
     if (mode === "continue-then-invalid-session" && calls === 1) {
       requestAgentBridgeOutcome(["continue", "--after-seconds", "60", "--reason", "stale wake"], options.contextEnv);
       throw new Error("No conversation found with session ID: stale-session");
@@ -95,6 +101,19 @@ describe("ordinary Run objective settlement", () => {
     expect(invocation.mock.calls[1][4].outputDir).toBe(invocation.mock.calls[0][4].outputDir);
     expect(result.text).toBe("Reconciliation was recorded");
     expect(result.telemetry).toEqual(expect.objectContaining({ inputTokens: 120, outputTokens: 35 }));
+    expect(db.getRun("run-one").outcome_status).toBe("complete");
+    db.close();
+  });
+
+  it("preserves a recorded disposition when the provider returns no final answer", async () => {
+    const { db, engine, handle, invocation } = fixture("report-first-empty", "acp:outward");
+    const result = await engine.executePromptAsync(
+      "Implement and verify", null, "chat",
+      { publishArtifacts: false, ordinaryWorkstreamId: "chat" },
+      () => {}, [], undefined, "run-one", null, "chat", handle,
+    );
+    expect(invocation).toHaveBeenCalledTimes(1);
+    expect(result.text).toContain("Recorded details: verified");
     expect(db.getRun("run-one").outcome_status).toBe("complete");
     db.close();
   });
@@ -223,8 +242,10 @@ describe("ordinary Run objective settlement", () => {
 
   it("fails as unresolved after exactly one unsuccessful reconciliation", async () => {
     const { db, engine, handle, invocation } = fixture("missing-twice");
-    await expect(engine.executePromptAsync("Fix", null, "chat", {}, () => {}, [], undefined, "run-one", null, "chat", handle))
-      .rejects.toBeInstanceOf(MissingRunOutcomeError);
+    const failure = await engine.executePromptAsync("Fix", null, "chat", {}, () => {}, [], undefined, "run-one", null, "chat", handle)
+      .then(() => null, (e: Error) => e);
+    expect(failure).toBeInstanceOf(MissingRunOutcomeError);
+    expect(readProviderFailureEvidence(failure)).toMatchObject({ promptSubmitted: true });
     expect(invocation).toHaveBeenCalledTimes(2);
     expect(db.getRun("run-one").outcome_status).toBeNull();
     db.close();
