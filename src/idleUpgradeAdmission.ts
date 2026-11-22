@@ -86,7 +86,7 @@ const TRANSIENT_QUERIES = [
   // admission, and the INSERT trigger prevents fresh submissions.
   // An expired claim is relinquished under the existing lease contract;
   // the capacity owner deletes it on its next acquisition.
-  "SELECT 1 FROM execution_capacity_claims WHERE lease_expires_at > strftime('%Y-%m-%dT%H:%M:%fZ', 'now') LIMIT 1",
+  "SELECT 1 FROM execution_capacity_claims WHERE lease_expires_at IS NULL OR lease_expires_at > strftime('%Y-%m-%dT%H:%M:%fZ', 'now') OR strftime('%Y-%m-%dT%H:%M:%fZ', lease_expires_at) IS NULL OR strftime('%Y-%m-%dT%H:%M:%fZ', lease_expires_at) != lease_expires_at LIMIT 1",
   "SELECT 1 FROM settings WHERE key LIKE 'outward-queue-reservation:%' LIMIT 1",
   // Ambiguous is already a terminal receipt state, not an active dispatch.
   // A received receipt is persisted but not dispatching. The update trigger
