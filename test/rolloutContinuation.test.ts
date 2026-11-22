@@ -190,6 +190,43 @@ describe("controlled self-rollout continuation recovery (issue #964)", () => {
     db.close();
   });
 
+  it("reuses the only pending agent wake and never arms an ambiguous accepted user turn", () => {
+    const { db, path } = setup();
+    const workstream = "two-input-workstream";
+    db.raw.prepare("INSERT INTO outward_acp_sessions (session_id, conversation_id, cwd) VALUES (?, ?, ?)")
+      .run("two-input-session", workstream, process.cwd());
+    db.insertRun("existing-wake-run", { surfaceIdentity: "acp:outward", chatKey: workstream }, "claude");
+    const accepted = db.addConvTurn(workstream, "user", "Finish task", "claude", { surfaceIdentity: "acp:outward" });
+    const existing = requestRunContinuation(db, {
+      originRunId: "existing-wake-run", surfaceIdentity: "acp:outward",
+      chatKey: workstream, provider: "claude",
+      reason: "Agent requested follow-up", afterSeconds: 30,
+      outwardSessionId: "two-input-session",
+    });
+    const admitted = tryAdmitIdleUpgrade(path, process.pid, { interruptActive: true });
+    expect(admitted.state).toBe("admitted");
+    if (admitted.state !== "admitted") throw new Error("expected admission");
+    const armed = listRunContinuations(db, "acp:outward");
+    expect(armed).toHaveLength(1);
+    expect(armed[0]).toMatchObject({
+      id: existing.id, reason: existing.reason, dueAt: existing.dueAt,
+      recoveryOriginalTurnId: accepted, rolloutRecoveryOnly: true,
+    });
+    expect(releaseIdleUpgrade(path, admitted.fence.token)).toBe(true);
+
+    db.insertRun("ambiguous-run", { surfaceIdentity: "acp:outward", chatKey: "other" }, "codex");
+    db.raw.prepare("INSERT INTO outward_acp_sessions (session_id, conversation_id, cwd) VALUES (?, ?, ?)")
+      .run("other-session", "other", process.cwd());
+    db.addConvTurn("other", "user", "First request", "codex", { surfaceIdentity: "acp:outward" });
+    db.addConvTurn("other", "user", "Second request", "codex", { surfaceIdentity: "acp:outward" });
+    const admitted2 = tryAdmitIdleUpgrade(path, process.pid, { interruptActive: true });
+    expect(admitted2.state).toBe("admitted");
+    if (admitted2.state !== "admitted") throw new Error("expected admission");
+    expect(listRunContinuations(db, "acp:outward")).toHaveLength(1);
+    expect(releaseIdleUpgrade(path, admitted2.fence.token)).toBe(true);
+    db.close();
+  });
+
   it("fails closed if restart occurs before trusted handoff / commit", async () => {
     const { db, path } = setup();
     const runId = "uncontrolled-crash-run";
