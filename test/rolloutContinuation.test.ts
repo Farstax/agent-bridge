@@ -23,10 +23,10 @@ import * as runOwnedProcesses from "../src/runOwnedProcesses.js";
 
 const paths: string[] = [];
 
-function setup() {
+function setup(databaseRole?: "interactive") {
   const path = join(tmpdir(), `rollout-continuation-${Date.now()}-${Math.random()}.sqlite`);
   paths.push(path);
-  const db = openDb(path, { serviceId: "rollout-continuation-test", runId: "test-process" });
+  const db = openDb(path, { serviceId: "rollout-continuation-test", runId: "test-process", ...(databaseRole ? { databaseRole } : {}) });
   return { db, path };
 }
 
@@ -138,7 +138,7 @@ describe("controlled self-rollout continuation recovery (issue #964)", () => {
   });
 
   it("arms exactly one accepted ordinary Workstream objective before a guarded restart and resumes inspection first", () => {
-    const { db, path } = setup();
+    const { db, path } = setup("interactive");
     const runId = "accepted-workstream-run-1";
     const conversation = "workstream-conversation-1";
     db.raw.prepare("INSERT INTO outward_acp_sessions (session_id, conversation_id, cwd) VALUES (?, ?, ?)")
@@ -179,7 +179,7 @@ describe("controlled self-rollout continuation recovery (issue #964)", () => {
   });
 
   it("does not wake a normally completed or user-cancelled accepted objective", () => {
-    const { db, path } = setup();
+    const { db, path } = setup("interactive");
     const conversation = "completed-workstream";
     db.raw.prepare("INSERT INTO outward_acp_sessions (session_id, conversation_id, cwd) VALUES (?, ?, ?)")
       .run("completed-workstream-session", conversation, process.cwd());
@@ -197,7 +197,7 @@ describe("controlled self-rollout continuation recovery (issue #964)", () => {
   });
 
   it("reuses the only pending agent wake and never arms an ambiguous accepted user turn", () => {
-    const { db, path } = setup();
+    const { db, path } = setup("interactive");
     const workstream = "two-input-workstream";
     db.raw.prepare("INSERT INTO outward_acp_sessions (session_id, conversation_id, cwd) VALUES (?, ?, ?)")
       .run("two-input-session", workstream, process.cwd());
@@ -627,7 +627,7 @@ describe("controlled self-rollout continuation recovery (issue #964)", () => {
     });
 
     const cont = listRunContinuations(db)[0];
-    expect(cont.rolloutProvenance).toBeDefined();
+    expect(cont.rolloutProvenance).toBeUndefined(); // Audit is attached by the post-fence claimant.
 
     // Mock getRunOwnedProcessState returning live (descendant still running)
     const spy = vi.spyOn(runOwnedProcesses, "getRunOwnedProcessState").mockReturnValue("live");

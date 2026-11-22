@@ -407,17 +407,7 @@ function capacityCompletionProven(db: BridgeDb, wait: RunContinuation): boolean 
 export function acceptedRecoveryTurn(db: BridgeDb, wake: Pick<RunContinuation,
   "surfaceIdentity" | "chatKey" | "provider" | "recoveryOriginalTurnId">): { id: number; text: string } | null {
   if (!wake.recoveryOriginalTurnId || wake.surfaceIdentity !== "acp:outward") return null;
-  const record = db.raw.prepare(`
-    SELECT id, text FROM conversation_turns
-    WHERE id = ? AND chat_key = ? AND surface_identity = 'acp:outward'
-      AND role = 'user' AND cli = ?
-  `).get(wake.recoveryOriginalTurnId, wake.chatKey, wake.provider) as { id: number; text: string } | undefined;
-  if (!record?.text?.trim() || record.text.length > 160_000) return null;
-  const later = db.raw.prepare(`
-    SELECT 1 FROM conversation_turns WHERE chat_key = ? AND surface_identity = 'acp:outward'
-      AND role = 'user' AND id > ? LIMIT 1
-  `).get(wake.chatKey, record.id);
-  return later ? null : record;
+  return db.getAcceptedOutwardTurn(wake.chatKey, wake.provider, wake.recoveryOriginalTurnId);
 }
 
 /**
@@ -462,13 +452,7 @@ function originalAcceptedTurnId(db: BridgeDb, origin: { run_id: string },
     .get(OUTWARD_RUN_ACCEPTED_TURN_PREFIX + origin.run_id) as { value: string } | undefined;
   if (!linked || !/^[1-9][0-9]*$/.test(linked.value)) return null;
   const id = Number(linked.value);
-  if (!Number.isSafeInteger(id)) return null;
-  const turn = db.raw.prepare(`
-    SELECT id, text FROM conversation_turns
-    WHERE id = ? AND chat_key = ? AND surface_identity = 'acp:outward'
-      AND role = 'user' AND cli = ?
-  `).get(id, wake.chatKey, wake.provider) as { id: number; text: string } | undefined;
-  return turn?.text?.trim() && turn.text.length <= 160_000 ? turn.id : null;
+  return db.getAcceptedOutwardTurn(wake.chatKey, wake.provider, id)?.id ?? null;
 }
 
 /**
@@ -526,6 +510,10 @@ export function claimDueRunContinuation(
 
     const originRun = db.getRun(current.originRunId);
     if (!originRun) return null;
+    if (current.outwardSessionId && current.rolloutRecoveryOnly
+      && (originRun.outcome_status === "complete" || originRun.outcome_status === "blocked")) {
+      return cancel("originating objective already has a terminal provider disposition");
+    }
     if (current.rolloutRecoveryOnly && originRun.status === "done") return cancel("originating objective completed normally");
     if (current.rolloutRecoveryOnly && (originRun.status === "cancelled"
       || (originRun.status === "failed" && originRun.error !== "interrupted_by_controlled_rollout"))) {
