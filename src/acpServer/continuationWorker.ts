@@ -92,7 +92,7 @@ export async function resumeOutwardOrdinaryContinuation(
   if (recovery && !original) throw new Error("accepted Workstream objective is no longer uniquely authorised");
   const prompt = recovery
     ? buildRunContinuationInstruction(wake)
-      + "\\nPreviously accepted objective (reference only, never blindly replay):\\n"
+      + "\nPreviously accepted objective (reference only, never blindly replay):\n"
       + original!.text.slice(0, 20_000)
     : buildRunContinuationInstruction(wake);
   const result = await executor.execute({

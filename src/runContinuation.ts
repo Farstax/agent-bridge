@@ -510,7 +510,8 @@ export function claimDueRunContinuation(
 
     const originRun = db.getRun(current.originRunId);
     if (!originRun) return null;
-    if (current.outwardSessionId && current.rolloutRecoveryOnly
+    if (current.outwardSessionId && originRun.status === "failed"
+      && originRun.error === "interrupted_by_controlled_rollout"
       && (originRun.outcome_status === "complete" || originRun.outcome_status === "blocked")) {
       return cancel("originating objective already has a terminal provider disposition");
     }
