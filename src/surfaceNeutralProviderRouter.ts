@@ -130,9 +130,14 @@ export function createSurfaceNeutralProviderRouter(
           // failure proven to precede prompt submission may advance the chain.
           const failure = error instanceof Error ? error : new Error(String(error));
           const decision = decideProviderRecovery(providerIdForBotName(provider), failure);
-          // Never abandon a Run that has already recorded a valid disposition.
-          // In particular, a missing final answer must not erase its continuation.
-          const recoverable = decision.reason !== null && !readRunOutcome(options.db, input.runId);
+          // A completed/blocked outcome is not an abandoned attempt. Keep a
+          // scheduled continuation when only its final presentation was lost;
+          // for an actual provider failure, preserve the existing stale-wake
+          // cleanup and inspection-first successor behaviour.
+          const disposition = readRunOutcome(options.db, input.runId);
+          const settled = disposition?.status === "complete" || disposition?.status === "blocked"
+            || (disposition?.status === "continue" && failure.name === "MissingAcpAnswerError");
+          const recoverable = decision.reason !== null && !settled;
           if (!recoverable) {
             input.onProviderRecoveryDecision?.(null, false);
             for (const event of attemptEvents) input.collect(event);
