@@ -349,6 +349,8 @@ describe("outward ACP durable queue ownership", () => {
       const baseInput = base(f.session, "direct capacity task", { busyMessages: true, requestId, deferCapacity: true });
       const deferred = await executor.execute(baseInput);
       expect((deferred._meta as any)["agent-bridge"].outcome).toBe("deferred");
+      expect(f.db.getRecentConvTurns(f.session.conversationId, 10, undefined, OUTWARD_ACP_SURFACE)
+        .filter((turn) => turn.role === "assistant")).toEqual([]);
       const receiptKey = `acp-request:${f.session.sessionId}:${requestId}`;
       expect(listRunContinuations(f.db, OUTWARD_ACP_SURFACE)[0]?.outward?.receiptKey).toBe(receiptKey);
       expect(JSON.parse(f.db.getSetting(`outward-queue-receipt:${receiptKey}`)!)).toMatchObject({ outcome: "deferred", status: "waiting" });

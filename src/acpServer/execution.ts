@@ -1126,13 +1126,17 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
         }
         return { stopReason: "cancelled" };
       }
+      // An exhausted chain with a durable capacity wait is not terminal:
+      // only the claimed continuation owns the next user-facing result.
+      const capacityWillDefer = recoveryChainExhausted && encounteredCapacity && !active?.cancelRequested
+        && Boolean(queued || input.capacityResume || (input.deferCapacity && this.supportsDeferredCapacity));
       if (eventStore && db.getRun(runId)?.status === "running") {
         // Failed ACP requests are not assistant history. Persist a bounded,
         // sanitized explanation with the failed Run so reconnects show it.
         const explanation = "The agent could not finish this Run. " + outwardFailureMessage(error)
           + " Existing work may be incomplete; inspect it before continuing.";
         db.runWithLockFence(lane, () => db.runInTransaction(() => {
-          db.addConvTurn(input.session.conversationId, "assistant", explanation, activeProvider, {
+          if (!capacityWillDefer) db.addConvTurn(input.session.conversationId, "assistant", explanation, activeProvider, {
             surfaceIdentity: OUTWARD_ACP_SURFACE,
           });
           eventStore!.collect(failedEvent(runId, activeProvider, input.session, error));
