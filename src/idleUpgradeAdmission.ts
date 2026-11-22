@@ -15,7 +15,7 @@ import Database from "better-sqlite3";
 import { randomUUID } from "node:crypto";
 import { readFileSync, realpathSync } from "node:fs";
 import { readProcessStartTicks } from "./cliSupervisor.js";
-import { parseRunContinuation } from "./runContinuation.js";
+import { parseRunContinuation, OUTWARD_RUN_ACCEPTED_TURN_PREFIX } from "./runContinuation.js";
 
 export const IDLE_UPGRADE_FENCE_KEY = "agent-bridge:idle-maintenance:v1";
 export type IdleUpgradeState = "idle" | "deferred_busy" | "unknown";
@@ -156,23 +156,20 @@ function armInterruptedWorkstreamRecovery(db: Database.Database, nowMs: number):
   const hasSessions = db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'outward_acp_sessions'").get();
   if (!hasSessions) return;
   const runs = db.prepare(`
-    SELECT r.run_id AS runId, r.chat_id AS chatKey, r.bot AS provider,
-      r.started_at AS startedAt, s.session_id AS sessionId
+    SELECT r.run_id AS runId, r.chat_id AS chatKey, r.bot AS provider, s.session_id AS sessionId
     FROM bridge_runs r JOIN outward_acp_sessions s ON s.conversation_id = r.chat_id
     WHERE r.status = 'running' AND r.surface_identity = 'acp:outward' AND s.archived_at IS NULL
-  `).all() as Array<{ runId: string; chatKey: string; provider: string; startedAt: string; sessionId: string }>;
-  const linked = (db.prepare("SELECT value FROM settings WHERE key LIKE 'run-continuation:v1:%'")
-    .all() as Array<{ value: string }>).some((row) => {
-      try { return typeof JSON.parse(row.value)?.successorRunId === "string"; } catch { return false; }
-    });
-  // A successor already executing a continuation has separate authority.
-  // Avoid manufacturing a chain-depth bypass from an incomplete record.
-  const successors = linked ? (db.prepare("SELECT value FROM settings WHERE key LIKE 'run-continuation:v1:%'")
-    .all() as Array<{ value: string }>).map((row) => {
-      try { return (JSON.parse(row.value) as { successorRunId?: string }).successorRunId; } catch { return undefined; }
-    }) : [];
+  `).all() as Array<{ runId: string; chatKey: string; provider: string; sessionId: string }>;
+  const successors = new Set<string>();
+  for (const row of db.prepare("SELECT value FROM settings WHERE key LIKE 'run-continuation:v1:%'")
+    .all() as Array<{ value: string }>) {
+    try {
+      const id = (JSON.parse(row.value) as { successorRunId?: unknown }).successorRunId;
+      if (typeof id === "string" && id.length > 0) successors.add(id);
+    } catch { /* Corrupt records do not authorise a successor. */ }
+  }
   for (const run of runs) {
-    if (successors.includes(run.runId) || !run.sessionId || !Number.isFinite(Date.parse(run.startedAt))) continue;
+    if (successors.has(run.runId) || !run.sessionId) continue;
     if (db.prepare("SELECT 1 FROM settings WHERE key IN (?, ?) LIMIT 1")
       .get(`outward-stop-fence:${run.chatKey}`, `outward-cancel:${run.runId}`)) continue;
     const key = `run-continuation:v1:${run.runId}`;
@@ -180,15 +177,20 @@ function armInterruptedWorkstreamRecovery(db: Database.Database, nowMs: number):
     // is deferred or aborted. The post-rollout claimant may upgrade it to a
     // recovery wake only after a completed containment audit is proven.
     if (db.prepare("SELECT 1 FROM settings WHERE key = ?").get(key)) continue;
-    const acceptedSince = new Date(Date.parse(run.startedAt) - 1_000).toISOString();
-    const turns = db.prepare(`
+    const turnLink = db.prepare("SELECT value FROM settings WHERE key = ?")
+      .get(OUTWARD_RUN_ACCEPTED_TURN_PREFIX + run.runId) as { value: string } | undefined;
+    if (!turnLink || !/^[1-9][0-9]*$/.test(turnLink.value)) continue;
+    const turnId = Number(turnLink.value);
+    if (!Number.isSafeInteger(turnId)) continue;
+    const turn = db.prepare(`
       SELECT id, text, cli FROM conversation_turns
-      WHERE chat_key = ? AND surface_identity = 'acp:outward' AND role = 'user'
-        AND created_at >= ? ORDER BY id DESC LIMIT 2
-    `).all(run.chatKey, acceptedSince) as Array<{ id: number; text: string; cli: string | null }>;
-    if (turns.length !== 1 || turns[0].cli !== run.provider
-      || !turns[0].text.trim() || turns[0].text.length > 160_000
-      || /^\/(?:stop|cancel|reset)(?:\s|$)/i.test(turns[0].text)) continue;
+      WHERE id = ? AND chat_key = ? AND surface_identity = 'acp:outward'
+        AND role = 'user' AND cli = ?
+    `).get(turnId, run.chatKey, run.provider) as { id: number; text: string; cli: string } | undefined;
+    if (!turn || !turn.text.trim() || turn.text.length > 160_000
+      || /^\/(?:stop|cancel|reset)(?:\s|$)/i.test(turn.text)
+      || db.prepare("SELECT 1 FROM conversation_turns WHERE chat_key = ? AND surface_identity = 'acp:outward' AND role = 'user' AND id > ? LIMIT 1")
+        .get(run.chatKey, turnId)) continue;
     const continuation = {
       version: 1, id: run.runId, originRunId: run.runId,
       surfaceIdentity: "acp:outward", chatKey: run.chatKey,
@@ -197,7 +199,7 @@ function armInterruptedWorkstreamRecovery(db: Database.Database, nowMs: number):
       dueAt: new Date(nowMs + 10_000).toISOString(),
       expiresAt: new Date(nowMs + 2 * 60 * 60_000).toISOString(),
       state: "pending", depth: 1, outwardSessionId: run.sessionId,
-      rolloutRecoveryOnly: true, recoveryOriginalTurnId: turns[0].id,
+      rolloutRecoveryOnly: true, recoveryOriginalTurnId: turn.id,
     };
     db.prepare("INSERT INTO settings (key, value) VALUES (?, ?)").run(key, JSON.stringify(continuation));
   }
