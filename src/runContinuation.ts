@@ -394,6 +394,28 @@ function capacityCompletionProven(db: BridgeDb, wait: RunContinuation): boolean 
     && (wait.outward !== undefined || !db.hasAnyPendingMessageId(wait.surfaceIdentity, wait.chatKey, wait.retainedPendingMessageIds!));
 }
 
+/**
+ * Resolve completed, single-origin rollout audit only AFTER the release fence
+ * has gone. Never modify an existing continuation inside the fenced offline
+ * reconciliation phase; a healthy restart (or independently verified rollback)
+ * is the only owner allowed to resume durable work.
+ */
+function provenPostRolloutAudit(db: BridgeDb, originRunId: string): { id: string; completedAt: string } | null {
+  if (db.raw.prepare("SELECT 1 FROM settings WHERE key = 'agent-bridge:idle-maintenance:v1'").get()) return null;
+  const audits = db.raw.prepare(`
+    SELECT id, completed_at AS completedAt, before_json AS beforeJson
+    FROM reconciliation_audit WHERE kind = 'run' AND subject_id = ?
+      AND status = 'completed' AND reason = 'interrupted_by_controlled_rollout'
+    ORDER BY created_at DESC LIMIT 2
+  `).all(originRunId) as Array<{ id: string; completedAt: string | null; beforeJson: string }>;
+  if (audits.length !== 1 || !audits[0].completedAt || !Number.isFinite(Date.parse(audits[0].completedAt))) return null;
+  try {
+    const proof = JSON.parse(audits[0].beforeJson) as { containmentState?: unknown; processState?: unknown };
+    if (proof.containmentState !== "proven" || proof.processState !== "absent") return null;
+  } catch { return null; }
+  return { id: audits[0].id, completedAt: audits[0].completedAt };
+}
+
 export function claimDueRunContinuation(
   db: BridgeDb,
   id: string,
@@ -499,8 +521,28 @@ export function claimDueRunContinuation(
       return claimed;
     }
 
-    if (current.rolloutProvenance) {
-      const prov = current.rolloutProvenance;
+    // A reconciler must never write a continuation under the all-role fence.
+    // Only the existing post-restart claimant can attach already completed
+    // audit proof. An unverified fence or missing/ambiguous audit leaves work
+    // dormant; no successor can be admitted without this exact proof.
+    let rolloutProvenance = current.rolloutProvenance;
+    if (!rolloutProvenance && originRun.status === "failed"
+      && originRun.error === "interrupted_by_controlled_rollout") {
+      const audit = provenPostRolloutAudit(db, current.originRunId);
+      if (!audit) return null;
+      rolloutProvenance = {
+        reconciledAt: audit.completedAt,
+        reason: "interrupted_by_controlled_rollout",
+        reconciliationAuditId: audit.id,
+        originRunId: current.originRunId,
+        surfaceIdentity: current.surfaceIdentity,
+        chatKey: current.chatKey,
+        provider: current.provider,
+      };
+    }
+    if (rolloutProvenance) {
+      if (db.raw.prepare("SELECT 1 FROM settings WHERE key = 'agent-bridge:idle-maintenance:v1'").get()) return null;
+      const prov = rolloutProvenance;
 
       const isProcessAlive = options?.isProcessAlive ?? ((runId: string) => getRunOwnedProcessState(runId) !== "absent");
       if (isProcessAlive(current.originRunId)) {
@@ -581,7 +623,7 @@ export function claimDueRunContinuation(
 
       if (Date.parse(current.dueAt) > nowMs) return null;
 
-      const claimed: RunContinuation = { ...current, state: "claimed", claimedAt: new Date(nowMs).toISOString() };
+      const claimed: RunContinuation = { ...current, rolloutProvenance, state: "claimed", claimedAt: new Date(nowMs).toISOString() };
       db.raw.prepare("UPDATE settings SET value = ? WHERE key = ?").run(JSON.stringify(claimed), key(id));
       return claimed;
     }
