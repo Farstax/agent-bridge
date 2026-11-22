@@ -420,6 +420,36 @@ export function acceptedRecoveryTurn(db: BridgeDb, wake: Pick<RunContinuation,
 }
 
 /**
+ * A failed rollout origin can be resumed only in its original Workstream and
+ * provider. The exact native session is reusable only if a previously DONE
+ * Run proved it before interruption. With no native binding the existing
+ * provider engine can start a fresh inspection-first session. An ambiguous
+ * native binding never gets cleared or silently replaced.
+ */
+export function rolloutRecoveryProviderAuthority(
+  db: BridgeDb,
+  wake: RunContinuation,
+): { providerSessionId?: string; rolloutRecovery: true } | null {
+  if (!wake.rolloutRecoveryOnly || !wake.rolloutProvenance || !acceptedRecoveryTurn(db, wake)
+    || wake.state !== "claimed" || !wake.claimToken || wake.surfaceIdentity !== "acp:outward") return null;
+  const origin = db.getRun(wake.originRunId);
+  if (!origin || origin.status !== "failed" || origin.error !== "interrupted_by_controlled_rollout"
+    || origin.surface_identity !== wake.surfaceIdentity
+    || origin.chat_id !== wake.chatKey || origin.bot !== wake.provider) return null;
+  const bound = lookupProviderSession(db, {
+    surfaceIdentity: wake.surfaceIdentity, chatKey: wake.chatKey,
+  }, wake.provider);
+  if (!bound) return { rolloutRecovery: true };
+  const previouslySettled = db.raw.prepare(`
+    SELECT 1 FROM bridge_runs WHERE session_id = ? AND status = 'done'
+      AND surface_identity = ? AND chat_id = ? AND bot = ?
+      AND started_at < ? AND ended_at <= ? LIMIT 1
+  `).get(bound, wake.surfaceIdentity, wake.chatKey, wake.provider,
+    origin.started_at, origin.started_at);
+  return previouslySettled ? { providerSessionId: bound, rolloutRecovery: true } : null;
+}
+
+/**
  * Resolve completed, single-origin rollout audit only AFTER the release fence
  * has gone. Never modify an existing continuation inside the fenced offline
  * reconciliation phase; a healthy restart (or independently verified rollback)
@@ -1086,6 +1116,16 @@ export function buildPostRolloutVerificationTurnText(reason: string): string {
 
 /** Shared instruction for unfinished objectives; never replay the original user request. */
 export function buildRunContinuationInstruction(continuation: RunContinuation): string {
+  if (continuation.rolloutRecoveryOnly) {
+    return [
+      "[Agent Bridge continuation]",
+      "A previously accepted Workstream objective has no verified final outcome.",
+      "Before acting, inspect the conversation, current files and commits, queued work, durable receipts and any external operations.",
+      "Determine what has actually completed. Do not replay the previous mutating request or duplicate external side effects.",
+      "Continue only the outstanding authorised work. Report normal meaningful progress, a verified result or a genuine blocker.",
+      "Do not announce or explain an infrastructure change unless it is itself relevant to a genuine blocker.",
+    ].join("\\n");
+  }
   return [
     "[Agent Bridge continuation]",
     "A required bounded operation was still pending in the previous Run.",
