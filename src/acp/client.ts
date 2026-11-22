@@ -48,6 +48,9 @@ const IN_BAND_FAILURE_TEXT_MARKERS: Readonly<Record<string, readonly RegExp[]>> 
 const AGY_QUOTA_BANNER =
   /^\s*Usage Limit Reached\s+You have reached your current quota for this period\.(?:\s+Your limit will reset in ((?:\d+ (?:days?|hours?|minutes?)(?:, | and )?)+)\.?)?\s*$/i;
 
+// Whole-message Agy quota variant; avoid matching quoted discussions.
+const AGY_INDIVIDUAL_QUOTA_BANNER = /^\s*Individual quota reached\.?\s*$/i;
+
 function relativeResetMs(text: string): number | null {
   let total = 0;
   for (const [, n, unit] of text.matchAll(/(\d+) (day|hour|minute)/gi)) {
@@ -59,8 +62,8 @@ function relativeResetMs(text: string): number | null {
 function inBandFailureDiagnostic(providerId: string | undefined, liveText: string): AcpSystemError | null {
   if (providerId === "agy") {
     const banner = AGY_QUOTA_BANNER.exec(liveText);
-    if (banner) {
-      const ms = banner[1] ? relativeResetMs(banner[1]) : null;
+    if (banner || AGY_INDIVIDUAL_QUOTA_BANNER.test(liveText)) {
+      const ms = banner?.[1] ? relativeResetMs(banner[1]) : null;
       return new AcpSystemError(liveText, "usageLimitExceeded", ms === null ? undefined : new Date(Date.now() + ms).toISOString());
     }
   }

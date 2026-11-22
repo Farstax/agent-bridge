@@ -688,7 +688,11 @@ describe("outward ACP Workstreams (#1101)", () => {
       agent.request(acp.methods.agent.session.prompt, { sessionId: "s1", prompt: [{ type: "text", text: "accepted before failure" }] })))
       .rejects.toMatchObject({ code: -32001 });
 
-    expect(f.sessions.history!("acp:c1")).toEqual([{ role: "user", text: "accepted before failure" }]);
+    const retainedHistory = f.sessions.history!("acp:c1");
+    expect(retainedHistory[0]).toEqual({ role: "user", text: "accepted before failure" });
+    expect(retainedHistory[1]).toMatchObject({
+      role: "assistant", text: expect.stringContaining("could not finish this Run"),
+    });
     expect(exec.status(f.repo.get("s1")!).lastRun).toMatchObject({ status: "failed", error: expect.any(String) });
 
     f.db.close();
@@ -707,7 +711,7 @@ describe("outward ACP Workstreams (#1101)", () => {
       state: "failed",
       lastRun: { status: "failed", error: "provider failed" },
     });
-    expect(f.sessions.history!("acp:c1")).toEqual([{ role: "user", text: "accepted before failure" }]);
+    expect(f.sessions.history!("acp:c1")).toEqual(retainedHistory);
   });
 
   it("does not replay an assistant answer when its terminal Run update fails", async () => {
@@ -724,7 +728,12 @@ describe("outward ACP Workstreams (#1101)", () => {
     } finally {
       f.db.updateRunCompleted = updateRunCompleted;
     }
-    expect(f.sessions.history!(session.conversationId)).toEqual([{ role: "user", text: "do not mark complete" }]);
+    const history = f.sessions.history!(session.conversationId);
+    expect(history[0]).toEqual({ role: "user", text: "do not mark complete" });
+    expect(history[1]).toMatchObject({
+      role: "assistant", text: expect.stringContaining("could not finish this Run"),
+    });
+    expect(history[1]!.text).not.toContain("Task completed");
     expect(exec.status(session)).toMatchObject({ state: "failed", lastRun: { status: "failed" } });
   });
 });

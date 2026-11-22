@@ -33,7 +33,7 @@ import {
   CliTimeoutError,
   ProviderStallError,
 } from "./cli.js";
-import { supportsProvisionalAnswers } from "./providers/acpRuntime.js";
+import { MissingAcpAnswerError, supportsProvisionalAnswers } from "./providers/acpRuntime.js";
 import { isAcpBackedBot, providerIdForBotName, supportsReadOnlyBtw } from "./providers/registry.js";
 import { decideProviderRecovery, type ProviderFallbackReason } from "./providers/recoveryVerdict.js";
 import {
@@ -2287,6 +2287,20 @@ export class BridgeEngine {
       includeExecutionContract: !isVerificationOnly && this.kind !== "autonomous",
     });
     const executionLane = this._executionLane(chatKey);
+    // An outcome is a durable provider claim, not a reason to execute the
+    // original task again because its final presentation was omitted.
+    const recordedOutcomeWithoutAnswer = (error: unknown): CliResult | null => {
+      if (!(error instanceof MissingAcpAnswerError) || !runId || error.stopReason === "refusal"
+        || this.laneCoordinator.hasCancellation(executionLane) || this.laneCoordinator.isAborted(executionLane)) return null;
+      const disposition = readRunOutcome(this.db, runId);
+      if (!disposition) return null;
+      return {
+        text: "The agent recorded " + disposition.status
+          + " but did not provide a final answer. Recorded details: " + disposition.detail,
+        sessionId: error.sessionId,
+        stopReason: error.stopReason,
+      };
+    };
     try {
       let stdout: string;
       let parsedAcp: CliResult | null = null;
@@ -2330,7 +2344,11 @@ export class BridgeEngine {
             preferProviderDefaults: this.opts.surfaceIdentity === "acp:outward",
           },
           { conversationId: chatKey, runId: runId ?? randomUUID() },
-        ));
+        )).catch((error: unknown) => {
+          const recovered = recordedOutcomeWithoutAnswer(error);
+          if (!recovered) throw error;
+          return { stdout: "", parsed: recovered };
+        });
         stdout = invoked.stdout;
         parsedAcp = invoked.parsed;
       } finally {
@@ -2464,7 +2482,9 @@ export class BridgeEngine {
         } catch (error) {
           if (error instanceof LostExecutionLeaseError) throw error;
           if (this.laneCoordinator.hasCancellation(executionLane) || this.laneCoordinator.isAborted(executionLane)) throw error;
-          throw new RunOutcomeReconciliationError(
+          const recovered = recordedOutcomeWithoutAnswer(error);
+          if (recovered) reconciled = { stdout: "", parsed: recovered };
+          else throw new RunOutcomeReconciliationError(
             "Provider error during outcome reconciliation; original work may have executed and intent remains unresolved.",
             { cause: error },
           );
@@ -2488,10 +2508,15 @@ export class BridgeEngine {
           return stagedResult;
         }
         const reported = readRunOutcome(this.db, runId!);
+        if (!reported && reconciledResult.stopReason === "refusal") {
+          // A structural refusal is not an unavailable provider. Do not route around it.
+          throw new MissingRunOutcomeError("The provider refused outcome reconciliation; original intent remains unresolved.");
+        }
         if (!reported) {
-          throw new MissingRunOutcomeError(
+          // An inspection-first successor may reconcile the existing work. Do not replay it.
+          throw attachProviderFailureEvidence(new MissingRunOutcomeError(
             "The provider did not report an objective outcome after the single reconciliation attempt.",
-          );
+          ), { promptSubmitted: true });
         }
         // Keep artifacts from the first invocation, but use the reconciled
         // final answer: the first one may have claimed failure/completion

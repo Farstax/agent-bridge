@@ -1126,9 +1126,22 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
         }
         return { stopReason: "cancelled" };
       }
+      // An exhausted chain with a durable capacity wait is not terminal:
+      // only the claimed continuation owns the next user-facing result.
+      const capacityWillDefer = recoveryChainExhausted && encounteredCapacity && !active?.cancelRequested
+        && Boolean(queued || input.capacityResume || (input.deferCapacity && this.supportsDeferredCapacity));
       if (eventStore && db.getRun(runId)?.status === "running") {
-        eventStore.collect(failedEvent(runId, activeProvider, input.session, error));
-        eventStore.finalize();
+        // Failed ACP requests are not assistant history. Persist a bounded,
+        // sanitized explanation with the failed Run so reconnects show it.
+        const explanation = "The agent could not finish this Run. " + outwardFailureMessage(error)
+          + " Existing work may be incomplete; inspect it before continuing.";
+        db.runWithLockFence(lane, () => db.runInTransaction(() => {
+          if (!capacityWillDefer) db.addConvTurn(input.session.conversationId, "assistant", explanation, activeProvider, {
+            surfaceIdentity: OUTWARD_ACP_SURFACE,
+          });
+          eventStore!.collect(failedEvent(runId, activeProvider, input.session, error));
+          eventStore!.finalize();
+        }));
       }
       // An idempotent contender can lose the race before its own Run is
       // persisted while another process commits the same request ID. Report
@@ -1169,8 +1182,8 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
       if (input.deferCapacity && this.supportsDeferredCapacity && !input.capacityResume && !active?.cancelRequested &&
           capacityWaitEligible) {
         const continuationId = `acp-capacity-wait:${runId}`;
-        await retainOutwardAcpAttachmentsForWait(input.session.cwd, input.attachments ?? [], continuationId);
         try {
+          await retainOutwardAcpAttachmentsForWait(input.session.cwd, input.attachments ?? [], continuationId);
           const persistWait = () => requestRunContinuation(db, {
             continuationId,
             originRunId: runId,
@@ -1205,6 +1218,15 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
             persistWait();
           }
         } catch (persistError) {
+          // An intended capacity deferral was not durably accepted. A direct
+          // request is terminal: retain its explanation instead of leaving a
+          // failed Run without an assistant history turn. Queued work stays
+          // owned by its existing retry receipt; do not fabricate a failure.
+          if (!queued) db.runWithLockFence(lane, () => {
+            db.addConvTurn(input.session.conversationId, "assistant",
+              "The agent could not schedule a provider-capacity retry. Existing work may be incomplete; inspect it before continuing.",
+              activeProvider, { surfaceIdentity: OUTWARD_ACP_SURFACE });
+          });
           // Leave a short-lived orphan for the bounded owner-marker cleanup;
           // never signal deferred admission if its durable record was not made.
           throw persistError;
@@ -1276,6 +1298,11 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
           this.writeQueueReceipt(queued.key, { outcome: "queued", status: "queued", reason: "provider_capacity" });
         } else {
           this.writeQueueReceipt(queued.key, { outcome: "settled", status: "failed", reason: "provider_capacity" });
+          // No continuation or queued retry remains. Explain the terminal
+          // failure atomically with its receipt, under the existing queue claim.
+          db.addConvTurn(session.conversationId, "assistant",
+            "The agent could not finish this queued request because all provider-capacity retries were exhausted. Existing work may be incomplete; inspect it before continuing.",
+            db.getRun(runId)?.bot ?? this.selectedProvider(session), { surfaceIdentity: OUTWARD_ACP_SURFACE });
           clearSetting(db, attemptsKey);
         }
         return true;

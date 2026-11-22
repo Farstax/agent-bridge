@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { openDb } from "../src/db.js";
 import { createSurfaceNeutralProviderRouter } from "../src/surfaceNeutralProviderRouter.js";
 import { recordRunOutcome } from "../src/runOutcome.js";
+import { attachProviderFailureEvidence } from "../src/providers/failureEvidence.js";
 import { listRunContinuations, requestRunContinuation } from "../src/runContinuation.js";
 import type { BotKind } from "../src/types.js";
 
@@ -192,6 +193,34 @@ describe("surface-neutral provider attempt isolation", () => {
       db.unlock(lane!);
       db.close();
     }
+  });
+
+  it("does not abandon a recorded outcome when the provider fails after disposition", async () => {
+    const db = openDb(":memory:");
+    const identity = { surfaceIdentity: "acp:outward", chatKey: "autonomous:episode-1" };
+    db.insertRun("run-1", identity, "claude");
+    const lane = db.acquireLock(identity.surfaceIdentity, identity.chatKey);
+    expect(lane).not.toBeNull();
+    recordRunOutcome(db, {
+      runId: "run-1", surfaceIdentity: identity.surfaceIdentity, chatKey: identity.chatKey,
+      provider: "claude", status: "complete", detail: "verified",
+      lock: { serviceId: lane!.serviceId, runId: lane!.runId, acquisitionId: lane!.acquisitionId },
+    });
+    const next = vi.fn(async () => ({ text: "must not run", sessionId: "s" }));
+    const router = createSurfaceNeutralProviderRouter({
+      db, surfaceIdentity: identity.surfaceIdentity, initialProvider: "claude",
+      providerChain: ["claude", "codex"],
+      engineForProvider: (provider) => provider === "claude"
+        ? { executeSurfaceNeutralTurn: async () => {
+          throw attachProviderFailureEvidence(new Error("missing final answer"), { promptSubmitted: true });
+        } } as any
+        : { executeSurfaceNeutralTurn: next } as any,
+    });
+    try {
+      await expect(router.executeSurfaceNeutralTurn({ ...turnInput(vi.fn()), laneHandle: lane! })).rejects.toThrow();
+      expect(db.getRun("run-1").outcome_status).toBe("complete");
+      expect(next).not.toHaveBeenCalled();
+    } finally { db.unlock(lane!); db.close(); }
   });
 
   it("preserves the final provider failure when no fallback remains", async () => {

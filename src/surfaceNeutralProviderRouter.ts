@@ -3,7 +3,7 @@ import type { BridgeEngine, SurfaceNeutralTurnInput } from "./engine.js";
 import type { BridgeEvent } from "./events/types.js";
 import { ProviderFallbackChain } from "./providerFallback.js";
 import { RunRepository } from "./repositories/runRepository.js";
-import { resetAbandonedRunDisposition } from "./runOutcome.js";
+import { readRunOutcome, resetAbandonedRunDisposition } from "./runOutcome.js";
 import { providerIdForBotName } from "./providers/registry.js";
 import { decideProviderRecovery } from "./providers/recoveryVerdict.js";
 import { markHandoffRequired } from "./handoffState.js";
@@ -130,7 +130,14 @@ export function createSurfaceNeutralProviderRouter(
           // failure proven to precede prompt submission may advance the chain.
           const failure = error instanceof Error ? error : new Error(String(error));
           const decision = decideProviderRecovery(providerIdForBotName(provider), failure);
-          const recoverable = decision.reason !== null;
+          // A completed/blocked outcome is not an abandoned attempt. Keep a
+          // scheduled continuation when only its final presentation was lost;
+          // for an actual provider failure, preserve the existing stale-wake
+          // cleanup and inspection-first successor behaviour.
+          const disposition = readRunOutcome(options.db, input.runId);
+          const settled = disposition?.status === "complete" || disposition?.status === "blocked"
+            || (disposition?.status === "continue" && failure.name === "MissingAcpAnswerError");
+          const recoverable = decision.reason !== null && !settled;
           if (!recoverable) {
             input.onProviderRecoveryDecision?.(null, false);
             for (const event of attemptEvents) input.collect(event);

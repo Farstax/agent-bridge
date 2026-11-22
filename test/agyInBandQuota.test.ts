@@ -37,6 +37,14 @@ describe("provider-scoped in-band failure text", () => {
     expect(retry).toBeLessThan((5 * 24 + 19) * 3600);
   });
 
+  it("recognizes only a complete individual-quota reply", async () => {
+    const error = await run("agy", "Individual quota reached").then(() => null, (e: Error) => e);
+    expect(error?.name).toBe("AcpSystemError");
+    expect(decideProviderRecovery("agy", error!)).toMatchObject({ reason: "capacity", capacityExhausted: true });
+    expect((await run("agy", "The provider said: Individual quota reached")).liveText)
+      .toContain("Individual quota reached");
+  });
+
   it("falls back to unknown timing when the banner has no parseable reset", async () => {
     const error = await run("agy", "Usage Limit Reached\n\nYou have reached your current quota for this period.").then(() => null, (e: Error) => e);
     expect(classifyProviderError("agy", error!).kind).toBe("capacity_exhausted");

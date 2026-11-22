@@ -765,6 +765,12 @@ describe("outward ACP prompt execution", () => {
       });
       expect(attempts).toBe(1);
       expect(db.getRun("run-host-capacity")).toMatchObject({ status: "failed" });
+      // A reconnect/history read must retain a truthful failure even when
+      // the ACP request itself ended in an error instead of an assistant chunk.
+      const history = db.getRecentConvTurns("acp:host-capacity", 5, undefined, OUTWARD_ACP_SURFACE);
+      expect(history.filter((turn) => turn.role === "assistant")).toHaveLength(1);
+      expect(history.find((turn) => turn.role === "assistant")?.text).toContain("could not finish");
+
     } finally {
       db.close();
       rmSync(root, { recursive: true, force: true });
