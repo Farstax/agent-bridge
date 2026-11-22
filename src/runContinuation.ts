@@ -432,6 +432,11 @@ export function rolloutRecoveryProviderAuthority(
 ): { providerSessionId?: string; rolloutRecovery: true } | null {
   if (!wake.rolloutRecoveryOnly || !wake.rolloutProvenance || !acceptedRecoveryTurn(db, wake)
     || wake.state !== "claimed" || !wake.claimToken || wake.surfaceIdentity !== "acp:outward") return null;
+  const audit = provenPostRolloutAudit(db, wake.originRunId);
+  if (!audit || audit.id !== wake.rolloutProvenance.reconciliationAuditId
+    || getRunOwnedProcessState(wake.originRunId) !== "absent") return null;
+  if (db.raw.prepare("SELECT 1 FROM settings WHERE key IN (?, ?) LIMIT 1")
+    .get(`outward-stop-fence:${wake.chatKey}`, `outward-cancel:${wake.originRunId}`)) return null;
   const origin = db.getRun(wake.originRunId);
   if (!origin || origin.status !== "failed" || origin.error !== "interrupted_by_controlled_rollout"
     || origin.surface_identity !== wake.surfaceIdentity
@@ -709,6 +714,11 @@ export function claimDueRunContinuation(
         : { ...current, rolloutRecoveryOnly: true, recoveryOriginalTurnId: originalId };
       if (current.outwardSessionId && !eligible) {
         return cancel("interrupted Workstream objective could not be attributed to one accepted user turn", "failed");
+      }
+      if (recoveryWake.rolloutRecoveryOnly && db.raw.prepare(
+        "SELECT 1 FROM settings WHERE key IN (?, ?) LIMIT 1",
+      ).get(`outward-stop-fence:${recoveryWake.chatKey}`, `outward-cancel:${recoveryWake.originRunId}`)) {
+        return cancel("originating Workstream was stopped by the user");
       }
       if (recoveryWake.rolloutRecoveryOnly && !acceptedRecoveryTurn(db, recoveryWake)) {
         return cancel("accepted originating Workstream objective or authority changed", "failed");
