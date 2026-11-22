@@ -106,15 +106,46 @@ describe("atomic generic idle-only upgrade admission (#1161)", () => {
     expect(tryAdmitIdleUpgrade(path)).toEqual({ state: "deferred_busy" });
     // Transient dispatch/capacity states are not reconciled by a controlled rollout: they still defer.
     db.raw.prepare("INSERT INTO settings (key, value) VALUES (?, ?)").run("outward-queue-reservation:x", "{}");
-    expect(tryAdmitIdleUpgrade(path, process.pid, { interruptActive: true })).toEqual({ state: "deferred_busy" });
+    expect(tryAdmitIdleUpgrade(path, process.pid, { interruptActive: true })).toEqual({ state: "deferred_busy", reason: "outward_reservation" });
     db.raw.prepare("DELETE FROM settings WHERE key = ?").run("outward-queue-reservation:x");
     const result = tryAdmitIdleUpgrade(path, process.pid, { interruptActive: true });
     expect(result.state).toBe("admitted");
     expect(() => db.insertRun("run-2", identity, "claude")).toThrow("agent_bridge_idle_maintenance_deferred_busy");
     expect(() => db.createEventReceipt(event)).toThrow("agent_bridge_idle_maintenance_deferred_busy");
     // A second admission and a malformed marker are still refused: the option never bypasses an existing fence.
-    expect(tryAdmitIdleUpgrade(path, process.pid, { interruptActive: true })).toEqual({ state: "deferred_busy" });
+    expect(tryAdmitIdleUpgrade(path, process.pid, { interruptActive: true })).toEqual({ state: "deferred_busy", reason: "existing_fence" });
     if (result.state === "admitted") expect(releaseIdleUpgrade(path, result.fence.token)).toBe(true);
+  });
+
+  it("ignores expired capacity claims but preserves live claims and ambiguous dispatch (#1207)", () => {
+    const options = { interruptActive: true };
+    const claim = db.acquireExecutionCapacity(2, "execution", "acquisition");
+    expect(claim).not.toBeNull();
+    expect(tryAdmitIdleUpgrade(path, process.pid, options))
+      .toEqual({ state: "deferred_busy", reason: "capacity_claim" });
+    // The existing capacity lease contract relinquishes expired claims; admission
+    // must neither delete them prematurely nor ignore live ownership.
+    db.raw.prepare("UPDATE execution_capacity_claims SET lease_expires_at = ? WHERE claim_id = ?")
+      .run("2000-01-01T00:00:00.000Z", claim!.claimId);
+    const expiredClaimAdmission = tryAdmitIdleUpgrade(path, process.pid, options);
+    expect(expiredClaimAdmission.state).toBe("admitted");
+    if (expiredClaimAdmission.state !== "admitted") throw new Error("expired claim should not defer");
+    expect(db.raw.prepare("SELECT claim_id FROM execution_capacity_claims").get())
+      .toMatchObject({ claim_id: claim!.claimId });
+    expect(releaseIdleUpgrade(path, expiredClaimAdmission.fence.token)).toBe(true);
+
+    db.setSetting("outward-queue-reservation:test", "{}");
+    expect(tryAdmitIdleUpgrade(path, process.pid, options))
+      .toEqual({ state: "deferred_busy", reason: "outward_reservation" });
+    db.raw.prepare("DELETE FROM settings WHERE key = ?").run("outward-queue-reservation:test");
+
+    db.createEventReceipt(event);
+    db.raw.prepare("UPDATE event_receipts SET status = 'dispatching' WHERE idempotency_key = ?")
+      .run(event.idempotency_key);
+    expect(tryAdmitIdleUpgrade(path, process.pid, options))
+      .toEqual({ state: "deferred_busy", reason: "event_dispatch" });
+    expect(db.raw.prepare("SELECT status FROM event_receipts WHERE idempotency_key = ?")
+      .get(event.idempotency_key)).toMatchObject({ status: "dispatching" });
   });
 
   it("preserves durable queued messages across idle admission without allowing them to execute", () => {
