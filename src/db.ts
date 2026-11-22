@@ -54,7 +54,6 @@ export interface ControlledRolloutReconciliationOptions {
   isProcessAlive?: (runId: string) => boolean;
 }
 
-import type { RunContinuation } from "./runContinuation.js";
 
 import { ConversationRepository, DEFAULT_CONTEXT_MAX_CHARS, type AuthorizedConversationSearchScope, type ConversationTurnProvenance } from "./repositories/conversationRepository.js";
 export { DEFAULT_CONTEXT_MAX_CHARS, DEFAULT_CONTEXT_RECENT_TURN_LIMIT } from "./repositories/conversationRepository.js";
