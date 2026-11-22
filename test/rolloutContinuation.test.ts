@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { openDb } from "../src/db.js";
+import { tryAdmitIdleUpgrade, releaseIdleUpgrade } from "../src/idleUpgradeAdmission.js";
 import { persistProviderSession } from "../src/providers/sessionRuntime.js";
 import {
   buildDiscordRunContinuationTurn,
@@ -65,11 +66,10 @@ describe("controlled self-rollout continuation recovery (issue #964)", () => {
     });
     expect(reconResult.reconciledRunIds).toContain(runId);
 
-    // Provenance stamped
+    // Reconciliation cannot stamp a continuation during the all-role fence.
+    // The existing worker claims the completed audit only after fence release.
     const contAfter = listRunContinuations(db)[0];
-    expect(contAfter.rolloutProvenance).toBeDefined();
-    expect(contAfter.rolloutProvenance?.originRunId).toBe(runId);
-    expect(contAfter.rolloutProvenance?.reason).toBe("interrupted_by_controlled_rollout");
+    expect(contAfter.rolloutProvenance).toBeUndefined();
 
     // Service restarts - simulate new service instance
     db.close();
@@ -94,9 +94,40 @@ describe("controlled self-rollout continuation recovery (issue #964)", () => {
     expect(dispatch).toHaveBeenCalledTimes(1);
 
     const settled = listRunContinuations(restartedDb)[0];
+    expect(settled.rolloutProvenance?.originRunId).toBe(runId);
+    expect(settled.rolloutProvenance?.reason).toBe("interrupted_by_controlled_rollout");
     expect(settled.state).toBe("completed");
 
     restartedDb.close();
+  });
+
+  it("reconciles an existing continuation while the exact SQLite fence is held and only claims after release", () => {
+    const { db, path } = setup();
+    const runId = "fenced-rollout-recovery";
+    db.insertRun(runId, { surfaceIdentity: "acp:outward", chatKey: "conversation-1" }, "codex");
+    requestRunContinuation(db, {
+      originRunId: runId, surfaceIdentity: "acp:outward",
+      chatKey: "conversation-1", provider: "codex",
+      reason: "inspect previous work before resuming", afterSeconds: 10,
+      outwardSessionId: "workstream-1",
+    }, 1_000);
+    const admitted = tryAdmitIdleUpgrade(path, process.pid, { interruptActive: true });
+    expect(admitted.state).toBe("admitted");
+    if (admitted.state !== "admitted") throw new Error("expected fence");
+    // The guarded trigger would reject the old reconciliation UPDATE settings.
+    expect(() => db.raw.prepare("UPDATE settings SET value = value WHERE key = ?")
+      .run("run-continuation:v1:" + runId)).toThrow("agent_bridge_idle_maintenance_deferred_busy");
+    const result = db.reconcileControlledRollout({
+      reason: "interrupted_by_controlled_rollout", nowMs: 2_000, isProcessAlive: () => false,
+    });
+    expect(result.reconciledRunIds).toEqual([runId]);
+    expect(listRunContinuations(db)[0].rolloutProvenance).toBeUndefined();
+    expect(claimDueRunContinuation(db, runId, 11_000)).toBeNull();
+    expect(releaseIdleUpgrade(path, admitted.fence.token)).toBe(true);
+    const claimed = claimDueRunContinuation(db, runId, 11_000, { isProcessAlive: () => false });
+    expect(claimed?.rolloutProvenance?.originRunId).toBe(runId);
+    expect(claimDueRunContinuation(db, runId, 11_000)).toBeNull();
+    db.close();
   });
 
   it("fails closed if restart occurs before trusted handoff / commit", async () => {
