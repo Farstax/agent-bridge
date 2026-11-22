@@ -335,6 +335,36 @@ describe("outward ACP durable queue ownership", () => {
     } finally { f.cleanup(); }
   });
 
+  it("records one terminal explanation only after queued capacity retries exhaust their budget", async () => {
+    const f = fixture();
+    try {
+      const key = "acp-request:s1:terminal-capacity";
+      const rowId = f.db.enqueueMsg(OUTWARD_ACP_SURFACE, f.session.conversationId, {
+        prompt: "finish queued task", chatId: f.session.sessionId, chatType: "acp", scheduledOccurrenceKey: key,
+      });
+      const lane = f.db.acquireLock(OUTWARD_ACP_SURFACE, f.session.conversationId);
+      expect(lane).not.toBeNull();
+      expect(f.db.claimNextPendingMsg(lane!)?.id).toBe(rowId);
+      f.db.insertRun("terminal-capacity-run", { surfaceIdentity: OUTWARD_ACP_SURFACE, chatKey: f.session.conversationId }, "codex");
+      f.db.updateRunFailed("terminal-capacity-run", "provider at capacity");
+      const executor = f.executor as unknown as { settleQueuedThroughCore: (
+        session: typeof f.session, queued: unknown, runId: string, capacityRequeue: boolean,
+      ) => Promise<string> };
+      for (let attempt = 1; attempt <= 5; attempt += 1) {
+        expect(await executor.settleQueuedThroughCore(f.session,
+          { id: rowId, laneHandle: lane!, key, retainedId: null }, "terminal-capacity-run", true))
+          .toBe(attempt === 5 ? "committed" : "deferred");
+        const answers = f.db.getRecentConvTurns(f.session.conversationId, 10, undefined, OUTWARD_ACP_SURFACE)
+          .filter((turn) => turn.role === "assistant");
+        expect(answers).toHaveLength(attempt === 5 ? 1 : 0);
+        if (attempt === 5) expect(answers[0]?.text).toContain("capacity retries were exhausted");
+      }
+      expect(JSON.parse(f.db.getSetting(`outward-queue-receipt:${key}`)!))
+        .toMatchObject({ outcome: "settled", status: "failed", reason: "provider_capacity" });
+      f.db.unlock(lane!);
+    } finally { f.cleanup(); }
+  });
+
   it("retains an actionable failure if a direct capacity wait cannot be persisted", async () => {
     const f = fixture();
     try {

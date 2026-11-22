@@ -15,7 +15,7 @@ afterEach(() => {
   for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
 });
 
-function fixture(mode: "complete-after-retry" | "continue-after-retry" | "blocked-after-retry" | "missing-twice" | "report-first" | "report-first-empty" | "refusal-on-reconcile" | "report-continue" | "continue-no-wake" | "continue-cancelled-wake" | "continue-mismatched-wake" | "continue-mismatched-binding" | "retry-throws" | "refusal" | "continue-then-invalid-session" | "continue-then-model-fallback" | "continue-then-internal-retry", surfaceIdentity = "telegram:interactive") {
+function fixture(mode: "complete-after-retry" | "continue-after-retry" | "blocked-after-retry" | "missing-twice" | "report-first" | "report-first-empty" | "report-on-reconcile-empty" | "continue-on-reconcile-empty" | "refusal-on-reconcile" | "report-continue" | "continue-no-wake" | "continue-cancelled-wake" | "continue-mismatched-wake" | "continue-mismatched-binding" | "retry-throws" | "refusal" | "continue-then-invalid-session" | "continue-then-model-fallback" | "continue-then-internal-retry", surfaceIdentity = "telegram:interactive") {
   const dir = mkdtempSync(join(tmpdir(), "run-outcome-engine-")); dirs.push(dir);
   const path = join(dir, "bridge.sqlite");
   const db = openDb(path, { serviceId: "outcome-engine-test", runId: "process" });
@@ -30,6 +30,12 @@ function fixture(mode: "complete-after-retry" | "continue-after-retry" | "blocke
     if (mode === "retry-throws" && calls === 2) throw new Error("provider quota exhausted after initial work");
     if (mode === "report-first-empty") {
       requestAgentBridgeOutcome(["complete", "--evidence", "verified"], options.contextEnv);
+      throw new MissingAcpAnswerError("claude", "live text", "same-acp-session", "end_turn");
+    }
+    if ((mode === "report-on-reconcile-empty" || mode === "continue-on-reconcile-empty") && calls === 2) {
+      requestAgentBridgeOutcome(mode === "report-on-reconcile-empty"
+        ? ["complete", "--evidence", "verified during reconciliation"]
+        : ["continue", "--after-seconds", "60", "--reason", "work remains"], options.contextEnv);
       throw new MissingAcpAnswerError("claude", "live text", "same-acp-session", "end_turn");
     }
     if (mode === "continue-then-invalid-session" && calls === 1) {
@@ -115,6 +121,27 @@ describe("ordinary Run objective settlement", () => {
     expect(invocation).toHaveBeenCalledTimes(1);
     expect(result.text).toContain("Recorded details: verified");
     expect(db.getRun("run-one").outcome_status).toBe("complete");
+    db.close();
+  });
+
+  it.each([
+    ["complete", "report-on-reconcile-empty"],
+    ["continue", "continue-on-reconcile-empty"],
+  ] as const)("preserves %s recorded by reconciliation even if its final answer is empty", async (status, mode) => {
+    const { db, engine, handle, invocation } = fixture(mode, "acp:outward");
+    const result = await engine.executePromptAsync(
+      "Check and report the original task", null, "chat",
+      { publishArtifacts: false, ordinaryWorkstreamId: "chat" },
+      () => {}, [], undefined, "run-one", null, "chat", handle,
+    );
+    expect(invocation).toHaveBeenCalledTimes(2);
+    expect(result.text).toContain("The agent recorded " + status);
+    expect(db.getRun("run-one").outcome_status).toBe(status);
+    if (status === "continue") {
+      expect(listRunContinuations(db, "acp:outward")).toEqual([
+        expect.objectContaining({ state: "pending", outwardSessionId: "chat", originRunId: "run-one" }),
+      ]);
+    }
     db.close();
   });
 

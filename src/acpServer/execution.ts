@@ -1298,6 +1298,11 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
           this.writeQueueReceipt(queued.key, { outcome: "queued", status: "queued", reason: "provider_capacity" });
         } else {
           this.writeQueueReceipt(queued.key, { outcome: "settled", status: "failed", reason: "provider_capacity" });
+          // No continuation or queued retry remains. Explain the terminal
+          // failure atomically with its receipt, under the existing queue claim.
+          db.addConvTurn(session.conversationId, "assistant",
+            "The agent could not finish this queued request because all provider-capacity retries were exhausted. Existing work may be incomplete; inspect it before continuing.",
+            db.getRun(runId)?.bot ?? this.selectedProvider(session), { surfaceIdentity: OUTWARD_ACP_SURFACE });
           clearSetting(db, attemptsKey);
         }
         return true;

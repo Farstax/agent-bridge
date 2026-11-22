@@ -2287,6 +2287,20 @@ export class BridgeEngine {
       includeExecutionContract: !isVerificationOnly && this.kind !== "autonomous",
     });
     const executionLane = this._executionLane(chatKey);
+    // An outcome is a durable provider claim, not a reason to execute the
+    // original task again because its final presentation was omitted.
+    const recordedOutcomeWithoutAnswer = (error: unknown): CliResult | null => {
+      if (!(error instanceof MissingAcpAnswerError) || !runId || error.stopReason === "refusal"
+        || this.laneCoordinator.hasCancellation(executionLane) || this.laneCoordinator.isAborted(executionLane)) return null;
+      const disposition = readRunOutcome(this.db, runId);
+      if (!disposition) return null;
+      return {
+        text: "The agent recorded " + disposition.status
+          + " but did not provide a final answer. Recorded details: " + disposition.detail,
+        sessionId: error.sessionId,
+        stopReason: error.stopReason,
+      };
+    };
     try {
       let stdout: string;
       let parsedAcp: CliResult | null = null;
@@ -2331,14 +2345,9 @@ export class BridgeEngine {
           },
           { conversationId: chatKey, runId: runId ?? randomUUID() },
         )).catch((error: unknown) => {
-          // The agent may have recorded a disposition before returning no final
-          // answer. Preserve it and its wake without replaying side effects.
-          if (!(error instanceof MissingAcpAnswerError) || !runId || error.stopReason === "refusal") throw error;
-          const disposition = readRunOutcome(this.db, runId);
-          if (!disposition) throw error;
-          const text = "The agent recorded " + disposition.status
-            + " but did not provide a final answer. Recorded details: " + disposition.detail;
-          return { stdout: "", parsed: { text, sessionId: error.sessionId, stopReason: error.stopReason } };
+          const recovered = recordedOutcomeWithoutAnswer(error);
+          if (!recovered) throw error;
+          return { stdout: "", parsed: recovered };
         });
         stdout = invoked.stdout;
         parsedAcp = invoked.parsed;
@@ -2473,7 +2482,9 @@ export class BridgeEngine {
         } catch (error) {
           if (error instanceof LostExecutionLeaseError) throw error;
           if (this.laneCoordinator.hasCancellation(executionLane) || this.laneCoordinator.isAborted(executionLane)) throw error;
-          throw new RunOutcomeReconciliationError(
+          const recovered = recordedOutcomeWithoutAnswer(error);
+          if (recovered) reconciled = { stdout: "", parsed: recovered };
+          else throw new RunOutcomeReconciliationError(
             "Provider error during outcome reconciliation; original work may have executed and intent remains unresolved.",
             { cause: error },
           );
