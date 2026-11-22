@@ -67,6 +67,9 @@ export interface RunContinuation {
   error?: string;
   delivery?: { chatId: string | number; chatType: string; threadId?: string | number };
   rolloutProvenance?: RolloutProvenance;
+  /** Qualified accepted origin captured before a controlled OSS rollout fence. */
+  rolloutRecoveryOnly?: true;
+  recoveryOriginalTurnId?: number;
   /** Ordinary continuation run admitted after its durable queue handoff. */
   successorRunId?: string;
   /**
@@ -153,6 +156,11 @@ function parse(value: string): RunContinuation | null {
     ) return null;
     if (candidate.depth !== undefined && (!Number.isSafeInteger(candidate.depth) || candidate.depth < 0)) return null;
     if (candidate.capacityWait !== undefined && candidate.capacityWait !== true) return null;
+    if (candidate.rolloutRecoveryOnly !== undefined && candidate.rolloutRecoveryOnly !== true) return null;
+    if (candidate.recoveryOriginalTurnId !== undefined
+      && (!Number.isSafeInteger(candidate.recoveryOriginalTurnId) || candidate.recoveryOriginalTurnId < 1)) return null;
+    if (candidate.rolloutRecoveryOnly && (candidate.surfaceIdentity !== "acp:outward" || !candidate.outwardSessionId
+      || !candidate.recoveryOriginalTurnId || candidate.capacityWait)) return null;
     if (candidate.capacityNoticeSent !== undefined && candidate.capacityNoticeSent !== true) return null;
     if (candidate.expiryDeliveryPending !== undefined && candidate.expiryDeliveryPending !== true) return null;
     if (candidate.claimToken !== undefined && (typeof candidate.claimToken !== "string" || !candidate.claimToken)) return null;
@@ -394,6 +402,23 @@ function capacityCompletionProven(db: BridgeDb, wait: RunContinuation): boolean 
     && (wait.outward !== undefined || !db.hasAnyPendingMessageId(wait.surfaceIdentity, wait.chatKey, wait.retainedPendingMessageIds!));
 }
 
+/** Accept only one exact persisted user turn with no later instructions. */
+export function acceptedRecoveryTurn(db: BridgeDb, wake: Pick<RunContinuation,
+  "surfaceIdentity" | "chatKey" | "provider" | "recoveryOriginalTurnId">): { id: number; text: string } | null {
+  if (!wake.recoveryOriginalTurnId || wake.surfaceIdentity !== "acp:outward") return null;
+  const record = db.raw.prepare(`
+    SELECT id, text FROM conversation_turns
+    WHERE id = ? AND chat_key = ? AND surface_identity = 'acp:outward'
+      AND role = 'user' AND cli = ?
+  `).get(wake.recoveryOriginalTurnId, wake.chatKey, wake.provider) as { id: number; text: string } | undefined;
+  if (!record?.text?.trim() || record.text.length > 160_000) return null;
+  const later = db.raw.prepare(`
+    SELECT 1 FROM conversation_turns WHERE chat_key = ? AND surface_identity = 'acp:outward'
+      AND role = 'user' AND id > ? LIMIT 1
+  `).get(wake.chatKey, record.id);
+  return later ? null : record;
+}
+
 /**
  * Resolve completed, single-origin rollout audit only AFTER the release fence
  * has gone. Never modify an existing continuation inside the fenced offline
@@ -449,6 +474,11 @@ export function claimDueRunContinuation(
 
     const originRun = db.getRun(current.originRunId);
     if (!originRun) return null;
+    if (current.rolloutRecoveryOnly && originRun.status === "done") return cancel("originating objective completed normally");
+    if (current.rolloutRecoveryOnly && (originRun.status === "cancelled"
+      || (originRun.status === "failed" && originRun.error !== "interrupted_by_controlled_rollout"))) {
+      return cancel("originating objective was cancelled or not interrupted by controlled rollout");
+    }
     if (originRun.status === "running") {
       if (current.rolloutProvenance) {
         return cancel("originating Run process or descendant is still active");
@@ -621,9 +651,19 @@ export function claimDueRunContinuation(
         return cancel("originating Run cancelled or reset by user");
       }
 
+      if (current.rolloutRecoveryOnly && !acceptedRecoveryTurn(db, current)) {
+        return cancel("accepted originating Workstream objective or authority changed", "failed");
+      }
       if (Date.parse(current.dueAt) > nowMs) return null;
 
-      const claimed: RunContinuation = { ...current, rolloutProvenance, state: "claimed", claimedAt: new Date(nowMs).toISOString() };
+      const claimed: RunContinuation = {
+        ...current, rolloutProvenance, state: "claimed", claimedAt: new Date(nowMs).toISOString(),
+        ...(current.outwardSessionId ? {
+          claimRunId: options?.runId ?? (db as any).runId,
+          claimToken: options?.claimToken ?? randomUUID(),
+          claimExpiresAt: new Date(nowMs + (options?.leaseMs ?? (db as any).lockLeaseMs ?? 90_000)).toISOString(),
+        } : {}),
+      };
       db.raw.prepare("UPDATE settings SET value = ? WHERE key = ?").run(JSON.stringify(claimed), key(id));
       return claimed;
     }
