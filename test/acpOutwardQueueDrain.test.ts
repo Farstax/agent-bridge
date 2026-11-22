@@ -352,7 +352,7 @@ describe("outward ACP durable queue ownership", () => {
         } }),
       });
       await expect(executor.execute(base(f.session, "capacity task", { deferCapacity: true })))
-        .rejects.toMatchObject({ code: -32001 });
+        .rejects.toMatchObject({ code: "SQLITE_CONSTRAINT_TRIGGER" });
       expect(listRunContinuations(f.db, OUTWARD_ACP_SURFACE)).toHaveLength(0);
       const history = f.db.getRecentConvTurns(f.session.conversationId, 10, undefined, OUTWARD_ACP_SURFACE);
       expect(history.filter((turn) => turn.role === "assistant")).toHaveLength(1);
