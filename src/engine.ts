@@ -2497,6 +2497,10 @@ export class BridgeEngine {
           return stagedResult;
         }
         const reported = readRunOutcome(this.db, runId!);
+        if (!reported && reconciledResult.stopReason === "refusal") {
+          // A structural refusal is not an unavailable provider. Do not route around it.
+          throw new MissingRunOutcomeError("The provider refused outcome reconciliation; original intent remains unresolved.");
+        }
         if (!reported) {
           // An inspection-first successor may reconcile the existing work. Do not replay it.
           throw attachProviderFailureEvidence(new MissingRunOutcomeError(

@@ -15,7 +15,7 @@ afterEach(() => {
   for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
 });
 
-function fixture(mode: "complete-after-retry" | "continue-after-retry" | "blocked-after-retry" | "missing-twice" | "report-first" | "report-first-empty" | "report-continue" | "continue-no-wake" | "continue-cancelled-wake" | "continue-mismatched-wake" | "continue-mismatched-binding" | "retry-throws" | "refusal" | "continue-then-invalid-session" | "continue-then-model-fallback" | "continue-then-internal-retry", surfaceIdentity = "telegram:interactive") {
+function fixture(mode: "complete-after-retry" | "continue-after-retry" | "blocked-after-retry" | "missing-twice" | "report-first" | "report-first-empty" | "refusal-on-reconcile" | "report-continue" | "continue-no-wake" | "continue-cancelled-wake" | "continue-mismatched-wake" | "continue-mismatched-binding" | "retry-throws" | "refusal" | "continue-then-invalid-session" | "continue-then-model-fallback" | "continue-then-internal-retry", surfaceIdentity = "telegram:interactive") {
   const dir = mkdtempSync(join(tmpdir(), "run-outcome-engine-")); dirs.push(dir);
   const path = join(dir, "bridge.sqlite");
   const db = openDb(path, { serviceId: "outcome-engine-test", runId: "process" });
@@ -72,7 +72,7 @@ function fixture(mode: "complete-after-retry" | "continue-after-retry" | "blocke
     return {
       text: calls === 1 ? "Original user-facing answer" : "Reconciliation was recorded",
       sessionId: "same-acp-session",
-      stopReason: mode === "refusal" ? "refusal" : "end_turn",
+      stopReason: mode === "refusal" || (mode === "refusal-on-reconcile" && calls === 2) ? "refusal" : "end_turn",
       telemetry: { provider: "claude", inputTokens: calls === 1 ? 100 : 20, outputTokens: calls === 1 ? 30 : 5 },
     };
   });
@@ -250,6 +250,17 @@ describe("ordinary Run objective settlement", () => {
     expect(db.getRun("run-one").outcome_status).toBeNull();
     db.close();
   });
+  it("does not fall back when outcome reconciliation explicitly refuses", async () => {
+    const { db, engine, handle, invocation } = fixture("refusal-on-reconcile");
+    const failure = await engine.executePromptAsync(
+      "Original request", null, "chat", {}, () => {}, [], undefined, "run-one", null, "chat", handle,
+    ).then(() => null, (e: Error) => e);
+    expect(failure).toBeInstanceOf(MissingRunOutcomeError);
+    expect(readProviderFailureEvidence(failure)).toBeNull();
+    expect(invocation).toHaveBeenCalledTimes(2);
+    db.close();
+  });
+
   it("does not re-prompt a structural ACP refusal solely to obtain an outcome helper call", async () => {
     const { db, engine, handle, invocation } = fixture("refusal");
     const result = await engine.executePromptAsync(
