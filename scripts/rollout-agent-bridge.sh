@@ -2840,7 +2840,7 @@ for database in "${databases[@]}"; do idle_db_args+=(--db "$database"); done
 # unknown results and partial-fence failures are never retried automatically.
 idle_admitted=0
 for admission_attempt in 1 2 3; do
-  if run_as_runtime "$node_bin" "$project_dir/node_modules/tsx/dist/cli.mjs" "$project_dir/scripts/idle-maintenance.ts" acquire --owner-pid "$" "${idle_db_args[@]}" --interrupt-active > "$artifact_dir/idle-upgrade-admission.json"; then
+  if run_as_runtime "$node_bin" "$project_dir/node_modules/tsx/dist/cli.mjs" "$project_dir/scripts/idle-maintenance.ts" acquire --owner-pid "$$" "${idle_db_args[@]}" --interrupt-active > "$artifact_dir/idle-upgrade-admission.json"; then
     idle_admitted=1
     break
   fi
