@@ -14,6 +14,7 @@ import {
   acceptedRecoveryTurn,
   rolloutRecoveryProviderAuthority,
   buildRunContinuationInstruction,
+  OUTWARD_RUN_ACCEPTED_TURN_PREFIX,
   listRunContinuations,
   requestRunContinuation,
   scanRunContinuations,
@@ -127,8 +128,11 @@ describe("controlled self-rollout continuation recovery (issue #964)", () => {
     expect(listRunContinuations(db)[0].rolloutProvenance).toBeUndefined();
     expect(claimDueRunContinuation(db, runId, 11_000)).toBeNull();
     expect(releaseIdleUpgrade(path, admitted.fence.token)).toBe(true);
+    // Legacy/manual ACP Runs without the exact accepted-turn link are not
+    // recoverable merely because their timestamps look plausible.
     const claimed = claimDueRunContinuation(db, runId, 11_000, { isProcessAlive: () => false });
-    expect(claimed?.rolloutProvenance?.originRunId).toBe(runId);
+    expect(claimed).toBeNull();
+    expect(listRunContinuations(db)[0].state).toBe("failed");
     expect(claimDueRunContinuation(db, runId, 11_000)).toBeNull();
     db.close();
   });
@@ -142,6 +146,7 @@ describe("controlled self-rollout continuation recovery (issue #964)", () => {
     db.insertRun(runId, { surfaceIdentity: "acp:outward", chatKey: conversation }, "codex");
     const originalId = db.addConvTurn(conversation, "user", "Implement the pending change safely", "codex",
       { surfaceIdentity: "acp:outward" });
+    db.setSetting(OUTWARD_RUN_ACCEPTED_TURN_PREFIX + runId, String(originalId));
     const admitted = tryAdmitIdleUpgrade(path, process.pid, { interruptActive: true });
     expect(admitted.state).toBe("admitted");
     if (admitted.state !== "admitted") throw new Error("expected guarded rollout");
@@ -179,7 +184,8 @@ describe("controlled self-rollout continuation recovery (issue #964)", () => {
     db.raw.prepare("INSERT INTO outward_acp_sessions (session_id, conversation_id, cwd) VALUES (?, ?, ?)")
       .run("completed-workstream-session", conversation, process.cwd());
     db.insertRun("normally-completed-run", { surfaceIdentity: "acp:outward", chatKey: conversation }, "codex");
-    db.addConvTurn(conversation, "user", "Do a task", "codex", { surfaceIdentity: "acp:outward" });
+    const original = db.addConvTurn(conversation, "user", "Do a task", "codex", { surfaceIdentity: "acp:outward" });
+    db.setSetting(OUTWARD_RUN_ACCEPTED_TURN_PREFIX + "normally-completed-run", String(original));
     const fence = tryAdmitIdleUpgrade(path, process.pid, { interruptActive: true });
     expect(fence.state).toBe("admitted");
     if (fence.state !== "admitted") throw new Error("fence unavailable");
@@ -197,6 +203,7 @@ describe("controlled self-rollout continuation recovery (issue #964)", () => {
       .run("two-input-session", workstream, process.cwd());
     db.insertRun("existing-wake-run", { surfaceIdentity: "acp:outward", chatKey: workstream }, "claude");
     const accepted = db.addConvTurn(workstream, "user", "Finish task", "claude", { surfaceIdentity: "acp:outward" });
+    db.setSetting(OUTWARD_RUN_ACCEPTED_TURN_PREFIX + "existing-wake-run", String(accepted));
     const existing = requestRunContinuation(db, {
       originRunId: "existing-wake-run", surfaceIdentity: "acp:outward",
       chatKey: workstream, provider: "claude",
@@ -222,7 +229,8 @@ describe("controlled self-rollout continuation recovery (issue #964)", () => {
     db.insertRun("ambiguous-run", { surfaceIdentity: "acp:outward", chatKey: "other" }, "codex");
     db.raw.prepare("INSERT INTO outward_acp_sessions (session_id, conversation_id, cwd) VALUES (?, ?, ?)")
       .run("other-session", "other", process.cwd());
-    db.addConvTurn("other", "user", "First request", "codex", { surfaceIdentity: "acp:outward" });
+    const first = db.addConvTurn("other", "user", "First request", "codex", { surfaceIdentity: "acp:outward" });
+    db.setSetting(OUTWARD_RUN_ACCEPTED_TURN_PREFIX + "ambiguous-run", String(first));
     db.addConvTurn("other", "user", "Second request", "codex", { surfaceIdentity: "acp:outward" });
     const admitted2 = tryAdmitIdleUpgrade(path, process.pid, { interruptActive: true });
     expect(admitted2.state).toBe("admitted");
