@@ -11,6 +11,9 @@ import {
   cancelPendingRunContinuation,
   cancelPendingRunContinuationsForChat,
   claimDueRunContinuation,
+  acceptedRecoveryTurn,
+  rolloutRecoveryProviderAuthority,
+  buildRunContinuationInstruction,
   listRunContinuations,
   requestRunContinuation,
   scanRunContinuations,
@@ -127,6 +130,63 @@ describe("controlled self-rollout continuation recovery (issue #964)", () => {
     const claimed = claimDueRunContinuation(db, runId, 11_000, { isProcessAlive: () => false });
     expect(claimed?.rolloutProvenance?.originRunId).toBe(runId);
     expect(claimDueRunContinuation(db, runId, 11_000)).toBeNull();
+    db.close();
+  });
+
+  it("arms exactly one accepted ordinary Workstream objective before a guarded restart and resumes inspection first", () => {
+    const { db, path } = setup();
+    const runId = "accepted-workstream-run-1";
+    const conversation = "workstream-conversation-1";
+    db.raw.prepare("INSERT INTO outward_acp_sessions (session_id, conversation_id, cwd) VALUES (?, ?, ?)")
+      .run("workstream-1", conversation, process.cwd());
+    db.insertRun(runId, { surfaceIdentity: "acp:outward", chatKey: conversation }, "codex");
+    const originalId = db.addConvTurn(conversation, "user", "Implement the pending change safely", "codex",
+      { surfaceIdentity: "acp:outward" });
+    const admitted = tryAdmitIdleUpgrade(path, process.pid, { interruptActive: true });
+    expect(admitted.state).toBe("admitted");
+    if (admitted.state !== "admitted") throw new Error("expected guarded rollout");
+    const candidate = listRunContinuations(db, "acp:outward")[0];
+    expect(candidate).toMatchObject({
+      id: runId, originRunId: runId, rolloutRecoveryOnly: true,
+      recoveryOriginalTurnId: originalId, outwardSessionId: "workstream-1",
+      state: "pending",
+    });
+    expect(listRunContinuations(db, "acp:outward")).toHaveLength(1);
+    db.reconcileControlledRollout({
+      reason: "interrupted_by_controlled_rollout", isProcessAlive: () => false,
+    });
+    expect(claimDueRunContinuation(db, runId, Date.now() + 15_000, {
+      isProcessAlive: () => false,
+    })).toBeNull();
+    expect(releaseIdleUpgrade(path, admitted.fence.token)).toBe(true);
+    const claimed = claimDueRunContinuation(db, runId, Date.now() + 15_000, {
+      isProcessAlive: () => false, runId: "continuation-worker", claimToken: "exact-claim",
+    });
+    expect(claimed?.state).toBe("claimed");
+    expect(claimed?.claimToken).toBe("exact-claim");
+    expect(claimed?.rolloutProvenance?.originRunId).toBe(runId);
+    expect(acceptedRecoveryTurn(db, claimed!)).toMatchObject({ id: originalId });
+    expect(rolloutRecoveryProviderAuthority(db, claimed!)).toEqual({ rolloutRecovery: true });
+    expect(buildRunContinuationInstruction(claimed!)).toContain("Before acting, inspect");
+    expect(buildRunContinuationInstruction(claimed!)).toContain("Do not replay");
+    expect(claimDueRunContinuation(db, runId, Date.now() + 16_000)).toBeNull();
+    db.close();
+  });
+
+  it("does not wake a normally completed or user-cancelled accepted objective", () => {
+    const { db, path } = setup();
+    const conversation = "completed-workstream";
+    db.raw.prepare("INSERT INTO outward_acp_sessions (session_id, conversation_id, cwd) VALUES (?, ?, ?)")
+      .run("completed-workstream-session", conversation, process.cwd());
+    db.insertRun("normally-completed-run", { surfaceIdentity: "acp:outward", chatKey: conversation }, "codex");
+    db.addConvTurn(conversation, "user", "Do a task", "codex", { surfaceIdentity: "acp:outward" });
+    const fence = tryAdmitIdleUpgrade(path, process.pid, { interruptActive: true });
+    expect(fence.state).toBe("admitted");
+    if (fence.state !== "admitted") throw new Error("fence unavailable");
+    expect(releaseIdleUpgrade(path, fence.fence.token)).toBe(true);
+    expect(db.updateRunCompleted("normally-completed-run", "Done", null)).toBe(true);
+    expect(claimDueRunContinuation(db, "normally-completed-run", Date.now() + 15_000)).toBeNull();
+    expect(listRunContinuations(db)[0].state).toBe("cancelled");
     db.close();
   });
 
