@@ -173,6 +173,8 @@ function armInterruptedWorkstreamRecovery(db: Database.Database, nowMs: number):
     }) : [];
   for (const run of runs) {
     if (successors.includes(run.runId) || !run.sessionId || !Number.isFinite(Date.parse(run.startedAt))) continue;
+    if (db.prepare("SELECT 1 FROM settings WHERE key IN (?, ?) LIMIT 1")
+      .get(`outward-stop-fence:${run.chatKey}`, `outward-cancel:${run.runId}`)) continue;
     const key = `run-continuation:v1:${run.runId}`;
     // Existing scheduled work must retain its original terms when a rollout
     // is deferred or aborted. The post-rollout claimant may upgrade it to a
