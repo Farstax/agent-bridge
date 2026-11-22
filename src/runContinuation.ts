@@ -449,6 +449,22 @@ export function rolloutRecoveryProviderAuthority(
   return previouslySettled ? { providerSessionId: bound, rolloutRecovery: true } : null;
 }
 
+/** Strictly attribute an interrupted Run to exactly one accepted user turn. */
+function originalAcceptedTurnId(db: BridgeDb, origin: { started_at: string },
+  wake: Pick<RunContinuation, "chatKey" | "provider">): number | null {
+  const startedAt = Date.parse(origin.started_at);
+  if (!Number.isFinite(startedAt)) return null;
+  const rows = db.raw.prepare(`
+    SELECT id, text FROM conversation_turns
+    WHERE chat_key = ? AND surface_identity = 'acp:outward'
+      AND role = 'user' AND cli = ? AND created_at >= ?
+    ORDER BY id DESC LIMIT 2
+  `).all(wake.chatKey, wake.provider, new Date(startedAt - 1_000).toISOString())
+    as Array<{ id: number; text: string }>;
+  if (rows.length !== 1 || !rows[0].text.trim() || rows[0].text.length > 160_000) return null;
+  return rows[0].id;
+}
+
 /**
  * Resolve completed, single-origin rollout audit only AFTER the release fence
  * has gone. Never modify an existing continuation inside the fenced offline
@@ -681,13 +697,26 @@ export function claimDueRunContinuation(
         return cancel("originating Run cancelled or reset by user");
       }
 
-      if (current.rolloutRecoveryOnly && !acceptedRecoveryTurn(db, current)) {
+      // Existing agent-requested Workstream wakes stay unchanged on an aborted
+      // rollout. Only after an audited interruption do they become eligible
+      // inspection-first recovery candidates, preserving their original due
+      // time and the same unique continuation record.
+      const originalId = !current.rolloutRecoveryOnly && current.outwardSessionId
+        && current.surfaceIdentity === "acp:outward"
+        ? originalAcceptedTurnId(db, originRun, current) : null;
+      const eligible = current.rolloutRecoveryOnly || originalId !== null;
+      const recoveryWake: RunContinuation = originalId === null ? current
+        : { ...current, rolloutRecoveryOnly: true, recoveryOriginalTurnId: originalId };
+      if (current.outwardSessionId && !eligible) {
+        return cancel("interrupted Workstream objective could not be attributed to one accepted user turn", "failed");
+      }
+      if (recoveryWake.rolloutRecoveryOnly && !acceptedRecoveryTurn(db, recoveryWake)) {
         return cancel("accepted originating Workstream objective or authority changed", "failed");
       }
       if (Date.parse(current.dueAt) > nowMs) return null;
 
       const claimed: RunContinuation = {
-        ...current, rolloutProvenance, state: "claimed", claimedAt: new Date(nowMs).toISOString(),
+        ...recoveryWake, rolloutProvenance, state: "claimed", claimedAt: new Date(nowMs).toISOString(),
         ...(current.outwardSessionId ? {
           claimRunId: options?.runId ?? (db as any).runId,
           claimToken: options?.claimToken ?? randomUUID(),
