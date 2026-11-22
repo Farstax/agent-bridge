@@ -1124,7 +1124,7 @@ export function buildRunContinuationInstruction(continuation: RunContinuation): 
       "Determine what has actually completed. Do not replay the previous mutating request or duplicate external side effects.",
       "Continue only the outstanding authorised work. Report normal meaningful progress, a verified result or a genuine blocker.",
       "Do not announce or explain an infrastructure change unless it is itself relevant to a genuine blocker.",
-    ].join("\\n");
+    ].join("\n");
   }
   return [
     "[Agent Bridge continuation]",
