@@ -2835,16 +2835,48 @@ fi
 [[ -f "$project_dir/scripts/idle-maintenance.ts" ]] || die "protected idle admission helper missing from staged release"
 idle_db_args=()
 for database in "${databases[@]}"; do idle_db_args+=(--db "$database"); done
-if ! run_as_runtime "$node_bin" "$project_dir/node_modules/tsx/dist/cli.mjs" "$project_dir/scripts/idle-maintenance.ts" acquire --owner-pid "$$" "${idle_db_args[@]}" --interrupt-active > "$artifact_dir/idle-upgrade-admission.json"; then
-  idle_refusal="$(/usr/bin/python3 - "$artifact_dir/idle-upgrade-admission.json" <<'PY'
+# A transient capacity/reservation/dispatch state may settle while all
+# services are still running. Retry admission briefly BEFORE taking any fence;
+# unknown results and partial-fence failures are never retried automatically.
+idle_admitted=0
+for admission_attempt in 1 2 3; do
+  if run_as_runtime "$node_bin" "$project_dir/node_modules/tsx/dist/cli.mjs" "$project_dir/scripts/idle-maintenance.ts" acquire --owner-pid "$$" "${idle_db_args[@]}" --interrupt-active > "$artifact_dir/idle-upgrade-admission.json"; then
+    idle_admitted=1
+    break
+  fi
+  admission_state="$(/usr/bin/python3 - "$artifact_dir/idle-upgrade-admission.json" <<'PY'
 import json, sys
 try:
-    print(json.load(open(sys.argv[1], encoding="utf-8")).get("state", "unknown"))
-except (OSError, ValueError, TypeError):
+    record = json.load(open(sys.argv[1], encoding="utf-8"))
+    print(record.get("state", "unknown"))
+except (OSError, ValueError, TypeError, AttributeError):
     print("unknown")
 PY
 )"
-  if [[ "$idle_refusal" == deferred_busy ]]; then die "provider_sessions_active"; fi
+  if [[ "$admission_state" != deferred_busy ]] || (( admission_attempt == 3 )); then break; fi
+  /usr/bin/sleep 1
+done
+if (( idle_admitted != 1 )); then
+  idle_refusal="$(/usr/bin/python3 - "$artifact_dir/idle-upgrade-admission.json" <<'PY'
+import json, sys
+try:
+    result = json.load(open(sys.argv[1], encoding="utf-8"))
+    if result.get("state") != "deferred_busy":
+        print("protected_idle_upgrade_admission_unknown")
+    else:
+        # This marker keeps older Platform retry owners compatible. It does
+        # NOT assert that a provider session caused the deferral.
+        reasons = {"existing_fence", "capacity_claim", "outward_reservation",
+                   "event_dispatch", "claimed_continuation"}
+        category = result.get("reason")
+        if category not in reasons:
+            category = "unknown"
+        print(f"rollout_admission_deferred_{category} legacy_retryable_provider_sessions_active")
+except (OSError, ValueError, TypeError, AttributeError):
+    print("protected_idle_upgrade_admission_unknown")
+PY
+)"
+  if [[ "$idle_refusal" == rollout_admission_deferred_* ]]; then die "$idle_refusal"; fi
   # A partial fence could remain if the helper failed while releasing roles.
   # Keep the sentinel until trusted recovery establishes what was acquired.
   idle_fence_acquired=1

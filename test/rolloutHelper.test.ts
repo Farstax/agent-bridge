@@ -157,6 +157,28 @@ describe("guarded rollout helper", { timeout: 30_000 }, () => {
       expect(events).not.toContain("systemctl:stop");
     });
 
+    it.each(["capacity_claim", "outward_reservation", "event_dispatch", "existing_fence"] as const)(
+      "retains the actual retryable %s admission category without stopping services", (reason) => {
+        const fixture = createFixture();
+        const result = runRollout(fixture, undefined, undefined, {
+          FAKE_IDLE_UPGRADE_STATE: "deferred_busy", FAKE_IDLE_UPGRADE_REASON: reason,
+        });
+        expect(result.status).not.toBe(0);
+        expect(`${result.stdout}\\n${result.stderr}`).toContain(`rollout_admission_deferred_${reason}`);
+        expect(`${result.stdout}\\n${result.stderr}`).toContain("legacy_retryable_provider_sessions_active");
+        expect(actions(fixture)).not.toContain("systemctl:stop");
+      },
+    );
+
+    it("retries a transient reservation before fencing and installs once", () => {
+      const fixture = createFixture();
+      const result = runRollout(fixture, undefined, undefined, { FAKE_IDLE_UPGRADE_DEFER_ONCE: "1" });
+      expect(result.status).toBe(0);
+      const events = actions(fixture);
+      expect(events.match(/scripts\/idle-maintenance\.ts acquire/g) ?? []).toHaveLength(2);
+      expect(events.match(/^systemctl:stop\b/gm) ?? []).toHaveLength(1);
+    });
+
     it("retains the sentinel and healthy accepted services if exact-token fence release fails", () => {
       const fixture = createFixture();
       const result = runRollout(fixture, undefined, undefined, { FAKE_IDLE_FENCE_RELEASE_FAIL: "1" });

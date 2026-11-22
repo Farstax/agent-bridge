@@ -331,7 +331,12 @@ describe("interrupted-rollout sentinel (Phase 4C.4, issue #135)", { timeout: 30_
         expect(second.status).not.toBe(0);
         expect(second.stderr).toMatch(/a rollout is currently active/i);
       } finally {
-        await new Promise<void>((resolve) => first.once("close", () => resolve()));
+        // spawnSync for the contending process may outlast the first clear:
+        // if close already fired, registering a new listener hangs forever.
+        await new Promise<void>((resolve) => {
+          if (first.exitCode !== null || first.signalCode !== null) { resolve(); return; }
+          first.once("close", () => resolve());
+        });
       }
 
       // The winner (first) must have actually cleared it.
