@@ -120,33 +120,6 @@ function storedFence(db: Database.Database): { exists: boolean; fence: IdleUpgra
   return { exists: !!row, fence: parseFence(row?.value ?? null) };
 }
 
-function idleState(db: Database.Database, options: IdleUpgradeAdmissionOptions = {}): IdleUpgradeState {
-  const marker = storedFence(db);
-  if (marker.exists) return marker.fence ? "deferred_busy" : "unknown";
-  for (const sql of options.interruptActive ? TRANSIENT_QUERIES : ACTIVE_QUERIES) if (db.prepare(sql).get()) return "deferred_busy";
-  const continuationRows = db.prepare(
-    "SELECT value FROM settings WHERE key LIKE 'run-continuation:v1:%'",
-  ).all() as Array<{ value: string | null }>;
-  for (const { value } of continuationRows) {
-    try {
-      if (!value) return "unknown";
-      const continuation: unknown = JSON.parse(value);
-      if (!continuation || typeof continuation !== "object") return "unknown";
-      const state = (continuation as { state?: unknown }).state;
-      // A pending wake is dormant durable work, like a queued message. The
-      // atomic fence below prevents it being claimed or starting during rollout.
-      if (state === "pending") {
-        // Only a valid dormant record can be exempted from upgrade admission.
-        if (!parseRunContinuation(value)) return "unknown";
-        continue;
-      }
-      if (state === "claimed") { if (options.interruptActive) continue; return "deferred_busy"; }
-      if (!["completed", "failed", "expired", "cancelled"].includes(String(state))) return "unknown";
-    } catch { return "unknown"; }
-  }
-  return "idle";
-}
-
 /**
  * Capture only unambiguous, already accepted ordinary ACP objectives inside
  * the same IMMEDIATE admission transaction, BEFORE the fence marker exists.
@@ -199,6 +172,33 @@ function armInterruptedWorkstreamRecovery(db: Database.Database, nowMs: number):
     };
     db.prepare("INSERT INTO settings (key, value) VALUES (?, ?)").run(key, JSON.stringify(continuation));
   }
+}
+
+function idleState(db: Database.Database, options: IdleUpgradeAdmissionOptions = {}): IdleUpgradeState {
+  const marker = storedFence(db);
+  if (marker.exists) return marker.fence ? "deferred_busy" : "unknown";
+  for (const sql of options.interruptActive ? TRANSIENT_QUERIES : ACTIVE_QUERIES) if (db.prepare(sql).get()) return "deferred_busy";
+  const continuationRows = db.prepare(
+    "SELECT value FROM settings WHERE key LIKE 'run-continuation:v1:%'",
+  ).all() as Array<{ value: string | null }>;
+  for (const { value } of continuationRows) {
+    try {
+      if (!value) return "unknown";
+      const continuation: unknown = JSON.parse(value);
+      if (!continuation || typeof continuation !== "object") return "unknown";
+      const state = (continuation as { state?: unknown }).state;
+      // A pending wake is dormant durable work, like a queued message. The
+      // atomic fence below prevents it being claimed or starting during rollout.
+      if (state === "pending") {
+        // Only a valid dormant record can be exempted from upgrade admission.
+        if (!parseRunContinuation(value)) return "unknown";
+        continue;
+      }
+      if (state === "claimed") { if (options.interruptActive) continue; return "deferred_busy"; }
+      if (!["completed", "failed", "expired", "cancelled"].includes(String(state))) return "unknown";
+    } catch { return "unknown"; }
+  }
+  return "idle";
 }
 
 function installGuard(db: Database.Database): void {
