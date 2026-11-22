@@ -146,6 +146,58 @@ function idleState(db: Database.Database, options: IdleUpgradeAdmissionOptions =
   return "idle";
 }
 
+/**
+ * Capture only unambiguous, already accepted ordinary ACP objectives inside
+ * the same IMMEDIATE admission transaction, BEFORE the fence marker exists.
+ * Reuse any existing agent-requested continuation; never invent a second wake.
+ * No background owner, timer, database table, or mutating prompt replay.
+ */
+function armInterruptedWorkstreamRecovery(db: Database.Database, nowMs: number): void {
+  const hasSessions = db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'outward_acp_sessions'").get();
+  if (!hasSessions) return;
+  const runs = db.prepare(`
+    SELECT r.run_id AS runId, r.chat_id AS chatKey, r.bot AS provider,
+      r.started_at AS startedAt, s.session_id AS sessionId
+    FROM bridge_runs r JOIN outward_acp_sessions s ON s.conversation_id = r.chat_id
+    WHERE r.status = 'running' AND r.surface_identity = 'acp:outward' AND s.archived_at IS NULL
+  `).all() as Array<{ runId: string; chatKey: string; provider: string; startedAt: string; sessionId: string }>;
+  const linked = (db.prepare("SELECT value FROM settings WHERE key LIKE 'run-continuation:v1:%'")
+    .all() as Array<{ value: string }>).some((row) => {
+      try { return typeof JSON.parse(row.value)?.successorRunId === "string"; } catch { return false; }
+    });
+  // A successor already executing a continuation has separate authority.
+  // Avoid manufacturing a chain-depth bypass from an incomplete record.
+  const successors = linked ? (db.prepare("SELECT value FROM settings WHERE key LIKE 'run-continuation:v1:%'")
+    .all() as Array<{ value: string }>).map((row) => {
+      try { return (JSON.parse(row.value) as { successorRunId?: string }).successorRunId; } catch { return undefined; }
+    }) : [];
+  for (const run of runs) {
+    if (successors.includes(run.runId) || !run.sessionId || !Number.isFinite(Date.parse(run.startedAt))) continue;
+    const key = `run-continuation:v1:${run.runId}`;
+    if (db.prepare("SELECT 1 FROM settings WHERE key = ?").get(key)) continue;
+    const acceptedSince = new Date(Date.parse(run.startedAt) - 1_000).toISOString();
+    const turns = db.prepare(`
+      SELECT id, text, cli FROM conversation_turns
+      WHERE chat_key = ? AND surface_identity = 'acp:outward' AND role = 'user'
+        AND created_at >= ? ORDER BY id DESC LIMIT 2
+    `).all(run.chatKey, acceptedSince) as Array<{ id: number; text: string; cli: string | null }>;
+    if (turns.length !== 1 || turns[0].cli !== run.provider
+      || !turns[0].text.trim() || turns[0].text.length > 160_000
+      || /^\\/(?:stop|cancel|reset)(?:\\s|$)/i.test(turns[0].text)) continue;
+    const continuation = {
+      version: 1, id: run.runId, originRunId: run.runId,
+      surfaceIdentity: "acp:outward", chatKey: run.chatKey,
+      provider: run.provider, reason: "Inspect accepted Workstream objective and finish only uncompleted work",
+      requestedAt: new Date(nowMs).toISOString(),
+      dueAt: new Date(nowMs + 10_000).toISOString(),
+      expiresAt: new Date(nowMs + 2 * 60 * 60_000).toISOString(),
+      state: "pending", depth: 1, outwardSessionId: run.sessionId,
+      rolloutRecoveryOnly: true, recoveryOriginalTurnId: turns[0].id,
+    };
+    db.prepare("INSERT INTO settings (key, value) VALUES (?, ?)").run(key, JSON.stringify(continuation));
+  }
+}
+
 function installGuard(db: Database.Database): void {
   for (const [name, table, event, predicate] of GATED_TABLES) {
     const condition = predicate ? `(${predicate}) AND ` : "";
@@ -200,6 +252,7 @@ export function tryAdmitIdleUpgrade(dbPath: string, ownerPid = process.pid, opti
         startTicks, bootId, acquiredAt: new Date().toISOString(),
       };
       installGuard(db!);
+      if (options.interruptActive) armInterruptedWorkstreamRecovery(db!, Date.now());
       db!.prepare("INSERT INTO settings (key, value) VALUES (?, ?)")
         .run(IDLE_UPGRADE_FENCE_KEY, JSON.stringify(fence));
       return { state: "admitted" as const, fence };
