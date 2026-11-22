@@ -19,6 +19,9 @@ import { parseRunContinuation } from "./runContinuation.js";
 
 export const IDLE_UPGRADE_FENCE_KEY = "agent-bridge:idle-maintenance:v1";
 export type IdleUpgradeState = "idle" | "deferred_busy" | "unknown";
+export type IdleUpgradeDeferralReason =
+  | "existing_fence" | "capacity_claim" | "outward_reservation"
+  | "event_dispatch" | "claimed_continuation" | "unknown";
 /**
  * `interruptActive` admits a protected release that will interrupt in-process
  * Runs: the durable fence and triggers still stop every NEW Run/claim, but
@@ -38,7 +41,7 @@ export interface IdleUpgradeFence {
 }
 export type IdleUpgradeAdmission =
   | { state: "admitted"; fence: IdleUpgradeFence }
-  | { state: IdleUpgradeState };
+  | { state: IdleUpgradeState; reason?: IdleUpgradeDeferralReason };
 
 function currentBootId(): string | null {
   try {
@@ -81,7 +84,9 @@ const TRANSIENT_QUERIES = [
   // Durable queued messages are retained across the release transaction. The
   // fence's UPDATE trigger prevents a queued message becoming claimed after
   // admission, and the INSERT trigger prevents fresh submissions.
-  "SELECT 1 FROM execution_capacity_claims LIMIT 1",
+  // An expired claim is relinquished under the existing lease contract;
+  // the capacity owner deletes it on its next acquisition.
+  "SELECT 1 FROM execution_capacity_claims WHERE lease_expires_at > strftime('%Y-%m-%dT%H:%M:%fZ', 'now') LIMIT 1",
   "SELECT 1 FROM settings WHERE key LIKE 'outward-queue-reservation:%' LIMIT 1",
   // Ambiguous is already a terminal receipt state, not an active dispatch.
   // A received receipt is persisted but not dispatching. The update trigger
@@ -146,6 +151,17 @@ function idleState(db: Database.Database, options: IdleUpgradeAdmissionOptions =
   return "idle";
 }
 
+/** Read-only, non-sensitive explanation; never changes admission authority. */
+function interruptibleDeferralReason(db: Database.Database): IdleUpgradeDeferralReason {
+  const marker = storedFence(db);
+  if (marker.exists) return marker.fence ? "existing_fence" : "unknown";
+  const reasons = ["capacity_claim", "outward_reservation", "event_dispatch"] as const;
+  for (let i = 0; i < TRANSIENT_QUERIES.length; i++) {
+    if (db.prepare(TRANSIENT_QUERIES[i]).get()) return reasons[i];
+  }
+  return "claimed_continuation";
+}
+
 function installGuard(db: Database.Database): void {
   for (const [name, table, event, predicate] of GATED_TABLES) {
     const condition = predicate ? `(${predicate}) AND ` : "";
@@ -194,7 +210,9 @@ export function tryAdmitIdleUpgrade(dbPath: string, ownerPid = process.pid, opti
     db = openExisting(dbPath, false);
     return withImmediate(db, () => {
       const state = idleState(db!, options);
-      if (state !== "idle") return { state };
+      if (state !== "idle") return options.interruptActive && state === "deferred_busy"
+        ? { state, reason: interruptibleDeferralReason(db!) }
+        : { state };
       const fence: IdleUpgradeFence = {
         version: 1, token: randomUUID(), pid: ownerPid,
         startTicks, bootId, acquiredAt: new Date().toISOString(),
@@ -236,7 +254,7 @@ export interface IdleUpgradeRoleFence {
 }
 export type IdleUpgradeRolesAdmission =
   | { state: "admitted"; roles: IdleUpgradeRoleFence[] }
-  | { state: IdleUpgradeState };
+  | { state: IdleUpgradeState; reason?: IdleUpgradeDeferralReason };
 
 function distinctRolePaths(dbPaths: readonly string[]): string[] {
   if (dbPaths.length === 0) throw new Error("at least one database role is required");
@@ -257,12 +275,14 @@ export function readIdleUpgradeRolesState(dbPaths: readonly string[]): IdleUpgra
 export function tryAdmitIdleUpgradeRoles(dbPaths: readonly string[], ownerPid = process.pid, options: IdleUpgradeAdmissionOptions = {}): IdleUpgradeRolesAdmission {
   const owned: IdleUpgradeRoleFence[] = [];
   let state: IdleUpgradeState = "unknown";
+  let reason: IdleUpgradeDeferralReason | undefined;
   try {
     const paths = distinctRolePaths(dbPaths);
     for (const dbPath of paths) {
       const result = tryAdmitIdleUpgrade(dbPath, ownerPid, options);
       if (result.state !== "admitted") {
         state = result.state;
+        reason = result.reason;
         break;
       }
       owned.push({ dbPath, fence: result.fence });
@@ -277,11 +297,11 @@ export function tryAdmitIdleUpgradeRoles(dbPaths: readonly string[], ownerPid = 
       }
     }
   } catch { state = "unknown"; }
-  if (owned.length === 0) return { state };
+  if (owned.length === 0) return reason ? { state, reason } : { state };
   try {
     if (!releaseIdleUpgradeRoles(owned)) return { state: "unknown" };
   } catch { return { state: "unknown" }; }
-  return { state };
+  return reason ? { state, reason } : { state };
 }
 
 /** Token-bound release after activation, rollback or an aborted pre-stop attempt. */
