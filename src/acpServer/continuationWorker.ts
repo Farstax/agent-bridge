@@ -6,7 +6,7 @@
 import { realpath } from "node:fs/promises";
 import { isAbsolute } from "node:path";
 import { openProductionDb, type BridgeDb } from "../db.js";
-import { RunContinuationRunner, buildRunContinuationInstruction, listRunContinuations, type RunContinuation } from "../runContinuation.js";
+import { RunContinuationRunner, buildRunContinuationInstruction, acceptedRecoveryTurn, rolloutRecoveryProviderAuthority, listRunContinuations, type RunContinuation } from "../runContinuation.js";
 import { lookupProviderSession } from "../providers/sessionRuntime.js";
 import { outwardServiceId, recoverOutwardLanes } from "./recovery.js";
 import { prepareInteractiveCliAuth } from "../interactiveCliAuth.js";
@@ -80,19 +80,29 @@ export async function resumeOutwardOrdinaryContinuation(
   const origin = db.getRun(wake.originRunId);
   const providerSessionId = lookupProviderSession(db,
     { surfaceIdentity: OUTWARD_ACP_SURFACE, chatKey: wake.chatKey }, wake.provider);
-  if (!origin || origin.status !== "done" || !origin.session_id || !providerSessionId ||
+  const recovery = wake.rolloutRecoveryOnly ? rolloutRecoveryProviderAuthority(db, wake) : null;
+  const ordinary = !wake.rolloutRecoveryOnly && origin?.status === "done" && origin.session_id
+    && providerSessionId === origin.session_id;
+  if ((!ordinary && !recovery) || !origin ||
       origin.surface_identity !== OUTWARD_ACP_SURFACE || origin.chat_id !== wake.chatKey ||
-      origin.bot !== wake.provider || providerSessionId !== origin.session_id) {
+      origin.bot !== wake.provider) {
     throw new Error("outward ordinary continuation provider-session authority changed");
   }
+  const original = recovery ? acceptedRecoveryTurn(db, wake) : null;
+  if (recovery && !original) throw new Error("accepted Workstream objective is no longer uniquely authorised");
+  const prompt = recovery
+    ? buildRunContinuationInstruction(wake)
+      + "\\nPreviously accepted objective (reference only, never blindly replay):\\n"
+      + original!.text.slice(0, 20_000)
+    : buildRunContinuationInstruction(wake);
   const result = await executor.execute({
     session,
-    prompt: buildRunContinuationInstruction(wake),
+    prompt,
     signal: new AbortController().signal,
     onUpdate: () => undefined,
     ordinaryResume: {
       id: wake.id, claimToken: wake.claimToken, provider: wake.provider,
-      providerSessionId,
+      ...(recovery ? recovery : { providerSessionId: providerSessionId! }),
     },
     // A busy Workstream is admitted to the existing durable Core queue;
     // its correlation is the same claimed continuation, not a fresh user Run.
