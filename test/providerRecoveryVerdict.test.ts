@@ -9,6 +9,7 @@ import {
 } from "../src/providers/failureEvidence.js";
 import { decideProviderRecovery } from "../src/providers/recoveryVerdict.js";
 import { RunOutcomeReconciliationError } from "../src/runOutcome.js";
+import { MissingAcpAnswerError } from "../src/providers/acpRuntime.js";
 
 const weeklyLimit = "You've hit your weekly limit · resets 11am (Europe/London)";
 
@@ -40,6 +41,13 @@ describe("provider recovery verdict", () => {
     const wrapped = new RunOutcomeReconciliationError("outcome reconciliation failed", { cause });
     expect(decideProviderRecovery("agy", wrapped)).toMatchObject({ reason: "capacity", capacityExhausted: true });
     expect(decideProviderRecovery("agy", new RunOutcomeReconciliationError("validation-only")).reason).toBeNull();
+  });
+
+  it("does not switch providers on an explicit ACP refusal with no answer", () => {
+    const refused = attachProviderFailureEvidence(
+      new MissingAcpAnswerError("agy", "live text", "session", "refusal"), { promptSubmitted: true },
+    );
+    expect(decideProviderRecovery("agy", refused).reason).toBeNull();
   });
 
   it("never treats an untagged unknown error as a provider failure", () => {

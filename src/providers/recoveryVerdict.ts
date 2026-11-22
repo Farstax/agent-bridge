@@ -73,6 +73,16 @@ export function decideProviderRecovery(
     };
   }
 
+  // ACP refusal is an intentional terminal response, not a provider failure
+  // to route around, even if its selected answer is empty.
+  if (providerError.name === "MissingAcpAnswerError"
+    && (providerError as { stopReason?: string }).stopReason === "refusal") {
+    return {
+      classification, reason: null, capacityExhausted: false,
+      authRequired: false, transportReason: null, freshSessionRetry: false,
+    };
+  }
+
   // Transport/availability reasons are evaluated independently of the auth and
   // capacity categories (a stalled provider still abandons its session even if
   // its text also looks like capacity wording).

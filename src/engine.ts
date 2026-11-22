@@ -2333,7 +2333,7 @@ export class BridgeEngine {
         )).catch((error: unknown) => {
           // The agent may have recorded a disposition before returning no final
           // answer. Preserve it and its wake without replaying side effects.
-          if (!(error instanceof MissingAcpAnswerError) || !runId) throw error;
+          if (!(error instanceof MissingAcpAnswerError) || !runId || error.stopReason === "refusal") throw error;
           const disposition = readRunOutcome(this.db, runId);
           if (!disposition) throw error;
           const text = "The agent recorded " + disposition.status
