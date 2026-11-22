@@ -174,8 +174,10 @@ function armInterruptedWorkstreamRecovery(db: Database.Database, nowMs: number):
   for (const run of runs) {
     if (successors.includes(run.runId) || !run.sessionId || !Number.isFinite(Date.parse(run.startedAt))) continue;
     const key = `run-continuation:v1:${run.runId}`;
-    const existingRow = db.prepare("SELECT value FROM settings WHERE key = ?")
-      .get(key) as { value: string } | undefined;
+    // Existing scheduled work must retain its original terms when a rollout
+    // is deferred or aborted. The post-rollout claimant may upgrade it to a
+    // recovery wake only after a completed containment audit is proven.
+    if (db.prepare("SELECT 1 FROM settings WHERE key = ?").get(key)) continue;
     const acceptedSince = new Date(Date.parse(run.startedAt) - 1_000).toISOString();
     const turns = db.prepare(`
       SELECT id, text, cli FROM conversation_turns
@@ -195,22 +197,7 @@ function armInterruptedWorkstreamRecovery(db: Database.Database, nowMs: number):
       state: "pending", depth: 1, outwardSessionId: run.sessionId,
       rolloutRecoveryOnly: true, recoveryOriginalTurnId: turns[0].id,
     };
-    if (existingRow) {
-      // Reuse the initiating agent's existing wake; never create a competing
-      // continuation. Only augment a dormant, exactly bound Run record.
-      try {
-        const existing = JSON.parse(existingRow.value) as Record<string, unknown>;
-        if (existing.version !== 1 || existing.state !== "pending"
-          || existing.originRunId !== run.runId || existing.chatKey !== run.chatKey
-          || existing.surfaceIdentity !== "acp:outward" || existing.provider !== run.provider
-          || existing.outwardSessionId !== run.sessionId || existing.capacityWait
-          || typeof existing.expiresAt !== "string" || Date.parse(existing.expiresAt) <= nowMs) continue;
-        db.prepare("UPDATE settings SET value = ? WHERE key = ?")
-          .run(JSON.stringify({ ...existing, rolloutRecoveryOnly: true, recoveryOriginalTurnId: turns[0].id }), key);
-      } catch { /* Malformed existing authority is never overwritten. */ }
-    } else {
-      db.prepare("INSERT INTO settings (key, value) VALUES (?, ?)").run(key, JSON.stringify(continuation));
-    }
+    db.prepare("INSERT INTO settings (key, value) VALUES (?, ?)").run(key, JSON.stringify(continuation));
   }
 }
 
