@@ -126,6 +126,10 @@ describe("atomic generic idle-only upgrade admission (#1161)", () => {
     // The existing capacity lease contract relinquishes expired claims; admission
     // must neither delete them prematurely nor ignore live ownership.
     db.raw.prepare("UPDATE execution_capacity_claims SET lease_expires_at = ? WHERE claim_id = ?")
+      .run("invalid-expiry", claim!.claimId);
+    expect(tryAdmitIdleUpgrade(path, process.pid, options))
+      .toEqual({ state: "deferred_busy", reason: "capacity_claim" });
+    db.raw.prepare("UPDATE execution_capacity_claims SET lease_expires_at = ? WHERE claim_id = ?")
       .run("2000-01-01T00:00:00.000Z", claim!.claimId);
     const expiredClaimAdmission = tryAdmitIdleUpgrade(path, process.pid, options);
     expect(expiredClaimAdmission.state).toBe("admitted");
