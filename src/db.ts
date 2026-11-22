@@ -798,36 +798,11 @@ export class BridgeDb {
           reason: options.reason, reconciledAt: now, processState: "absent", lockState: "absent", cutoffMs: 0,
         })) throw new ReconciliationLostRace();
         reconciled.push(run.run_id);
-        const contKey = `run-continuation:v1:${run.run_id}`;
-        const existingRow = this.raw.prepare("SELECT value FROM settings WHERE key = ?").get(contKey) as { value: string } | undefined;
-        if (existingRow) {
-          try {
-            const cont = JSON.parse(existingRow.value) as RunContinuation;
-            if (
-              cont
-              && cont.version === 1
-              && cont.state === "pending"
-              && cont.originRunId === run.run_id
-              && cont.surfaceIdentity === (run.surface_identity ?? "$legacy")
-              && cont.chatKey === run.chat_id
-              && cont.provider === run.bot
-              && Date.parse(cont.expiresAt) > nowMs
-            ) {
-              cont.rolloutProvenance = {
-                reconciledAt: now,
-                reason: options.reason,
-                reconciliationAuditId: auditId,
-                originRunId: run.run_id,
-                surfaceIdentity: cont.surfaceIdentity,
-                chatKey: cont.chatKey,
-                provider: cont.provider,
-              };
-              this.raw.prepare("UPDATE settings SET value = ? WHERE key = ?").run(JSON.stringify(cont), contKey);
-            }
-          } catch {
-            // malformed json, ignore
-          }
-        }
+        // Reconciliation executes while the all-role idle fence is held.
+        // Continuation settings are intentionally write-fenced until a
+        // healthy activation or proven rollback releases that fence. Leave
+        // the completed audit as durable evidence; the existing continuation
+        // claimant attaches it in its own post-fence transaction.
       }
       for (const claim of claims) {
         const changed = this.raw.prepare(`
