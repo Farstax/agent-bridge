@@ -12,6 +12,7 @@ import { lookupProviderSession } from "./providers/sessionRuntime.js";
 import { getRunOwnedProcessState } from "./runOwnedProcesses.js";
 
 export const RUN_CONTINUATION_PREFIX = "run-continuation:v1:";
+export const OUTWARD_RUN_ACCEPTED_TURN_PREFIX = "outward-run-accepted-turn:v1:";
 const PREFIX = RUN_CONTINUATION_PREFIX;
 const DEFAULT_SCAN_MS = 5_000;
 const MIN_DELAY_SECONDS = 5;
