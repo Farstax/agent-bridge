@@ -457,6 +457,11 @@ fi
 # integration contract independently of the existing real SQLite fence tests.
 if [[ "\${cmd[1]:-}" == */tsx/dist/cli.mjs && "\${cmd[2]:-}" == */scripts/idle-maintenance.ts ]]; then
   action="\${cmd[3]:-}"
+  if [[ "$action" == acquire && "\${FAKE_IDLE_UPGRADE_DEFER_ONCE:-}" == 1 && ! -e "\${AGENT_BRIDGE_ROLLOUT_TEST_ROOT}/fake-idle-deferred" ]]; then
+    touch -- "\${AGENT_BRIDGE_ROLLOUT_TEST_ROOT}/fake-idle-deferred"
+    echo '{"state":"deferred_busy","reason":"outward_reservation"}'
+    exit 75
+  fi
   if [[ "$action" == acquire && "\${FAKE_IDLE_UPGRADE_STATE:-}" == deferred_busy ]]; then
     if [[ -n "\${FAKE_IDLE_UPGRADE_REASON:-}" ]]; then
       printf '{"state":"deferred_busy","reason":"%s"}\\n' "$FAKE_IDLE_UPGRADE_REASON"
