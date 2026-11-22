@@ -159,7 +159,7 @@ function interruptibleDeferralReason(db: Database.Database): IdleUpgradeDeferral
   for (let i = 0; i < TRANSIENT_QUERIES.length; i++) {
     if (db.prepare(TRANSIENT_QUERIES[i]).get()) return reasons[i];
   }
-  return "claimed_continuation";
+  return "unknown";
 }
 
 function installGuard(db: Database.Database): void {
