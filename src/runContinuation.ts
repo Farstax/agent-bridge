@@ -456,19 +456,19 @@ export function rolloutRecoveryProviderAuthority(
 }
 
 /** Strictly attribute an interrupted Run to exactly one accepted user turn. */
-function originalAcceptedTurnId(db: BridgeDb, origin: { started_at: string },
+function originalAcceptedTurnId(db: BridgeDb, origin: { run_id: string },
   wake: Pick<RunContinuation, "chatKey" | "provider">): number | null {
-  const startedAt = Date.parse(origin.started_at);
-  if (!Number.isFinite(startedAt)) return null;
-  const rows = db.raw.prepare(`
+  const linked = db.raw.prepare("SELECT value FROM settings WHERE key = ?")
+    .get(OUTWARD_RUN_ACCEPTED_TURN_PREFIX + origin.run_id) as { value: string } | undefined;
+  if (!linked || !/^[1-9][0-9]*$/.test(linked.value)) return null;
+  const id = Number(linked.value);
+  if (!Number.isSafeInteger(id)) return null;
+  const turn = db.raw.prepare(`
     SELECT id, text FROM conversation_turns
-    WHERE chat_key = ? AND surface_identity = 'acp:outward'
-      AND role = 'user' AND cli = ? AND created_at >= ?
-    ORDER BY id DESC LIMIT 2
-  `).all(wake.chatKey, wake.provider, new Date(startedAt - 1_000).toISOString())
-    as Array<{ id: number; text: string }>;
-  if (rows.length !== 1 || !rows[0].text.trim() || rows[0].text.length > 160_000) return null;
-  return rows[0].id;
+    WHERE id = ? AND chat_key = ? AND surface_identity = 'acp:outward'
+      AND role = 'user' AND cli = ?
+  `).get(id, wake.chatKey, wake.provider) as { id: number; text: string } | undefined;
+  return turn?.text?.trim() && turn.text.length <= 160_000 ? turn.id : null;
 }
 
 /**
