@@ -25,7 +25,7 @@ import { QUEUED_ATTACHMENT_MARKER, readRetainedOutwardAcpAttachments, retainOutw
 import { rememberQueuedDisplay, settleQueuedDisplay, retireQueuedDisplay } from "./queuedDisplay.js";
 import { resolveLaneBusyMessageMode } from "../busyMessageMode.js";
 import { discardDeskRunArtifacts, retainDeskArtifacts } from "./artifacts.js";
-import { hasPendingCapacityWait, listRunContinuations, linkCapacityContinuationRun, linkRunContinuationRun, RUN_CONTINUATION_PREFIX, requestRunContinuation, rolloutRecoveryProviderAuthority, cancelPendingRunContinuation, settleRunContinuation, type RunContinuation } from "../runContinuation.js";
+import { hasPendingCapacityWait, listRunContinuations, linkCapacityContinuationRun, linkRunContinuationRun, RUN_CONTINUATION_PREFIX, OUTWARD_RUN_ACCEPTED_TURN_PREFIX, requestRunContinuation, rolloutRecoveryProviderAuthority, cancelPendingRunContinuation, settleRunContinuation, type RunContinuation } from "../runContinuation.js";
 
 
 import { OUTWARD_ACP_SURFACE, outwardServiceId, recoverOutwardLanes } from "./recovery.js";
@@ -900,6 +900,9 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
           const turnId = db.addConvTurn(input.session.conversationId, "user", input.prompt, provider, {
             surfaceIdentity: OUTWARD_ACP_SURFACE,
           }, queued ? queuedSubmittedAt(db, queued.id) : undefined);
+          // The exact Run-to-accepted-turn link commits with Run admission.
+          // Never infer it later from timestamps or replay a queued prompt.
+          db.setSetting(OUTWARD_RUN_ACCEPTED_TURN_PREFIX + runId, String(turnId));
           // Persist the real client operation ID in the same transaction as
           // the user turn. This metadata is for Desk reconciliation only and
           // never changes provider context, transcript text or execution.
@@ -1113,6 +1116,8 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
         if (db.getRun(runId)?.status !== (cancelled ? "cancelled" : "done")) {
           throw new Error("outward ACP terminal Run state was not persisted");
         }
+        db.raw.prepare("DELETE FROM settings WHERE key = ?")
+          .run(OUTWARD_RUN_ACCEPTED_TURN_PREFIX + runId);
       }));
       if (!cancelled && result.text && actualProvider !== provider) this.routers.delete(input.session.conversationId);
       if (!cancelled && result.text && !previewEmitted) {
@@ -1151,6 +1156,10 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
           });
           eventStore!.collect(failedEvent(runId, activeProvider, input.session, error));
           eventStore!.finalize();
+          if (db.getRun(runId)?.status === "failed") {
+            db.raw.prepare("DELETE FROM settings WHERE key = ?")
+              .run(OUTWARD_RUN_ACCEPTED_TURN_PREFIX + runId);
+          }
         }));
       }
       // An idempotent contender can lose the race before its own Run is
