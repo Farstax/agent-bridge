@@ -51,18 +51,6 @@ describe("BridgeDb ordinary Run state", () => {
     expect(db.getRun("terminal-race")).toEqual(original);
   });
 
-  it("keeps event receipt idempotency in the ordinary Run path", () => {
-    const input = {
-      event_id: "event-1", source: "health", event_kind: "red",
-      idempotency_key: "health:event-1", received_at: "2026-01-01T00:00:00.000Z",
-      occurred_at: "2026-01-01T00:00:00.000Z", payload_json: "{}", authority_scope: "health",
-    };
-    const first = db.createEventReceipt(input);
-    const second = db.createEventReceipt(input);
-    expect(second.id).toBe(first.id);
-    expect(db.getEventReceiptByIdempotencyKey(input.idempotency_key)?.id).toBe(first.id);
-  });
-
   it("uses one durable receipt-admission decision across both entry points and connections", () => {
     const dir = mkdtempSync(join(tmpdir(), "bridge-receipt-admission-"));
     const firstDb = openDb(join(dir, "bridge.sqlite"));
@@ -78,6 +66,8 @@ describe("BridgeDb ordinary Run state", () => {
 
         // The legacy caller and the new delivery caller share the same unique key.
         const first = firstDb.createEventReceipt(input);
+        expect(firstDb.createEventReceipt(input).id).toBe(first.id);
+        expect(firstDb.getEventReceiptByIdempotencyKey(input.idempotency_key)?.id).toBe(first.id);
         expect(firstDb.claimEventReceiptDispatch(first.id)).toBe(true);
         const duplicate = secondDb.admitEventReceipt({ ...input, event_id: "retry-a", payload_json: '{"retry":true}' });
         expect(duplicate.created).toBe(false);
