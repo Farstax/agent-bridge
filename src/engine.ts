@@ -1002,7 +1002,8 @@ export class BridgeEngine {
               "[Agent Bridge provider recovery]",
               "The previous provider attempt failed. Inspect earlier tool effects, durable outcomes and workspace state before changing anything.",
               "Preserve completed work; continue only unfinished tasks. Do not blindly repeat uncertain side effects.",
-              "Sanitised original error: " + toUserMessage(providerError).slice(0, 1_000),
+              "Sanitised original error: " + toUserMessage(providerError.name === "RunOutcomeReconciliationError" && providerError.cause instanceof Error
+                ? providerError.cause : providerError).slice(0, 1_000),
               "",
               prompt,
             ].join("\n"), sessionId: null, chatId, chatKey, threadId, attachments, laneHandle, runId, eventContext, collect,
