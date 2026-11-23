@@ -8,6 +8,7 @@ import {
   readProviderFailureEvidence,
 } from "../src/providers/failureEvidence.js";
 import { decideProviderRecovery } from "../src/providers/recoveryVerdict.js";
+import { runWithAcpTransientRetry } from "../src/providers/acpTransientRetry.js";
 import { RunOutcomeReconciliationError } from "../src/runOutcome.js";
 import { MissingAcpAnswerError } from "../src/providers/acpRuntime.js";
 
@@ -91,11 +92,26 @@ describe("provider recovery verdict", () => {
     );
     expect(decision.authRequired).toBe(false);
     expect(decision.classification.kind).toBe("transient");
-    expect(decision.reason).toBeNull();
+    expect(decision.reason).toBe("provider_transport_failure");
   });
 });
 
 describe("ACP prompt submission evidence", () => {
+  it("does not replay a submitted transient prompt before inspection-first recovery", async () => {
+    let submitted = false;
+    const operation = vi.fn(async () => {
+      submitted = true;
+      throw new Error("socket hang up after provider tool calls");
+    });
+    await expect(runWithAcpTransientRetry("codex", operation, {
+      abortRequested: () => false,
+      promptSubmitted: () => submitted,
+      wait: vi.fn(),
+    })).rejects.toThrow("socket hang up");
+    expect(operation).toHaveBeenCalledTimes(1);
+  });
+
+
   it("reports submission immediately before session/prompt and not when setup fails first", async () => {
     const submitted = vi.fn();
     const peer = acp.agent({ name: "evidence-agent" })
