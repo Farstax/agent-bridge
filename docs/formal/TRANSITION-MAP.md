@@ -47,8 +47,8 @@
 ## Narrow production changes on this continuation branch
 
 1. `EventReceiptRepository.createReceipt` now delegates to `admitReceipt`: removes a duplicate read-then-insert branch and uses the existing SQLite unique-key admission authority for both APIs. `test/db.test.ts` checks both call orders, distinct SQLite connections, preserved in-flight/terminal status and no duplicate rows. **Execution pending.**
-2. `settleRunContinuation` now admits writes only from `pending` or `claimed`; once `failed`, `completed`, `cancelled` or `expired`, a later expiry cannot overwrite terminal evidence. Expiry reclaims in `scanRunContinuations` also re-read the live state, require a capacity wait and reject a terminal value before creating an expiry claim. `test/runContinuation.test.ts` injects a competing failure during awaited expiry notification. **Execution pending.**
-3. No shared state-machine runtime, new table, new public API or extra CI framework was introduced. No existing integration test was removed: uniqueness of high-risk process/WAL/race scenarios still needs the local execution audit before any subtraction.
+2. `settleRunContinuation` now admits writes only from `pending` or `claimed`; once `failed`, `completed`, `cancelled` or `expired`, a later expiry cannot overwrite terminal evidence. Expiry reclaims in `scanRunContinuations` also re-read the live state, require a capacity wait and reject a terminal value before creating an expiry claim. `test/runContinuation.test.ts` injects a competing failure during awaited expiry notification and separately settles between a stale scan candidate and its transactional re-read. **Execution pending.**
+3. **Test consolidation:** the old in-memory `createEventReceipt` duplicate test was removed only after transferring both of its assertions (same ID on repeated create, and lookup by idempotency key) into the new two-connection regression. No process, WAL, Stop, rollback or transport integration test was removed. No shared state-machine runtime, new table, public API or CI framework was introduced.
 
 ## Blockers to merge
 
