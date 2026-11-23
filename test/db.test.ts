@@ -1,3 +1,6 @@
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { openDb, DEFAULT_CONTEXT_MAX_CHARS, DEFAULT_CONTEXT_RECENT_TURN_LIMIT } from "../src/db.js";
 import type { BridgeDb } from "../src/db.js";
@@ -58,6 +61,46 @@ describe("BridgeDb ordinary Run state", () => {
     const second = db.createEventReceipt(input);
     expect(second.id).toBe(first.id);
     expect(db.getEventReceiptByIdempotencyKey(input.idempotency_key)?.id).toBe(first.id);
+  });
+
+  it("uses one durable receipt-admission decision across both entry points and connections", () => {
+    const dir = mkdtempSync(join(tmpdir(), "bridge-receipt-admission-"));
+    const firstDb = openDb(join(dir, "bridge.sqlite"));
+    try {
+      const secondDb = openDb(join(dir, "bridge.sqlite"));
+      try {
+        const input = {
+          event_id: "event-a", source: "health", event_kind: "red",
+          idempotency_key: "health:event-a", received_at: "2026-01-01T00:00:00.000Z",
+          occurred_at: "2026-01-01T00:00:00.000Z", payload_json: "{}",
+          authority_scope: "health",
+        };
+
+        // The legacy caller and the new delivery caller share the same unique key.
+        const first = firstDb.createEventReceipt(input);
+        expect(firstDb.claimEventReceiptDispatch(first.id)).toBe(true);
+        const duplicate = secondDb.admitEventReceipt({ ...input, event_id: "retry-a", payload_json: '{"retry":true}' });
+        expect(duplicate.created).toBe(false);
+        expect(duplicate.receipt).toMatchObject({ id: first.id, event_id: "event-a", status: "dispatching", payload_json: "{}" });
+
+        // Admission in the reverse order also preserves the original row and status.
+        const next = { ...input, event_id: "event-b", idempotency_key: "health:event-b" };
+        const admitted = secondDb.admitEventReceipt(next);
+        expect(admitted.created).toBe(true);
+        expect(secondDb.claimEventReceiptDispatch(admitted.receipt.id)).toBe(true);
+        secondDb.finishEventReceipt(admitted.receipt.id, { status: "failed", error_class: "test_failure" });
+        expect(firstDb.createEventReceipt({ ...next, event_id: "retry-b" }))
+          .toMatchObject({ id: admitted.receipt.id, event_id: "event-b", status: "failed", error_class: "test_failure" });
+        expect((firstDb.raw.prepare("SELECT COUNT(*) AS n FROM event_receipts WHERE idempotency_key IN (?, ?)").get(
+          input.idempotency_key, next.idempotency_key,
+        ) as { n: number }).n).toBe(2);
+      } finally {
+        secondDb.close();
+      }
+    } finally {
+      firstDb.close();
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it("retains exact conversation turns for fresh-session continuity", () => {
