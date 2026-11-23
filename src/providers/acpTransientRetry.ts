@@ -75,7 +75,9 @@ export async function runWithAcpTransientRetry<T>(
     if (normalized.name === "WorkspaceLockBusyError") throw error;
     const kind = classifyProviderError(providerId, normalized).kind;
     if (kind !== "transient" && kind !== "unknown") throw error;
-    if (kind === "unknown" && options.promptSubmitted?.()) throw error;
+    // After any submitted prompt the provider may already have performed tools.
+    // Hand control to an inspection-first recovery owner, never a blind replay.
+    if (options.promptSubmitted?.()) throw error;
     const retryDelayMs = providerId === "claude" && isClaudeOAuthRefreshContention(normalized)
       ? CLAUDE_OAUTH_REFRESH_RETRY_DELAY_MS
       : TRANSIENT_RETRY_DELAY_MS;
