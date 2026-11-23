@@ -33,9 +33,9 @@ export const BRIDGE_ACP_CLIENT_INFO = {
 export function bridgeInitializeRequest(providerId?: string): InitializeRequest {
   return {
     protocolVersion: PROTOCOL_VERSION,
-    // codex-acp 2.6.0 requires AIR client negotiation for explicit message
-    // phases. No optional AIR capabilities: preserve baseline permissions and
-    // leave every other ACP provider's initialization unchanged.
+    // Codex ACP requires AIR client negotiation for explicit message phases.
+    // No optional AIR capabilities: preserve baseline permissions and leave
+    // every other ACP provider's initialization unchanged.
     clientCapabilities: providerId === "codex"
       ? {
           ...BRIDGE_ACP_CLIENT_CAPABILITIES,

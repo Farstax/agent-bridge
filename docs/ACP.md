@@ -4,8 +4,8 @@ Agent Bridge uses Agent Client Protocol (ACP) v1 as the canonical inward
 provider-runtime contract for providers that have completed ACP migration.
 This is not a second agent runtime and not a proprietary wrapper around ACP.
 
-Pinned SDK: `@agentclientprotocol/sdk@2.7.0` (stable ACP v1 entry point).
-Pinned Codex ACP adapter: `@agentclientprotocol/codex-acp@1.10.0`
+Pinned SDK: `@agentclientprotocol/sdk@2.9.1` (stable ACP v1 entry point).
+Pinned Codex ACP adapter: `@agentclientprotocol/codex-acp@2.9.0`
 (maintained implementation; bundled in the active Agent Bridge release).
 Pinned Claude ACP adapter: `@agentclientprotocol/claude-agent-acp@0.107.1`
 (official Registry distribution; bundled in the active Agent Bridge release).
@@ -118,7 +118,7 @@ CODEX_ACP_ARGS=...                  # optional extra adapter argv
 ```
 
 The pinned adapter ships with the Agent Bridge release as
-`@agentclientprotocol/codex-acp@1.10.0`. Fresh managed installation and
+`@agentclientprotocol/codex-acp@2.9.0`. Fresh managed installation and
 source `npm install` both obtain it. Execution, doctor, health, qualification,
 and runtime inspection resolve the same launchable artifact:
 
