@@ -318,6 +318,28 @@ describe("two-stage provider recovery (#1281)", () => {
     } finally { db.close(); }
   });
 
+  it("does not transfer the original Codex session requirement when Codex is unavailable at admission", async () => {
+    const db = openDb(":memory:");
+    const attempts: Array<{ provider: BotKind; bound: boolean | undefined; fresh: boolean | undefined }> = [];
+    const router = createSurfaceNeutralProviderRouter({
+      db, surfaceIdentity: "acp:outward",
+      initialProvider: "codex", providerChain: ["codex", "claude"],
+      isProviderAvailable: (provider) => provider === "claude",
+      engineForProvider: (provider) => ({
+        executeSurfaceNeutralTurn: async (input: any) => {
+          attempts.push({ provider, bound: input.requireBoundProviderSession, fresh: input.freshProviderSession });
+          return { text: "completed by Claude", sessionId: "claude-own-session" };
+        },
+      }) as any,
+    });
+    try {
+      await expect(router.executeSurfaceNeutralTurn({
+        ...turnInput(vi.fn()), requireBoundProviderSession: true,
+      })).resolves.toMatchObject({ sessionId: "claude-own-session" });
+      expect(attempts).toEqual([{ provider: "claude", bound: false, fresh: true }]);
+    } finally { db.close(); }
+  });
+
   it("does not route an explicit refusal, local unknown error, or Stop through another provider", async () => {
     for (const errorType of ["refusal", "local", "stop"] as const) {
       const db = openDb(":memory:");
