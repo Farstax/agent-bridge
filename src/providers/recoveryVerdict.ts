@@ -2,7 +2,6 @@ import { CliTimeoutError, ProviderStallError } from "../cliSupervisor.js";
 import {
   classifyAnyProviderError,
   classifyProviderError,
-  isClaudeOAuthRefreshContention,
   isFallbackEligibleProviderError,
 } from "./errorClassification.js";
 import {
@@ -51,7 +50,6 @@ export function decideProviderRecovery(
   const providerError = error.name === "RunOutcomeReconciliationError" && error.cause instanceof Error
     ? error.cause : error;
   const classification = provider ? classifyProviderError(provider, providerError) : classifyAnyProviderError(providerError);
-  const claudeContention = provider === "claude" && isClaudeOAuthRefreshContention(providerError);
   const authRequired = classification.kind === "auth_required";
   // Capacity wording is shared across provider CLIs (e.g. "session limit"), so
   // the category check stays provider-agnostic as it was at every old call site.
@@ -83,6 +81,7 @@ export function decideProviderRecovery(
     };
   }
 
+  // A failed targeted retry is not a terminal category gate (including Claude OAuth contention).
   // Transport/availability reasons are evaluated independently of the auth and
   // capacity categories (a stalled provider still abandons its session even if
   // its text also looks like capacity wording).
