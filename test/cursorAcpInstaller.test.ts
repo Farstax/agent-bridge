@@ -5,8 +5,8 @@ import { join, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 
 const installerSource = resolve(process.cwd(), "scripts", "install-cursor-acp.sh");
-const cursorVersion = "2026.10.22-27dcf5f";
-const cursorArchiveSha = "85296944e4600a83c4b764f578d1502bf9c416db200d33a593e8f3ecabfdc294";
+const cursorVersion = "2026.11.22-e9042b2";
+const cursorArchiveSha = "7663b1c5d1b56e095ef8e23bef38d66df6cfd665c4873470214e0e411f0f97b3";
 
 function executable(path: string, contents: string) {
   writeFileSync(path, contents);
