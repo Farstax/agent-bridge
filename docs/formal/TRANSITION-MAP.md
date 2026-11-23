@@ -1,0 +1,71 @@
+# OSS #1278 — critical state-owner and transition correspondence
+
+> **Status: source-reviewed, not exact-head qualified.** This mapping is an implementation
+> audit and a local-execution checklist, not a TLA refinement proof. The recovered
+> model results in `README.md` refer to earlier working-tree states; use `RECOVERY.md`
+> for provenance. Nothing in this document claims that TLC or Vitest passed on the
+> current draft PR head.
+
+## Boundaries that must stay distinct
+
+- **Logical task / Workstream:** the accepted user objective and its durable origin; completing a provider Run need not complete the objective.
+- **Run:** one provider attempt, persisted in `bridge_runs`; ordinary terminal writers are guarded SQLite updates. Autonomous disposition reconciliation has a deliberately separate `done` → `failed` correction.
+- **Queue receipt / lane claim:** durable `pending_messages` and lease/lock ownership. A queued message is not a Run; losing a claim is not evidence of a provider effect.
+- **Continuation:** one persisted future wake with its own claim token, lifetime and successor correlation. A capacity wait is not an ordinary fresh continuation.
+- **Process:** OS-owned provider descendants and their independently verified liveness/termination; a database status is not proof of process death.
+- **Delivery:** an external message or upload with partial/in-flight side effects. Stop can fence the next send, not undo an already-started send.
+
+## Critical model actions and their real implementation owners
+
+| Model / important actions | Authoritative code and guard | Implementation test owner | Not proven by the abstraction |
+| --- | --- | --- | --- |
+| `RunTerminal`: `Finish(done/failed/cancelled)` | `RunRepository.updateRunCompleted/Failed/Cancelled` in `src/repositories/runRepository.ts`; each `WHERE status = 'running'` CAS. | `test/db.test.ts` terminal-writer order; `test/eventStore.test.ts` | Autonomous `done` → `failed` correction, multiple processes, external effects |
+| `LateProviderResult`: `Stop`, `Return`, `Settle` | `BridgeOutwardAcpPromptExecutor.cancel/cancelRun/execute` in `src/acpServer/execution.ts`; separate cancellation/final-publication authority. | `test/acpOutwardCancellationRace.test.ts` gated late success | Earlier streaming, remote process shutdown, irrevocable provider side effects |
+| `QueueStop`: `Acquire`, `Claim`, `LoseLane`, `Recover`, `Admit`, `Stop`, `Finish` | `src/executionLaneCoordinator.ts` ingress `preparing/claimed/aborted`, durable `src/db.ts` queue/locks and `src/acpServer/execution.ts` Stop fence; no single in-memory authority. | `test/executionLaneCorrectness.test.ts`, `test/executionLaneCoordinator.test.ts`, `test/acpOutwardQueueDrain.test.ts` | Lease expiry and crash between SQL claim, Stop and provider submit |
+| `OrdinaryContinuation`: `Fence`, `Claim`, `Admit`, `Reclaim`, `Stop`, `Expire`, `Settle` | `src/runContinuation.ts`: `claimDueRunContinuation`, `linkRunContinuationRun`, `cancelPendingRunContinuation`, `reconcileRunContinuations`, `settleRunContinuation`; token/expiry checks remain at SQLite transaction owner. | `test/runContinuation.test.ts`, `test/rolloutContinuation.test.ts` | Identity/lease/queue cross-product, fairness, effects after admission |
+| `CapacityWait`: `Claim`, `Admit`, `Finish`, `ReceiptLost`, `Complete`, `Fail`, `Retry`, `Stop`, `Expire` | `src/runContinuation.ts`: `claimDueRunContinuation`, `capacityCompletionProven`, `linkCapacityContinuationRun`, `requeueClaimedCapacityWait`, `requeueProvenOutwardCapacityRejection`, `scanRunContinuations`, `settleRunContinuation`. | `test/acpOutwardCapacityRecovery.test.ts`, `test/runContinuation.test.ts` including late expiry-versus-failure regression added after recovery | Missing receipt is ambiguous; no provider effect exactly-once guarantee; notification callback races need executable tests |
+| `RolloutFence`: `Fence`, `Stop`, `Contain`, `Offline`, `Activate`, `Rollback`, `Release` | `src/idleUpgradeAdmission.ts` role fence; `scripts/rollout-agent-bridge.sh` writer scan, stop, WAL checkpoint, backup/migration, rollback and proof gates. | `test/idleUpgradeAdmission.test.ts`, `test/rolloutHelper.test.ts` | **Blocking:** real writer containment, caller late-open, process ancestry, WAL and rollback; model assumes true writer exclusion |
+| `MultiRoleFence`: `Acquire`, `Deny`, `Admit`, `Release`, `CleanupFailure`, `Offline` | `tryAdmitIdleUpgradeRoles`, `releaseIdleUpgradeRoles`, `recoverIdleUpgradeRoles` in `src/idleUpgradeAdmission.ts`; exact token required for each role. | `test/idleUpgradeAdmission.test.ts` swapped role tokens and partial-fence scenarios | Real OS owner/boot identity, failed release and live DB writer |
+| `RolloutRecovery`: `Arm`, `Fence`, `Abort`, `Interrupt`, `Audit`, `Release`, `Claim` | `armInterruptedWorkstreamRecovery` / `tryAdmitIdleUpgrade` in `src/idleUpgradeAdmission.ts`; `provenPostRolloutAudit` / `claimDueRunContinuation` in `src/runContinuation.ts`. | `test/rolloutContinuation.test.ts`, `test/rolloutLifecycle.test.ts` | Observed process absence is not proof against reappearance; readiness and audit identity must be independently checked |
+| `AutonomousGoal`: `Claim`, `Continue`, `Terminal`, `Cancel` | `src/autonomousGoalRuntime.ts`: `claimWakeAndRun`, `reconcile`, `cancelAutonomousGoal`; goal state `active/complete/blocked/cancelled/budget_exhausted`. | `test/autonomousGoalRuntime.test.ts`, `test/autonomousGoalCancellationFence.test.ts` | Budget/wake/process concurrency, durable effect idempotency |
+| `AutonomyReconcile`: `ProviderDone`, `CancelRun`, `ReconcileMissing`, `ReconcileCancelled` | `src/autonomousGoalRuntime.ts` `reconcile` and `recoverUnreconciledWake`; missing disposition can correct technical `done` to `failed`, never `cancelled`. | `test/autonomyDispositionContract.test.ts`, `test/autonomousGoalCancellationFence.test.ts` | Full disposition cases, aborted process state and multi-connection interleavings |
+| `EventReceipt`: `Receive`, `Duplicate`, `Claim`, `Link`, `Finish` | `src/repositories/eventReceiptRepository.ts` `admitReceipt` owns the `UNIQUE(idempotency_key)` `ON CONFLICT DO NOTHING` insert; `createReceipt` now delegates. `claimDispatch`, `linkRun`, `finish` own status CAS. | `test/telegramPollAdmission.test.ts`, `test/slackIngress.test.ts`, `test/db.test.ts` cross-connection two-API regression | External effect exactly once, retention expiry and cross-process crash/effect ambiguity |
+| `ScheduledCorrelation`: `Link`, `FailEvidence`, `Advance` | `src/scheduledRunCorrelation.ts` `linkScheduledOccurrenceRun` and `markScheduledOccurrenceFailed` within transaction and settings value CAS. | `test/scheduledRunCorrelationEngine.test.ts`, `test/scheduledRunCorrelationHardening.test.ts` | Completed Run cannot be rebound; missing Run may still have produced a side effect |
+| `OutputDelivery`: `Start`, `Stop`, `Finish`, `Settle` | `src/fileOutput.ts` `uploadOutputFiles` `canPublish` checks and retention marker functions. | `test/fileOutput.test.ts`, `test/fileOutputRetentionInvariant.test.ts` | Transport send already in-flight, crash before deletion/marker, TTL and filesystem failures |
+| `SlackReadiness`: socket/flush/restart/age | `src/slackStatus.ts` `SlackStatusWriter.transition/stop` and `isSlackStatusCurrent` identity/generation/time check. | `test/slackConfigStatus.test.ts` | Connected observation is not a live socket, cross-process status ordering and network connectivity |
+
+## Other inventoried ownership (deliberately not one model per enum)
+
+| Owner | Classification / reason not to add a new model here |
+| --- | --- |
+| `src/rolloutLifecycle.ts` | Process/claim `live-correlated/stale-unowned/ambiguous` classification feeds rollout evidence. Its process identity observations require real-process tests, not another enum-only model. |
+| `src/providers/recoveryVerdict.ts` and `src/providers/qualificationStatus.ts` | Provider recovery decisions and qualification evidence are separate domain observations, not a reason to merge capacity and ordinary continuation state. Explicit coverage of persisted-evidence races remains open. |
+| `src/runOutcome.ts`, `src/acpServer/execution.ts` outward Workstream status | Exchange completion and objective outcome are distinct. Some outward statuses are projections, not independent durable transition owners. |
+| `src/acp/subagentActivity.ts` | Subagent spawned/completed/failed/interrupted: separate observer; verify owner before considering additional modeling. |
+| Legacy worker/task tables | Not an active runtime state owner after retirement migrations. Do not resurrect a generic Task or another queue. |
+
+## Narrow production changes on this continuation branch
+
+1. `EventReceiptRepository.createReceipt` now delegates to `admitReceipt`: removes a duplicate read-then-insert branch and uses the existing SQLite unique-key admission authority for both APIs. `test/db.test.ts` checks both call orders, distinct SQLite connections, preserved in-flight/terminal status and no duplicate rows. **Execution pending.**
+2. `settleRunContinuation` now admits writes only from `pending` or `claimed`; once `failed`, `completed`, `cancelled` or `expired`, a later expiry cannot overwrite terminal evidence. Expiry reclaims in `scanRunContinuations` also re-read the live state, require a capacity wait and reject a terminal value before creating an expiry claim. `test/runContinuation.test.ts` injects a competing failure during awaited expiry notification. **Execution pending.**
+3. No shared state-machine runtime, new table, new public API or extra CI framework was introduced. No existing integration test was removed: uniqueness of high-risk process/WAL/race scenarios still needs the local execution audit before any subtraction.
+
+## Blockers to merge
+
+1. **SQLite writer containment:** candidate script detects a currently open caller-owned handle; a later reopen can still pass its single scan. The production caller/host service handoff must be inspected and a real-process late-open/write during checkpoint, busy WAL, respawn and rollback must be run. If continuous exclusivity is unproven, do not run offline work or merge this safety claim.
+2. **Formal scope:** rerun all 14 `*.tla`/`*.cfg` pairs from `docs/formal` with the pinned trusted TLC 2.19 (or record a deliberate updated version), state counts, bounds and output; deliberately remove a meaningful guard in a disposable copy, save counterexample and restore pass. Models are bounded safety abstractions, not refinement or liveness proofs.
+3. **Exact-head implementation tests:** run `test/db.test.ts`, `test/runContinuation.test.ts`, and each mapped targeted suite including actual process/SQLite, Stop, upload and rollback fixtures; then repository `npm run typecheck`, `npm run qualify:local` and required hosted checks. Record the **same final head SHA** for all gates.
+4. **Evidence/measurement:** record full-suite baseline/final test count, runtime and touched-file source LOC; retain unique real-process and transport coverage, and defer unrelated broad test subtraction to #462. Independently review changed lines and correct findings before declaring ready.
+
+### Reproduction starting point
+
+```sh
+git switch work/1278-explicit-state-machines
+npm ci
+npm run typecheck
+./node_modules/.bin/vitest run test/db.test.ts test/runContinuation.test.ts --maxWorkers=1
+( cd docs/formal && for module in *.tla; do name=${module%.tla}; java -XX:+UseParallelGC -cp /absolute/path/to/tla2tools.jar tlc2.TLC -workers 1 -config "$name.cfg" "$module" || exit; done )
+npm run qualify:local
+```
+
+Do not invoke the TLC loop without a trusted local `tla2tools.jar`. The model run, negative mutations, rollback/WAL races and full qualification have **not** been executed from this GitHub-connected environment.
