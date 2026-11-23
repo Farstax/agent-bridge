@@ -105,8 +105,10 @@ export function createSurfaceNeutralProviderRouter(
           ].join("\n"),
           // The original continuation session is mandatory only for its admitted
           // first attempt. A successor provider must never inherit that requirement.
-          requireBoundProviderSession: input.requireBoundProviderSession === true && attemptMode === "initial",
-          freshProviderSession: attemptMode !== "initial",
+          requireBoundProviderSession: input.requireBoundProviderSession === true
+            && attemptMode === "initial" && provider === options.initialProvider,
+          freshProviderSession: attemptMode !== "initial"
+            || (input.requireBoundProviderSession === true && provider !== options.initialProvider),
           eventContext: { ...input.eventContext, bot: provider },
           // BridgeEngine emits run.started for every actual CLI process,
           // including same-provider model fallback and fresh-session retries.
