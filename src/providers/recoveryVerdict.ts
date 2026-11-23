@@ -95,7 +95,7 @@ export function decideProviderRecovery(
     transportReason = evidence ? "provider_transport_failure" : null;
   }
   else if (classification.kind === "transient") {
-    transportReason = claudeContention ? null : "provider_transport_failure";
+    transportReason = "provider_transport_failure";
   } else if (classification.kind === "fatal" && !/not a git repository/i.test(classification.reason)) {
     transportReason = "provider_unavailable";
   } else if (classification.kind === "unknown" && evidence) {
