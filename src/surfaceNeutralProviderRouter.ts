@@ -7,6 +7,7 @@ import { readRunOutcome, resetAbandonedRunDisposition } from "./runOutcome.js";
 import { providerIdForBotName } from "./providers/registry.js";
 import { decideProviderRecovery } from "./providers/recoveryVerdict.js";
 import { markHandoffRequired } from "./handoffState.js";
+import { toUserMessage } from "./cli.js";
 import type { BotKind } from "./types.js";
 
 export interface SurfaceNeutralProviderRouterOptions {
@@ -65,6 +66,10 @@ export function createSurfaceNeutralProviderRouter(
         initialized.add(input.chatKey);
       }
 
+      // A recovery stays inside the admitted Run and the existing finite fallback chain.
+      // Each provider can receive at most one fresh, inspection-first recovery attempt.
+      let attemptMode: "initial" | "recovery" | "fallback" = "initial";
+      const failures: string[] = [];
       for (;;) {
         const provider = fallback.getActiveCli(input.chatKey) as BotKind;
         // The chain returns its head when nothing is routeable; a non-messaging
@@ -90,6 +95,18 @@ export function createSurfaceNeutralProviderRouter(
         let attemptEvents: BridgeEvent[] = [];
         const providerInput: SurfaceNeutralTurnInput = {
           ...input,
+          prompt: failures.length === 0 ? input.prompt : [
+            "[Agent Bridge provider recovery]",
+            "Original objective follows below. Inspect previous tool actions, repository state, artifacts and durable outcomes before any side effect.",
+            "Preserve verified progress and perform only unfinished work. Do not retry an action whose result is uncertain without inspecting it first.",
+            ...failures.slice(-3).map((failure) => "Previous provider error: " + failure),
+            "",
+            input.prompt,
+          ].join("\n"),
+          // The original continuation session is mandatory only for its admitted
+          // first attempt. A successor provider must never inherit that requirement.
+          requireBoundProviderSession: input.requireBoundProviderSession === true && attemptMode === "initial",
+          freshProviderSession: attemptMode !== "initial",
           eventContext: { ...input.eventContext, bot: provider },
           // BridgeEngine emits run.started for every actual CLI process,
           // including same-provider model fallback and fresh-session retries.
@@ -137,11 +154,30 @@ export function createSurfaceNeutralProviderRouter(
           const disposition = readRunOutcome(options.db, input.runId);
           const settled = disposition?.status === "complete" || disposition?.status === "blocked"
             || (disposition?.status === "continue" && failure.name === "MissingAcpAnswerError");
-          const recoverable = decision.reason !== null && !settled;
+          const recoverable = decision.reason !== null && !settled && input.mayContinueRecovery?.() !== false;
           if (!recoverable) {
             input.onProviderRecoveryDecision?.(null, false);
             for (const event of attemptEvents) input.collect(event);
             throw error;
+          }
+          // The ACP runtime supplies provenance; ordinary local errors do not
+          // acquire recovery eligibility. Do not replay a failed task verbatim:
+          // a fresh native session receives inspection-first context instead.
+          failures.push(`${provider}: ${toUserMessage(failure).slice(0, 1_000)}`);
+          if (attemptMode !== "recovery" &&
+              decision.reason !== "auth_required" && decision.reason !== "capacity" &&
+              decision.reason !== "provider_unavailable") {
+            if (options.db.getRun(input.runId)?.status === "running") {
+              options.db.runWithLockFence(input.laneHandle, () => {
+                resetAbandonedRunDisposition(options.db, input.runId);
+              });
+            }
+            markHandoffRequired(options.db, options.surfaceIdentity, input.chatKey, provider, `fallback_from_${provider}`);
+            for (const event of attemptEvents) {
+              if (event.type === "run.diagnostic") input.collect(event);
+            }
+            attemptMode = "recovery";
+            continue;
           }
           // Anchor to the provider that actually attempted and failed, not to
           // whatever chatActiveIdx currently holds — a concurrent status peek
@@ -165,6 +201,7 @@ export function createSurfaceNeutralProviderRouter(
           // same durable inspection-first handoff context as interactive
           // turns. The successor is instructed to reconcile prior work.
           markHandoffRequired(options.db, options.surfaceIdentity, input.chatKey, next, `fallback_from_${provider}`);
+          attemptMode = "fallback";
           // The failed provider/model attempt was abandoned in favour of the
           // next configured CLI. Preserve its non-terminal diagnostics for
           // audit (especially prompt-submission evidence) without letting its
