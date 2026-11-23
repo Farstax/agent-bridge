@@ -73,7 +73,7 @@ exec "${process.execPath}" "${join(process.cwd(), "node_modules/tsx/dist/cli.mjs
 `);
       script(cursor, `
 printf '%s\\n' "$0 $*" >> "${qualificationLog}"
-if [ "\${1:-}" = --version ]; then echo '2026.10.22-27dcf5f'; exit 0; fi
+if [ "\${1:-}" = --version ]; then echo '2026.11.22-e9042b2'; exit 0; fi
 exec "${process.execPath}" "${join(process.cwd(), "node_modules/tsx/dist/cli.mjs")}" "${join(process.cwd(), "test/support/fakeAcpAgent.ts")}"
 `);
 
@@ -153,7 +153,7 @@ exit 97
         claude: { overall: "pass", providerVersion: "0.110.0" },
         codex: { overall: "pass", providerVersion: "2.9.0" },
         agy: { overall: "pass", providerVersion: "1.5.9" },
-        cursor: { overall: "pass", providerVersion: "2026.10.22-27dcf5f" },
+        cursor: { overall: "pass", providerVersion: "2026.11.22-e9042b2" },
       });
     } finally {
       rmSync(root, { recursive: true, force: true });
