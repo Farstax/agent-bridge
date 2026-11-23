@@ -843,6 +843,7 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
     let encounteredCapacity = false;
     let queueCapacityRequeue = false;
     let recoveryChainExhausted = false;
+    let exhaustedReason: string | null = null;
     let clearLivePreview: (() => void) | null = null;
     let settleLiveUpdates: (() => Promise<void>) | null = null;
     try {
@@ -1065,7 +1066,10 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
             _meta: { "agent-bridge/provider-fallback": { ...transition, reason } },
           } as OutwardUpdate);
           if (reason === "capacity") encounteredCapacity = true;
-          if (exhausted) recoveryChainExhausted = true;
+          if (exhausted) {
+            recoveryChainExhausted = true;
+            exhaustedReason = reason;
+          }
         },
       });
 
@@ -1150,13 +1154,21 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
       if (eventStore && db.getRun(runId)?.status === "running") {
         // Failed ACP requests are not assistant history. Persist a bounded,
         // sanitized explanation with the failed Run so reconnects show it.
-        const explanation = "The agent could not finish this Run. " + outwardFailureMessage(error)
-          + " Existing work may be incomplete; inspect it before continuing.";
+        const nextStep = exhaustedReason === "auth_required"
+          ? "Reconnect the affected provider subscription, then resume the remaining work."
+          : exhaustedReason === "capacity"
+            ? "Wait for provider capacity or make another authorised provider available, then resume."
+            : "Check the configured providers and their connectivity, then resume the unfinished work.";
+        const explanation = "The agent could not finish this Run. "
+          + (recoveryChainExhausted ? "Available authorised provider recovery attempts were exhausted. " : "")
+          + outwardFailureMessage(error)
+          + " Inspect prior tool actions, files and durable results before repeating anything. "
+          + nextStep;
         db.runWithLockFence(lane, () => db.runInTransaction(() => {
           if (!capacityWillDefer) db.addConvTurn(input.session.conversationId, "assistant", explanation, activeProvider, {
             surfaceIdentity: OUTWARD_ACP_SURFACE,
           });
-          eventStore!.collect(failedEvent(runId, activeProvider, input.session, error));
+          eventStore!.collect(failedEvent(runId, activeProvider, input.session, explanation));
           eventStore!.finalize();
           if (db.getRun(runId)?.status === "failed") {
             db.raw.prepare("DELETE FROM settings WHERE key = ?")
