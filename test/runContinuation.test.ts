@@ -746,6 +746,26 @@ describe("ordinary Run continuation", () => {
     db.close();
   });
 
+  it("does not overwrite a failed capacity wait when expiry notification settles late", async () => {
+    const { db } = setup();
+    const wait = requestForActiveRun(db, {
+      originRunId: "expiry-failure-race", surfaceIdentity: "telegram:interactive",
+      chatKey: "123", provider: "codex", reason: "capacity wait",
+      afterSeconds: 5, capacityWait: true,
+    }, 1_000);
+    const expiry = Date.parse(wait.expiresAt);
+    const onCapacityExpired = vi.fn(async (claimed: typeof wait) => {
+      // The notification is in flight when another completion owner wins.
+      settleRunContinuation(db, claimed.id, "failed", "other owner settled", expiry, claimed.claimToken);
+      expect(listRunContinuations(db)[0]).toMatchObject({ state: "failed", error: "other owner settled" });
+    });
+    await scanRunContinuations(db, "telegram:interactive", vi.fn(), expiry, { onCapacityExpired });
+
+    expect(onCapacityExpired).toHaveBeenCalledOnce();
+    expect(listRunContinuations(db)[0]).toMatchObject({ state: "failed", error: "other owner settled" });
+    db.close();
+  });
+
   it("does not allow competing runner to reclaim active claimed capacity wait (P1)", () => {
     const { db } = setup();
     const continuation = requestForActiveRun(db, {
