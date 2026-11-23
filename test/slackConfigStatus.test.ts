@@ -86,6 +86,10 @@ describe("slack status file (#943, schema v1)", () => {
     expect(isSlackStatusCurrent(record, { ...expected, pid: process.pid + 1 }, at(0))).toBe(false);
     expect(isSlackStatusCurrent(record, { ...expected, generation: "other" }, at(0))).toBe(false);
     expect(isSlackStatusCurrent(record, { ...expected, appId: "A2" }, at(0))).toBe(false);
+    expect(isSlackStatusCurrent(record, { ...expected, teamId: "T2" }, at(0))).toBe(false);
+    expect(isSlackStatusCurrent(record, expected, at(-1))).toBe(false);
+    expect(isSlackStatusCurrent({ ...record, observedAt: "not-a-date" }, expected, at(0))).toBe(false);
+    expect(isSlackStatusCurrent({ ...record, errorCode: "socket_error" }, expected, at(0))).toBe(false);
     expect(isSlackStatusCurrent({ ...record, state: "reconnecting" }, expected, at(0))).toBe(false);
   });
 

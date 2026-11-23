@@ -2180,8 +2180,8 @@ def ours(pid):
             return True
         pid, seen = ppid(pid), seen + 1
     return False
-# The caller chain (deployer/handoff owner) is part of the release transaction,
-# not a database writer to interrupt.
+# Never interrupt the caller chain, but do not assume its database handles are
+# quiescent: a caller with an open connection can write during offline work.
 ancestors, walk, seen = set(), self_pid, 0
 while walk > 1 and seen < 64:
     ancestors.add(walk)
@@ -2192,7 +2192,7 @@ def holders():
         if not entry.isdigit():
             continue
         pid = int(entry)
-        if pid == os.getpid() or pid in ancestors or ours(pid):
+        if pid == os.getpid() or pid == self_pid or (pid not in ancestors and ours(pid)):
             continue
         try:
             for fd in os.listdir(f"/proc/{pid}/fd"):
@@ -2201,7 +2201,7 @@ def holders():
                 except OSError:
                     continue
                 if link in targets:
-                    found[pid] = (targets[link], link)
+                    found[pid] = (targets[link], link, pid in ancestors)
         except PermissionError:
             if os.geteuid() == 0:
                 unreadable.append(pid)
@@ -2219,7 +2219,10 @@ for attempt in range(3):
         evidence["result"] = "unreadable_process_table"; finish(1)
     if not found:
         finish(0)
-    for pid, (owner, link) in found.items():
+    for pid, (owner, link, caller) in found.items():
+        if caller:
+            evidence["result"] = "caller_database_handle"; evidence["pid"] = pid; finish(1)
+    for pid, (owner, link, caller) in found.items():
         try:
             uid = os.stat(f"/proc/{pid}").st_uid
         except OSError:

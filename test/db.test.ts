@@ -35,6 +35,19 @@ describe("BridgeDb ordinary Run state", () => {
     expect(db.getRun("run-1")).toMatchObject({ status: "done", final_text_preview: "answer", session_id: "session-1" });
   });
 
+  it.each(["done", "failed", "cancelled"] as const)("keeps the first repository terminal result when later writers follow %s", (first) => {
+    const writers = {
+      done: () => db.updateRunCompleted("terminal-race", "original answer", "original session"),
+      failed: () => db.updateRunFailed("terminal-race", "original error"),
+      cancelled: () => db.updateRunCancelled("terminal-race", "original cancellation"),
+    };
+    db.insertRun("terminal-race", { surfaceIdentity: "telegram:interactive", chatKey: "chat-1" }, "codex");
+    expect(writers[first]()).toBe(true);
+    const original = db.getRun("terminal-race");
+    for (const writer of Object.values(writers)) expect(writer()).toBe(false);
+    expect(db.getRun("terminal-race")).toEqual(original);
+  });
+
   it("keeps event receipt idempotency in the ordinary Run path", () => {
     const input = {
       event_id: "event-1", source: "health", event_kind: "red",

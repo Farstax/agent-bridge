@@ -603,7 +603,7 @@ describe("controlled self-rollout continuation recovery (issue #964)", () => {
     expect(turn.attachments).toEqual([]);
   });
 
-  it("default production scanner path without injected options verifies live process containment and fails closed", async () => {
+  it.each(["live", "ambiguous"] as const)("default production scanner fails closed when process state is %s", async (processState) => {
     const { db } = setup();
     const runId = "default-scanner-liveness-run";
     const surfaceIdentity = "telegram:interactive";
@@ -629,8 +629,8 @@ describe("controlled self-rollout continuation recovery (issue #964)", () => {
     const cont = listRunContinuations(db)[0];
     expect(cont.rolloutProvenance).toBeUndefined(); // Audit is attached by the post-fence claimant.
 
-    // Mock getRunOwnedProcessState returning live (descendant still running)
-    const spy = vi.spyOn(runOwnedProcesses, "getRunOwnedProcessState").mockReturnValue("live");
+    // An unreadable process table is not proof that descendants are absent.
+    const spy = vi.spyOn(runOwnedProcesses, "getRunOwnedProcessState").mockReturnValue(processState);
 
     const dispatch = vi.fn(async () => undefined);
 

@@ -383,4 +383,24 @@ describe("atomic generic idle-only upgrade admission (#1161)", () => {
       expect(releaseIdleUpgrade(path, admitted.roles.find((role) => role.dbPath === path)!.fence.token)).toBe(true);
     } finally { worker.close(); }
   });
+
+  it("does not release either role when their valid tokens are swapped", () => {
+    const workerPath = join(dir, "worker.sqlite");
+    const worker = openDb(workerPath);
+    try {
+      const admitted = tryAdmitIdleUpgradeRoles([path, workerPath]);
+      if (admitted.state !== "admitted") throw new Error("failed to admit cohort");
+      const [first, second] = admitted.roles;
+      expect(first.fence.token).not.toBe(second.fence.token);
+      const swapped = [
+        { ...first, fence: { ...first.fence, token: second.fence.token } },
+        { ...second, fence: { ...second.fence, token: first.fence.token } },
+      ];
+      expect(releaseIdleUpgradeRoles(swapped)).toBe(false);
+      expect(readIdleUpgradeState(path)).toBe("deferred_busy");
+      expect(readIdleUpgradeState(workerPath)).toBe("deferred_busy");
+      expect(releaseIdleUpgradeRoles(admitted.roles)).toBe(true);
+      expect(readIdleUpgradeRolesState([path, workerPath])).toBe("idle");
+    } finally { worker.close(); }
+  });
 });

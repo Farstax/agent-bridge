@@ -101,6 +101,27 @@ describe("run-scoped autonomous disposition contract", () => {
     }
   });
 
+  it("reclassifies an already completed provider Run when its objective disposition is missing", async () => {
+    const { db, dbPath } = makeDb();
+    try {
+      createAutonomousGoal(db, { goalId: "completed-without-disposition", prompt: "Do work", constraints: [], bot: "claude", maxCycles: 2 });
+      let runId = "";
+      const engine = { executeSurfaceNeutralTurn: vi.fn(async (input: { runId: string }) => {
+        runId = input.runId;
+        expect(db.updateRunCompleted(runId, "provider finished", "session")).toBe(true);
+        return { text: "provider finished" };
+      }) } as any;
+      await runNextAutonomousGoal(db, "completed-without-disposition", engine);
+      expect(db.getRun(runId)).toMatchObject({ status: "failed", error: "missing_autonomy_disposition" });
+      expect(getAutonomousGoal(db, "completed-without-disposition")).toMatchObject({ status: "active", cycle: 1 });
+      expect(db.raw.prepare("SELECT status, error_class FROM event_receipts WHERE run_id = ?").get(runId))
+        .toMatchObject({ status: "failed", error_class: "missing_autonomy_disposition" });
+    } finally {
+      db.close();
+      removeDb(dbPath);
+    }
+  });
+
   it("lets provider failure win over a disposition already recorded", async () => {
     const { db, dbPath } = makeDb();
     try {

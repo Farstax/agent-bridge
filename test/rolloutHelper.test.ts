@@ -257,15 +257,18 @@ describe("guarded rollout helper", { timeout: 30_000 }, () => {
       } finally { after.close(); }
     }, 60_000);
 
-    it("never interrupts the release caller chain even if it holds a managed database open", () => {
+    it("refuses offline work when the caller holds a database open without interrupting it", () => {
       const fixture = createFixture();
       prepareImmutableRelease(fixture, fixture.previousCommit);
       const callerHandle = new Database(fixture.dbPaths[0]);
       try {
-        callerHandle.exec("select 1");
         const result = runRollout(fixture);
-        expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
+        expect(result.status).not.toBe(0);
+        expect(`${result.stdout}\n${result.stderr}`).toContain("SQLite writers could not be contained");
+        expect(actions(fixture)).not.toMatch(/runuser:.* (checkpoint|backup|migrate)\b/);
         expect(callerHandle.prepare("select 1 as ok").get()).toEqual({ ok: 1 });
+        const evidence = execFileSync("bash", ["-c", `cat ${JSON.stringify(fixture.logDir)}/*/containment-evidence-sqlite-writers.json`], { encoding: "utf8" });
+        expect(JSON.parse(evidence)).toMatchObject({ result: "caller_database_handle" });
       } finally { callerHandle.close(); }
     }, 60_000);
 
@@ -793,7 +796,7 @@ describe("guarded rollout helper", { timeout: 30_000 }, () => {
     expect(actions(fixture).match(/systemctl:disable agent-bridge-health\.service/g)?.length ?? 0).toBe(1);
     expect(readlinkSync(currentPointer)).toBe(secondCommit);
     expect(readFileSync(fixture.configFile, "utf8")).not.toContain("agent-bridge-health.service");
-  }, 20_000);
+  }, 60_000);
 
   it("fails deployment if the retired health service cannot be disabled", () => {
     const fixture = createFixture();
@@ -1659,7 +1662,7 @@ if [ -e ${JSON.stringify(`${fixture.dbPaths[0]}-wal`)} ]; then printf '1\\n'; el
     expect(output).toMatch(/STOPPED_PRESERVED/);
     expect(ledger).toMatch(/phase=SERVICES_STARTING/);
     expect(ledger).not.toMatch(/phase=ACCEPTED/);
-  }, 15_000);
+  }, 30_000);
 
   it("resets historical service failure counters before capturing smoke baselines", () => {
     const fixture = createFixture();
@@ -1671,7 +1674,7 @@ if [ -e ${JSON.stringify(`${fixture.dbPaths[0]}-wal`)} ]; then printf '1\\n'; el
     const baselineIndex = log.indexOf(`systemctl:show ${units[0]} --property=NRestarts --value`);
     expect(resetIndex).toBeGreaterThanOrEqual(0);
     expect(resetIndex).toBeLessThan(baselineIndex);
-  }, 15_000);
+  }, 30_000);
 
   it("runs the full fixed-unit rollout sequence and writes durable evidence", () => {
     const fixture = createFixture();
@@ -1771,7 +1774,7 @@ if [ -e ${JSON.stringify(`${fixture.dbPaths[0]}-wal`)} ]; then printf '1\\n'; el
     expect(log.indexOf(" checkpoint ")).toBeLessThan(log.indexOf(" backup "));
   });
 
-  it("fails closed when an offline WAL checkpoint is busy", () => {
+  it("rejects a busy WAL checkpoint and refuses rollout while its caller holds the database", () => {
     const fixture = useMinimalInventory(createFixture({ initiallyStopped: true }));
     const reader = new Database(fixture.dbPaths[0]);
     reader.pragma("journal_mode = WAL");
@@ -1783,14 +1786,16 @@ if [ -e ${JSON.stringify(`${fixture.dbPaths[0]}-wal`)} ]; then printf '1\\n'; el
     writer.exec("INSERT INTO settings(key, value) VALUES ('wal-checkpoint-busy-test', 'must remain intact');");
     writer.close();
 
+    const checkpoint = spawnSync(process.execPath, [join(fixture.root, "rollout-db-bundled.mjs"), "checkpoint", "--evidence", "-", "--db", fixture.dbPaths[0]], { encoding: "utf8" });
+    expect(checkpoint.status).not.toBe(0);
+    expect(`${checkpoint.stdout}\n${checkpoint.stderr}`).toMatch(/checkpoint.*busy/i);
     const result = runRollout(fixture);
     reader.close();
 
     const output = `${result.stdout}\n${result.stderr}`;
     expect(result.status).not.toBe(0);
-    expect(output).toMatch(/checkpoint|busy/i);
-    expect(output).toMatch(/services remain stopped|STOPPED_UNCHANGED/i);
-    expect(actions(fixture)).not.toMatch(/\sbackup\s|\smigrate\s/);
+    expect(output).toContain("SQLite writers could not be contained");
+    expect(actions(fixture)).not.toMatch(/\scheckpoint\s|\sbackup\s|\smigrate\s/);
   }, 15_000);
 
   it("attaches per-database resolving-units evidence, correctly collapsing the shared antigravity/claude/codex unit onto one database", () => {

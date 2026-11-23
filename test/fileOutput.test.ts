@@ -230,6 +230,30 @@ describe("uploadOutputFiles", () => {
     expect(await dirExists(dir)).toBe(false);
   });
 
+  it("stops subsequent uploads when publication is fenced during an in-flight upload", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "bridge-upload-inflight-"));
+    await writeFile(join(dir, "a.png"), "x");
+    await writeFile(join(dir, "b.png"), "y");
+    let allowPublication = true;
+    let started!: () => void;
+    let finish!: () => void;
+    const entered = new Promise<void>((resolve) => { started = resolve; });
+    const gate = new Promise<void>((resolve) => { finish = resolve; });
+    const sendPhoto = vi.fn().mockImplementation(async () => { started(); await gate; });
+    const client = { capabilities: TELEGRAM_SURFACE_CAPABILITIES, sendPhoto, sendDocument: vi.fn() } as any;
+
+    const delivery = uploadOutputFiles(dir, 1, client, undefined, () => allowPublication);
+    await entered;
+    allowPublication = false;
+    finish();
+    const result = await delivery;
+
+    expect(result.status).toBe("cancelled");
+    expect(result.uploadedFiles).toHaveLength(1);
+    expect(sendPhoto).toHaveBeenCalledOnce();
+    expect(await dirExists(dir)).toBe(false);
+  });
+
   it("cleans generated files when the surface cannot publish attachments", async () => {
     const dir = await prepareOutputDir(77777, "claude");
     await writeFile(join(dir, "unsupported.txt"), "x");

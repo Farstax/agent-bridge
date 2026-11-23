@@ -21,6 +21,7 @@ import {
 } from "../src/scheduledRoutines.js";
 import {
   linkScheduledOccurrenceRun,
+  markScheduledOccurrenceFailed,
   parseScheduledOccurrenceEvidence,
   scheduledOccurrenceKey,
 } from "../src/scheduledRunCorrelation.js";
@@ -333,6 +334,9 @@ describe("authoritative scheduled Run correlation", () => {
       db.insertRun("run-c", { surfaceIdentity: "telegram:interactive", chatKey: "100" }, "codex");
       db.updateRunCompleted("run-c", "ok", null);
       expect(linkScheduledOccurrenceRun(db, key, "run-d")).toBe(false);
+      expect(linkScheduledOccurrenceRun(db, key, "run-c")).toBe(true);
+      expect(markScheduledOccurrenceFailed(db, key, "late failure")).toBe(false);
+      expect(parseScheduledOccurrenceEvidence(db.getSetting(key))).toMatchObject({ runId: "run-c", status: "completed" });
     } finally {
       db.close();
     }
