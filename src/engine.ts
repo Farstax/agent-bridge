@@ -196,6 +196,10 @@ export interface SurfaceNeutralTurnInput {
   contextWorkstreamId?: string;
   /** A claimed ordinary wake must not silently abandon its bound native session. */
   requireBoundProviderSession?: boolean;
+  /** Retry/handoff must create its own native session, not reuse an abandoned one. */
+  freshProviderSession?: boolean;
+  /** Stop/Reset and ownership are checked by the original lane owner before any retry. */
+  mayContinueRecovery?: () => boolean;
 }
 
 export const MAX_QUEUE_DEPTH = 5;
