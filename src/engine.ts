@@ -995,7 +995,7 @@ export class BridgeEngine {
           resetAbandonedRunDisposition(this.db, runId);
           persistEngineProviderSession(this.db, { surfaceIdentity: this.surfaceIdentity, chatKey }, sourceKind, null);
         });
-        markHandoffRequired(this.db, this.surfaceIdentity, chatKey, sourceKind, `fallback_from_${sourceKind}`);
+        markHandoffRequired(this.db, this.surfaceIdentity, chatKey, sourceKind, "provider_recovery");
         try {
           const retryResult = await this._executeAndDeliverTurn({
             prompt: [
