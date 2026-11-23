@@ -766,6 +766,32 @@ describe("ordinary Run continuation", () => {
     db.close();
   });
 
+  it("does not revive a failed capacity wait from a stale expiry-scan candidate", async () => {
+    const { db } = setup();
+    const wait = requestForActiveRun(db, {
+      originRunId: "expiry-stale-candidate", surfaceIdentity: "telegram:interactive",
+      chatKey: "123", provider: "codex", reason: "capacity wait",
+      afterSeconds: 5, capacityWait: true,
+    }, 1_000);
+    expect(db.updateRunFailed("expiry-stale-candidate", "MODEL_CAPACITY_EXHAUSTED")).toBe(true);
+    const claim = claimDueRunContinuation(db, wait.id, 6_000);
+    expect(claim?.claimToken).toBeTruthy();
+    const expiry = Date.parse(wait.expiresAt);
+    const onCapacityExpired = vi.fn();
+
+    // Settle after the scan has selected its stale claimed candidate but
+    // before its next transactional read. The failed record must not be claimed.
+    vi.spyOn(db, "hasChatLock").mockImplementationOnce(() => {
+      settleRunContinuation(db, wait.id, "failed", "other owner settled", expiry, claim!.claimToken);
+      return false;
+    });
+    await scanRunContinuations(db, "telegram:interactive", vi.fn(), expiry, { onCapacityExpired });
+
+    expect(onCapacityExpired).not.toHaveBeenCalled();
+    expect(listRunContinuations(db)[0]).toMatchObject({ state: "failed", error: "other owner settled" });
+    db.close();
+  });
+
   it("does not allow competing runner to reclaim active claimed capacity wait (P1)", () => {
     const { db } = setup();
     const continuation = requestForActiveRun(db, {
