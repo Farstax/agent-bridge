@@ -320,9 +320,9 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
     return stored && this.options.providerChain.includes(stored as BotKind) ? stored as BotKind : this.options.providerChain[0];
   }
 
-  private routerFor(session: OutwardAcpSessionRecord, initialProvider: BotKind, originalProviderOnly = false): SurfaceNeutralProviderRouter {
+  private routerFor(session: OutwardAcpSessionRecord, initialProvider: BotKind, freshRouter = false): SurfaceNeutralProviderRouter {
     const existing = this.routers.get(session.conversationId);
-    if (!originalProviderOnly && existing?.provider === initialProvider) return existing.router;
+    if (!freshRouter && existing?.provider === initialProvider) return existing.router;
     const { db, providerChain, createEngine, isProviderAvailable } = this.options;
     const durablySelected = getStoredCliPreference(db, this.identity(session)) === initialProvider;
     const router = createSurfaceNeutralProviderRouter({
@@ -333,10 +333,10 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
       isProviderAvailable: (candidate) => (durablySelected && candidate === initialProvider) || isProviderAvailable?.(candidate) !== false,
       surfaceIdentity: OUTWARD_ACP_SURFACE,
       initialProvider,
-      providerChain: originalProviderOnly ? [initialProvider] : providerChain,
+      providerChain,
       engineForProvider: (attemptProvider) => createEngine(session, attemptProvider),
     });
-    if (!originalProviderOnly) this.routers.set(session.conversationId, { provider: initialProvider, router });
+    if (!freshRouter) this.routers.set(session.conversationId, { provider: initialProvider, router });
     return router;
   }
 
@@ -1037,6 +1037,8 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
         ...(ordinaryWorkstreamId ? { ordinaryWorkstreamId } : {}),
         contextWorkstreamId: input.session.sessionId,
         ...(input.ordinaryResume?.providerSessionId ? { requireBoundProviderSession: true } : {}),
+        mayContinueRecovery: () => !active?.cancelRequested && !input.signal.aborted
+          && !db.getSetting(stopFenceKey(input.session.conversationId)) && db.ownsLock(lane),
         onProviderExecutionStarted: resetAttemptPresentation,
         onAnswerDelta: input.answerPreview === true ? (delta) => {
           if (!delta || active?.cancelRequested || input.signal.aborted) return;
@@ -1988,7 +1990,8 @@ export function createProductionOutwardAcpPromptExecutor(
         // forwards for a different provider's turn input.
         executeSurfaceNeutralTurn: (turnInput) => engine.executeSurfaceNeutralTurn({
           ...turnInput,
-          sessionId: lookupProviderSession(db, { surfaceIdentity: OUTWARD_ACP_SURFACE, chatKey: session.conversationId }, attemptProvider),
+          sessionId: turnInput.freshProviderSession ? null
+            : lookupProviderSession(db, { surfaceIdentity: OUTWARD_ACP_SURFACE, chatKey: session.conversationId }, attemptProvider),
           onOutputArtifacts: (outDir) => {
             const turnCount = db.getConvHistoryPage(session.conversationId, 1, undefined, OUTWARD_ACP_SURFACE).turnCount;
             return retainDeskArtifacts(outDir, session.conversationId, turnInput.runId, Math.max(0, turnCount - 1));
