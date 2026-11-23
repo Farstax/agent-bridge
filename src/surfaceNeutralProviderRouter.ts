@@ -174,7 +174,7 @@ export function createSurfaceNeutralProviderRouter(
                 resetAbandonedRunDisposition(options.db, input.runId);
               });
             }
-            markHandoffRequired(options.db, options.surfaceIdentity, input.chatKey, provider, `fallback_from_${provider}`);
+            markHandoffRequired(options.db, options.surfaceIdentity, input.chatKey, provider, "provider_recovery");
             for (const event of attemptEvents) {
               if (event.type === "run.diagnostic") input.collect(event);
             }
