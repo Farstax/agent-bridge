@@ -45,6 +45,17 @@ describe("provider-scoped in-band failure text", () => {
       .toContain("Individual quota reached");
   });
 
+  it("raises the Agy 1.5.15 individual-quota banner with its compact reset", async () => {
+    const text = "⚠ Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 115h15m3s.";
+    const error = await run("agy", text).then(() => null, (e: Error) => e);
+    expect(error?.name).toBe("AcpSystemError");
+    expect(decideProviderRecovery("agy", error!)).toMatchObject({ reason: "capacity", capacityExhausted: true });
+    const retry = capacityRetryAfterSeconds(error);
+    expect(retry).toBeGreaterThan(115 * 3600);
+    expect(retry).toBeLessThan(116 * 3600);
+    expect((await run("agy", `${text}\n\nHere is my analysis.`)).liveText).toContain("Here is my analysis.");
+  });
+
   it("falls back to unknown timing when the banner has no parseable reset", async () => {
     const error = await run("agy", "Usage Limit Reached\n\nYou have reached your current quota for this period.").then(() => null, (e: Error) => e);
     expect(classifyProviderError("agy", error!).kind).toBe("capacity_exhausted");
