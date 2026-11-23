@@ -959,7 +959,10 @@ export class BridgeEngine {
         outcome = "failed";
         return "failed";
       }
-      if (error instanceof MissingRunOutcomeError || error instanceof RunOutcomeReconciliationError) {
+      // A provider-origin failure may be wrapped by outcome reconciliation.
+      // Only validation-only outcome failures remain terminal here.
+      if ((error instanceof MissingRunOutcomeError || error instanceof RunOutcomeReconciliationError)
+        && decideProviderRecovery(providerIdForBotName(this._executionKind()), error).reason === null) {
         await sendSurfaceMessage({
           client: this.client, kind: this._deliveryKind(), chatId,
           body: { text: `Error: ${error.message} The original intent remains unresolved.`, message_thread_id: threadId },
@@ -990,7 +993,10 @@ export class BridgeEngine {
       // an ordinary task/repository failure (see providerFallbackReasonForError
       // and runWithAcpTransientRetry's narrower, structurally-confined
       // same-session retry for the one place "unknown" is safe to recover).
-      if (decision.freshSessionRetry && isRouteableKind(sourceKind)) {
+      const providerOrigin = readProviderFailureEvidence(providerError)
+        ?? (providerError.cause instanceof Error ? readProviderFailureEvidence(providerError.cause) : null);
+      if ((decision.freshSessionRetry || (providerOrigin && decision.reason === "provider_transport_failure"))
+        && isRouteableKind(sourceKind)) {
         // Submission evidence is monotonic across the admitted action: a first
         // attempt without evidence is treated as possibly submitted.
         priorEvidence = readProviderFailureEvidence(providerError) ?? { promptSubmitted: true };
@@ -1004,7 +1010,14 @@ export class BridgeEngine {
         markHandoffRequired(this.db, this.surfaceIdentity, chatKey, sourceKind, `fallback_from_${sourceKind}`);
         try {
           const retryResult = await this._executeAndDeliverTurn({
-            prompt, sessionId: null, chatId, chatKey, threadId, attachments, laneHandle, runId, eventContext, collect,
+            prompt: [
+              "[Agent Bridge provider recovery]",
+              "The previous provider attempt failed. Inspect earlier tool effects, durable outcomes and workspace state before changing anything.",
+              "Preserve completed work; continue only unfinished tasks. Do not blindly repeat uncertain side effects.",
+              "Sanitised original error: " + toUserMessage(providerError).slice(0, 1_000),
+              "",
+              prompt,
+            ].join("\n"), sessionId: null, chatId, chatKey, threadId, attachments, laneHandle, runId, eventContext, collect,
             suppressTransientRetry: true,
             executionMode, verificationOnly,
           });
