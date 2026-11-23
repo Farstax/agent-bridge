@@ -163,7 +163,9 @@ export function createSurfaceNeutralProviderRouter(
           // The ACP runtime supplies provenance; ordinary local errors do not
           // acquire recovery eligibility. Do not replay a failed task verbatim:
           // a fresh native session receives inspection-first context instead.
-          failures.push(`${provider}: ${toUserMessage(failure).slice(0, 1_000)}`);
+          const originalError = failure.name === "RunOutcomeReconciliationError" && failure.cause instanceof Error
+            ? failure.cause : failure;
+          failures.push(`${provider}: ${toUserMessage(originalError).slice(0, 1_000)}`);
           if (attemptMode !== "recovery" &&
               decision.reason !== "auth_required" && decision.reason !== "capacity" &&
               decision.reason !== "provider_unavailable") {
