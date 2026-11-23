@@ -49,21 +49,27 @@ const AGY_QUOTA_BANNER =
   /^\s*Usage Limit Reached\s+You have reached your current quota for this period\.(?:\s+Your limit will reset in ((?:\d+ (?:days?|hours?|minutes?)(?:, | and )?)+)\.?)?\s*$/i;
 
 // Whole-message Agy quota variant; avoid matching quoted discussions.
-const AGY_INDIVIDUAL_QUOTA_BANNER = /^\s*Individual quota reached\.?\s*$/i;
+// Agy 1.5.15 prefixes a warning sign and appends an upgrade hint and a compact
+// reset such as "Resets in 115h15m3s."
+const AGY_INDIVIDUAL_QUOTA_BANNER =
+  /^\s*(?:⚠\uFE0F?\s*)?Individual quota reached\.?(?:\s+Please upgrade your subscription to increase your limits\.)?(?:\s+Resets in ((?:\d+[hms])+)\.?)?\s*$/i;
 
 function relativeResetMs(text: string): number | null {
   let total = 0;
   for (const [, n, unit] of text.matchAll(/(\d+) (day|hour|minute)/gi)) {
     total += Number(n) * ({ day: 86_400_000, hour: 3_600_000, minute: 60_000 }[unit!.toLowerCase() as "day"]);
   }
+  for (const [, n, unit] of text.matchAll(/(\d+)([hms])(?![a-z])/gi)) {
+    total += Number(n) * ({ h: 3_600_000, m: 60_000, s: 1_000 }[unit!.toLowerCase() as "h"]);
+  }
   return total > 0 ? total : null;
 }
 
 function inBandFailureDiagnostic(providerId: string | undefined, liveText: string): AcpSystemError | null {
   if (providerId === "agy") {
-    const banner = AGY_QUOTA_BANNER.exec(liveText);
-    if (banner || AGY_INDIVIDUAL_QUOTA_BANNER.test(liveText)) {
-      const ms = banner?.[1] ? relativeResetMs(banner[1]) : null;
+    const banner = AGY_QUOTA_BANNER.exec(liveText) ?? AGY_INDIVIDUAL_QUOTA_BANNER.exec(liveText);
+    if (banner) {
+      const ms = banner[1] ? relativeResetMs(banner[1]) : null;
       return new AcpSystemError(liveText, "usageLimitExceeded", ms === null ? undefined : new Date(Date.now() + ms).toISOString());
     }
   }
