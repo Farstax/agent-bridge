@@ -85,12 +85,12 @@ describe("provider qualification routing", () => {
       CLAUDE_ACP_COMMAND: claudeAcp,
     };
     try {
-      writeFileSync(claudeAcp, "#!/usr/bin/env bash\nprintf '0.107.1\\n'\n", { mode: 0o755 });
+      writeFileSync(claudeAcp, "#!/usr/bin/env bash\nprintf '0.110.0\\n'\n", { mode: 0o755 });
       chmodSync(claudeAcp, 0o755);
       writeQualificationRecord({
         provider: "claude",
         executionRuntime: resolveProviderRuntime("claude", env).runtimeIdentity,
-        providerVersion: "0.107.1",
+        providerVersion: "0.110.0",
         previousVersion: null,
         bridgeCommit: "e".repeat(40),
         contractVersion: PROVIDER_CONTRACT_VERSION,
@@ -188,7 +188,7 @@ describe("provider qualification routing", () => {
     writeQualificationRecord({
       provider: "grok",
       executionRuntime: runtimeIdentity,
-      providerVersion: "1.0.70",
+      providerVersion: "1.0.92",
       previousVersion: null,
       bridgeCommit: "e".repeat(40),
       contractVersion: PROVIDER_CONTRACT_VERSION,
@@ -202,12 +202,12 @@ describe("provider qualification routing", () => {
       ],
     }, evidencePath);
 
-    expect([...getQualificationPassedProviders(evidencePath, { grok: "1.0.70" })]).toEqual([]);
+    expect([...getQualificationPassedProviders(evidencePath, { grok: "1.0.92" })]).toEqual([]);
 
     writeQualificationRecord({
       provider: "grok",
       executionRuntime: runtimeIdentity,
-      providerVersion: "1.0.70",
+      providerVersion: "1.0.92",
       previousVersion: null,
       bridgeCommit: "e".repeat(40),
       contractVersion: PROVIDER_CONTRACT_VERSION,
@@ -221,7 +221,7 @@ describe("provider qualification routing", () => {
       ],
     }, evidencePath);
 
-    expect([...getQualificationPassedProviders(evidencePath, { grok: "1.0.70" })]).toEqual(["grok"]);
+    expect([...getQualificationPassedProviders(evidencePath, { grok: "1.0.92" })]).toEqual(["grok"]);
     expect([...getQualificationPassedProviders(evidencePath, { grok: "1.0.31" })]).toEqual([]);
   });
 

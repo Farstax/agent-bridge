@@ -67,21 +67,21 @@ const RELEASE_LOCKED_ACP_REGISTRY_ENTRIES: Readonly<Partial<Record<ProviderId, A
   claude: {
     id: "claude-acp",
     name: "Claude Agent",
-    version: "0.107.1",
+    version: "0.110.0",
     description: "ACP adapter for the Claude Agent SDK",
     repository: "https://github.com/agentclientprotocol/claude-agent-acp",
     license: "Apache-2.0",
-    license_url: "https://github.com/agentclientprotocol/claude-agent-acp/blob/v0.107.1/LICENSE",
+    license_url: "https://github.com/agentclientprotocol/claude-agent-acp/blob/v0.110.0/LICENSE",
     distribution: {
       npx: {
-        package: "@agentclientprotocol/claude-agent-acp@0.107.1",
+        package: "@agentclientprotocol/claude-agent-acp@0.110.0",
       },
     },
   },
   grok: {
     id: "grok-build",
     name: "Grok Build",
-    version: "1.0.70",
+    version: "1.0.92",
     description: "xAI's coding agent and CLI",
     website: "https://x.ai/cli",
     authors: ["xAI"],
@@ -89,7 +89,7 @@ const RELEASE_LOCKED_ACP_REGISTRY_ENTRIES: Readonly<Partial<Record<ProviderId, A
     license_url: "https://x.ai/legal/terms-of-service",
     distribution: {
       npx: {
-        package: "@xai-official/grok@1.0.70",
+        package: "@xai-official/grok@1.0.92",
         args: ["agent", "stdio"],
       },
     },
