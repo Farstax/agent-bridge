@@ -29,14 +29,14 @@ function request(overrides: Partial<ProviderInvocationRequest> = {}): ProviderIn
 }
 
 describe("Agy ACP provider", () => {
-  it("locks the official Google 1.5.9 archive and launches agy acp in the generic ACP runtime", () => {
+  it("locks the official Google 1.5.14 archive and launches agy acp in the generic ACP runtime", () => {
     expect(getLockedAcpRegistryEntry("agy")).toEqual(expect.objectContaining({
       id: "antigravity-acp",
-      version: "1.5.9",
+      version: "1.5.14",
       distribution: { binary: expect.objectContaining({
         "linux-x86_64": {
-          archive: "https://github.com/google-antigravity/antigravity-cli/releases/download/1.5.9/agy_cli_linux_x64.tar.gz",
-          sha256: "8b1f5e56779f2434a0af36f1b715a8392a084de550f8c68bc79821f95fabf3fa",
+          archive: "https://github.com/google-antigravity/antigravity-cli/releases/download/1.5.14/agy_cli_linux_x64.tar.gz",
+          sha256: "d58386322d2073e96b33f7cc32b4e9ae2db6228f58440369725967b2de48c7b5",
           cmd: "./agy", args: ["acp"],
         },
       }) },
@@ -45,7 +45,7 @@ describe("Agy ACP provider", () => {
     expect(resolveProviderRuntime("agy", { AGY_ACP_COMMAND: "/opt/agy/agy" })).toEqual(expect.objectContaining({
       providerId: "agy", transport: "acp-stdio", executable: "/opt/agy/agy",
       args: ["acp"], versionArgs: ["--version"],
-      runtimeIdentity: expect.stringMatching(/^acp:antigravity-acp@1\.5\.9:[a-f0-9]{64}$/),
+      runtimeIdentity: expect.stringMatching(/^acp:antigravity-acp@1\.5\.14:[a-f0-9]{64}$/),
       toolFree: true, provisionalAnswers: true,
     }));
     const invocation = buildCliInvocation({
@@ -63,19 +63,19 @@ describe("Agy ACP provider", () => {
       expect(command).toBe("agy");
       expect(args).toEqual(["--version"]);
       options = received as { timeout?: number };
-      return "agy 1.5.9";
-    }) as never)).toContain("1.5.9");
+      return "agy 1.5.14";
+    }) as never)).toContain("1.5.14");
     expect(options?.timeout).toBe(AGY_ACP_VERSION_TIMEOUT_MS);
-    expect(() => assertAgyAcpVersion("agy", "1.5.9", () => "agy 1.2.1"))
-      .toThrow(/expects 1\.5\.9, observed 1\.2\.1/);
-    expect(() => assertAgyAcpVersion("agy", "1.5.9", () => "unknown"))
+    expect(() => assertAgyAcpVersion("agy", "1.5.14", () => "agy 1.5.9"))
+      .toThrow(/expects 1\.5\.14, observed 1\.5\.9/);
+    expect(() => assertAgyAcpVersion("agy", "1.5.14", () => "unknown"))
       .toThrow(/observed unknown/);
-    expect(() => assertAgyAcpVersion("agy", "1.5.9", () => { throw new Error("not installed"); }))
+    expect(() => assertAgyAcpVersion("agy", "1.5.14", () => { throw new Error("not installed"); }))
       .toThrow(/could not be version-verified: not installed/);
-    expect(() => assertAgyAcpVersion("agy", "1.5.9", () => "agy version 1.5.9")).not.toThrow();
-    expect(() => assertAgyAcpVersion("agy", "1.5.9", () => "agy v1.5.9")).not.toThrow();
-    for (const displayed of ["agy 1.5.9.1", "agy 1.5.90", "agy 11.5.9", "agy 1.5.9-rc1"]) {
-      expect(() => assertAgyAcpVersion("agy", "1.5.9", () => displayed)).toThrow(/version mismatch|observed unknown/);
+    expect(() => assertAgyAcpVersion("agy", "1.5.14", () => "agy version 1.5.14")).not.toThrow();
+    expect(() => assertAgyAcpVersion("agy", "1.5.14", () => "agy v1.5.14")).not.toThrow();
+    for (const displayed of ["agy 1.5.14.1", "agy 1.5.140", "agy 11.5.14", "agy 1.5.14-rc1"]) {
+      expect(() => assertAgyAcpVersion("agy", "1.5.14", () => displayed)).toThrow(/version mismatch|observed unknown/);
     }
   });
 

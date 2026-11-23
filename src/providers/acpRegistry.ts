@@ -97,7 +97,7 @@ const RELEASE_LOCKED_ACP_REGISTRY_ENTRIES: Readonly<Partial<Record<ProviderId, A
   agy: {
     id: "antigravity-acp",
     name: "Google Antigravity",
-    version: "1.5.9",
+    version: "1.5.14",
     description: "Official Google Antigravity CLI ACP",
     website: "https://antigravity.google/docs/cli/acp",
     authors: ["Google LLC"],
@@ -106,9 +106,8 @@ const RELEASE_LOCKED_ACP_REGISTRY_ENTRIES: Readonly<Partial<Record<ProviderId, A
     distribution: {
       binary: {
         "linux-x86_64": {
-          archive: "https://github.com/google-antigravity/antigravity-cli/releases/download/1.5.9/agy_cli_linux_x64.tar.gz",
-          // Qualification-time pin from the exact versioned vendor URL; Google did not publish this digest.
-          sha256: "8b1f5e56779f2434a0af36f1b715a8392a084de550f8c68bc79821f95fabf3fa",
+          archive: "https://github.com/google-antigravity/antigravity-cli/releases/download/1.5.14/agy_cli_linux_x64.tar.gz",
+          sha256: "d58386322d2073e96b33f7cc32b4e9ae2db6228f58440369725967b2de48c7b5",
           cmd: "./agy",
           args: ["acp"],
         },

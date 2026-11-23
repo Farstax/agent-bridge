@@ -7,7 +7,7 @@ const voiceReady = () => ({ status: "ready" as const, reasonCode: null });
 const acpInspectVersion = (executable: string): string | null => {
   if (executable.includes("codex-acp")) return "2.9.0";
   if (executable.includes("claude-agent-acp")) return "0.107.1";
-  if (executable === "agy" || executable.includes("agy_acp_server") || executable.endsWith("/agy")) return "1.5.9";
+  if (executable === "agy" || executable.includes("agy_acp_server") || executable.endsWith("/agy")) return "1.5.14";
   if (executable.includes("grok")) return "1.0.70";
   if (executable.includes("cursor-agent")) return "2026.10.22-27dcf5f";
   return "1.0.0";

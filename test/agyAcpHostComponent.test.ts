@@ -56,11 +56,11 @@ describe("Agy ACP managed host component", () => {
     }
 
     it("is present in the installer", () => { expect(snippet).toBeTruthy(); });
-    it("accepts the official 1.5.9 layout, where the executable is named `antigravity`", () => {
-      expect(extract(["antigravity"])).toMatchObject({ status: 0, out: "binary:antigravity" });
-    });
-    it("still accepts a single `agy` member", () => {
+    it("accepts the official 1.5.14 layout, where the executable is named `agy`", () => {
       expect(extract(["agy"])).toMatchObject({ status: 0, out: "binary:agy" });
+    });
+    it("still accepts the legacy `antigravity` executable member", () => {
+      expect(extract(["antigravity"])).toMatchObject({ status: 0, out: "binary:antigravity" });
     });
     it("rejects an archive with no recognised executable", () => {
       expect(extract(["README"]).stderr).toContain("expected one official agy executable");

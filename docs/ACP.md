@@ -13,10 +13,10 @@ Pinned Grok ACP distribution: `@xai-official/grok@1.0.46` (`grok agent stdio`;
 official Registry `grok-build` 1.0.46). The package bin symlink is rewritten
 to a relative `grok-native` link at install so release artifacts stay
 self-contained.
-Pinned Agy ACP distribution: official Registry `antigravity-acp@1.2.1`
-(`agy_acp_server.par` with args `--uid=`). The binary is not npm-bundled;
-ordinary Runs never download it. Set `AGY_ACP_COMMAND` to the installed
-server path.
+Pinned Agy ACP distribution: official Google Antigravity CLI `1.5.14`
+(`agy` with args `acp`). The binary is installed as a guarded host component,
+not npm-bundled; ordinary Runs never download it. Set `AGY_ACP_COMMAND` only
+when overriding the managed executable.
 Pinned Cursor ACP distribution: release lock `cursor` 2026.09.23-86fc751
 (`cursor-agent acp`; binary 2026.09.23-86fc751). The Cursor CLI is not
 vendored into git or npm; ordinary Runs use `CURSOR_ACP_COMMAND` or PATH
@@ -171,11 +171,11 @@ native `agy --print --output-format stream-json` invocation, parser, planner
 stall watch, or settings.json model writer.
 
 ```bash
-AGY_ACP_COMMAND=...                 # optional override; default is agy_acp_server.par
-AGY_ACP_ARGS=...                    # optional extra argv; default is --uid=
+AGY_ACP_COMMAND=...                 # optional override; default is /usr/local/bin/agy
+AGY_ACP_ARGS=...                    # optional extra argv; default is acp
 ```
 
-The release locks official Registry `antigravity-acp@1.2.1`. The binary is
+The release locks the official Google Antigravity CLI `1.5.14`. The binary is
 host-installed, not npm-bundled; ordinary Runs never download it. Ordinary
 Runs authenticate with ACP `oauth-personal` only when a cached credential
 already exists at workspace-local `~/.gemini/antigravity-acp/acp_token.json`
