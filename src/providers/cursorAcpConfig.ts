@@ -2,7 +2,7 @@ import { execFileSync } from "node:child_process";
 import type { AcpRegistryAgentEntry } from "./acpRegistry.js";
 
 /** Exact Cursor binary build selected by the Registry archive lock. */
-export const CURSOR_ACP_VERSION = "2026.10.22-27dcf5f";
+export const CURSOR_ACP_VERSION = "2026.11.22-e9042b2";
 
 export function resolveCursorAcpCommand(
   env: Record<string, string | undefined> = process.env,
