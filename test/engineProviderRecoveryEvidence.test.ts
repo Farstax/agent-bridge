@@ -4,6 +4,7 @@ import { BridgeEngine, type ProviderFallbackReason } from "../src/engine.js";
 import { ProviderFallbackChain } from "../src/providerFallback.js";
 import { dispatchClaimedInteractiveWithFallback, dispatchInteractiveWithFallback, setUserCliPreference } from "../src/interactiveBot.js";
 import { attachProviderFailureEvidence } from "../src/providers/failureEvidence.js";
+import { RunOutcomeReconciliationError } from "../src/runOutcome.js";
 import { createSurfaceNeutralProviderRouter } from "../src/surfaceNeutralProviderRouter.js";
 import { TELEGRAM_SURFACE_CAPABILITIES } from "../src/platform.js";
 import { CliTimeoutError, ProviderStallError } from "../src/cli.js";
@@ -169,6 +170,19 @@ describe("evidence-based provider recovery through the interactive route owner",
       expect(sourceRun).toHaveBeenCalledTimes(2);
       expect(targetRun).toHaveBeenCalledTimes(1);
       expect(texts).toContain("answer from fallback");
+    } finally { db.close(); }
+  });
+
+  it("does not terminate a wrapped, evidenced provider failure during outcome reconciliation", async () => {
+    const sourceRun = vi.fn(async () => {
+      throw new RunOutcomeReconciliationError("provider failed during outcome reconciliation", {
+        cause: submitted("AcpSystemError: provider disconnected after tools", true),
+      });
+    });
+    const { db, targetRun } = await runCodexThenClaude(sourceRun);
+    try {
+      expect(sourceRun).toHaveBeenCalledTimes(2);
+      expect(targetRun).toHaveBeenCalledTimes(1);
     } finally { db.close(); }
   });
 
