@@ -976,23 +976,11 @@ export class BridgeEngine {
       let decision = decideProviderRecovery(executionProvider, providerError);
       const sourceKind = this.kind;
 
-      // Tier 2: one silent same-provider, fresh-session retry for a
-      // transient failure, before falling to cross-provider fallback (tier
-      // 3). Tier 1 (same-session retry) already ran and failed inside
-      // runWithAcpTransientRetry -- reaching here means the ACP layer gave
-      // up on this session entirely. Reuses the same handoff-context
-      // mechanism cross-provider fallback uses (markHandoffRequired plus a
-      // fresh nativeSessionMode triggers _buildPromptForCli's existing
-      // fallback-continuation prefix), just targeting this same provider
-      // instead of the next one in the chain -- so no new context-injection
-      // path is needed. Not attempted for any other classification
-      // (capacity_exhausted, auth_required, model_unavailable, fatal,
-      // unknown): those are either account/config-level conditions a fresh
-      // session on this same account cannot fix, or -- for unknown -- an
-      // unclassifiable error this coarse a boundary cannot tell apart from
-      // an ordinary task/repository failure (see providerFallbackReasonForError
-      // and runWithAcpTransientRetry's narrower, structurally-confined
-      // same-session retry for the one place "unknown" is safe to recover).
+      // Before requesting an authorised fallback, give the original provider
+      // one bounded inspection-first fresh-session recovery. This also covers
+      // unknown ACP failures with explicit provider-origin evidence and wrapped
+      // reconciliation failures; untagged local failures stay terminal.
+      // Known quota/auth/model failures retain their existing targeted paths.
       const providerOrigin = readProviderFailureEvidence(providerError)
         ?? (providerError.cause instanceof Error ? readProviderFailureEvidence(providerError.cause) : null);
       if ((decision.freshSessionRetry || (providerOrigin && decision.reason === "provider_transport_failure"))
