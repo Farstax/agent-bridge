@@ -1,3 +1,4 @@
+import { attachProviderFailureEvidence } from "../src/providers/failureEvidence.js";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -89,7 +90,7 @@ function executor(db: BridgeDb, attempts: Attempt[], options: {
         }
         if (capacityPending === attemptProvider) {
           capacityPending = undefined;
-          throw new Error("MODEL_CAPACITY_EXHAUSTED");
+          throw attachProviderFailureEvidence(new Error("MODEL_CAPACITY_EXHAUSTED"), { promptSubmitted: false });
         }
         return { text: `answer from ${attemptProvider}`, sessionId: `${attemptProvider}-session`, stopReason: "end_turn" };
       },
@@ -474,7 +475,7 @@ describe("outward ACP Workstreams (#1101)", () => {
             runId: input.runId, bot: "codex", chatId: String(input.chatId), chatKey: input.chatKey,
             command: "codex-acp", cwd: f.root, model: null,
           }));
-          throw new Error("MODEL_CAPACITY_EXHAUSTED");
+          throw attachProviderFailureEvidence(new Error("MODEL_CAPACITY_EXHAUSTED"), { promptSubmitted: false });
         },
       }),
     });
@@ -527,7 +528,7 @@ describe("outward ACP Workstreams (#1101)", () => {
               runId: input.runId, bot: provider, chatId: String(input.chatId),
               chatKey: input.chatKey, command: provider, cwd: f.root, model: null,
             }));
-            throw new Error(provider === "codex" ? "MODEL_CAPACITY_EXHAUSTED" : "login required");
+            throw attachProviderFailureEvidence(new Error(provider === "codex" ? "MODEL_CAPACITY_EXHAUSTED" : "login required"), { promptSubmitted: false });
           },
         }),
       });
