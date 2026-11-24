@@ -42,7 +42,7 @@ The managed production trigger is a CLI install/upgrade or a subsequently observ
 - The health service checks established evidence for out-of-band/self-updated provider versions. When `installed_version != last_qualified_version`, it qualifies that provider once and persists the new result.
 - Only the changed provider is qualified. A contract-version change invalidates earlier evidence; the next needed qualification checks the current contract, including repository grounding, and then reuses current evidence.
 
-Grok and Cursor are not part of the managed automatic upgrade set. Their qualifiers can be run explicitly after installation, an upgrade, or when troubleshooting:
+Grok and Cursor can also be qualified explicitly after installation, an upgrade, or when troubleshooting. Cursor's release-locked binary is converged by guarded release activation and `scripts/upgrade.sh --update`; `--clis-only` does not install or upgrade Cursor. Ordinary Runs never auto-update either provider:
 
 ```bash
 npm run qualify:provider -- --provider grok
