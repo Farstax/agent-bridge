@@ -89,6 +89,18 @@ describe("ACP prompt submission evidence at the runtime boundary", () => {
     expect(decideProviderRecovery("codex", error as Error).reason).toBe("provider_transport_failure");
   });
 
+  it("does not give an unreadable Bridge attachment provider provenance", async () => {
+    let error: unknown;
+    try {
+      await runResolvedAcpProviderTurn(policy, runtime, {
+        ...request, attachments: [join(tmpdir(), "missing-bridge-attachment-1281")],
+      }, process.cwd(), { timeoutMs: 20_000, idleTimeoutMs: 20_000 }, { conversationId: "local", runId: "local" });
+    } catch (failure) { error = failure; }
+    expect(error).toBeInstanceOf(Error);
+    expect(readProviderFailureEvidence(error)).toBeNull();
+    expect(decideProviderRecovery("codex", error as Error).reason).toBeNull();
+  });
+
   it("proves no submission when every attempt fails during session setup", async () => {
     const events: any[] = [];
     const error = await failureFor("setup-fail", undefined, events);
