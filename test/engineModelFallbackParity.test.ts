@@ -76,7 +76,7 @@ describe("same-provider model fallback uses the normal provider-attempt success 
       expect(requests[0].model).toBe("model-a");
       expect(requests[1].model).toBe("model-b");
       expect(requests[1].sessionId).toBeNull();
-      expect(requests[1].prompt).toContain("Inspect existing workspace/repository progress");
+      expect(requests[1].prompt).toContain("inspect durable conversation/Run evidence");
       expect(requests[1].prompt).toContain("task");
       expect(result.text).toContain("Fell back to model-b");
       expect(result.text).toContain("fallback answer");
