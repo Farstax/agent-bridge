@@ -69,7 +69,8 @@ describe("outward ACP durable capacity worker (#1114)", () => {
 
 
 
-  it("a claimed Codex continuation recovers then falls back to Claude within its original fenced successor Run", async () => {
+  for (const failureMode of ["systemError", "quota"] as const) {
+  it(`a claimed Codex continuation reaches Claude in its original fenced successor Run (${failureMode})`, async () => {
     const root = mkdtempSync(join(tmpdir(), "bridge-1281-portable-wake-"));
     roots.push(root);
     const db = openDb(join(root, "state.sqlite"), { databaseRole: "interactive" });
@@ -109,8 +110,10 @@ describe("outward ACP durable capacity worker (#1114)", () => {
           }));
           if (provider === "codex") {
             if (attempts.length === 1) priorToolEffects = 9; // simulated prior tool activity
-            const error = new Error("AcpSystemError: resumed Codex session stopped after tool activity");
-            error.name = "AcpSystemError";
+            const error = failureMode === "quota"
+              ? new Error("RequestError: Codex usage limit reached; try again after quota reset")
+              : new Error("AcpSystemError: resumed Codex session stopped after tool activity");
+            error.name = failureMode === "quota" ? "RequestError" : "AcpSystemError";
             throw attachProviderFailureEvidence(error, { promptSubmitted: true });
           }
           expect(priorToolEffects).toBe(9); // no earlier operation was replayed
@@ -137,10 +140,13 @@ describe("outward ACP durable capacity worker (#1114)", () => {
         db, (id) => new OutwardAcpSessionRepository(db.raw).get(id), executor, claimed,
       );
       expect(ok).toBe(true);
-      expect(attempts.map((item) => item.provider)).toEqual(["codex", "codex", "claude"]);
-      expect(attempts.map((item) => item.session)).toEqual(["codex-original-native-session", null, null]);
-      expect(attempts.map((item) => item.bound)).toEqual([true, false, false]);
-      expect(attempts[2].prompt).toContain("AcpSystemError");
+      expect(attempts.map((item) => item.provider)).toEqual(
+        failureMode === "quota" ? ["codex", "claude"] : ["codex", "codex", "claude"]);
+      expect(attempts.map((item) => item.session)).toEqual(
+        failureMode === "quota" ? ["codex-original-native-session", null] : ["codex-original-native-session", null, null]);
+      expect(attempts.map((item) => item.bound)).toEqual(
+        failureMode === "quota" ? [true, false] : [true, false, false]);
+      expect(attempts.at(-1)?.prompt).toContain(failureMode === "quota" ? "usage limit" : "AcpSystemError");
       expect(db.getRun("portable-successor")).toMatchObject({
         status: "done", bot: "claude", outcome_status: "continue",
         session_id: "claude-new-native-session",
@@ -158,6 +164,7 @@ describe("outward ACP durable capacity worker (#1114)", () => {
         .get(identity.chatKey) as { n: number }).n).toBe(2);
     } finally { await executor.shutdown(); db.close(); }
   });
+  }
 
   it("Stop cancels a claimed ordinary wake before successor Run admission", async () => {
     const root = mkdtempSync(join(tmpdir(), "bridge-acp-ordinary-stop-"));
