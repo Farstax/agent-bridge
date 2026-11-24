@@ -1,8 +1,31 @@
-# OSS state-machine inventory (initial)
+# Formal verification of critical OSS state machines
 
-For the source-reviewed model → production-owner → executable-test mapping and
-outstanding exact-head qualification, see [TRANSITION-MAP.md](TRANSITION-MAP.md).
-The initial results below remain historical, not proof of the current PR head.
+This is the **living engineering guide** for the bounded TLA+ models introduced in [#1278](https://github.com/Farstax/agent-bridge/issues/1278). The [transition map](TRANSITION-MAP.md) identifies actual code/transaction owners, implementation tests and unproven boundaries. The historical investigation below remains evidence only for its **stated revisions**.
+
+## When to check or maintain models
+
+For changes to critical durable or concurrent lifecycle behaviour—Run/Stop, claims/receipts, continuations, stale owner fencing, restart, rollout/rollback or ambiguous external effects—start with the transition map and current source. Inspect the relevant model and its assumptions. **Update a model and config only when its represented transitions, guards or invariants change.** For relevant code behaviour outside its abstraction, retain real implementation tests and note the gap. Do not model every enum, presentation state or unrelated refactor.
+
+## Focused verification practice
+
+1. Identify the authoritative persisted/process owner. Distinguish task, Run/attempt, queue receipt, continuation, process and external delivery. Specify meaningful legal transitions, guards, cancellation/timeout, crash/restart and effect boundaries.
+2. Prefer the existing small `.tla` + finite `.cfg` pair. Record checked safety invariants, assumptions and excluded behaviour. Temporarily mutate a consequential guard **when informative**, confirm TLC finds the intended counterexample, then restore the specification.
+3. Run TLC from this directory with a trusted local tools JAR (see [recovered checker provenance](RECOVERY.md)):
+
+   ```sh
+   java -XX:+UseParallelGC -cp "$TLA2TOOLS_JAR" tlc2.TLC -workers 1 \
+     -config OrdinaryContinuation.cfg OrdinaryContinuation.tla
+   ```
+
+   Run each **affected** configuration and record checker identity, commit SHA, finite configuration, state counts and violations in the PR evidence. No new CI job or mandatory model for every change.
+4. Map **model action → actual guard/SQL or OS boundary → executable regression → limitation** in [TRANSITION-MAP.md](TRANSITION-MAP.md). Keep real-process, SQLite/WAL, provider, Stop, rollback, restart and delivery tests when a model cannot prove those boundaries.
+5. Existing [TDD and release-readiness guidance](../../AGENTS.md) owns implementation and review. Bounded TLC does **not** prove implementation refinement, liveness, continuous OS exclusion or exactly-once external effects. Do not create a second state manager, approval gate or verification framework.
+
+## Historical investigation and model notes
+
+For the maintained model → production-owner → executable-test mapping, see
+[TRANSITION-MAP.md](TRANSITION-MAP.md). The initial results below document the
+pre-merge investigation; they do not qualify subsequent revisions.
 
 This inventory is a starting point, not a claim of exhaustive repository coverage. The initial source inventory targeted main `07ca07770a99af91c4461fb3fed82687ea6cb5cb`. The worktree has since advanced to `e435ce689e7fbe577026f9bd28adedf565edd427`; relevant targeted tests are identified below, and the inventory and all tests have not yet been requalified for that head. The first test run below was on `7793aed` and is not exact-head evidence. The separate uncommitted rollout-recovery candidate is not included.
 

@@ -49,6 +49,12 @@ Use repository instructions for durable architecture/safety and Skills for repea
 
 Do not duplicate these procedures here.
 
+### Critical state-machine maintenance
+
+For changes to **durable or concurrent lifecycle decisions** (Run/Stop, claims, receipts, continuations, ownership fences, rollout or rollback), consult the [state-owner and transition map](docs/formal/TRANSITION-MAP.md), then inspect the actual code owner and implementation tests. If a change affects a modelled transition or invariant, update the relevant TLA+ model/config as needed, run its bounded TLC check and the real boundary tests, and update the mapping and limitations. See [formal verification guidance](docs/formal/README.md).
+
+Add a model only for a concrete high-risk persistence, concurrency or failure case. A model never replaces SQLite/process/provider/delivery evidence or creates a second runtime state owner. This is **conditional**, not TLC for every change or an extra review gate; use the existing TDD and release-readiness Skills.
+
 ### Requirements and issue quality
 
 For a non-trivial change, establish before implementation:
