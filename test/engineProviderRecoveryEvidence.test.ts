@@ -214,7 +214,7 @@ describe("evidence-based provider recovery through the interactive route owner",
       calls += 1;
       if (calls === 1) throw submitted("ECONNREFUSED at spawn", false);
       // The silent retry ran the task, then a local post-provider step failed.
-      throw new Error("Internal error: upload hook exploded");
+      throw new Error("ECONNRESET writing local upload receipt");
     });
     const { db, targetRun } = await runCodexThenClaude(sourceRun);
     try {
@@ -227,7 +227,7 @@ describe("evidence-based provider recovery through the interactive route owner",
     let calls = 0;
     const sourceRun = vi.fn(async () => {
       calls += 1;
-      if (calls === 1) throw new Error("socket hang up");
+      if (calls === 1) throw submitted("socket hang up", false);
       throw submitted("Internal error: could not initialise", false);
     });
     const { db, targetRun } = await runCodexThenClaude(sourceRun);
@@ -239,7 +239,7 @@ describe("evidence-based provider recovery through the interactive route owner",
 
 describe("Claude weekly limit incident", () => {
   it("routes a configured claude -> codex chain to one final answer without a generic same-session retry", async () => {
-    const claudeRun = vi.fn(async () => { throw new Error("You've hit your weekly limit · resets 11am (Europe/London)"); });
+    const claudeRun = vi.fn(async () => { throw submitted("You've hit your weekly limit · resets 11am (Europe/London)", true); });
     const { db, targetRun, texts } = await runCodexThenClaude(claudeRun, "claude");
     try {
       expect(claudeRun).toHaveBeenCalledTimes(1);
@@ -252,7 +252,7 @@ describe("Claude weekly limit incident", () => {
 
 describe("provider-locked surface", () => {
   it("never acquires another provider even when the weekly limit is recognised as capacity", async () => {
-    const claudeRun = vi.fn(async () => { throw new Error("You've hit your weekly limit · resets 11am (Europe/London)"); });
+    const claudeRun = vi.fn(async () => { throw submitted("You've hit your weekly limit · resets 11am (Europe/London)", true); });
     const { db, targetRun } = await runCodexThenClaude(claudeRun, "claude", true);
     try {
       expect(claudeRun).toHaveBeenCalledTimes(1);
@@ -293,8 +293,8 @@ describe("the surface-neutral route owner consumes the same verdict", () => {
 
   it("advances an authorised surface-neutral chain for evidenced provider failures", async () => {
     const advancing = [
-      new Error("usage limit reached"),
-      new Error("Failed to authenticate"),
+      submitted("usage limit reached", true),
+      submitted("Failed to authenticate", false),
       submitted("socket hang up", false),
       submitted("socket hang up", true),
       attachProviderFailureEvidence(new CliTimeoutError("pre-prompt timeout", "hard"), { promptSubmitted: false }),
@@ -309,7 +309,7 @@ describe("the surface-neutral route owner consumes the same verdict", () => {
   });
 
   it("does not advance an unclassified failure without provider evidence", async () => {
-    for (const error of [new Error("Internal error: lost")]) {
+    for (const error of [new Error("Internal error: lost"), new Error("ECONNRESET storing receipt"), new Error("permission denied"), new Error("ENOENT"), new Error("usage limit reached")]) {
       const { db, claude, router, input } = routerOver(error);
       try {
         await expect(router.executeSurfaceNeutralTurn(input as any)).rejects.toThrow();
