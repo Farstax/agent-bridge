@@ -490,7 +490,7 @@ if [[ "\${cmd[1]:-}" == */tsx/dist/cli.mjs && "\${cmd[2]:-}" == */scripts/idle-m
 fi
 if [ -n "\${FAKE_FAIL_PHASE:-}" ] && [ "\${FAKE_FAIL_PHASE:-}" = "$phase" ]; then
   "\${cmd[@]}"
-  if [ -n "\${FAKE_CORRUPT_DB:-}" ]; then printf 'corrupt' > "$FAKE_CORRUPT_DB"; fi
+  if [ -n "\${FAKE_CORRUPT_DB:-}" ]; then fenced=0; [ "$(stat -c %a "$FAKE_CORRUPT_DB")" = 0 ] && fenced=1; [ "$fenced" = 1 ] && chmod 600 "$FAKE_CORRUPT_DB"; printf 'corrupt' > "$FAKE_CORRUPT_DB"; [ "$fenced" = 1 ] && chmod 0 "$FAKE_CORRUPT_DB"; fi
   exit 70
 fi
 exec "\${cmd[@]}"

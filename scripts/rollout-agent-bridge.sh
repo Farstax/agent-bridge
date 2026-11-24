@@ -1073,6 +1073,13 @@ backup_databases() {
     uid="$(/usr/bin/stat -c %u "$source")"
     gid="$(/usr/bin/stat -c %g "$source")"
     mode="$(/usr/bin/stat -c %a "$source")"
+    if [[ -f "$sqlite_fence_record" ]]; then
+      mode="$(/usr/bin/python3 -c 'import json,sys; m=json.load(open(sys.argv[1])).get(sys.argv[2]); print(format(m,"o") if m is not None else "")' "$sqlite_fence_record" "$source")"
+      [[ -n "$mode" ]] || mode="$(/usr/bin/stat -c %a "$source")"
+    fi
+    # Root reads through the fence; an unprivileged test-mode run cannot, so it
+    # briefly reads the file back at its recorded mode (never in production).
+    (( test_mode == 0 )) || /usr/bin/chmod "$mode" "$source"
     size="$(/usr/bin/stat -c %s "$source")"
     source_hash="$(/usr/bin/sha256sum "$source" | /usr/bin/cut -d' ' -f1)"
     parent_device="$(/usr/bin/stat -c %d "$source_dir")"
@@ -1081,10 +1088,12 @@ backup_databases() {
     parent_gid="$(/usr/bin/stat -c %g "$source_dir")"
     parent_mode="$(/usr/bin/stat -c %a "$source_dir")"
     "$cp_cmd" --preserve=all --no-dereference -- "$source" "$backup"
+    /usr/bin/chmod "$mode" "$backup"
     [[ -f "$backup" && ! -L "$backup" ]] || die "backup is not a regular file: $backup"
     backup_canonical="$(/usr/bin/realpath -e "$backup")"
     [[ "$backup_canonical" == "$backup" && "$(/usr/bin/dirname "$backup")" == "$backup_set" ]] || die "backup escaped fixed backup directory: $backup"
     backup_hash="$(/usr/bin/sha256sum "$backup" | /usr/bin/cut -d' ' -f1)"
+    (( test_mode == 0 )) || /usr/bin/chmod 0 "$source"
     [[ "$source_hash" == "$backup_hash" ]] || die "byte-exact backup verification failed: $source"
     [[ "$(/usr/bin/stat -c %u "$backup")" == "$uid" && "$(/usr/bin/stat -c %g "$backup")" == "$gid" && "$(/usr/bin/stat -c %a "$backup")" == "$mode" && "$(/usr/bin/stat -c %s "$backup")" == "$size" ]] || die "backup metadata verification failed: $source"
     printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$index" "$source" "$backup" "$uid" "$gid" "$mode" "$size" "$source_hash" "$backup_hash" "$parent_device" "$parent_inode" "$parent_uid" "$parent_gid" "$parent_mode" >> "$manifest"
@@ -1346,6 +1355,7 @@ restore_previous_release_and_start() {
   for unit in "${recovery_units[@]}"; do recovery_journal_args+=(-u "$unit"); done
   recovery_since="$(/usr/bin/date -u '+%Y-%m-%d %H:%M:%S UTC')"
   record_recovery_phase PREVIOUS_RELEASE_STARTING || return 1
+  unfence_sqlite_files || { recontain_after_recovery_failure; return 1; }
   "$systemctl_cmd" start "${recovery_units[@]}" || { recontain_after_recovery_failure; return 1; }
   for unit in "${recovery_units[@]}"; do assert_service_active "$unit" || { recontain_after_recovery_failure; return 1; }; done
   (( smoke_delay > 0 )) && /usr/bin/sleep "$smoke_delay"
@@ -2156,17 +2166,41 @@ PY
 # fails closed before any checkpoint, backup, migration or restore. Any
 # same-owner process holding the database (including an operator's sqlite3
 # shell) is terminated: exclusive access is the point of the boundary.
+sqlite_fence_record=""
+sqlite_fence_active=0
 contain_sqlite_writers() {
-  local evidence="$artifact_dir/${1%.json}-sqlite-writers.json"
-  /usr/bin/python3 - "$$" "$evidence" "${databases[@]}" <<'PY'
+  local evidence="$artifact_dir/${1%.json}-sqlite-writers.json" verify_only="${2:-0}"
+  (( verify_only == 1 )) || sqlite_fence_active=1
+  /usr/bin/python3 - "$$" "$evidence" "$sqlite_fence_record" "$verify_only" "${databases[@]}" <<'PY'
 import json, os, signal, sys, time
-self_pid, evidence_path, dbs = int(sys.argv[1]), sys.argv[2], sys.argv[3:]
+self_pid, evidence_path, fence_record, verify_only, dbs = int(sys.argv[1]), sys.argv[2], sys.argv[3], sys.argv[4] == "1", sys.argv[5:]
 targets = {}
 for db in dbs:
     real = os.path.realpath(db)
     owner = os.stat(real).st_uid if os.path.exists(real) else None
     for suffix in ("", "-wal", "-shm"):
         targets[real + suffix] = owner
+# Fence first, scan second. A point-in-time holder scan cannot exclude a process
+# that opens the database afterwards, so every managed file is set to mode 000
+# before any scan: nothing but the owner-run rollout database tool (which lifts
+# and restores the fence per invocation) or root can open it from here on. The
+# original modes are recorded once; the scan below then only has to deal with
+# handles that were already open.
+try:
+    with open(fence_record) as handle:
+        recorded = json.load(handle)
+except FileNotFoundError:
+    recorded = {}
+for path in targets:
+    try:
+        mode = os.lstat(path).st_mode & 0o777
+    except FileNotFoundError:
+        continue
+    if mode and path not in recorded:
+        recorded[path] = mode
+    os.chmod(path, 0)
+with open(fence_record, "w") as handle:
+    json.dump(recorded, handle)
 def ppid(pid):
     try:
         raw = open(f"/proc/{pid}/stat").read()
@@ -2180,8 +2214,8 @@ def ours(pid):
             return True
         pid, seen = ppid(pid), seen + 1
     return False
-# The caller chain (deployer/handoff owner) is part of the release transaction,
-# not a database writer to interrupt.
+# Never interrupt the caller chain, but do not assume its database handles are
+# quiescent: a caller with an open connection can write during offline work.
 ancestors, walk, seen = set(), self_pid, 0
 while walk > 1 and seen < 64:
     ancestors.add(walk)
@@ -2192,7 +2226,7 @@ def holders():
         if not entry.isdigit():
             continue
         pid = int(entry)
-        if pid == os.getpid() or pid in ancestors or ours(pid):
+        if pid == os.getpid() or pid == self_pid or (pid not in ancestors and ours(pid)):
             continue
         try:
             for fd in os.listdir(f"/proc/{pid}/fd"):
@@ -2201,7 +2235,7 @@ def holders():
                 except OSError:
                     continue
                 if link in targets:
-                    found[pid] = (targets[link], link)
+                    found[pid] = (targets[link], link, pid in ancestors)
         except PermissionError:
             if os.geteuid() == 0:
                 unreadable.append(pid)
@@ -2213,13 +2247,24 @@ def finish(code):
     with open(evidence_path, "w") as handle:
         json.dump(evidence, handle)
     sys.exit(code)
+if verify_only:
+    # Re-check after a database tool lifted the fence for its own run: any
+    # holder now opened the database inside that window, so offline work is
+    # no longer exclusive. Never signal here; the failure path re-contains.
+    found, unreadable = holders()
+    if unreadable or found:
+        evidence["result"] = "late_writer"; evidence["pids"] = sorted(found); finish(1)
+    finish(0)
 for attempt in range(3):
     found, unreadable = holders()
     if unreadable:
         evidence["result"] = "unreadable_process_table"; finish(1)
     if not found:
         finish(0)
-    for pid, (owner, link) in found.items():
+    for pid, (owner, link, caller) in found.items():
+        if caller:
+            evidence["result"] = "caller_database_handle"; evidence["pid"] = pid; finish(1)
+    for pid, (owner, link, caller) in found.items():
         try:
             uid = os.stat(f"/proc/{pid}").st_uid
         except OSError:
@@ -2233,7 +2278,18 @@ for attempt in range(3):
     deadline = time.time() + 3
     while time.time() < deadline and holders()[0]:
         time.sleep(0.2)
-    for pid in holders()[0]:
+    found, unreadable = holders()
+    if unreadable:
+        evidence["result"] = "unreadable_process_table"; finish(1)
+    for pid, (owner, link, caller) in found.items():
+        if caller:
+            evidence["result"] = "caller_database_handle"; evidence["pid"] = pid; finish(1)
+        try:
+            uid = os.stat(f"/proc/{pid}").st_uid
+        except OSError:
+            continue
+        if owner is None or uid != owner:
+            evidence["result"] = "foreign_writer"; evidence["pid"] = pid; finish(1)
         try: os.kill(pid, signal.SIGKILL)
         except OSError: pass
     time.sleep(0.3)
@@ -2245,6 +2301,26 @@ PY
   local status=$?
   [[ -f "$evidence" ]] && /usr/bin/sha256sum "$evidence" > "${evidence%.json}.sha256"
   return "$status"
+}
+
+# Lifts the offline-exclusion fence set by contain_sqlite_writers; only called
+# immediately before services are allowed to start again. Restored database
+# files already carry their original mode, which this rewrites unchanged.
+unfence_sqlite_files() {
+  sqlite_fence_active=0
+  [[ -f "$sqlite_fence_record" ]] || return 0
+  /usr/bin/python3 - "$sqlite_fence_record" <<'PY' || return 1
+import json, os, sys
+recorded = json.load(open(sys.argv[1]))
+for path, mode in recorded.items():
+    if os.path.lexists(path):
+        os.chmod(path, mode)
+    # Sidecars created while fenced (e.g. by a migration) take the main file's mode.
+    base = path.removesuffix("-wal").removesuffix("-shm")
+    for suffix in ("-wal", "-shm"):
+        if path == base and os.path.lexists(base + suffix) and (os.lstat(base + suffix).st_mode & 0o777) == 0:
+            os.chmod(base + suffix, mode)
+PY
 }
 
 stop_and_verify_all_services() {
@@ -2588,6 +2664,12 @@ on_exit() {
       fi
     fi
   fi
+  # The fence spans the whole offline window including rollback; release it
+  # last so a stopped, uncertain host stays operable for the operator.
+  if ! unfence_sqlite_files; then
+    echo "SQLite fence could not be released; database files remain at mode 000: $sqlite_fence_record" >&2
+    status=1
+  fi
   if (( containment_verified == 1 && recovery_running == 0 )); then
     echo "services remain stopped; operator review required"
   elif (( recovery_running == 1 )); then
@@ -2625,6 +2707,7 @@ manifest="$artifact_dir/backup-manifest.tsv"
 backup_set="$backup_dir/$timestamp-$expected_commit"
 sentinel_path="$log_dir/.rollout-in-progress"
 phase_ledger="$artifact_dir/phase-ledger.log"
+sqlite_fence_record="$artifact_dir/sqlite-fence-modes.json"
 
 start_attempted=0
 services_started=0
@@ -2753,8 +2836,13 @@ build_db_args
 preflight_db_args=("${db_args[@]}")
 inspect_db_flags=()
 if (( retiring_health == 1 && retired_health_database_present == 1 )); then inspect_db_flags+=(--allow-retired-health); fi
+# Each tool invocation lifts the SQLite fence for its own run, so another
+# process of the runtime user could open the database inside that window.
+# While the fence is held, every tool run is followed by a holder re-check that
+# fails closed (the caller's failure path re-contains and rolls back).
 run_db_tool() {
-  run_as_runtime "$node_bin" "$project_dir/node_modules/tsx/dist/cli.mjs" "$project_dir/scripts/rollout-db.ts" "$@"
+  run_as_runtime "$node_bin" "$project_dir/node_modules/tsx/dist/cli.mjs" "$project_dir/scripts/rollout-db.ts" "$@" || return $?
+  (( sqlite_fence_active == 0 )) || contain_sqlite_writers "verify-after-${1}.json" 1 || { echo "SQLite writer appeared during offline database tool: $1" >&2; return 1; }
 }
 
 # A configured autonomy database has no dependency on the old process.  Make
@@ -2973,6 +3061,17 @@ fi
 if [[ -n "$health_relocation_source" ]] && (( retiring_health == 0 )); then
   echo "relocating legacy health database source=$health_relocation_source target=$health_relocation_target"
   run_db_tool relocate --from "$health_relocation_source" --to "$health_relocation_target"
+  # The relocated copy inherits the fence; record the source's original mode for it.
+  /usr/bin/python3 - "$sqlite_fence_record" "$health_relocation_source" "$health_relocation_target" <<'PY' || die "SQLite fence record could not be extended to the relocated database"
+import json, sys
+record, source, target = sys.argv[1:]
+data = json.load(open(record))
+if source not in data:
+    sys.exit("relocated database has no recorded fence mode: " + source)
+data[target] = data[source]
+with open(record, "w") as handle:
+    json.dump(data, handle)
+PY
   for database_index in "${!databases[@]}"; do
     [[ "${databases[$database_index]}" == "$health_relocation_source" ]] && databases[$database_index]="$health_relocation_target"
   done
@@ -3010,6 +3109,7 @@ journal_since="$(/usr/bin/date -u '+%Y-%m-%d %H:%M:%S UTC')"
 start_attempted=1
 record_phase SERVICES_STARTING
 restart_boundary="$(/usr/bin/date -u '+%Y-%m-%dT%H:%M:%S.%3NZ')"
+unfence_sqlite_files
 "$systemctl_cmd" start "${units[@]}"
 for unit in "${units[@]}"; do assert_service_active "$unit"; done
 services_started=1

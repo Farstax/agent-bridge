@@ -818,9 +818,7 @@ export function settleRunContinuation(
   db.runInTransaction(() => {
     const row = db.raw.prepare("SELECT value FROM settings WHERE key = ?").get(key(id)) as { value: string } | undefined;
     const current = row ? parse(row.value) : null;
-    if (!current) return;
-    if (current.state === "completed" || current.state === "cancelled") return;
-    if (outcome === "expired" && current.state === "expired") return;
+    if (!current || (current.state !== "pending" && current.state !== "claimed")) return;
     if (current.capacityWait && outcome === "completed" && !capacityCompletionProven(db, current)) return;
     if (outcome !== "expired"
       && current.state !== "claimed"
@@ -1016,7 +1014,9 @@ export async function scanRunContinuations(
       const claimedExpiry = db.runInTransaction((): RunContinuation | null => {
         const row = db.raw.prepare("SELECT value FROM settings WHERE key = ?").get(key(candidate.id)) as { value: string } | undefined;
         const current = row ? parse(row.value) : null;
-        if (!current || current.state === "completed" || current.state === "cancelled" || current.state === "expired") return null;
+        // Revalidate the current state, not the stale scan candidate: a
+        // concurrently failed continuation must not be revived for expiry.
+        if (!current?.capacityWait || (current.state !== "pending" && current.state !== "claimed")) return null;
 
         if (current.expiryDeliveryPending) {
           const claimExpiresAtMs = current.claimExpiresAt ? Date.parse(current.claimExpiresAt) : 0;
