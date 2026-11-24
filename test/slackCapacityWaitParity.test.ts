@@ -1,3 +1,4 @@
+import { attachProviderFailureEvidence } from "../src/providers/failureEvidence.js";
 /**
  * Slack capacity-wait parity (#1114 Phase 3): Telegram and Discord already
  * hold the original admission and durably wait when every configured
@@ -71,9 +72,9 @@ describe("Slack capacity-wait parity (#1114)", () => {
     const capacityFallbackAttempts = new Map<string, { runId: string; chatId: number | string; chatType: string; threadId?: number | string; provider?: CliKind; retryAfterSeconds?: number; hasUnknownCapacityTiming?: true }>();
     const notifications: string[] = [];
 
-    const codexRun = vi.fn().mockRejectedValue(new Error("MODEL_CAPACITY_EXHAUSTED"));
+    const codexRun = vi.fn().mockRejectedValue(attachProviderFailureEvidence(new Error("MODEL_CAPACITY_EXHAUSTED"), { promptSubmitted: false }));
     const claudeRun = vi.fn()
-      .mockRejectedValueOnce(new Error("MODEL_CAPACITY_EXHAUSTED"))
+      .mockRejectedValueOnce(attachProviderFailureEvidence(new Error("MODEL_CAPACITY_EXHAUSTED"), { promptSubmitted: false }))
       .mockResolvedValue(JSON.stringify({ result: "claude has recovered" }));
     const makeEngine = (kind: "codex" | "claude", runCli: typeof codexRun) => new BridgeEngine(
       {
