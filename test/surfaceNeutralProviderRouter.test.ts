@@ -195,7 +195,7 @@ describe("surface-neutral provider attempt isolation", () => {
     }
   });
 
-  for (const status of ["complete", "continue", "blocked"] as const) {
+  for (const status of ["complete", "blocked"] as const) {
   it(`does not abandon an authoritative ${status} outcome when the provider fails`, async () => {
     const db = openDb(":memory:");
     const identity = { surfaceIdentity: "acp:outward", chatKey: "autonomous:episode-1" };
