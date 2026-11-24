@@ -1,8 +1,8 @@
-# OSS #1278 — critical state-owner and transition correspondence
+# Critical OSS state-owner and transition correspondence
 
-> **Status: incomplete and not merge-qualified.** This mapping is an implementation
-> audit, not a TLA refinement proof. `RECOVERY.md` records the recovered-head model
-> recheck; it does not qualify later changes or prove production correspondence.
+**Living transition map.** Created under [#1278](https://github.com/Farstax/agent-bridge/issues/1278), merged in [PR #1279](https://github.com/Farstax/agent-bridge/pull/1279) (`77be1be2c8649a9d0f2ee0e85d4f9e013f084d2b`). Read the [model maintenance guide](README.md) before altering a consequential durable/concurrent transition.
+
+Maintain **model action → current code/transaction guard → real implementation test → unproven boundary** when the authoritative owner or modelled behaviour changes. Use TLC for affected bounded models and executable tests for actual process, database and external effects. This is not an implementation refinement proof.
 
 ## Boundaries that must stay distinct
 
@@ -43,32 +43,23 @@
 | `src/acp/subagentActivity.ts` | Subagent spawned/completed/failed/interrupted: separate observer; verify owner before considering additional modeling. |
 | Legacy worker/task tables | Not an active runtime state owner after retirement migrations. Do not resurrect a generic Task or another queue. |
 
-## Narrow production changes on this continuation branch
+## Production changes delivered by #1278
 
 1. `EventReceiptRepository.createReceipt` now delegates to `admitReceipt`: removes a duplicate read-then-insert branch and uses the existing SQLite unique-key admission authority for both APIs. `test/db.test.ts` checks both call orders, distinct SQLite connections, preserved in-flight/terminal status and no duplicate rows. The duplicate/retention interleaving is covered by a two-connection test; it does not establish exactly-once effects.
 2. `settleRunContinuation` now admits writes only from `pending` or `claimed`; once `failed`, `completed`, `cancelled` or `expired`, a later expiry cannot overwrite terminal evidence. Expiry reclaims in `scanRunContinuations` also re-read the live state, require a capacity wait and reject a terminal value before creating an expiry claim. `test/runContinuation.test.ts` injects a competing failure during awaited expiry notification and separately settles between a stale scan candidate and its transactional re-read. Focused regression evidence must be refreshed for the final candidate.
 3. Receipt insertion and duplicate lookup now share an immediate transaction, preventing retention from deleting the selected duplicate between statements. `test/db.test.ts` forces that ordering on two SQLite connections. Run ingress likewise creates its receipt and links its Run in one immediate transaction; `test/runIngress.test.ts` covers rollback on admission failure, duplicate authority/scope and a two-process admission race. An existing unlinked receipt remains ambiguous and fails closed; no external effect deduplication is inferred.
 4. During writer termination, `contain_sqlite_writers` rechecks caller identity and ownership before escalation. A disposable process-tree test covers a caller opening the database during termination. This does not protect against PID reuse between observation and signalling and is not continuous writer exclusion.
-5. Writer exclusion: `contain_sqlite_writers` sets every managed database and sidecar to mode 000 (original modes in `sqlite-fence-modes.json`) before scanning holders, so a process opening after the scan is denied. Each `rollout-db.ts` run lifts the fence for itself and restores it on exit; `run_db_tool` then re-scans holders and fails closed if one appeared in that window. Backup records original modes; the fence is released just before service start and last in `on_exit`. Regressions: independent late writer, respawning writer and caller late-open in `test/rolloutHelper.test.ts`.
 5. Writer exclusion: `contain_sqlite_writers` sets every managed database and sidecar to mode 000 (original modes recorded in `sqlite-fence-modes.json`) before scanning holders, so a process that opens after the scan is denied. Each `rollout-db.ts` invocation lifts the fence for its own run and restores it on exit; `run_db_tool` then re-scans holders and fails closed if any appeared inside that window. Backup records the original mode; the fence is released immediately before service start and last in `on_exit`. Regressions: independent late writer, respawning writer, caller late-open (not killed) in `test/rolloutHelper.test.ts`.
-5. **Test consolidation:** the old in-memory `createEventReceipt` duplicate test was removed only after transferring both of its assertions (same ID on repeated create, and lookup by idempotency key) into the new two-connection regression. No process, WAL, Stop, rollback or transport integration test was removed. No shared state-machine runtime, new table, public API or CI framework was introduced.
+6. **Test consolidation:** the old in-memory `createEventReceipt` duplicate test was removed only after transferring both of its assertions (same ID on repeated create, and lookup by idempotency key) into the new two-connection regression. No process, WAL, Stop, rollback or transport integration test was removed. No shared state-machine runtime, new table, public API or CI framework was introduced.
 
-## Blockers to merge
+## Merged qualification and remaining limitations
 
-1. **SQLite writer containment:** addressed by the fence in change 5. Residual, unproven: root-privileged writers; a same-user process opening inside one tool invocation (detected afterwards, not prevented); PID reuse between observation and signal. Not modelled in TLA+.
-2. **Formal scope:** rerun all 14 `*.tla`/`*.cfg` pairs from `docs/formal` with the pinned trusted TLC 2.19 (or record a deliberate updated version), state counts, bounds and output; deliberately remove a meaningful guard in a disposable copy, save counterexample and restore pass. Models are bounded safety abstractions, not refinement or liveness proofs.
-3. **Exact-head implementation tests:** run `test/db.test.ts`, `test/runContinuation.test.ts`, and each mapped targeted suite including actual process/SQLite, Stop, upload and rollback fixtures; then repository `npm run typecheck`, `npm run qualify:local` and required hosted checks. Record the **same final head SHA** for all gates.
-4. **Evidence/measurement:** record full-suite baseline/final test count, runtime and touched-file source LOC; retain unique real-process and transport coverage, and defer unrelated broad test subtraction to #462. Independently review changed lines and correct findings before declaring ready.
+PR #1279 merged on `77be1be2c8649a9d0f2ee0e85d4f9e013f084d2b`. Its qualified head `1e29ef62e5dcc2c109c1399028d1e5e1d31c65cb` had all **14 bounded TLC configurations** pass, an expected `NoRetiredClaim` negative-mutation counterexample, and rollout real-process tests **136 passed / 1 skipped**. Typecheck, build, architecture lint and [hosted exact-head CI](https://github.com/Farstax/agent-bridge/actions/runs/45381217410) passed. The local full-suite run had environment-associated failures and is **not** a full local pass. These are historical qualification results; use current-head evidence for subsequent changes.
 
-### Reproduction starting point
+**Known unproven boundaries:**
 
-```sh
-git switch work/1278-explicit-state-machines
-npm ci
-npm run typecheck
-./node_modules/.bin/vitest run test/db.test.ts test/runContinuation.test.ts --maxWorkers=1
-( cd docs/formal && for module in *.tla; do name=${module%.tla}; java -XX:+UseParallelGC -cp /absolute/path/to/tla2tools.jar tlc2.TLC -workers 1 -config "$name.cfg" "$module" || exit; done )
-npm run qualify:local
-```
+- The mode-`000` SQLite fence does not block **root-privileged writers**. A same-user writer can open during a temporarily unfenced rollout-db tool invocation; the holder re-scan detects this afterward and fails closed rather than preventing the write. PID reuse between observing and signalling a process remains unaddressed. Real-process tests cover the mechanism; no TLA+ model proves its continuous exclusion.
+- `EventReceipt.tla` assumes retention semantics and does not model concurrent receipt admission/pruning; that race has a real two-connection SQLite regression. No model proves exactly-once external effects.
+- Finite models abstract some OS timing, process death, provider sessions, external operations and liveness; preserve implementation tests and record any new limitations.
 
-Use a verified `tla2tools.jar`; see `RECOVERY.md` for recovered-head results and the checker hash. Rollback/WAL races and full qualification remain open.
+To maintain this map, update the affected row and relevant `.tla` / `.cfg` as warranted; run TLC using the trusted local JAR and the [README procedure](README.md), run the owning implementation tests and the existing exact-head qualification when code changes. [RECOVERY.md](RECOVERY.md) is a historical record, not a current merge runbook.
