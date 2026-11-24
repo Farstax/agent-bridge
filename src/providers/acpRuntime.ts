@@ -564,9 +564,17 @@ export async function runResolvedAcpProviderTurn(
   const effectiveEnv = { ...process.env, ...(options.contextEnv ?? {}) };
   const runtimeHome = effectiveEnv.HOME?.trim() || homedir();
   if (runtime.transport !== "acp-stdio") throw new Error(`Provider ${providerId} is not an ACP runtime`);
-  policy.validateRuntime?.(runtime, effectiveEnv);
-  const providerEnv = policy.buildChildEnv?.(request, effectiveEnv) ?? {};
-  const sessionSettings = policy.sessionSettings?.(request, effectiveEnv, cwd);
+  // Provider-owned setup may fail before a native session exists. Keep
+  // provenance confined to the provider hooks, not Bridge delivery/storage.
+  let providerEnv: ReturnType<NonNullable<typeof policy.buildChildEnv>>;
+  let sessionSettings: ReturnType<NonNullable<typeof policy.sessionSettings>>;
+  try {
+    policy.validateRuntime?.(runtime, effectiveEnv);
+    providerEnv = policy.buildChildEnv?.(request, effectiveEnv) ?? {};
+    sessionSettings = policy.sessionSettings?.(request, effectiveEnv, cwd);
+  } catch (error) {
+    throw attachProviderFailureEvidence(redactAcpFailure(error, effectiveEnv), { promptSubmitted: false });
+  }
   const contextEnv = { ...(options.contextEnv ?? {}), ...providerEnv };
   const redactionEnv = { ...process.env, ...contextEnv };
   const secretValues = getProviderApiKeySecretValues(redactionEnv);
@@ -586,6 +594,7 @@ export async function runResolvedAcpProviderTurn(
   // Monotonic across same-session retry attempts: once any attempt sent
   // session/prompt the provider may have started the task.
   let promptEverSubmitted = false;
+  let submittedSessionId: string | undefined;
   const runTurn = async (attempt: 1 | 2): Promise<AcpTurnResult> => {
     // Never reuse a preview classifier or its buffered text across an ACP retry.
     if (attempt === 2) {
@@ -620,7 +629,7 @@ export async function runResolvedAcpProviderTurn(
         sessionConfig: sessionSettings?.config,
         authenticateMethodId: policy.authenticateMethodId?.(effectiveEnv),
         abortRequested,
-        onPromptSubmitted: () => { promptEverSubmitted = true; },
+        onPromptSubmitted: (sessionId) => { promptEverSubmitted = true; submittedSessionId = sessionId; },
         signal: io.signal,
         onSteerReady: policy.steeringSupported ? options.onSteerReady : undefined,
         onLiveText: options.onProgress
@@ -704,7 +713,7 @@ export async function runResolvedAcpProviderTurn(
     }
     // Cancellation is never a provider failure and must not gain recovery evidence.
     if (abortRequested() || redacted instanceof AcpTransientRetryCancelledError) throw redacted;
-    throw attachProviderFailureEvidence(redacted, { promptSubmitted: promptEverSubmitted });
+    throw attachProviderFailureEvidence(redacted, { promptSubmitted: promptEverSubmitted, sessionId: submittedSessionId });
   }
   if (providerId === "claude") clearProviderRuntimeAuthDegraded("claude", runtimeHome);
   const flushed = liveRedactor.flush();
@@ -730,7 +739,7 @@ export async function runResolvedAcpProviderTurn(
         { attempt: currentAttempt, successorStarted: false, retryEligible: false, promptSubmitted: promptEverSubmitted },
       ));
     }
-    throw attachProviderFailureEvidence(classifiedError, { promptSubmitted: promptEverSubmitted });
+    throw attachProviderFailureEvidence(classifiedError, { promptSubmitted: promptEverSubmitted, sessionId: submittedSessionId });
   }
   if (parsed.stopReason === "cancelled" && request.outputDir) {
     try {
@@ -757,9 +766,15 @@ export async function runAcpProviderTurn(
   const policy = getAcpProviderPolicy(providerId);
   if (!policy) throw new Error(`Provider ${providerId} has no ACP runtime policy`);
   const effectiveEnv = { ...process.env, ...(options.contextEnv ?? {}) };
+  let runtime: ReturnType<typeof resolveProviderRuntime>;
+  try {
+    runtime = resolveProviderRuntime(providerId, effectiveEnv);
+  } catch (error) {
+    throw attachProviderFailureEvidence(redactAcpFailure(error, effectiveEnv), { promptSubmitted: false });
+  }
   return runResolvedAcpProviderTurn(
     policy,
-    resolveProviderRuntime(providerId, effectiveEnv),
+    runtime,
     request,
     cwd,
     options,
