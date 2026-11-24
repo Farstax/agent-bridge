@@ -253,6 +253,33 @@ describe("surface-neutral provider attempt isolation", () => {
 
 
 describe("two-stage provider recovery (#1281)", () => {
+  it("retains the first failure context across a bounded multi-provider recovery", async () => {
+    const db = openDb(":memory:");
+    let promptForThirdProvider = "";
+    let failures = 0;
+    const router = createSurfaceNeutralProviderRouter({
+      db, surfaceIdentity: "acp:outward", initialProvider: "codex",
+      providerChain: ["codex", "claude", "grok"],
+      engineForProvider: (provider) => ({
+        executeSurfaceNeutralTurn: async (input: any) => {
+          if (provider === "grok") {
+            promptForThirdProvider = input.prompt;
+            return { text: "finished", sessionId: "grok-fresh" };
+          }
+          const error = new Error("AcpSystemError: failure-" + (++failures));
+          error.name = "AcpSystemError";
+          throw attachProviderFailureEvidence(error, { promptSubmitted: true });
+        },
+      }) as any,
+    });
+    try {
+      await router.executeSurfaceNeutralTurn(turnInput(vi.fn()));
+      expect(failures).toBe(4);
+      expect(promptForThirdProvider).toContain("failure-1");
+      expect(promptForThirdProvider).toContain("failure-4");
+    } finally { db.close(); }
+  });
+
   it("recovers on the same provider with a fresh inspection-first session before any fallback", async () => {
     const db = openDb(":memory:");
     const attempts: Array<{ provider: BotKind; fresh: boolean | undefined; bound: boolean | undefined; prompt: string }> = [];
