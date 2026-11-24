@@ -195,7 +195,8 @@ describe("surface-neutral provider attempt isolation", () => {
     }
   });
 
-  it("does not abandon a recorded outcome when the provider fails after disposition", async () => {
+  for (const status of ["complete", "continue", "blocked"] as const) {
+  it(`does not abandon an authoritative ${status} outcome when the provider fails`, async () => {
     const db = openDb(":memory:");
     const identity = { surfaceIdentity: "acp:outward", chatKey: "autonomous:episode-1" };
     db.insertRun("run-1", identity, "claude");
@@ -203,7 +204,7 @@ describe("surface-neutral provider attempt isolation", () => {
     expect(lane).not.toBeNull();
     recordRunOutcome(db, {
       runId: "run-1", surfaceIdentity: identity.surfaceIdentity, chatKey: identity.chatKey,
-      provider: "claude", status: "complete", detail: "verified",
+      provider: "claude", status, detail: "verified",
       lock: { serviceId: lane!.serviceId, runId: lane!.runId, acquisitionId: lane!.acquisitionId },
     });
     const next = vi.fn(async () => ({ text: "must not run", sessionId: "s" }));
@@ -218,10 +219,11 @@ describe("surface-neutral provider attempt isolation", () => {
     });
     try {
       await expect(router.executeSurfaceNeutralTurn({ ...turnInput(vi.fn()), laneHandle: lane! })).rejects.toThrow();
-      expect(db.getRun("run-1").outcome_status).toBe("complete");
+      expect(db.getRun("run-1").outcome_status).toBe(status);
       expect(next).not.toHaveBeenCalled();
     } finally { db.unlock(lane!); db.close(); }
   });
+  }
 
   it("preserves the final provider failure when no fallback remains", async () => {
     const db = openDb(":memory:");
