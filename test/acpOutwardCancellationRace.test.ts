@@ -16,6 +16,39 @@ import {
 import { OutwardAcpSessionRepository } from "../src/repositories/outwardAcpSessionRepository.js";
 
 describe("outward ACP cancellation ownership", () => {
+  it("does not publish a late successful provider response after Stop wins", async () => {
+    const root = mkdtempSync(join(tmpdir(), "agent-bridge-outward-late-success-"));
+    const db = openDb(join(root, "bridge.sqlite"), { databaseRole: "interactive" });
+    try {
+      const session = new OutwardAcpSessionRepository(db.raw).create({ sessionId: "late-success", conversationId: "acp:late-success", cwd: root });
+      let entered!: () => void;
+      const ready = new Promise<void>((resolve) => { entered = resolve; });
+      let release!: () => void;
+      const gate = new Promise<void>((resolve) => { release = resolve; });
+      const updates: unknown[] = [];
+      const executor = new BridgeOutwardAcpPromptExecutor({
+        db, providerChain: ["codex"] as const, runId: () => "late-success-run",
+        createEngine: () => ({ executeSurfaceNeutralTurn: async () => {
+          entered();
+          await gate;
+          return { text: "late response", sessionId: null, stopReason: "end_turn" as const };
+        } }),
+      });
+      const execution = executor.execute({ session, prompt: "work", signal: new AbortController().signal, onUpdate: (update) => { updates.push(update); } });
+      await ready;
+      const cancellation = executor.cancel(session);
+      release();
+      const [result] = await Promise.all([execution, cancellation]);
+      expect(result.stopReason).toBe("cancelled");
+      expect(db.getRun("late-success-run").status).toBe("cancelled");
+      expect(db.getRecentConvTurns(session.conversationId, 20, undefined, OUTWARD_ACP_SURFACE).filter((turn) => turn.role === "assistant")).toEqual([]);
+      expect(JSON.stringify(updates)).not.toContain("late response");
+    } finally {
+      db.close();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("keeps cancellation asserted when it arrives before Bridge lifecycle registration", async () => {
     const root = mkdtempSync(join(tmpdir(), "agent-bridge-outward-cancel-race-"));
     const db = openDb(join(root, "bridge.sqlite"), { databaseRole: "interactive" });

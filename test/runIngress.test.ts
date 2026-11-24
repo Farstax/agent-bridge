@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
+import { spawn, spawnSync } from "node:child_process";
 import { join } from "node:path";
-import { existsSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, readFileSync, rmSync, mkdtempSync, writeFileSync } from "node:fs";
 import { createConnection } from "node:net";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
@@ -88,6 +89,77 @@ describe("authenticated ordinary Run ingress", () => {
     expect(second).toMatchObject({ runId: "run-1", created: false, receiptId: first.receiptId });
     expect(db.raw.prepare("SELECT COUNT(*) AS count FROM bridge_runs").get()).toEqual({ count: 1 });
     db.close();
+  });
+
+  it("rejects a duplicate key belonging to another receipt authority", () => {
+    const db = setup();
+    try {
+      db.insertRun("foreign-run", { surfaceIdentity: "telegram:interactive", chatKey: "other" }, "codex");
+      const receipt = db.createEventReceipt({ event_id: "foreign", source: "telegram", event_kind: "message", idempotency_key: request().idempotencyKey, received_at: "2020-01-01T00:00:00Z", occurred_at: "2020-01-01T00:00:00Z", payload_json: "{}", authority_scope: "telegram:interactive" });
+      db.linkEventReceiptRun(receipt.id, "foreign-run");
+      expect(() => acceptRunIngressRequest(db, request(), { expectedToken: TOKEN })).toThrow();
+    } finally { db.close(); }
+  });
+
+  it("rejects a duplicate key from a different ingress scope", () => {
+    const db = setup();
+    try {
+      acceptRunIngressRequest(db, request(), { expectedToken: TOKEN, runId: () => "run-1" });
+      expect(() => acceptRunIngressRequest(db, request({ scopeKey: "other-workspace" }), { expectedToken: TOKEN })).toThrow(RunIngressRequestError);
+    } finally { db.close(); }
+  });
+
+  it("admits one Run across concurrent processes", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "ingress-race-"));
+    const path = join(dir, "bridge.sqlite");
+    const initial = openDb(path); initial.close();
+    const source = `import {openDb} from './src/db.ts'; import {acceptRunIngressRequest} from './src/runIngress.ts'; import fs from 'node:fs'; const [path, gate, id] = process.argv.slice(1); const db = openDb(path); process.stdout.write('ready\\n'); while (!fs.existsSync(gate)) await new Promise(r => setTimeout(r, 5)); const out = acceptRunIngressRequest(db, ${JSON.stringify(request())}, {expectedToken:${JSON.stringify(TOKEN)}, runId:()=>id}); db.close(); process.stdout.write(JSON.stringify(out)+'\\n');`;
+    const children = ["one", "two"].map((id) => spawn(process.execPath, ["--import", "tsx", "--input-type=module", "-e", source, path, join(dir, "gate"), id], { cwd: process.cwd(), stdio: ["ignore", "pipe", "pipe"] }));
+    try {
+      const results = children.map((child) => new Promise<string>((resolve, reject) => {
+        let out = "", err = "";
+        child.stdout.on("data", (chunk) => { out += chunk; });
+        child.stderr.on("data", (chunk) => { err += chunk; });
+        child.on("error", reject);
+        child.on("exit", (code) => code === 0 ? resolve(out) : reject(new Error(err)));
+      }));
+      await new Promise<void>((resolve, reject) => {
+        let ready = 0;
+        const timeout = setTimeout(() => reject(new Error("workers not ready")), 15_000);
+        for (const child of children) child.stdout.once("data", () => { if (++ready === 2) { clearTimeout(timeout); resolve(); } });
+      });
+      writeFileSync(join(dir, "gate"), "go");
+      const admitted = (await Promise.all(results)).map((out) => JSON.parse(out.trim().split("\n").at(-1)!));
+      expect(admitted.map((v) => v.created).sort()).toEqual([false, true]);
+      expect(admitted[0].runId).toBe(admitted[1].runId);
+      const verify = openDb(path);
+      try { expect(verify.raw.prepare("SELECT COUNT(*) AS count FROM bridge_runs").get()).toEqual({ count: 1 }); } finally { verify.close(); }
+    } finally { for (const child of children) child.kill(); rmSync(dir, { recursive: true, force: true }); }
+  }, 30_000);
+
+  it("rolls back receipt admission when the process dies before linking the Run", () => {
+    const dir = mkdtempSync(join(tmpdir(), "ingress-crash-"));
+    const path = join(dir, "bridge.sqlite");
+    const initial = openDb(path); initial.close();
+    try {
+      const code = `import {openDb} from './src/db.ts';import {acceptRunIngressRequest} from './src/runIngress.ts';const db=openDb(process.argv[1]);acceptRunIngressRequest(db,${JSON.stringify(request())},{expectedToken:${JSON.stringify(TOKEN)},runId:()=>{process.kill(process.pid,'SIGKILL');throw new Error('unreachable')}});`;
+      const result = spawnSync(process.execPath, ["--import", "tsx", "--input-type=module", "-e", code, path], { cwd: process.cwd(), timeout: 15_000, encoding: "utf8" });
+      expect(result.signal).toBe("SIGKILL");
+      const reopened = openDb(path);
+      try {
+        expect(reopened.getEventReceiptByIdempotencyKey(request().idempotencyKey)).toBeNull();
+        expect(acceptRunIngressRequest(reopened, request(), { expectedToken: TOKEN, runId: () => "recovered" })).toMatchObject({ created: true, runId: "recovered" });
+      } finally { reopened.close(); }
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  }, 20_000);
+
+  it("rolls back the receipt if Run admission fails so a retry can proceed", () => {
+    const db = setup();
+    try {
+      expect(() => acceptRunIngressRequest(db, request(), { expectedToken: TOKEN, runId: () => { throw new Error("admission failed"); } })).toThrow("admission failed");
+      expect(db.getEventReceiptByIdempotencyKey(request().idempotencyKey)).toBeNull();
+      expect(acceptRunIngressRequest(db, request(), { expectedToken: TOKEN, runId: () => "retry-run" })).toMatchObject({ runId: "retry-run", created: true });
+    } finally { db.close(); }
   });
 
   it("preserves a custom ACP provider selected by the interactive runtime", () => {

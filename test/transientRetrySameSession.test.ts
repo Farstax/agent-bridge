@@ -85,14 +85,13 @@ describe("generic transient same-session retry (tier 1)", () => {
     expect(attempts).toEqual([1]);
   });
 
-  it("still retries a classified transient failure after the prompt was submitted", async () => {
+  it("does not replay a classified transient after the prompt was submitted", async () => {
     const attempts: number[] = [];
-    const result = await runWithAcpTransientRetry("codex", async (attempt) => {
+    await expect(runWithAcpTransientRetry("codex", async (attempt) => {
       attempts.push(attempt);
-      if (attempt === 1) throw new Error("Selected model is at capacity. Please try a different model.");
-      return "ok";
-    }, { abortRequested: () => false, wait: async () => undefined, promptSubmitted: () => true });
-    expect(result).toBe("ok");
-    expect(attempts).toEqual([1, 2]);
+      throw new Error("Selected model is at capacity. Please try a different model.");
+    }, { abortRequested: () => false, wait: async () => undefined, promptSubmitted: () => true }))
+      .rejects.toThrow("Selected model is at capacity");
+    expect(attempts).toEqual([1]);
   });
 });

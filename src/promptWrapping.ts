@@ -29,7 +29,7 @@ export function wrapPromptContext(
 export function prependProviderFallbackContinuation(prompt: string): string {
   return [
     "[Agent Bridge provider fallback]",
-    "This is a continuation of the same authorised objective after an interrupted or failed provider Run. Before doing more work, inspect durable conversation/Run evidence, current workspace and repository state, existing artifacts, and observable external effects. Identify what is complete, still required, or uncertain. Preserve completed work and recover the remainder; never blindly repeat side effects. If an action was refused or cannot be safely reconciled, report that blocker instead of attempting to route around it.",
+    "The previous provider became unavailable while working on this same user action. Before doing more work, inspect durable conversation/Run evidence, current workspace and repository state, existing artifacts, and externally observable results. Identify what is complete, still required, or uncertain. Preserve valid progress and recover only the authorised remainder; never blindly repeat side effects. If an action was refused or cannot be safely reconciled, report that blocker instead of attempting to route around it.",
     "",
     prompt,
   ].join("\n");

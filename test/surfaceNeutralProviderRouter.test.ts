@@ -195,7 +195,8 @@ describe("surface-neutral provider attempt isolation", () => {
     }
   });
 
-  it("does not abandon a recorded outcome when the provider fails after disposition", async () => {
+  for (const status of ["complete", "blocked"] as const) {
+  it(`does not abandon an authoritative ${status} outcome when the provider fails`, async () => {
     const db = openDb(":memory:");
     const identity = { surfaceIdentity: "acp:outward", chatKey: "autonomous:episode-1" };
     db.insertRun("run-1", identity, "claude");
@@ -203,7 +204,7 @@ describe("surface-neutral provider attempt isolation", () => {
     expect(lane).not.toBeNull();
     recordRunOutcome(db, {
       runId: "run-1", surfaceIdentity: identity.surfaceIdentity, chatKey: identity.chatKey,
-      provider: "claude", status: "complete", detail: "verified",
+      provider: "claude", status, detail: "verified",
       lock: { serviceId: lane!.serviceId, runId: lane!.runId, acquisitionId: lane!.acquisitionId },
     });
     const next = vi.fn(async () => ({ text: "must not run", sessionId: "s" }));
@@ -218,10 +219,11 @@ describe("surface-neutral provider attempt isolation", () => {
     });
     try {
       await expect(router.executeSurfaceNeutralTurn({ ...turnInput(vi.fn()), laneHandle: lane! })).rejects.toThrow();
-      expect(db.getRun("run-1").outcome_status).toBe("complete");
+      expect(db.getRun("run-1").outcome_status).toBe(status);
       expect(next).not.toHaveBeenCalled();
     } finally { db.unlock(lane!); db.close(); }
   });
+  }
 
   it("preserves the final provider failure when no fallback remains", async () => {
     const db = openDb(":memory:");
@@ -246,6 +248,172 @@ describe("surface-neutral provider attempt isolation", () => {
     } finally {
       db.close();
     }
+  });
+});
+
+
+describe("two-stage provider recovery (#1281)", () => {
+  it("retains the first failure context across a bounded multi-provider recovery", async () => {
+    const db = openDb(":memory:");
+    let promptForThirdProvider = "";
+    let failures = 0;
+    const router = createSurfaceNeutralProviderRouter({
+      db, surfaceIdentity: "acp:outward", initialProvider: "codex",
+      providerChain: ["codex", "claude", "grok"],
+      engineForProvider: (provider) => ({
+        executeSurfaceNeutralTurn: async (input: any) => {
+          if (provider === "grok") {
+            promptForThirdProvider = input.prompt;
+            return { text: "finished", sessionId: "grok-fresh" };
+          }
+          const error = new Error("AcpSystemError: failure-" + (++failures));
+          error.name = "AcpSystemError";
+          throw attachProviderFailureEvidence(error, { promptSubmitted: true });
+        },
+      }) as any,
+    });
+    try {
+      await router.executeSurfaceNeutralTurn(turnInput(vi.fn()));
+      expect(failures).toBe(4);
+      expect(promptForThirdProvider).toContain("failure-1");
+      expect(promptForThirdProvider).toContain("failure-4");
+    } finally { db.close(); }
+  });
+
+  it("recovers on the same provider with a fresh inspection-first session before any fallback", async () => {
+    const db = openDb(":memory:");
+    const attempts: Array<{ provider: BotKind; fresh: boolean | undefined; bound: boolean | undefined; prompt: string }> = [];
+    const router = createSurfaceNeutralProviderRouter({
+      db, surfaceIdentity: "acp:outward", initialProvider: "codex", providerChain: ["codex", "claude"],
+      engineForProvider: (provider) => ({
+        executeSurfaceNeutralTurn: async (input: any) => {
+          attempts.push({ provider, fresh: input.freshProviderSession, bound: input.requireBoundProviderSession, prompt: input.prompt });
+          if (attempts.length === 1) {
+            const error = new Error("AcpSystemError: resumed session failed after tools");
+            error.name = "AcpSystemError";
+            throw attachProviderFailureEvidence(error, { promptSubmitted: true });
+          }
+          return { text: "verified unfinished work", sessionId: "codex-new-native-session" };
+        },
+      }) as any,
+    });
+    try {
+      const result = await router.executeSurfaceNeutralTurn({
+        ...turnInput(vi.fn()), requireBoundProviderSession: true,
+      });
+      expect(result.sessionId).toBe("codex-new-native-session");
+      expect(attempts.map((entry) => entry.provider)).toEqual(["codex", "codex"]);
+      expect(attempts.map((entry) => entry.bound)).toEqual([true, false]);
+      expect(attempts[1].fresh).toBe(true);
+      expect(attempts[1].prompt).toContain("AcpSystemError");
+      expect(attempts[1].prompt).toContain("Inspect previous tool actions");
+    } finally { db.close(); }
+  });
+
+  it("falls back to an authorised provider only after failed same-provider recovery", async () => {
+    const db = openDb(":memory:");
+    const toolsAlreadyPerformed = Array.from({ length: 9 }, (_, n) => `existing-tool-${n + 1}`);
+    const attempts: Array<{ provider: BotKind; fresh: boolean | undefined; bound: boolean | undefined; prompt: string }> = [];
+    const transitions = vi.fn();
+    const router = createSurfaceNeutralProviderRouter({
+      db, surfaceIdentity: "acp:outward", initialProvider: "codex", providerChain: ["codex", "claude"],
+      engineForProvider: (provider) => ({
+        executeSurfaceNeutralTurn: async (input: any) => {
+          attempts.push({ provider, fresh: input.freshProviderSession, bound: input.requireBoundProviderSession, prompt: input.prompt });
+          if (provider === "codex") {
+            const error = new Error("AcpSystemError: interrupted after tool activity");
+            error.name = "AcpSystemError";
+            throw attachProviderFailureEvidence(error, { promptSubmitted: true });
+          }
+          expect(input.prompt).toContain("Inspect previous tool actions");
+          // Existing tool effects are inspected, not blindly emitted again.
+          expect(toolsAlreadyPerformed).toHaveLength(9);
+          return { text: "remaining work verified", sessionId: "claude-native-session" };
+        },
+      }) as any,
+    });
+    try {
+      const result = await router.executeSurfaceNeutralTurn({
+        ...turnInput(vi.fn()), requireBoundProviderSession: true, onProviderRecoveryDecision: transitions,
+      });
+      expect(result.sessionId).toBe("claude-native-session");
+      expect(attempts.map((item) => item.provider)).toEqual(["codex", "codex", "claude"]);
+      expect(attempts.map((item) => item.fresh)).toEqual([false, true, true]);
+      expect(attempts.map((item) => item.bound)).toEqual([true, false, false]);
+      expect(attempts[2].prompt).toContain("AcpSystemError");
+      expect(transitions).toHaveBeenCalledWith("provider_transport_failure", false, {
+        fromProvider: "codex", toProvider: "claude",
+      });
+    } finally { db.close(); }
+  });
+
+  it("does not transfer the original Codex session requirement when Codex is unavailable at admission", async () => {
+    const db = openDb(":memory:");
+    const attempts: Array<{ provider: BotKind; bound: boolean | undefined; fresh: boolean | undefined }> = [];
+    const router = createSurfaceNeutralProviderRouter({
+      db, surfaceIdentity: "acp:outward",
+      initialProvider: "codex", providerChain: ["codex", "claude"],
+      isProviderAvailable: (provider) => provider === "claude",
+      engineForProvider: (provider) => ({
+        executeSurfaceNeutralTurn: async (input: any) => {
+          attempts.push({ provider, bound: input.requireBoundProviderSession, fresh: input.freshProviderSession });
+          return { text: "completed by Claude", sessionId: "claude-own-session" };
+        },
+      }) as any,
+    });
+    try {
+      await expect(router.executeSurfaceNeutralTurn({
+        ...turnInput(vi.fn()), requireBoundProviderSession: true,
+      })).resolves.toMatchObject({ sessionId: "claude-own-session" });
+      expect(attempts).toEqual([{ provider: "claude", bound: false, fresh: true }]);
+    } finally { db.close(); }
+  });
+
+  it("does not route an explicit refusal, local unknown error, or Stop through another provider", async () => {
+    for (const errorType of ["refusal", "local", "stop"] as const) {
+      const db = openDb(":memory:");
+      const seen: BotKind[] = [];
+      const router = createSurfaceNeutralProviderRouter({
+        db, surfaceIdentity: "acp:outward", initialProvider: "codex", providerChain: ["codex", "claude"],
+        engineForProvider: (provider) => ({
+          executeSurfaceNeutralTurn: async () => {
+            seen.push(provider);
+            if (errorType === "refusal") {
+              const refused = new Error("provider refused the request");
+              refused.name = "MissingAcpAnswerError";
+              (refused as Error & { stopReason?: string }).stopReason = "refusal";
+              throw attachProviderFailureEvidence(refused, { promptSubmitted: true });
+            }
+            if (errorType === "stop") throw attachProviderFailureEvidence(new Error("socket hang up"), { promptSubmitted: true });
+            throw new Error("ordinary repository exception");
+          },
+        }) as any,
+      });
+      try {
+        await expect(router.executeSurfaceNeutralTurn({
+          ...turnInput(vi.fn()), mayContinueRecovery: () => errorType !== "stop",
+        })).rejects.toThrow();
+        expect(seen).toEqual(["codex"]);
+      } finally { db.close(); }
+    }
+  });
+
+  it("a single-provider Workstream still bounds recovery and has no unauthorised fallback", async () => {
+    const db = openDb(":memory:");
+    const attempts: string[] = [];
+    const router = createSurfaceNeutralProviderRouter({
+      db, surfaceIdentity: "acp:outward", initialProvider: "codex", providerChain: ["codex"],
+      engineForProvider: () => ({
+        executeSurfaceNeutralTurn: async (input: any) => {
+          attempts.push(input.freshProviderSession ? "fresh" : "bound");
+          throw attachProviderFailureEvidence(new Error("AcpSystemError"), { promptSubmitted: true });
+        },
+      }) as any,
+    });
+    try {
+      await expect(router.executeSurfaceNeutralTurn(turnInput(vi.fn()))).rejects.toThrow("AcpSystemError");
+      expect(attempts).toEqual(["bound", "fresh"]);
+    } finally { db.close(); }
   });
 });
 

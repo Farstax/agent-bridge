@@ -4,6 +4,7 @@ import { BridgeEngine, type ProviderFallbackReason } from "../src/engine.js";
 import { ProviderFallbackChain } from "../src/providerFallback.js";
 import { dispatchClaimedInteractiveWithFallback, dispatchInteractiveWithFallback, setUserCliPreference } from "../src/interactiveBot.js";
 import { attachProviderFailureEvidence } from "../src/providers/failureEvidence.js";
+import { RunOutcomeReconciliationError } from "../src/runOutcome.js";
 import { createSurfaceNeutralProviderRouter } from "../src/surfaceNeutralProviderRouter.js";
 import { TELEGRAM_SURFACE_CAPABILITIES } from "../src/platform.js";
 import { CliTimeoutError, ProviderStallError } from "../src/cli.js";
@@ -63,13 +64,31 @@ async function runCodexThenClaude(sourceRun: ReturnType<typeof vi.fn>, sourceKin
 }
 
 describe("evidence-based provider recovery through the interactive route owner", () => {
-  it("falls back once when an unclassified failure is proven to precede prompt submission", async () => {
+  it("attempts same-provider recovery before fallback for evidenced unclassified failure", async () => {
     const sourceRun = vi.fn(async () => { throw submitted("Internal error: could not initialise", false); });
     const { db, targetRun, texts } = await runCodexThenClaude(sourceRun);
     try {
-      expect(sourceRun).toHaveBeenCalledTimes(1);
+      expect(sourceRun).toHaveBeenCalledTimes(2);
       expect(targetRun).toHaveBeenCalledTimes(1);
       expect(texts.filter((t: string) => t === "answer from fallback")).toHaveLength(1);
+    } finally { db.close(); }
+  });
+
+  it("same-provider inspection-first recovery succeeds without unnecessary provider fallback", async () => {
+    let attempt = 0;
+    let recoveredPrompt = "";
+    const sourceRun = vi.fn(async (_cmd: string, _args: string[], _cwd: string, _opts: unknown, request: any) => {
+      if (++attempt === 1) throw submitted("AcpSystemError: prior tools may have run", true);
+      recoveredPrompt = String(request?.prompt ?? "");
+      return { text: "Recovered existing task", sessionId: "codex-fresh", stopReason: "end_turn" };
+    });
+    const { db, targetRun, texts } = await runCodexThenClaude(sourceRun);
+    try {
+      expect(sourceRun).toHaveBeenCalledTimes(2);
+      expect(targetRun).not.toHaveBeenCalled();
+      expect(recoveredPrompt).toContain("Sanitised original error");
+      expect(recoveredPrompt).toContain("Inspect earlier tool effects");
+      expect(texts).toContain("Recovered existing task");
     } finally { db.close(); }
   });
 
@@ -83,7 +102,11 @@ describe("evidence-based provider recovery through the interactive route owner",
     const partialWork = { step1Executed: false, step2Executed: false };
     let capturedPrompt = "";
 
-    const codexRun = vi.fn(async () => {
+    const codexRun = vi.fn(async (_cmd: string, _args: string[], _cwd: string, _opts: any, acpRequest: any) => {
+      if (partialWork.step1Executed) {
+        expect(acpRequest?.prompt).toContain("Inspect earlier tool effects");
+        throw submitted("Internal error: provider unavailable after reconciliation", true);
+      }
       partialWork.step1Executed = true;
       throw submitted("Internal error: connection lost mid-task", true);
     });
@@ -128,7 +151,7 @@ describe("evidence-based provider recovery through the interactive route owner",
       message: { message_id: 1, chat: { id: 946, type: "private" }, from: { id: 42, first_name: "T" }, text: "Execute two-step migration" },
     }, chatKey, deps);
 
-    expect(codexRun).toHaveBeenCalledTimes(1);
+    expect(codexRun).toHaveBeenCalledTimes(2);
     expect(claudeRun).toHaveBeenCalledTimes(1);
     expect(partialWork.step1Executed).toBe(true);
     expect(partialWork.step2Executed).toBe(true);
@@ -144,9 +167,22 @@ describe("evidence-based provider recovery through the interactive route owner",
     const sourceRun = vi.fn(async () => { throw submitted("Internal error: connection lost mid-task", true); });
     const { db, targetRun, texts } = await runCodexThenClaude(sourceRun);
     try {
-      expect(sourceRun).toHaveBeenCalledTimes(1);
+      expect(sourceRun).toHaveBeenCalledTimes(2);
       expect(targetRun).toHaveBeenCalledTimes(1);
       expect(texts).toContain("answer from fallback");
+    } finally { db.close(); }
+  });
+
+  it("does not terminate a wrapped, evidenced provider failure during outcome reconciliation", async () => {
+    const sourceRun = vi.fn(async () => {
+      throw new RunOutcomeReconciliationError("provider failed during outcome reconciliation", {
+        cause: submitted("AcpSystemError: provider disconnected after tools", true),
+      });
+    });
+    const { db, targetRun } = await runCodexThenClaude(sourceRun);
+    try {
+      expect(sourceRun).toHaveBeenCalledTimes(2);
+      expect(targetRun).toHaveBeenCalledTimes(1);
     } finally { db.close(); }
   });
 
@@ -306,7 +342,7 @@ describe("the surface-neutral route owner consumes the same verdict", () => {
         eventContext: { runId: "r", bot: "codex", chatId: "c", chatKey: "k" } as any,
         collect: (event) => diagnostics.push(event),
       });
-      expect(diagnostics.map((event) => event.type)).toEqual(["run.diagnostic"]);
+      expect(diagnostics.map((event) => event.type)).toEqual(["run.diagnostic", "run.diagnostic"]);
       expect((diagnostics[0] as any).promptSubmitted).toBe(false);
     } finally { db.close(); }
   });

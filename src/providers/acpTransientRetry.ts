@@ -39,7 +39,7 @@ async function defaultWait(delayMs: number, abortRequested: () => boolean): Prom
 }
 
 /**
- * Retry exactly one ACP attempt, on the same session, when the first attempt
+ * Retry at most one ACP attempt, on the same session, when the first attempt
  * fails with a `transient`-classified error (see errorClassification.ts) --
  * a dropped connection, an in-band system error, etc., for any provider.
  * Claude's OAuth-refresh lock contention is one such transient reason and
@@ -47,8 +47,8 @@ async function defaultWait(delayMs: number, abortRequested: () => boolean): Prom
  * cross-process credential lock); every other transient reason gets a short
  * "maybe it was nothing" retry instead. Not attempted for any other
  * classification (capacity_exhausted, auth_required, model_unavailable,
- * fatal) -- those cannot be fixed by retrying the same session. An `unknown`
- * failure is retried only while no session/prompt was submitted. The
+ * fatal) -- those cannot be fixed by retrying the same session. Neither a
+ * transient nor an unknown failure is blindly replayed after prompt submission. The
  * decision callback fires exactly once for the failed first attempt and
  * says whether attempt two really starts.
  */
@@ -60,7 +60,7 @@ export async function runWithAcpTransientRetry<T>(
     wait?: AcpTransientRetryWait;
     onRetryDecision?: (error: Error, successorStarted: boolean) => void | Promise<void>;
     /**
-     * True once any attempt sent `session/prompt`. An unclassified failure after
+     * True once any attempt sent `session/prompt`. Any failure after
      * that point is ambiguous (the provider may already be acting), so it is
      * surfaced instead of replaying the task in a successor attempt.
      */
@@ -75,7 +75,9 @@ export async function runWithAcpTransientRetry<T>(
     if (normalized.name === "WorkspaceLockBusyError") throw error;
     const kind = classifyProviderError(providerId, normalized).kind;
     if (kind !== "transient" && kind !== "unknown") throw error;
-    if (kind === "unknown" && options.promptSubmitted?.()) throw error;
+    // After any submitted prompt the provider may already have performed tools.
+    // Hand control to an inspection-first recovery owner, never a blind replay.
+    if (options.promptSubmitted?.()) throw error;
     const retryDelayMs = providerId === "claude" && isClaudeOAuthRefreshContention(normalized)
       ? CLAUDE_OAUTH_REFRESH_RETRY_DELAY_MS
       : TRANSIENT_RETRY_DELAY_MS;

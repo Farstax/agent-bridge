@@ -7,6 +7,7 @@ Use current product and operating contracts first. Historical implementation wor
 - [Vulnerability disclosure](../SECURITY.md)
 - [Architecture overview](architecture/overview.md)
 - [Architecture index](architecture/README.md)
+- [Formal verification of critical state machines](formal/README.md) — bounded TLA+ checks and the living model-to-code-to-test map
 - [Getting started and messaging surface examples](examples/README.md)
 - [Telegram onboarding](examples/telegram-multi-provider.md)
 - [Discord onboarding](examples/discord-interactive.md)

@@ -320,9 +320,9 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
     return stored && this.options.providerChain.includes(stored as BotKind) ? stored as BotKind : this.options.providerChain[0];
   }
 
-  private routerFor(session: OutwardAcpSessionRecord, initialProvider: BotKind, originalProviderOnly = false): SurfaceNeutralProviderRouter {
+  private routerFor(session: OutwardAcpSessionRecord, initialProvider: BotKind, freshRouter = false): SurfaceNeutralProviderRouter {
     const existing = this.routers.get(session.conversationId);
-    if (!originalProviderOnly && existing?.provider === initialProvider) return existing.router;
+    if (!freshRouter && existing?.provider === initialProvider) return existing.router;
     const { db, providerChain, createEngine, isProviderAvailable } = this.options;
     const durablySelected = getStoredCliPreference(db, this.identity(session)) === initialProvider;
     const router = createSurfaceNeutralProviderRouter({
@@ -333,10 +333,10 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
       isProviderAvailable: (candidate) => (durablySelected && candidate === initialProvider) || isProviderAvailable?.(candidate) !== false,
       surfaceIdentity: OUTWARD_ACP_SURFACE,
       initialProvider,
-      providerChain: originalProviderOnly ? [initialProvider] : providerChain,
+      providerChain,
       engineForProvider: (attemptProvider) => createEngine(session, attemptProvider),
     });
-    if (!originalProviderOnly) this.routers.set(session.conversationId, { provider: initialProvider, router });
+    if (!freshRouter) this.routers.set(session.conversationId, { provider: initialProvider, router });
     return router;
   }
 
@@ -843,6 +843,7 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
     let encounteredCapacity = false;
     let queueCapacityRequeue = false;
     let recoveryChainExhausted = false;
+    let exhaustedReason: string | null = null;
     let clearLivePreview: (() => void) | null = null;
     let settleLiveUpdates: (() => Promise<void>) | null = null;
     try {
@@ -1037,6 +1038,8 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
         ...(ordinaryWorkstreamId ? { ordinaryWorkstreamId } : {}),
         contextWorkstreamId: input.session.sessionId,
         ...(input.ordinaryResume?.providerSessionId ? { requireBoundProviderSession: true } : {}),
+        mayContinueRecovery: () => !active?.cancelRequested && !input.signal.aborted
+          && !db.getSetting(stopFenceKey(input.session.conversationId)) && db.ownsLock(lane),
         onProviderExecutionStarted: resetAttemptPresentation,
         onAnswerDelta: input.answerPreview === true ? (delta) => {
           if (!delta || active?.cancelRequested || input.signal.aborted) return;
@@ -1063,7 +1066,10 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
             _meta: { "agent-bridge/provider-fallback": { ...transition, reason } },
           } as OutwardUpdate);
           if (reason === "capacity") encounteredCapacity = true;
-          if (exhausted) recoveryChainExhausted = true;
+          if (exhausted) {
+            recoveryChainExhausted = true;
+            exhaustedReason = reason;
+          }
         },
       });
 
@@ -1148,8 +1154,16 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
       if (eventStore && db.getRun(runId)?.status === "running") {
         // Failed ACP requests are not assistant history. Persist a bounded,
         // sanitized explanation with the failed Run so reconnects show it.
-        const explanation = "The agent could not finish this Run. " + outwardFailureMessage(error)
-          + " Existing work may be incomplete; inspect it before continuing.";
+        const nextStep = exhaustedReason === "auth_required"
+          ? "Reconnect the affected provider subscription, then resume the remaining work."
+          : exhaustedReason === "capacity"
+            ? "Wait for provider capacity or make another authorised provider available, then resume."
+            : "Check the configured providers and their connectivity, then resume the unfinished work.";
+        const explanation = "The agent could not finish this Run. "
+          + (recoveryChainExhausted ? "Available authorised provider recovery attempts were exhausted. " : "")
+          + outwardFailureMessage(error)
+          + " Inspect prior tool actions, files and durable results before repeating anything. "
+          + nextStep;
         db.runWithLockFence(lane, () => db.runInTransaction(() => {
           if (!capacityWillDefer) db.addConvTurn(input.session.conversationId, "assistant", explanation, activeProvider, {
             surfaceIdentity: OUTWARD_ACP_SURFACE,
@@ -1988,7 +2002,8 @@ export function createProductionOutwardAcpPromptExecutor(
         // forwards for a different provider's turn input.
         executeSurfaceNeutralTurn: (turnInput) => engine.executeSurfaceNeutralTurn({
           ...turnInput,
-          sessionId: lookupProviderSession(db, { surfaceIdentity: OUTWARD_ACP_SURFACE, chatKey: session.conversationId }, attemptProvider),
+          sessionId: turnInput.freshProviderSession ? null
+            : lookupProviderSession(db, { surfaceIdentity: OUTWARD_ACP_SURFACE, chatKey: session.conversationId }, attemptProvider),
           onOutputArtifacts: (outDir) => {
             const turnCount = db.getConvHistoryPage(session.conversationId, 1, undefined, OUTWARD_ACP_SURFACE).turnCount;
             return retainDeskArtifacts(outDir, session.conversationId, turnInput.runId, Math.max(0, turnCount - 1));

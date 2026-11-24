@@ -91,7 +91,7 @@ describe("provider recovery verdict", () => {
     );
     expect(decision.authRequired).toBe(false);
     expect(decision.classification.kind).toBe("transient");
-    expect(decision.reason).toBeNull();
+    expect(decision.reason).toBe("provider_transport_failure");
   });
 });
 
