@@ -143,7 +143,7 @@ export interface AcpTurnInput {
   readonly authenticateMethodId?: string;
   readonly abortRequested?: () => boolean;
   /** Called once, immediately before `session/prompt` is sent. */
-  readonly onPromptSubmitted?: () => void;
+  readonly onPromptSubmitted?: (sessionId: string) => void;
   readonly signal?: AbortSignal;
   readonly stream?: Stream;
   readonly peer?: AgentApp;
@@ -737,7 +737,7 @@ export async function runAcpTurn(input: AcpTurnInput): Promise<AcpTurnResult> {
 
     // Evidence for recovery owners: from here the provider may have started the task.
     promptSubmitted = true;
-    input.onPromptSubmitted?.();
+    input.onPromptSubmitted?.(acpSessionId);
     const requestPrompt = () => agent.request(acp.methods.agent.session.prompt, {
       sessionId: acpSessionId,
       prompt: blocks,
