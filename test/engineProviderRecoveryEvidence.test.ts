@@ -4,7 +4,8 @@ import { BridgeEngine, type ProviderFallbackReason } from "../src/engine.js";
 import { ProviderFallbackChain } from "../src/providerFallback.js";
 import { dispatchClaimedInteractiveWithFallback, dispatchInteractiveWithFallback, setUserCliPreference } from "../src/interactiveBot.js";
 import { attachProviderFailureEvidence } from "../src/providers/failureEvidence.js";
-import { RunOutcomeReconciliationError } from "../src/runOutcome.js";
+import { recordRunOutcome, RunOutcomeReconciliationError } from "../src/runOutcome.js";
+import { listRunContinuations, requestRunContinuation } from "../src/runContinuation.js";
 import { createSurfaceNeutralProviderRouter } from "../src/surfaceNeutralProviderRouter.js";
 import { TELEGRAM_SURFACE_CAPABILITIES } from "../src/platform.js";
 import { CliTimeoutError, ProviderStallError } from "../src/cli.js";
@@ -64,6 +65,54 @@ async function runCodexThenClaude(sourceRun: ReturnType<typeof vi.fn>, sourceKin
 }
 
 describe("evidence-based provider recovery through the interactive route owner", () => {
+  it("settles a committed continue outcome after transport loss with the actual submitted native session", async () => {
+    const db = openDb(":memory:");
+    const identity = { surfaceIdentity: "acp:outward", chatKey: "acp:committed-native-wake" };
+    const runId = "committed-native-wake";
+    db.insertRun(runId, identity, "codex");
+    const lane = db.acquireLock(identity.surfaceIdentity, identity.chatKey, false)!;
+    const runProviderInvocation = vi.fn(async () => {
+      recordRunOutcome(db, {
+        ...identity, runId, provider: "codex", status: "continue", detail: "verify the result",
+        lock: { serviceId: lane.serviceId, runId: lane.runId, acquisitionId: lane.acquisitionId },
+      });
+      requestRunContinuation(db, {
+        ...identity, originRunId: runId, provider: "codex", reason: "verify the result",
+        afterSeconds: 60, outwardSessionId: "workstream",
+      });
+      throw attachProviderFailureEvidence(new Error("ECONNRESET after outcome"), {
+        promptSubmitted: true, sessionId: "native-session-from-failed-attempt",
+      });
+    });
+    const engine = new BridgeEngine({
+      surfaceIdentity: identity.surfaceIdentity, kind: "codex",
+      botConfig: { command: "codex", modelPreference: [] },
+      allowedUserIds: new Set(["42"]), executionMode: "safe", busyMessageMode: "augment",
+      pollIntervalMs: 1000, workingDir: process.cwd(),
+    }, db, client(), { runProviderInvocation } as any);
+    const successor = vi.fn(async () => ({ text: "must not run", sessionId: "other" }));
+    const router = createSurfaceNeutralProviderRouter({
+      db, surfaceIdentity: identity.surfaceIdentity, initialProvider: "codex", providerChain: ["codex", "claude"],
+      engineForProvider: provider => provider === "codex" ? engine : { executeSurfaceNeutralTurn: successor } as any,
+    });
+    try {
+      const result = await router.executeSurfaceNeutralTurn({
+        prompt: "inspect task", sessionId: null, chatId: "workstream", chatKey: identity.chatKey,
+        runId, laneHandle: lane, ordinaryWorkstreamId: "workstream",
+        eventContext: { runId, bot: "codex", chatId: "workstream", chatKey: identity.chatKey,
+          serviceId: lane.serviceId, acquisitionId: lane.acquisitionId },
+        collect: vi.fn(),
+      });
+      expect(result.sessionId).toBe("native-session-from-failed-attempt");
+      expect(result.text).toContain("The agent recorded continue");
+      expect(runProviderInvocation).toHaveBeenCalledTimes(1);
+      expect(successor).not.toHaveBeenCalled();
+      expect(db.getRun(runId).outcome_status).toBe("continue");
+      expect(listRunContinuations(db, identity.surfaceIdentity)).toEqual([
+        expect.objectContaining({ state: "pending", outwardSessionId: "workstream" }),
+      ]);
+    } finally { db.unlock(lane); db.close(); }
+  });
   it("attempts same-provider recovery before fallback for evidenced unclassified failure", async () => {
     const sourceRun = vi.fn(async () => { throw submitted("Internal error: could not initialise", false); });
     const { db, targetRun, texts } = await runCodexThenClaude(sourceRun);
