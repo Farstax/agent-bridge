@@ -2646,12 +2646,15 @@ export class BridgeEngine {
       }
       const mayRetry = recovery.reason !== null && canPublish
         && !(runId && hasAuthoritativeRunOutcome(this.db, runId, ordinaryWorkstreamId));
+      const recoveryPrompt = () => readProviderFailureEvidence(error)?.promptSubmitted === false
+        ? prompt
+        : prependProviderFallbackContinuation(`Sanitised original error: ${toUserMessage(error instanceof Error ? error : new Error(String(error))).slice(0, 1_000)}\n\n${prompt}`);
       if (mayRetry && !(body as { requireBoundProviderSession?: boolean }).requireBoundProviderSession && sessionId && isInvalidProviderSessionError(error)) {
         console.warn(`[${this.kind}] session ID invalid, retrying with fresh session...`);
         const kind = this.kind;
         this._discardAbandonedAttemptOutcome(laneHandle, runId);
         if (isRouteableKind(kind)) this._runWithFence(laneHandle, () => persistEngineProviderSession(this.db, { surfaceIdentity: this.surfaceIdentity, chatKey }, kind, null));
-        return this.executePromptAsync(prompt, null, chatId, body, onProgress, attachments, eventContext, runId, collect, chatKey, laneHandle);
+        return this.executePromptAsync(recoveryPrompt(), null, chatId, body, onProgress, attachments, eventContext, runId, collect, chatKey, laneHandle);
       }
       // One bounded same-provider alternate-model attempt; the alternate attempt
       // never falls back again.
@@ -2660,7 +2663,7 @@ export class BridgeEngine {
         if (fallbackModel) {
           this._discardAbandonedAttemptOutcome(laneHandle, runId);
           return this._executeProviderAttempt(
-            prompt, null, chatId, body, onProgress, attachments, eventContext, runId, collect, chatKey, laneHandle,
+            recoveryPrompt(), null, chatId, body, onProgress, attachments, eventContext, runId, collect, chatKey, laneHandle,
             { model: fallbackModel, from: model },
           );
         }
@@ -2679,7 +2682,7 @@ export class BridgeEngine {
   }
 
   /**
-   * Any execution error a managed bot throws counts toward the circuit
+   * Any genuine provider failure from a managed bot counts toward the circuit
    * breaker, not just timeout/killed-by-signal text. Provider adapters throw
    * a wide and evolving variety of opaque transport/runtime errors (ACP
    * connection drops, SDK-internal failures, etc.); enumerating patterns is a
