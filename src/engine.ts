@@ -2317,7 +2317,7 @@ export class BridgeEngine {
         text: "The agent recorded " + disposition.status
           + " but did not provide a final answer. Recorded details: " + disposition.detail,
         sessionId: nativeSession,
-        stopReason: error instanceof MissingAcpAnswerError ? error.stopReason : "end_turn",
+        ...(error instanceof MissingAcpAnswerError ? { stopReason: error.stopReason } : {}),
       };
     };
     try {
@@ -2624,8 +2624,7 @@ export class BridgeEngine {
         throw error;
       }
       // A stopped, aborted or fenced lane never recovers through a provider
-      // switch: the error is marked as possibly submitted before any route owner
-      // (interactive dispatch or the surface-neutral router) sees it.
+      // switch: surface loss of ownership, never provider recovery evidence.
       if (error instanceof Error && (
         this.laneCoordinator.hasCancellation(executionLane)
         || this.laneCoordinator.isAborted(executionLane)
