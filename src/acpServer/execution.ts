@@ -1168,7 +1168,7 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
           if (!capacityWillDefer) db.addConvTurn(input.session.conversationId, "assistant", explanation, activeProvider, {
             surfaceIdentity: OUTWARD_ACP_SURFACE,
           });
-          eventStore!.collect(failedEvent(runId, activeProvider, input.session, explanation));
+          eventStore!.collect(failedEvent(runId, activeProvider, input.session, error));
           eventStore!.finalize();
           if (db.getRun(runId)?.status === "failed") {
             db.raw.prepare("DELETE FROM settings WHERE key = ?")
