@@ -1,3 +1,4 @@
+import { attachProviderFailureEvidence } from "../src/providers/failureEvidence.js";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -32,7 +33,7 @@ describe("outward ACP Run provider attribution", () => {
               cwd: root,
               model: null,
             }));
-            if (provider === "codex") throw new Error("usage limit");
+            if (provider === "codex") throw attachProviderFailureEvidence(new Error("usage limit"), { promptSubmitted: false });
             input.collect(eventType.runCompleted({
               runId: input.runId,
               bot: provider,
@@ -93,7 +94,7 @@ describe("outward ACP Run provider attribution", () => {
               cwd: root,
               model: null,
             }));
-            if (provider === "codex") throw new Error("usage limit");
+            if (provider === "codex") throw attachProviderFailureEvidence(new Error("usage limit"), { promptSubmitted: false });
             // The provider may fail before emitting its own terminal event.
             // Outward ACP must preserve the actionable, sanitised provider cause.
             throw Object.assign(new Error("Internal error"), {
