@@ -1,3 +1,4 @@
+import { attachProviderFailureEvidence } from "../src/providers/failureEvidence.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { join } from "node:path";
 import { rmSync } from "node:fs";
@@ -214,7 +215,7 @@ describe("durable Run terminal authority", () => {
           error: "rate limit capacity exhausted",
           category: "cli",
         }));
-        throw new Error("rate limit capacity exhausted");
+        throw attachProviderFailureEvidence(new Error("rate limit capacity exhausted"), { promptSubmitted: true });
       }
       options.onEvent?.(eventType.runStarted({ ...ctx, command: "cursor", cwd, model: "claude-fallback" }));
       options.onEvent?.(eventType.runCompleted({ ...ctx, text: "fallback answer", sessionId: "s-2" }));

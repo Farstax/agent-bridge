@@ -1,3 +1,4 @@
+import { attachProviderFailureEvidence } from "../src/providers/failureEvidence.js";
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -220,7 +221,7 @@ describe("bounded autonomous Episode succession (#512)", () => {
     const dir = autonomyDir();
     const dbPath = join(dir, "autonomy.sqlite");
     const db = openDb(dbPath, { serviceId: "test-autonomy-fallback", runId: "process-3" });
-    const claude = { executeSurfaceNeutralTurn: vi.fn().mockRejectedValue(new Error("usage limit reached")) };
+    const claude = { executeSurfaceNeutralTurn: vi.fn().mockRejectedValue(attachProviderFailureEvidence(new Error("usage limit reached"), { promptSubmitted: false })) };
     const codex = dispositionEngine("done", false, "fallback completed the work");
     const controller = new AutonomyController({
       db,
@@ -252,7 +253,7 @@ describe("bounded autonomous Episode succession (#512)", () => {
       executeSurfaceNeutralTurn: vi.fn(async (input: any) => {
         input.onProviderExecutionStarted?.();
         execFileSync(dispositionCommand(input.prompt), ["continue"], { stdio: "pipe" });
-        throw new Error("usage limit reached");
+        throw attachProviderFailureEvidence(new Error("usage limit reached"), { promptSubmitted: true });
       }),
     };
     const codex = {

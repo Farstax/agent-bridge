@@ -36,7 +36,7 @@ export interface ProviderRecoveryDecision {
  * (BridgeEngine/interactive dispatch and the surface-neutral router) consume
  * this instead of keeping their own eligibility checks.
  *
- * A broad `unknown` error is eligible only with ACP provenance.  After prompt
+ * Every recovery category requires provider-origin evidence.  After prompt
  * submission the successor receives the normal inspection-first handoff; it
  * must reconcile existing work instead of replaying effects.
  */
@@ -55,12 +55,20 @@ export function decideProviderRecovery(
   // the category check stays provider-agnostic as it was at every old call site.
   const capacityExhausted = isFallbackEligibleProviderError(classification)
     || isFallbackEligibleProviderError(classifyAnyProviderError(providerError));
-  const evidence = mergeProviderFailureEvidence(
-    readProviderFailureEvidence(error), readProviderFailureEvidence(providerError), priorEvidence,
+  // Only evidence on this failure establishes provenance; prior attempts
+  // cannot turn a subsequent Bridge-local failure into a provider failure.
+  const currentEvidence = mergeProviderFailureEvidence(
+    readProviderFailureEvidence(error), readProviderFailureEvidence(providerError),
   );
-  if (error.name === "ProviderExecutionCapacityError" || error.name === "WorkspaceLockBusyError") {
-    // Host-wide execution slots and the Git worktree lock are shared by every
-    // provider. Switching CLIs cannot create either, so neither is provider quota.
+  const evidence = currentEvidence && mergeProviderFailureEvidence(currentEvidence, priorEvidence);
+  const localFailure = [error, providerError].some(failure =>
+    ["ProviderExecutionCapacityError", "WorkspaceLockBusyError", "LostExecutionLeaseError",
+      "ExecutionLockLostError", "PostExecutionHookError", "PreviewCleanupError",
+      "AcpTransientRetryCancelledError"].includes(failure.name),
+  );
+  if (localFailure || (!currentEvidence && !(providerError instanceof ProviderStallError))) {
+    // Host-wide capacity, lock ownership, and Bridge callbacks remain local
+    // even through an outcome-reconciliation wrapper.
     return {
       classification,
       reason: null,
@@ -86,11 +94,11 @@ export function decideProviderRecovery(
   // capacity categories (a stalled provider still abandons its session even if
   // its text also looks like capacity wording).
   let transportReason: ProviderRecoveryDecision["transportReason"] = null;
-  if (error instanceof ProviderStallError) transportReason = "provider_stall";
+  if (providerError instanceof ProviderStallError) transportReason = "provider_stall";
   // A timeout is normally ambiguous: the provider may have received work.
   // The ACP runtime can prove the narrower startup/setup case, where no
   // session/prompt was submitted and the existing fallback path is safe.
-  else if (error instanceof CliTimeoutError) {
+  else if (providerError instanceof CliTimeoutError) {
     transportReason = evidence ? "provider_transport_failure" : null;
   }
   else if (classification.kind === "transient") {

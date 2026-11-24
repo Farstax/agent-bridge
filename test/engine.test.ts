@@ -1,3 +1,4 @@
+import { attachProviderFailureEvidence } from "../src/providers/failureEvidence.js";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -677,7 +678,7 @@ describe("BridgeEngine", () => {
       let attempts = 0;
       const runProviderInvocation = vi.fn(async (_bot: string, _invocation: unknown, _cwd: string, options: any) => {
         attempts += 1;
-        if (attempts === 1) throw new Error("MODEL_CAPACITY_EXHAUSTED");
+        if (attempts === 1) throw attachProviderFailureEvidence(new Error("MODEL_CAPACITY_EXHAUSTED"), { promptSubmitted: false });
         options.onAnswerDelta?.("visible fallback answer");
         return { text: "visible fallback answer", sessionId: "agy-fallback-session" };
       });
@@ -1060,7 +1061,7 @@ describe("BridgeEngine", () => {
   describe("onCapacityExhausted hook", () => {
     it("defers the queued capacity message until the final recovery attempt", async () => {
       const { BridgeEngine } = await import("../src/engine.js");
-      const runCli = vi.fn().mockRejectedValue(new Error("MODEL_CAPACITY_EXHAUSTED"));
+      const runCli = vi.fn().mockRejectedValue(attachProviderFailureEvidence(new Error("MODEL_CAPACITY_EXHAUSTED"), { promptSubmitted: false }));
       const client = makeMockClient();
       const engine = new BridgeEngine(
         {
@@ -1113,7 +1114,7 @@ describe("BridgeEngine", () => {
 
     it("calls onCapacityExhausted when CLI throws a capacity error", async () => {
       const { BridgeEngine } = await import("../src/engine.js");
-      const runCli = vi.fn().mockRejectedValue(new Error("MODEL_CAPACITY_EXHAUSTED"));
+      const runCli = vi.fn().mockRejectedValue(attachProviderFailureEvidence(new Error("MODEL_CAPACITY_EXHAUSTED"), { promptSubmitted: false }));
       const client = makeMockClient();
       const exhaustedChats: string[] = [];
       const engine = new BridgeEngine(
@@ -1139,7 +1140,7 @@ describe("BridgeEngine", () => {
     it("signals auth-required fallback without sending the masked provider error", async () => {
       const { BridgeEngine } = await import("../src/engine.js");
       const runCli = vi.fn().mockRejectedValue(
-        new Error("Internal error: Failed to authenticate: OAuth session expired and could not be refreshed"),
+        attachProviderFailureEvidence(new Error("Internal error: Failed to authenticate: OAuth session expired and could not be refreshed"), { promptSubmitted: false }),
       );
       const client = makeMockClient();
       const authRequired = vi.fn();
@@ -1195,7 +1196,7 @@ describe("BridgeEngine", () => {
       const { BridgeEngine } = await import("../src/engine.js");
       const runCli = vi.fn()
         .mockResolvedValueOnce(cursorResult("Hello there! I am Claude.", "cursor-first"))
-        .mockRejectedValueOnce(new Error("CLI exited with code 1: No conversation found with session ID: invalid-session-id-123"))
+        .mockRejectedValueOnce(attachProviderFailureEvidence(new Error("CLI exited with code 1: No conversation found with session ID: invalid-session-id-123"), { promptSubmitted: false }))
         .mockResolvedValueOnce(cursorResult("Successful fresh retry result", "cursor-retry"));
       const client = makeMockClient();
       const engine = new BridgeEngine(
@@ -1236,7 +1237,7 @@ describe("BridgeEngine", () => {
       const { BridgeEngine } = await import("../src/engine.js");
       const runCli = vi.fn()
         .mockResolvedValueOnce(cursorResult("Hello there! I am Claude.", "cursor-first"))
-        .mockRejectedValueOnce(new Error("CLI exited with code 1: No conversation found with session ID: invalid-session-id-123"))
+        .mockRejectedValueOnce(attachProviderFailureEvidence(new Error("CLI exited with code 1: No conversation found with session ID: invalid-session-id-123"), { promptSubmitted: false }))
         .mockResolvedValueOnce(cursorResult("Successful fresh retry result", "cursor-retry"));
       const client = makeMockClient();
       const engine = new BridgeEngine(
@@ -1273,7 +1274,7 @@ describe("BridgeEngine", () => {
       const { BridgeEngine } = await import("../src/engine.js");
       const runCli = vi.fn()
         .mockResolvedValueOnce(cursorResult("Hello there! I am Claude Sonnet.", "cursor-first"))
-        .mockRejectedValueOnce(new Error("CLI exited with code 1: You've hit your session limit · resets 1pm (Europe/London)"))
+        .mockRejectedValueOnce(attachProviderFailureEvidence(new Error("CLI exited with code 1: You've hit your session limit · resets 1pm (Europe/London)"), { promptSubmitted: false }))
         .mockResolvedValueOnce(cursorResult("Successful fallback model retry result", "fallback-session"))
         .mockResolvedValueOnce(cursorResult("Native continuation result", "fallback-session"));
       const client = makeMockClient();
@@ -2162,7 +2163,7 @@ describe("BridgeEngine", () => {
     it("settles Run as failed and does not strand running state when onProviderFallbackRequested rejects", async () => {
       const { BridgeEngine } = await import("../src/engine.js");
       const client = makeMockClient();
-      const runCli = vi.fn().mockRejectedValue(new Error("rate limit reached"));
+      const runCli = vi.fn().mockRejectedValue(attachProviderFailureEvidence(new Error("rate limit reached"), { promptSubmitted: false }));
       const engine = new BridgeEngine(
         {
           surfaceIdentity: "test",

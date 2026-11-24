@@ -1,3 +1,4 @@
+import { attachProviderFailureEvidence } from "../src/providers/failureEvidence.js";
 import * as acp from "@agentclientprotocol/sdk/unstable";
 import { describe, expect, it } from "vitest";
 import { runAcpTurn } from "../src/acp/client.js";
@@ -31,7 +32,7 @@ describe("provider-scoped in-band failure text", () => {
   it("raises Agy's complete quota banner as a capacity failure with a parsed reset", async () => {
     const error = await run("agy", BANNER).then(() => null, (e: Error) => e);
     expect(error?.name).toBe("AcpSystemError");
-    expect(decideProviderRecovery("agy", error!)).toMatchObject({ reason: "capacity", capacityExhausted: true });
+    expect(decideProviderRecovery("agy", attachProviderFailureEvidence(error!, { promptSubmitted: true }))).toMatchObject({ reason: "capacity", capacityExhausted: true });
     const retry = capacityRetryAfterSeconds(error);
     expect(retry).toBeGreaterThan((5 * 24 + 17) * 3600);
     expect(retry).toBeLessThan((5 * 24 + 19) * 3600);
@@ -40,7 +41,7 @@ describe("provider-scoped in-band failure text", () => {
   it("recognizes only a complete individual-quota reply", async () => {
     const error = await run("agy", "Individual quota reached").then(() => null, (e: Error) => e);
     expect(error?.name).toBe("AcpSystemError");
-    expect(decideProviderRecovery("agy", error!)).toMatchObject({ reason: "capacity", capacityExhausted: true });
+    expect(decideProviderRecovery("agy", attachProviderFailureEvidence(error!, { promptSubmitted: true }))).toMatchObject({ reason: "capacity", capacityExhausted: true });
     expect((await run("agy", "The provider said: Individual quota reached")).liveText)
       .toContain("Individual quota reached");
   });
@@ -49,7 +50,7 @@ describe("provider-scoped in-band failure text", () => {
     const text = "⚠ Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 115h15m3s.";
     const error = await run("agy", text).then(() => null, (e: Error) => e);
     expect(error?.name).toBe("AcpSystemError");
-    expect(decideProviderRecovery("agy", error!)).toMatchObject({ reason: "capacity", capacityExhausted: true });
+    expect(decideProviderRecovery("agy", attachProviderFailureEvidence(error!, { promptSubmitted: true }))).toMatchObject({ reason: "capacity", capacityExhausted: true });
     const retry = capacityRetryAfterSeconds(error);
     expect(retry).toBeGreaterThan(115 * 3600);
     expect(retry).toBeLessThan(116 * 3600);

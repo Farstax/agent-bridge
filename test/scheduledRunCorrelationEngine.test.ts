@@ -1,3 +1,4 @@
+import { attachProviderFailureEvidence } from "../src/providers/failureEvidence.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { join } from "node:path";
 import { rmSync } from "node:fs";
@@ -191,7 +192,7 @@ describe("authoritative scheduled Run correlation", () => {
       expect(claimScheduledRoutineOccurrence(db, routine.id, intendedAt)).toBe(true);
       const occurrenceKey = scheduledOccurrenceKey(routine.id, intendedAt);
       const exhaustedChats = new Set<string>();
-      const claudeCli = vi.fn().mockRejectedValue(new Error("MODEL_CAPACITY_EXHAUSTED"));
+      const claudeCli = vi.fn().mockRejectedValue(attachProviderFailureEvidence(new Error("MODEL_CAPACITY_EXHAUSTED"), { promptSubmitted: false }));
       const codexCli = vi.fn().mockResolvedValue({ text: "ROUTINE_TEST_OK", sessionId: "11111111-2222-4333-8444-555555555555", stopReason: "end_turn" as const });
       const claude = new BridgeEngine({
         surfaceIdentity: "telegram:interactive",

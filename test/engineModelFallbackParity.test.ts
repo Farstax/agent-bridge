@@ -1,3 +1,4 @@
+import { attachProviderFailureEvidence } from "../src/providers/failureEvidence.js";
 import { describe, expect, it, vi } from "vitest";
 import { existsSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -6,7 +7,7 @@ import { BridgeEngine } from "../src/engine.js";
 import { TELEGRAM_SURFACE_CAPABILITIES } from "../src/platform.js";
 import type { BridgeEvent } from "../src/events/types.js";
 
-const CAPACITY = new Error("usage limit reached");
+const CAPACITY = attachProviderFailureEvidence(new Error("usage limit reached"), { promptSubmitted: true });
 
 function client() {
   return {
@@ -75,6 +76,8 @@ describe("same-provider model fallback uses the normal provider-attempt success 
       expect(requests[0].model).toBe("model-a");
       expect(requests[1].model).toBe("model-b");
       expect(requests[1].sessionId).toBeNull();
+      expect(requests[1].prompt).toContain("Inspect existing workspace/repository progress");
+      expect(requests[1].prompt).toContain("task");
       expect(result.text).toContain("Fell back to model-b");
       expect(result.text).toContain("fallback answer");
       expect(result.sessionId).toBe("model-b-session");

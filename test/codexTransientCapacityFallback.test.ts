@@ -1,3 +1,4 @@
+import { attachProviderFailureEvidence } from "../src/providers/failureEvidence.js";
 import { describe, expect, it, vi } from "vitest";
 import { openDb } from "../src/db.js";
 import { BridgeEngine } from "../src/engine.js";
@@ -74,7 +75,7 @@ describe("Codex in-band systemError capacity wording falls back instead of dead-
     // (src/acp/client.ts's AcpSystemError, thrown from a `threadStatus.type
     // === "systemError"` notification -- not an HTTP 429/quota response).
     const codexRun = vi.fn().mockRejectedValue(
-      new Error("Selected model is at capacity. Please try a different model."),
+      attachProviderFailureEvidence(new Error("Selected model is at capacity. Please try a different model."), { promptSubmitted: true }),
     );
     const claudeRun = vi.fn().mockResolvedValue(
       JSON.stringify({ event: "result", result: { conversation_id: "11111111-2222-4333-8444-555555555555", status: "SUCCESS", response: "authoritative Claude fallback" } }),

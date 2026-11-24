@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { BridgeEngine } from "../src/engine.js";
 import { MissingAcpAnswerError } from "../src/providers/acpRuntime.js";
-import { readProviderFailureEvidence } from "../src/providers/failureEvidence.js";
+import { attachProviderFailureEvidence, readProviderFailureEvidence } from "../src/providers/failureEvidence.js";
 import { openDb } from "../src/db.js";
 import { MissingRunOutcomeError, RunOutcomeReconciliationError, requestAgentBridgeOutcome } from "../src/runOutcome.js";
 import { listRunContinuations, RUN_CONTINUATION_PREFIX } from "../src/runContinuation.js";
@@ -15,7 +15,7 @@ afterEach(() => {
   for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
 });
 
-function fixture(mode: "complete-after-retry" | "continue-after-retry" | "blocked-after-retry" | "missing-twice" | "report-first" | "report-first-empty" | "report-on-reconcile-empty" | "continue-on-reconcile-empty" | "refusal-on-reconcile" | "report-continue" | "continue-no-wake" | "continue-cancelled-wake" | "continue-mismatched-wake" | "continue-mismatched-binding" | "retry-throws" | "refusal" | "continue-then-invalid-session" | "continue-then-model-fallback" | "continue-then-internal-retry", surfaceIdentity = "telegram:interactive") {
+function fixture(mode: "complete-after-retry" | "continue-after-retry" | "blocked-after-retry" | "missing-twice" | "report-first" | "report-first-empty" | "report-on-reconcile-empty" | "continue-on-reconcile-empty" | "refusal-on-reconcile" | "report-continue" | "continue-no-wake" | "continue-cancelled-wake" | "continue-mismatched-wake" | "continue-mismatched-binding" | "retry-throws" | "refusal" | "continue-then-invalid-session" | "continue-then-model-fallback" | "continue-then-internal-retry", surfaceIdentity = "telegram:interactive", transportFailure = false) {
   const dir = mkdtempSync(join(tmpdir(), "run-outcome-engine-")); dirs.push(dir);
   const path = join(dir, "bridge.sqlite");
   const db = openDb(path, { serviceId: "outcome-engine-test", runId: "process" });
@@ -24,30 +24,42 @@ function fixture(mode: "complete-after-retry" | "continue-after-retry" | "blocke
   db.insertRun("run-one", identity, provider);
   const handle = db.acquireLock(identity.surfaceIdentity, identity.chatKey);
   if (!handle) throw new Error("missing fixture lane ownership");
+  // A recovery attempt may discard a stale, mismatched wake, not a valid committed continuation.
+  function mismatchWake() {
+    const key = `${RUN_CONTINUATION_PREFIX}run-one`;
+    const row = db.raw.prepare("SELECT value FROM settings WHERE key = ?").get(key) as { value: string };
+    db.raw.prepare("UPDATE settings SET value = ? WHERE key = ?").run(JSON.stringify({ ...JSON.parse(row.value), chatKey: "stale-workstream" }), key);
+  }
+  const missingFinalAnswer = (sessionId: string) => transportFailure
+    ? attachProviderFailureEvidence(new Error("ECONNRESET after durable outcome"), { promptSubmitted: true, sessionId })
+    : new MissingAcpAnswerError("claude", "live text", sessionId, "end_turn");
   let calls = 0;
   const invocation = vi.fn(async (_provider: unknown, _invocation: unknown, _cwd: unknown, options: any, request: any) => {
     calls += 1;
     if (mode === "retry-throws" && calls === 2) throw new Error("provider quota exhausted after initial work");
     if (mode === "report-first-empty") {
       requestAgentBridgeOutcome(["complete", "--evidence", "verified"], options.contextEnv);
-      throw new MissingAcpAnswerError("claude", "live text", "same-acp-session", "end_turn");
+      throw missingFinalAnswer(transportFailure ? "submitted-native-session" : "same-acp-session");
     }
     if ((mode === "report-on-reconcile-empty" || mode === "continue-on-reconcile-empty") && calls === 2) {
       requestAgentBridgeOutcome(mode === "report-on-reconcile-empty"
         ? ["complete", "--evidence", "verified during reconciliation"]
         : ["continue", "--after-seconds", "60", "--reason", "work remains"], options.contextEnv);
-      throw new MissingAcpAnswerError("claude", "live text", "same-acp-session", "end_turn");
+      throw missingFinalAnswer("same-acp-session");
     }
     if (mode === "continue-then-invalid-session" && calls === 1) {
       requestAgentBridgeOutcome(["continue", "--after-seconds", "60", "--reason", "stale wake"], options.contextEnv);
-      throw new Error("No conversation found with session ID: stale-session");
+      if (surfaceIdentity !== "acp:outward") mismatchWake();
+      throw attachProviderFailureEvidence(new Error("No conversation found with session ID: stale-session"), { promptSubmitted: false });
     }
     if (mode === "continue-then-model-fallback" && calls === 1) {
       requestAgentBridgeOutcome(["continue", "--after-seconds", "60", "--reason", "stale model wake"], options.contextEnv);
-      throw new Error("usage limit reached");
+      if (surfaceIdentity !== "acp:outward") mismatchWake();
+      throw attachProviderFailureEvidence(new Error("usage limit reached"), { promptSubmitted: false });
     }
     if (mode === "continue-then-internal-retry") {
       requestAgentBridgeOutcome(["continue", "--after-seconds", "60", "--reason", "stale internal wake"], options.contextEnv);
+      mismatchWake();
       await options.onProviderRetry();
     }
     if (mode === "report-first" || (mode === "complete-after-retry" && calls === 2) || (mode === "continue-then-invalid-session" && calls === 2) || (mode === "continue-then-model-fallback" && calls === 2) || mode === "continue-then-internal-retry") {
@@ -56,6 +68,7 @@ function fixture(mode: "complete-after-retry" | "continue-after-retry" | "blocke
     if (mode === "report-continue" || mode === "continue-no-wake" || mode === "continue-cancelled-wake" || mode === "continue-mismatched-wake" || mode === "continue-mismatched-binding") {
       requestAgentBridgeOutcome(["continue", "--after-seconds", "60", "--reason", "finish pending verification"], options.contextEnv);
       const key = `${RUN_CONTINUATION_PREFIX}run-one`;
+      if (mode === "report-continue" && transportFailure) throw missingFinalAnswer("submitted-native-session");
       if (mode === "continue-no-wake") {
         db.raw.prepare("DELETE FROM settings WHERE key = ?").run(key);
       } else if (mode !== "report-continue") {
@@ -74,6 +87,7 @@ function fixture(mode: "complete-after-retry" | "continue-after-retry" | "blocke
     }
     if (mode === "blocked-after-retry" && calls === 2) {
       requestAgentBridgeOutcome(["blocked", "--reason", "Owner approval required"], options.contextEnv);
+      if (transportFailure) throw missingFinalAnswer("same-acp-session");
     }
     return {
       text: calls === 1 ? "Original user-facing answer" : "Reconciliation was recorded",
@@ -143,6 +157,34 @@ describe("ordinary Run objective settlement", () => {
       ]);
     }
     db.close();
+  });
+
+  it.each([
+    ["complete", "report-first-empty", 1, "submitted-native-session"],
+    ["continue", "report-continue", 1, "submitted-native-session"],
+    ["complete", "report-on-reconcile-empty", 2, "same-acp-session"],
+    ["continue", "continue-on-reconcile-empty", 2, "same-acp-session"],
+    ["blocked", "blocked-after-retry", 2, "same-acp-session"],
+  ] as const)("reconciles committed %s after provider transport failure (%s)", async (status, mode, calls, sessionId) => {
+    const { db, engine, handle, invocation } = fixture(mode, "acp:outward", true);
+    try {
+      const result = await engine.executePromptAsync(
+        "Check and report the original task", null, "chat",
+        { publishArtifacts: false, ordinaryWorkstreamId: "chat" },
+        () => {}, [], undefined, "run-one", null, "chat", handle,
+      );
+      expect(invocation).toHaveBeenCalledTimes(calls);
+      expect(result.text).toContain("The agent recorded " + status);
+      expect(result.sessionId).toBe(sessionId);
+      expect(db.getRun("run-one").outcome_status).toBe(status);
+      if (status === "continue") {
+        expect(listRunContinuations(db, "acp:outward")).toEqual([
+          expect.objectContaining({ state: "pending", outwardSessionId: "chat", originRunId: "run-one" }),
+        ]);
+      } else {
+        expect(listRunContinuations(db, "acp:outward")).toEqual([]);
+      }
+    } finally { db.close(); }
   });
 
   it("reconciles eligible neutral Run outcomes even when messaging artifact delivery is disabled", async () => {

@@ -1,3 +1,4 @@
+import { attachProviderFailureEvidence } from "../src/providers/failureEvidence.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -78,7 +79,7 @@ describe("tier 2: same-provider fresh-session retry for a transient failure", ()
     const chatKey = "100";
     persistProviderSession(db, { surfaceIdentity: "test", chatKey: chatKey }, "codex", "stale-session-id");
     runProviderInvocationMock.mockRejectedValueOnce(
-      new Error("Selected model is at capacity. Please try a different model."),
+      attachProviderFailureEvidence(new Error("Selected model is at capacity. Please try a different model."), { promptSubmitted: true }),
     );
     runProviderInvocationMock.mockResolvedValueOnce({
       text: "recovered on fresh session",
@@ -119,7 +120,7 @@ describe("tier 2: same-provider fresh-session retry for a transient failure", ()
   it("falls through to the existing cross-provider fallback path when the fresh-session retry also fails", async () => {
     const chatKey = "100";
     runProviderInvocationMock.mockRejectedValue(
-      new Error("Selected model is at capacity. Please try a different model."),
+      attachProviderFailureEvidence(new Error("Selected model is at capacity. Please try a different model."), { promptSubmitted: true }),
     );
 
     const fallbackRequests: string[] = [];
@@ -150,7 +151,7 @@ describe("tier 2: same-provider fresh-session retry for a transient failure", ()
 
   it("does not attempt a tier-2 retry for a non-transient (capacity_exhausted) failure", async () => {
     const chatKey = "100";
-    runProviderInvocationMock.mockRejectedValue(new Error("usage limit reached"));
+    runProviderInvocationMock.mockRejectedValue(attachProviderFailureEvidence(new Error("usage limit reached"), { promptSubmitted: false }));
 
     const client = makeMockClient();
     const { BridgeEngine } = await import("../src/engine.js");

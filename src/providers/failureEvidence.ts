@@ -6,13 +6,15 @@
  */
 export interface ProviderFailureEvidence {
   readonly promptSubmitted: boolean;
+  /** Native session of the submitted attempt, observed at the protocol boundary. */
+  readonly sessionId?: string;
 }
 
 const EVIDENCE_KEY = "providerFailureEvidence";
 
 export function attachProviderFailureEvidence<T>(error: T, evidence: ProviderFailureEvidence): Error {
   const target = error instanceof Error ? error : new Error(String(error));
-  (target as unknown as Record<string, unknown>)[EVIDENCE_KEY] = { promptSubmitted: evidence.promptSubmitted };
+  (target as unknown as Record<string, unknown>)[EVIDENCE_KEY] = { ...evidence };
   return target;
 }
 
@@ -21,7 +23,9 @@ export function readProviderFailureEvidence(error: unknown): ProviderFailureEvid
   const value = (error as Record<string, unknown>)[EVIDENCE_KEY];
   if (!value || typeof value !== "object") return null;
   const submitted = (value as { promptSubmitted?: unknown }).promptSubmitted;
-  return typeof submitted === "boolean" ? { promptSubmitted: submitted } : null;
+  const sessionId = (value as { sessionId?: unknown }).sessionId;
+  return typeof submitted === "boolean" ? { promptSubmitted: submitted,
+    ...(submitted && typeof sessionId === "string" && sessionId ? { sessionId } : {}) } : null;
 }
 
 /** Submission is monotonic: once any attempt submitted the prompt it stays submitted. */

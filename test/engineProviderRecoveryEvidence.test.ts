@@ -4,7 +4,8 @@ import { BridgeEngine, type ProviderFallbackReason } from "../src/engine.js";
 import { ProviderFallbackChain } from "../src/providerFallback.js";
 import { dispatchClaimedInteractiveWithFallback, dispatchInteractiveWithFallback, setUserCliPreference } from "../src/interactiveBot.js";
 import { attachProviderFailureEvidence } from "../src/providers/failureEvidence.js";
-import { RunOutcomeReconciliationError } from "../src/runOutcome.js";
+import { recordRunOutcome, RunOutcomeReconciliationError } from "../src/runOutcome.js";
+import { listRunContinuations, requestRunContinuation } from "../src/runContinuation.js";
 import { createSurfaceNeutralProviderRouter } from "../src/surfaceNeutralProviderRouter.js";
 import { TELEGRAM_SURFACE_CAPABILITIES } from "../src/platform.js";
 import { CliTimeoutError, ProviderStallError } from "../src/cli.js";
@@ -27,9 +28,8 @@ function client() {
 const submitted = (message: string, promptSubmitted: boolean) =>
   attachProviderFailureEvidence(new Error(message), { promptSubmitted });
 
-async function runCodexThenClaude(sourceRun: ReturnType<typeof vi.fn>, sourceKind: "codex" | "claude" = "codex", locked = false) {
+async function runCodexThenClaude(sourceRun: ReturnType<typeof vi.fn>, sourceKind: "codex" | "claude" = "codex", locked = false, db = openDb(":memory:")) {
   const targetKind = sourceKind === "codex" ? "claude" : "codex";
-  const db = openDb(":memory:");
   const chatKey = "946";
   const fallbackRequests = new Map<string, ProviderFallbackReason>();
   const fallbackChain = new ProviderFallbackChain(locked ? [sourceKind] : [sourceKind, targetKind], db, "telegram:interactive", () => true);
@@ -64,6 +64,83 @@ async function runCodexThenClaude(sourceRun: ReturnType<typeof vi.fn>, sourceKin
 }
 
 describe("evidence-based provider recovery through the interactive route owner", () => {
+  it("settles a committed continue outcome after transport loss with the actual submitted native session", async () => {
+    const db = openDb(":memory:");
+    const identity = { surfaceIdentity: "acp:outward", chatKey: "acp:committed-native-wake" };
+    const runId = "committed-native-wake";
+    db.insertRun(runId, identity, "codex");
+    const lane = db.acquireLock(identity.surfaceIdentity, identity.chatKey, false)!;
+    const runProviderInvocation = vi.fn(async () => {
+      recordRunOutcome(db, {
+        ...identity, runId, provider: "codex", status: "continue", detail: "verify the result",
+        lock: { serviceId: lane.serviceId, runId: lane.runId, acquisitionId: lane.acquisitionId },
+      });
+      requestRunContinuation(db, {
+        ...identity, originRunId: runId, provider: "codex", reason: "verify the result",
+        afterSeconds: 60, outwardSessionId: "workstream",
+      });
+      throw attachProviderFailureEvidence(new Error("ECONNRESET after outcome"), {
+        promptSubmitted: true, sessionId: "native-session-from-failed-attempt",
+      });
+    });
+    const engine = new BridgeEngine({
+      surfaceIdentity: identity.surfaceIdentity, kind: "codex",
+      botConfig: { command: "codex", modelPreference: [] },
+      allowedUserIds: new Set(["42"]), executionMode: "safe", busyMessageMode: "augment",
+      pollIntervalMs: 1000, workingDir: process.cwd(),
+    }, db, client(), { runProviderInvocation } as any);
+    const successor = vi.fn(async () => ({ text: "must not run", sessionId: "other" }));
+    const router = createSurfaceNeutralProviderRouter({
+      db, surfaceIdentity: identity.surfaceIdentity, initialProvider: "codex", providerChain: ["codex", "claude"],
+      engineForProvider: provider => provider === "codex" ? engine : { executeSurfaceNeutralTurn: successor } as any,
+    });
+    try {
+      const result = await router.executeSurfaceNeutralTurn({
+        prompt: "inspect task", sessionId: null, chatId: "workstream", chatKey: identity.chatKey,
+        runId, laneHandle: lane, ordinaryWorkstreamId: "workstream",
+        eventContext: { runId, bot: "codex", chatId: "workstream", chatKey: identity.chatKey,
+          serviceId: lane.serviceId, acquisitionId: lane.acquisitionId },
+        collect: vi.fn(),
+      });
+      expect(result.sessionId).toBe("native-session-from-failed-attempt");
+      expect(result.text).toContain("The agent recorded continue");
+      expect(runProviderInvocation).toHaveBeenCalledTimes(1);
+      expect(successor).not.toHaveBeenCalled();
+      expect(db.getRun(runId).outcome_status).toBe("continue");
+      expect(listRunContinuations(db, identity.surfaceIdentity)).toEqual([
+        expect.objectContaining({ state: "pending", outwardSessionId: "workstream" }),
+      ]);
+    } finally { db.unlock(lane); db.close(); }
+  });
+  it("reports a recorded continuation when its native session cannot be verified, without replay", async () => {
+    const db = openDb(":memory:");
+    const identity = { surfaceIdentity: "telegram:interactive", chatKey: "946" };
+    const sourceRun = vi.fn(async (_cmd: string, _args: string[], _cwd: string, options: any) => {
+      const runId = options.eventContext.runId;
+      if (!db.getRun(runId)) db.insertRun(runId, identity, "codex");
+      const lock = db.raw.prepare("SELECT service_id, run_id, acquisition_id FROM execution_locks WHERE surface = ? AND chat_key = ?")
+        .get(identity.surfaceIdentity, identity.chatKey) as { service_id: string; run_id: string; acquisition_id: string };
+      recordRunOutcome(db, {
+        ...identity, runId, provider: "codex", status: "continue", detail: "verify the result",
+        lock: { serviceId: lock.service_id, runId: lock.run_id, acquisitionId: lock.acquisition_id },
+      });
+      requestRunContinuation(db, {
+        ...identity, originRunId: runId, provider: "codex", reason: "verify the result", afterSeconds: 60,
+      });
+      throw submitted("ECONNRESET after recording continuation", true);
+    });
+    try {
+      const { targetRun, texts } = await runCodexThenClaude(sourceRun, "codex", false, db);
+      expect(sourceRun).toHaveBeenCalledTimes(1);
+      expect(targetRun).not.toHaveBeenCalled();
+      expect(texts.join("\n")).toContain("The agent recorded continue: verify the result");
+      expect(texts.join("\n")).toContain("Automatic continuation is not confirmed");
+      expect(listRunContinuations(db, identity.surfaceIdentity)).toEqual([
+        expect.objectContaining({ state: "cancelled", reason: "verify the result" }),
+      ]);
+    } finally { db.close(); }
+  });
+
   it("attempts same-provider recovery before fallback for evidenced unclassified failure", async () => {
     const sourceRun = vi.fn(async () => { throw submitted("Internal error: could not initialise", false); });
     const { db, targetRun, texts } = await runCodexThenClaude(sourceRun);
@@ -214,7 +291,7 @@ describe("evidence-based provider recovery through the interactive route owner",
       calls += 1;
       if (calls === 1) throw submitted("ECONNREFUSED at spawn", false);
       // The silent retry ran the task, then a local post-provider step failed.
-      throw new Error("Internal error: upload hook exploded");
+      throw new Error("ECONNRESET writing local upload receipt");
     });
     const { db, targetRun } = await runCodexThenClaude(sourceRun);
     try {
@@ -227,7 +304,7 @@ describe("evidence-based provider recovery through the interactive route owner",
     let calls = 0;
     const sourceRun = vi.fn(async () => {
       calls += 1;
-      if (calls === 1) throw new Error("socket hang up");
+      if (calls === 1) throw submitted("socket hang up", false);
       throw submitted("Internal error: could not initialise", false);
     });
     const { db, targetRun } = await runCodexThenClaude(sourceRun);
@@ -239,7 +316,7 @@ describe("evidence-based provider recovery through the interactive route owner",
 
 describe("Claude weekly limit incident", () => {
   it("routes a configured claude -> codex chain to one final answer without a generic same-session retry", async () => {
-    const claudeRun = vi.fn(async () => { throw new Error("You've hit your weekly limit · resets 11am (Europe/London)"); });
+    const claudeRun = vi.fn(async () => { throw submitted("You've hit your weekly limit · resets 11am (Europe/London)", true); });
     const { db, targetRun, texts } = await runCodexThenClaude(claudeRun, "claude");
     try {
       expect(claudeRun).toHaveBeenCalledTimes(1);
@@ -252,7 +329,7 @@ describe("Claude weekly limit incident", () => {
 
 describe("provider-locked surface", () => {
   it("never acquires another provider even when the weekly limit is recognised as capacity", async () => {
-    const claudeRun = vi.fn(async () => { throw new Error("You've hit your weekly limit · resets 11am (Europe/London)"); });
+    const claudeRun = vi.fn(async () => { throw submitted("You've hit your weekly limit · resets 11am (Europe/London)", true); });
     const { db, targetRun } = await runCodexThenClaude(claudeRun, "claude", true);
     try {
       expect(claudeRun).toHaveBeenCalledTimes(1);
@@ -293,8 +370,8 @@ describe("the surface-neutral route owner consumes the same verdict", () => {
 
   it("advances an authorised surface-neutral chain for evidenced provider failures", async () => {
     const advancing = [
-      new Error("usage limit reached"),
-      new Error("Failed to authenticate"),
+      submitted("usage limit reached", true),
+      submitted("Failed to authenticate", false),
       submitted("socket hang up", false),
       submitted("socket hang up", true),
       attachProviderFailureEvidence(new CliTimeoutError("pre-prompt timeout", "hard"), { promptSubmitted: false }),
@@ -309,7 +386,7 @@ describe("the surface-neutral route owner consumes the same verdict", () => {
   });
 
   it("does not advance an unclassified failure without provider evidence", async () => {
-    for (const error of [new Error("Internal error: lost")]) {
+    for (const error of [new Error("Internal error: lost"), new Error("ECONNRESET storing receipt"), new Error("permission denied"), new Error("ENOENT"), new Error("usage limit reached")]) {
       const { db, claude, router, input } = routerOver(error);
       try {
         await expect(router.executeSurfaceNeutralTurn(input as any)).rejects.toThrow();

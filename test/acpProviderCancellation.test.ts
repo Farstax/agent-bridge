@@ -1,3 +1,4 @@
+import { attachProviderFailureEvidence } from "../src/providers/failureEvidence.js";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -309,7 +310,7 @@ describe("ACP provider-cancellation terminal lifecycle", () => {
   });
 
   it("passes the transient answer callback to a Codex ACP model fallback attempt", async () => {
-    runProviderInvocationMock.mockRejectedValueOnce(new Error("MODEL_CAPACITY_EXHAUSTED"));
+    runProviderInvocationMock.mockRejectedValueOnce(attachProviderFailureEvidence(new Error("MODEL_CAPACITY_EXHAUSTED"), { promptSubmitted: false }));
     runProviderInvocationMock.mockImplementationOnce(async (
       _bot: unknown,
       _invocation: unknown,

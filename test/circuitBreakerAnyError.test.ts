@@ -1,10 +1,10 @@
+import { attachProviderFailureEvidence } from "../src/providers/failureEvidence.js";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { rmSync } from "node:fs";
 import { openDb } from "../src/db.js";
 import type { BridgeDb } from "../src/db.js";
-import type { TelegramMessage } from "../src/types.js";
 import { lookupProviderSession, persistProviderSession } from "../src/providers/sessionRuntime.js";
 
 // runProviderInvocation is the provider-neutral ACP transport entry point used
@@ -15,15 +15,6 @@ vi.mock("../src/cli.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../src/cli.js")>();
   return { ...actual, runProviderInvocation: runProviderInvocationMock };
 });
-
-function makeMessage(text: string, userId = 42, chatId = 100): TelegramMessage {
-  return {
-    message_id: Math.floor(Math.random() * 10000),
-    chat: { id: chatId, type: "private" },
-    from: { id: userId, first_name: "Test" },
-    text,
-  };
-}
 
 function makeMockClient() {
   return {
@@ -73,7 +64,6 @@ describe("circuit breaker reacts to any consecutive provider error", () => {
   it("clears the persisted session after two consecutive failures that are not timeouts or killed-by-signal", async () => {
     const chatKey = "100";
     persistProviderSession(db, { surfaceIdentity: "test", chatKey: chatKey }, "codex", "existing-session-id");
-    runProviderInvocationMock.mockRejectedValue(new Error("ACP connection closed"));
 
     const { BridgeEngine } = await import("../src/engine.js");
     const client = makeMockClient();
@@ -82,10 +72,31 @@ describe("circuit breaker reacts to any consecutive provider error", () => {
       db, client, {},
     );
 
-    await engine.handleMessages([makeMessage("first")]).catch(() => undefined);
-    expect(lookupProviderSession(db, { surfaceIdentity: "test", chatKey: chatKey }, "codex")).toBe("existing-session-id");
+    // Exercise the attempt owner directly: the interactive router now performs
+    // immediate inspection-first recovery for unknown provider failures, which
+    // independently clears the binding and would mask the breaker threshold.
+    const laneHandle = db.acquireLock("test", chatKey);
+    if (!laneHandle) throw new Error("test lane unavailable");
+    let attempt = 0;
+    const run = () => engine.executeSurfaceNeutralTurn({
+      prompt: "task", sessionId: "existing-session-id", chatId: chatKey, chatKey,
+      laneHandle, runId: `breaker-${++attempt}`,
+      eventContext: { runId: `breaker-${attempt}`, bot: "codex", chatId: chatKey, chatKey },
+      collect: () => {},
+    });
+    try {
+      runProviderInvocationMock.mockRejectedValue(new Error("ACP connection closed"));
+      for (let i = 0; i < 2; i++) await expect(run()).rejects.toThrow("ACP connection closed");
+      expect(lookupProviderSession(db, { surfaceIdentity: "test", chatKey }, "codex")).toBe("existing-session-id");
 
-    await engine.handleMessages([makeMessage("second")]).catch(() => undefined);
-    expect(lookupProviderSession(db, { surfaceIdentity: "test", chatKey: chatKey }, "codex")).toBeNull();
+      runProviderInvocationMock.mockRejectedValue(attachProviderFailureEvidence(new Error("ACP connection closed"), { promptSubmitted: true }));
+      await expect(run()).rejects.toThrow("ACP connection closed");
+      expect(lookupProviderSession(db, { surfaceIdentity: "test", chatKey }, "codex")).toBe("existing-session-id");
+
+      await expect(run()).rejects.toThrow("ACP connection closed");
+      expect(lookupProviderSession(db, { surfaceIdentity: "test", chatKey }, "codex")).toBeNull();
+    } finally {
+      db.unlock(laneHandle);
+    }
   });
 });

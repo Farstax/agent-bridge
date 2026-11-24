@@ -23,7 +23,7 @@ describe("Claude weekly limit (2026-10-10 incident)", () => {
   });
 
   it("requests capacity fallback instead of a same-session generic retry", () => {
-    const decision = decideProviderRecovery("claude", new Error(weeklyLimit));
+    const decision = decideProviderRecovery("claude", tagged(weeklyLimit, true));
     expect(decision.reason).toBe("capacity");
     expect(decision.freshSessionRetry).toBe(false);
   });
@@ -55,12 +55,34 @@ describe("provider recovery verdict", () => {
     expect(decideProviderRecovery("codex", new Error("ordinary repository failure")).reason).toBeNull();
   });
 
+  it("does not recover a Bridge-local error even when its text matches a provider classification or prior attempt", () => {
+    const earlier = readProviderFailureEvidence(tagged("earlier provider failure", true));
+    for (const message of ["ECONNRESET writing receipt", "permission denied storing history", "ENOENT removing artifact", "usage limit reached in local validation"]) {
+      const local = new Error(message);
+      expect(decideProviderRecovery("codex", local, earlier)).toMatchObject({
+        reason: null, authRequired: false, capacityExhausted: false, freshSessionRetry: false,
+      });
+    }
+    const hook = new Error("permission denied");
+    hook.name = "PostExecutionHookError";
+    expect(decideProviderRecovery("codex", hook).reason).toBeNull();
+  });
+
   it("does not treat host execution-slot exhaustion as provider capacity fallback (#1151)", () => {
     const error = new Error("all provider execution slots are occupied");
     error.name = "ProviderExecutionCapacityError";
     expect(decideProviderRecovery("codex", error)).toMatchObject({
       reason: null, capacityExhausted: false, authRequired: false, transportReason: null,
     });
+  });
+
+  it("does not route wrapped host contention even if it carries submission evidence", () => {
+    for (const name of ["ProviderExecutionCapacityError", "WorkspaceLockBusyError", "LostExecutionLeaseError"]) {
+      const cause = tagged("permission denied", true);
+      cause.name = name;
+      expect(decideProviderRecovery("codex", new RunOutcomeReconciliationError("reconciliation failed", { cause })))
+        .toMatchObject({ reason: null, capacityExhausted: false, authRequired: false });
+    }
   });
 
   it("keeps submission evidence monotonic across attempts of the same admitted action", () => {
@@ -73,21 +95,21 @@ describe("provider recovery verdict", () => {
     expect(decideProviderRecovery("codex", tagged("usage limit reached", true)).reason).toBe("capacity");
     expect(decideProviderRecovery("claude", tagged("Failed to authenticate", true)).reason).toBe("auth_required");
     expect(decideProviderRecovery("claude", tagged("model \"x\" not found", true)).reason).toBe("capacity");
-    expect(decideProviderRecovery("codex", new Error("socket hang up")).reason).toBe("provider_transport_failure");
-    expect(decideProviderRecovery("codex", new Error("socket hang up")).freshSessionRetry).toBe(true);
+    expect(decideProviderRecovery("codex", tagged("socket hang up", true)).reason).toBe("provider_transport_failure");
+    expect(decideProviderRecovery("codex", tagged("socket hang up", true)).freshSessionRetry).toBe(true);
     expect(decideProviderRecovery("codex", new ProviderStallError("stalled")).reason).toBe("provider_stall");
     expect(decideProviderRecovery("codex", new CliTimeoutError("t", "hard")).reason).toBeNull();
     expect(decideProviderRecovery("codex", attachProviderFailureEvidence(new CliTimeoutError("t", "hard"), { promptSubmitted: false })).reason)
       .toBe("provider_transport_failure");
     expect(decideProviderRecovery("codex", attachProviderFailureEvidence(new CliTimeoutError("t", "hard"), { promptSubmitted: true })).reason)
       .toBe("provider_transport_failure");
-    expect(decideProviderRecovery("codex", new Error("spawn agent ENOENT")).reason).toBe("provider_unavailable");
+    expect(decideProviderRecovery("codex", tagged("spawn agent ENOENT", false)).reason).toBe("provider_unavailable");
   });
 
-  it("keeps Claude OAuth refresh contention transient, not auth_required or a transport fallback", () => {
+  it("keeps Claude OAuth refresh contention transient and eligible for fallback", () => {
     const decision = decideProviderRecovery(
       "claude",
-      new Error("Failed to refresh OAuth token: another Claude Code process is refreshing it or exited mid-refresh."),
+      tagged("Failed to refresh OAuth token: another Claude Code process is refreshing it or exited mid-refresh.", false),
     );
     expect(decision.authRequired).toBe(false);
     expect(decision.classification.kind).toBe("transient");

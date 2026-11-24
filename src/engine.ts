@@ -8,7 +8,7 @@
  */
 
 import { SCRATCH_SIGNPOST, readScratch, renderFreshScratch } from "./scratchpad.js";
-import { MissingRunOutcomeError, RunOutcomeReconciliationError, readRunOutcome, missingOutcomeRetries, resetAbandonedRunDisposition } from "./runOutcome.js";
+import { MissingRunOutcomeError, RunOutcomeReconciliationError, readRunOutcome, hasAuthoritativeRunOutcome, missingOutcomeRetries, resetAbandonedRunDisposition } from "./runOutcome.js";
 import { EVENT_RECEIPT_CORRELATION_PREFIX } from "./interactiveIngress.js";
 import { randomUUID } from "node:crypto";
 import { basename, dirname, join } from "node:path";
@@ -21,7 +21,6 @@ import {
   runCliAsync as _runCliAsync,
   runProviderInvocation as _runProviderInvocation,
   parseCliResult,
-  isCapacityExhaustedError,
   getNextFallbackModel,
   abortCliProcess,
   abortExecutionAndWait,
@@ -975,6 +974,34 @@ export class BridgeEngine {
       const executionProvider = providerIdForBotName(this._executionKind());
       let decision = decideProviderRecovery(executionProvider, providerError);
       const sourceKind = this.kind;
+      // If final settlement cannot establish a native session, do not replay a
+      // recorded objective or promise a wake that the worker cannot resume.
+      const reportRecordedOutcomeFailure = async (): Promise<ExecutionOutcome> => {
+        if (this.laneCoordinator.hasCancellation(executionLane) || this.laneCoordinator.isAborted(executionLane) || !this.db.ownsLock(laneHandle)) {
+          outcome = "fenced";
+          return "fenced";
+        }
+        const recorded = readRunOutcome(this.db, runId)!;
+        finalize();
+        this._linkScheduledOccurrences(scheduledOccurrenceKeys, runId);
+        if (activePendingIds.length && !this.db.completePendingMsgs(laneHandle, activePendingIds)) {
+          outcome = "fenced";
+          return "fenced";
+        }
+        activeTaskCommitted = true;
+        await sendSurfaceMessage({
+          client: this.client, kind: this._deliveryKind(), chatId,
+          body: { text: "The agent recorded " + recorded.status + ": " + recorded.detail
+            + ". Final settlement could not be verified."
+            + (recorded.status === "continue" ? " Automatic continuation is not confirmed. Send a new message to resume the unfinished work after inspecting prior results."
+              : " Inspect the recorded result before repeating any work."), message_thread_id: threadId },
+        }).catch((sendError) => console.error(`[${this.kind}] recorded outcome notification failed`, sendError));
+        outcome = "failed";
+        return "failed";
+      };
+      if (hasAuthoritativeRunOutcome(this.db, runId)) {
+        return await reportRecordedOutcomeFailure();
+      }
 
       // Before requesting an authorised fallback, give the original provider
       // one bounded inspection-first fresh-session recovery. This also covers
@@ -1046,6 +1073,9 @@ export class BridgeEngine {
         this._linkScheduledOccurrences(scheduledOccurrenceKeys, runId);
       } catch (linkError) {
         console.error(`[${this.kind}] scheduled occurrence correlation failed after execution error`, linkError);
+      }
+      if (hasAuthoritativeRunOutcome(this.db, runId)) {
+        return await reportRecordedOutcomeFailure();
       }
       const capacityExhausted = decision.capacityExhausted;
       const capacityRetryAfter = capacityExhausted ? capacityRetryAfterSeconds(providerError) : null;
@@ -2296,15 +2326,20 @@ export class BridgeEngine {
     // An outcome is a durable provider claim, not a reason to execute the
     // original task again because its final presentation was omitted.
     const recordedOutcomeWithoutAnswer = (error: unknown): CliResult | null => {
-      if (!(error instanceof MissingAcpAnswerError) || !runId || error.stopReason === "refusal"
-        || this.laneCoordinator.hasCancellation(executionLane) || this.laneCoordinator.isAborted(executionLane)) return null;
-      const disposition = readRunOutcome(this.db, runId);
-      if (!disposition) return null;
+      if (!runId || this.laneCoordinator.hasCancellation(executionLane)
+        || this.laneCoordinator.isAborted(executionLane) || !this.db.ownsLock(laneHandle)) return null;
+      if (error instanceof MissingAcpAnswerError && (error.stopReason === "refusal" || error.stopReason === "cancelled")) return null;
+      const evidence = readProviderFailureEvidence(error);
+      const nativeSession = error instanceof MissingAcpAnswerError ? error.sessionId : evidence?.sessionId;
+      // Do not fabricate a native session or resume an older binding from a
+      // failed fresh-session attempt. The submitted ACP session is authoritative.
+      if (!nativeSession || !hasAuthoritativeRunOutcome(this.db, runId, ordinaryWorkstreamId)) return null;
+      const disposition = readRunOutcome(this.db, runId)!;
       return {
         text: "The agent recorded " + disposition.status
           + " but did not provide a final answer. Recorded details: " + disposition.detail,
-        sessionId: error.sessionId,
-        stopReason: error.stopReason,
+        sessionId: nativeSession,
+        ...(error instanceof MissingAcpAnswerError ? { stopReason: error.stopReason } : {}),
       };
     };
     try {
@@ -2541,14 +2576,7 @@ export class BridgeEngine {
       if (eligibleOutcome) {
         const disposition = readRunOutcome(this.db, runId!);
         if (disposition?.status === "continue") {
-          const wake = listRunContinuations(this.db, this.surfaceIdentity)
-            .find((item) => item.id === runId && item.originRunId === runId);
-          if (!wake || wake.chatKey !== chatKey || wake.provider !== executionKind
-            || wake.reason !== disposition.detail
-            || (wake.state !== "pending" && wake.state !== "claimed")
-            || !Number.isFinite(Date.parse(wake.dueAt))
-            || !(Date.parse(wake.expiresAt) > Math.max(Date.now(), Date.parse(wake.dueAt)))
-            || (this.surfaceIdentity === "acp:outward" && wake.outwardSessionId !== ordinaryWorkstreamId)) {
+          if (!hasAuthoritativeRunOutcome(this.db, runId!, ordinaryWorkstreamId)) {
             throw new RunOutcomeReconciliationError(
               "The continue outcome has no matching durable, actionable scheduled continuation; original intent remains unresolved.",
             );
@@ -2618,40 +2646,46 @@ export class BridgeEngine {
         throw error;
       }
       // A stopped, aborted or fenced lane never recovers through a provider
-      // switch: the error is marked as possibly submitted before any route owner
-      // (interactive dispatch or the surface-neutral router) sees it.
+      // switch: surface loss of ownership, never provider recovery evidence.
       if (error instanceof Error && (
         this.laneCoordinator.hasCancellation(executionLane)
         || this.laneCoordinator.isAborted(executionLane)
         || !this.db.ownsLock(laneHandle)
       )) {
-        attachProviderFailureEvidence(error, { promptSubmitted: true });
+        await this._cleanTerminalOutputDir(outDir, "fenced provider attempt");
+        throw new LostExecutionLeaseError();
       }
-      const providerFallbackReason = decideProviderRecovery(
+      const recovery = decideProviderRecovery(
         providerIdForBotName(executionKind),
         error instanceof Error ? error : new Error(String(error)),
-      ).transportReason;
+      );
+      const providerFallbackReason = recovery.transportReason;
       const canPublish = this._canPublish(laneHandle);
       if (providerFallbackReason || !publishArtifacts) {
         await this._cleanTerminalOutputDir(outDir, providerFallbackReason ? "provider fallback" : "non-messaging Run");
       } else if (canPublish) {
         await uploadOutputFiles(outDir, chatId, this.client, fileSendOptions, () => this._canPublish(laneHandle)).catch(() => {});
       }
-      if (!(body as { requireBoundProviderSession?: boolean }).requireBoundProviderSession && sessionId && isInvalidProviderSessionError(error)) {
+      const mayRetry = recovery.reason !== null && canPublish
+        && !(runId && hasAuthoritativeRunOutcome(this.db, runId, ordinaryWorkstreamId));
+      const recoveryPrompt = () => readProviderFailureEvidence(error)?.promptSubmitted === false
+        ? prompt
+        : prependProviderFallbackContinuation(`Sanitised original error: ${toUserMessage(error instanceof Error ? error : new Error(String(error))).slice(0, 1_000)}\n\n${prompt}`);
+      if (mayRetry && !(body as { requireBoundProviderSession?: boolean }).requireBoundProviderSession && sessionId && isInvalidProviderSessionError(error)) {
         console.warn(`[${this.kind}] session ID invalid, retrying with fresh session...`);
         const kind = this.kind;
         this._discardAbandonedAttemptOutcome(laneHandle, runId);
         if (isRouteableKind(kind)) this._runWithFence(laneHandle, () => persistEngineProviderSession(this.db, { surfaceIdentity: this.surfaceIdentity, chatKey }, kind, null));
-        return this.executePromptAsync(prompt, null, chatId, body, onProgress, attachments, eventContext, runId, collect, chatKey, laneHandle);
+        return this.executePromptAsync(recoveryPrompt(), null, chatId, body, onProgress, attachments, eventContext, runId, collect, chatKey, laneHandle);
       }
       // One bounded same-provider alternate-model attempt; the alternate attempt
       // never falls back again.
-      if (!(body as { requireBoundProviderSession?: boolean }).requireBoundProviderSession && !modelFallback && isCapacityExhaustedError(error as Error) && this.opts.botConfig.modelPreference.length > 1) {
+      if (mayRetry && !(body as { requireBoundProviderSession?: boolean }).requireBoundProviderSession && !modelFallback && recovery.capacityExhausted && this.opts.botConfig.modelPreference.length > 1) {
         const fallbackModel = getNextFallbackModel(model, this.opts.botConfig.modelPreference);
         if (fallbackModel) {
           this._discardAbandonedAttemptOutcome(laneHandle, runId);
           return this._executeProviderAttempt(
-            prompt, null, chatId, body, onProgress, attachments, eventContext, runId, collect, chatKey, laneHandle,
+            recoveryPrompt(), null, chatId, body, onProgress, attachments, eventContext, runId, collect, chatKey, laneHandle,
             { model: fallbackModel, from: model },
           );
         }
@@ -2664,13 +2698,13 @@ export class BridgeEngine {
       // for a fenced lane (e.g. a "killed by signal" message) and would
       // otherwise skip straight past any cleanup placed after it.
       if (!canPublish) await this._cleanTerminalOutputDir(outDir, "terminal provider attempt");
-      this._handleCircuitBreaker(error as Error, chatKey, laneHandle);
+      if (mayRetry) this._handleCircuitBreaker(error as Error, chatKey, laneHandle);
       throw error;
     }
   }
 
   /**
-   * Any execution error a managed bot throws counts toward the circuit
+   * Any genuine provider failure from a managed bot counts toward the circuit
    * breaker, not just timeout/killed-by-signal text. Provider adapters throw
    * a wide and evolving variety of opaque transport/runtime errors (ACP
    * connection drops, SDK-internal failures, etc.); enumerating patterns is a
