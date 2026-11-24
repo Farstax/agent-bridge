@@ -80,7 +80,7 @@ describe("surface-neutral provider attempt isolation", () => {
       executeSurfaceNeutralTurn: vi.fn(async (input: any) => {
         input.collect(event(input, "run.started", { model: "claude", command: "claude", cwd: "/tmp" }));
         input.collect(event(input, "run.failed", { error: "rate limit capacity exhausted", category: "cli" }));
-        throw new Error("rate limit capacity exhausted");
+        throw attachProviderFailureEvidence(new Error("rate limit capacity exhausted"), { promptSubmitted: true });
       }),
     };
     const codex = {
@@ -126,7 +126,7 @@ describe("surface-neutral provider attempt isolation", () => {
       engineForProvider: (provider) => ({
         executeSurfaceNeutralTurn: async () => {
           attempts.push(provider);
-          if (failures[provider]) throw new Error(failures[provider]);
+          if (failures[provider]) throw attachProviderFailureEvidence(new Error(failures[provider]), { promptSubmitted: true });
           return { text: "done", sessionId: "grok-session" };
         },
       }) as any,
@@ -168,7 +168,7 @@ describe("surface-neutral provider attempt isolation", () => {
               originRunId: input.runId, ...identity, provider,
               reason: "stale capacity wait", afterSeconds: 5, outwardSessionId: "workstream",
             });
-            throw new Error("usage limit reached");
+            throw attachProviderFailureEvidence(new Error("usage limit reached"), { promptSubmitted: true });
           }
           recordRunOutcome(db, {
             runId: input.runId, surfaceIdentity: identity.surfaceIdentity,
@@ -193,6 +193,42 @@ describe("surface-neutral provider attempt isolation", () => {
       db.unlock(lane!);
       db.close();
     }
+  });
+
+  it("preserves a matching durable ordinary wake after a provider transport failure", async () => {
+    const db = openDb(":memory:");
+    const identity = { surfaceIdentity: "acp:outward", chatKey: "acp:committed-wake" };
+    db.insertRun("wake-run", identity, "codex");
+    const lane = db.acquireLock(identity.surfaceIdentity, identity.chatKey, false)!;
+    const seen: BotKind[] = [];
+    const router = createSurfaceNeutralProviderRouter({
+      db, ...{ surfaceIdentity: identity.surfaceIdentity }, initialProvider: "codex", providerChain: ["codex", "claude"],
+      engineForProvider: (provider) => ({
+        executeSurfaceNeutralTurn: async () => {
+          seen.push(provider);
+          recordRunOutcome(db, {
+            runId: "wake-run", ...identity, provider, status: "continue", detail: "verify result",
+            lock: { serviceId: lane.serviceId, runId: lane.runId, acquisitionId: lane.acquisitionId },
+          });
+          requestRunContinuation(db, {
+            originRunId: "wake-run", ...identity, provider, reason: "verify result",
+            afterSeconds: 5, outwardSessionId: "workstream",
+          });
+          throw attachProviderFailureEvidence(new Error("ECONNRESET"), { promptSubmitted: true, sessionId: "native" });
+        },
+      }) as any,
+    });
+    try {
+      await expect(router.executeSurfaceNeutralTurn({
+        ...turnInput(vi.fn()), runId: "wake-run", chatKey: identity.chatKey,
+        ordinaryWorkstreamId: "workstream", laneHandle: lane,
+      })).rejects.toThrow("ECONNRESET");
+      expect(seen).toEqual(["codex"]);
+      expect(db.getRun("wake-run").outcome_status).toBe("continue");
+      expect(listRunContinuations(db, identity.surfaceIdentity)).toEqual([
+        expect.objectContaining({ state: "pending", reason: "verify result" }),
+      ]);
+    } finally { db.unlock(lane); db.close(); }
   });
 
   for (const status of ["complete", "blocked"] as const) {
@@ -232,7 +268,7 @@ describe("surface-neutral provider attempt isolation", () => {
       executeSurfaceNeutralTurn: vi.fn(async (input: any) => {
         input.collect(event(input, "run.started", { model: "claude", command: "claude", cwd: "/tmp" }));
         input.collect(event(input, "run.failed", { error: "rate limit capacity exhausted", category: "cli" }));
-        throw new Error("rate limit capacity exhausted");
+        throw attachProviderFailureEvidence(new Error("rate limit capacity exhausted"), { promptSubmitted: true });
       }),
     };
     const router = createSurfaceNeutralProviderRouter({
@@ -370,7 +406,7 @@ describe("two-stage provider recovery (#1281)", () => {
   });
 
   it("does not route an explicit refusal, local unknown error, or Stop through another provider", async () => {
-    for (const errorType of ["refusal", "local", "stop"] as const) {
+    for (const errorType of ["refusal", "local", "local-auth", "local-capacity", "local-transport", "stop"] as const) {
       const db = openDb(":memory:");
       const seen: BotKind[] = [];
       const router = createSurfaceNeutralProviderRouter({
@@ -385,6 +421,9 @@ describe("two-stage provider recovery (#1281)", () => {
               throw attachProviderFailureEvidence(refused, { promptSubmitted: true });
             }
             if (errorType === "stop") throw attachProviderFailureEvidence(new Error("socket hang up"), { promptSubmitted: true });
+            if (errorType === "local-auth") throw new Error("permission denied storing result");
+            if (errorType === "local-capacity") throw new Error("usage limit reached in local validation");
+            if (errorType === "local-transport") throw new Error("ECONNRESET storing receipt");
             throw new Error("ordinary repository exception");
           },
         }) as any,
@@ -431,7 +470,7 @@ describe("surface-neutral provider availability (#954)", () => {
         executeSurfaceNeutralTurn: vi.fn(async () => {
           calls.push(provider);
           onAttempt(provider);
-          if (failures[provider]) throw failures[provider];
+          if (failures[provider]) throw attachProviderFailureEvidence(failures[provider], { promptSubmitted: true });
           return { text: `${provider} answer`, sessionId: provider };
         }),
       }) as any,
