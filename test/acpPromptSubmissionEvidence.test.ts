@@ -75,6 +75,20 @@ async function failureFor(mode: string, counter?: string, events: any[] = []): P
 }
 
 describe("ACP prompt submission evidence at the runtime boundary", () => {
+  it("tags an unclassified provider-owned setup failure without prompt submission", async () => {
+    let error: unknown;
+    try {
+      await runResolvedAcpProviderTurn({
+        ...policy,
+        validateRuntime: () => { throw new Error("vendor runtime unavailable"); },
+      }, runtime, request, process.cwd(), {
+        timeoutMs: 20_000, idleTimeoutMs: 20_000,
+      }, { conversationId: "setup", runId: "setup" });
+    } catch (failure) { error = failure; }
+    expect(readProviderFailureEvidence(error)).toEqual({ promptSubmitted: false });
+    expect(decideProviderRecovery("codex", error as Error).reason).toBe("provider_transport_failure");
+  });
+
   it("proves no submission when every attempt fails during session setup", async () => {
     const events: any[] = [];
     const error = await failureFor("setup-fail", undefined, events);
@@ -89,7 +103,7 @@ describe("ACP prompt submission evidence at the runtime boundary", () => {
     try {
       const events: any[] = [];
       const error = await failureFor("prompt-then-setup-fail", join(dir, "count"), events);
-      expect(readProviderFailureEvidence(error)).toEqual({ promptSubmitted: true });
+      expect(readProviderFailureEvidence(error)).toMatchObject({ promptSubmitted: true, sessionId: expect.any(String) });
       // Attempt 1 submitted: do not launch another adapter process blindly.
       expect(events.filter((event) => event.type === "run.diagnostic").map((event) => event.promptSubmitted))
         .toEqual([true]);
@@ -105,7 +119,7 @@ describe("ACP prompt submission evidence at the runtime boundary", () => {
       const events: any[] = [];
       const counter = join(dir, "count");
       const error = await failureFor("prompt-fail", counter, events);
-      expect(readProviderFailureEvidence(error)).toEqual({ promptSubmitted: true });
+      expect(readProviderFailureEvidence(error)).toMatchObject({ promptSubmitted: true, sessionId: expect.any(String) });
       // One adapter process only: the task is not replayed on an ambiguous failure.
       expect(readFileSync(counter, "utf8")).toBe("1");
       const diagnostics = events.filter((event) => event.type === "run.diagnostic");
