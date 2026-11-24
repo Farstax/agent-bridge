@@ -974,10 +974,33 @@ export class BridgeEngine {
       const executionProvider = providerIdForBotName(this._executionKind());
       let decision = decideProviderRecovery(executionProvider, providerError);
       const sourceKind = this.kind;
-      // An existing durable objective outcome is not a new attempt invitation.
-      if (hasAuthoritativeRunOutcome(this.db, runId)) {
+      // If final settlement cannot establish a native session, do not replay a
+      // recorded objective or promise a wake that the worker cannot resume.
+      const reportRecordedOutcomeFailure = async (): Promise<ExecutionOutcome> => {
+        if (this.laneCoordinator.hasCancellation(executionLane) || this.laneCoordinator.isAborted(executionLane) || !this.db.ownsLock(laneHandle)) {
+          outcome = "fenced";
+          return "fenced";
+        }
+        const recorded = readRunOutcome(this.db, runId)!;
+        finalize();
+        this._linkScheduledOccurrences(scheduledOccurrenceKeys, runId);
+        if (activePendingIds.length && !this.db.completePendingMsgs(laneHandle, activePendingIds)) {
+          outcome = "fenced";
+          return "fenced";
+        }
+        activeTaskCommitted = true;
+        await sendSurfaceMessage({
+          client: this.client, kind: this._deliveryKind(), chatId,
+          body: { text: "The agent recorded " + recorded.status + ": " + recorded.detail
+            + ". Final settlement could not be verified."
+            + (recorded.status === "continue" ? " Automatic continuation is not confirmed. Send a new message to resume the unfinished work after inspecting prior results."
+              : " Inspect the recorded result before repeating any work."), message_thread_id: threadId },
+        }).catch((sendError) => console.error(`[${this.kind}] recorded outcome notification failed`, sendError));
         outcome = "failed";
         return "failed";
+      };
+      if (hasAuthoritativeRunOutcome(this.db, runId)) {
+        return await reportRecordedOutcomeFailure();
       }
 
       // Before requesting an authorised fallback, give the original provider
@@ -1052,8 +1075,7 @@ export class BridgeEngine {
         console.error(`[${this.kind}] scheduled occurrence correlation failed after execution error`, linkError);
       }
       if (hasAuthoritativeRunOutcome(this.db, runId)) {
-        outcome = "failed";
-        return "failed";
+        return await reportRecordedOutcomeFailure();
       }
       const capacityExhausted = decision.capacityExhausted;
       const capacityRetryAfter = capacityExhausted ? capacityRetryAfterSeconds(providerError) : null;
