@@ -61,13 +61,14 @@ export function decideProviderRecovery(
     readProviderFailureEvidence(error), readProviderFailureEvidence(providerError),
   );
   const evidence = currentEvidence && mergeProviderFailureEvidence(currentEvidence, priorEvidence);
-  if (error.name === "ProviderExecutionCapacityError" || error.name === "WorkspaceLockBusyError"
-    || error.name === "LostExecutionLeaseError" || error.name === "ExecutionLockLostError"
-    || error.name === "PostExecutionHookError" || error.name === "PreviewCleanupError"
-    || error.name === "AcpTransientRetryCancelledError"
-    || (!currentEvidence && !(providerError instanceof ProviderStallError))) {
-    // Host-wide execution slots and the Git worktree lock are shared by every
-    // provider. Switching CLIs cannot create either, so neither is provider quota.
+  const localFailure = [error, providerError].some(failure =>
+    ["ProviderExecutionCapacityError", "WorkspaceLockBusyError", "LostExecutionLeaseError",
+      "ExecutionLockLostError", "PostExecutionHookError", "PreviewCleanupError",
+      "AcpTransientRetryCancelledError"].includes(failure.name),
+  );
+  if (localFailure || (!currentEvidence && !(providerError instanceof ProviderStallError))) {
+    // Host-wide capacity, lock ownership, and Bridge callbacks remain local
+    // even through an outcome-reconciliation wrapper.
     return {
       classification,
       reason: null,
