@@ -2,9 +2,9 @@
 
 Agent Bridge treats Codex, Claude, Agy, Grok Build, and Cursor as external CLI contracts. Provider qualification checks the observable process/session behaviour that Agent Bridge depends on; it is not a model-quality or coding benchmark.
 
-## Contract v5
+## Contract v6
 
-`agent_bridge_provider_contract: 5`
+`agent_bridge_provider_contract: 6`
 
 The initial live contract is deliberately small and incident-driven:
 
@@ -13,15 +13,21 @@ The initial live contract is deliberately small and incident-driven:
 3. `session_resume` — when the fresh result exposes an invocation-attributable session ID, a second bounded prompt resumes that session and returns the resume marker. Providers that do not expose such an ID report `not_applicable`.
 4. `repository_grounding` — one fresh native-tool-enabled invocation runs in a disposable Git repository. A runtime-generated source fact lives only in implementation source and a separate runtime-generated marker lives only in repository instructions; neither is included in the prompt. The check passes only when the native provider returns both exact values.
 
-Codex qualification uses the production ACP-backed path (bundled `codex-acp`
-over stdio). The version probe is the invoked adapter (`CODEX_ACP_COMMAND` or
-the bundled `$BRIDGE_CURRENT_RELEASE_DIR/node_modules/.bin/codex-acp --version`), not
-`codex --version`. Current Codex evidence must record `executionRuntime: "acp"`
-as well as the observed adapter version and contract version. Pre-ACP records,
-including records without an execution-runtime identity, are stale and cannot
-qualify the ACP runtime.
+Codex, Claude, Agy, Grok and Cursor qualify the **actual selected ACP runtime**
+through Agent Bridge's invocation, stdio supervisor and ACP session path.
+For example, Codex's version probe checks the selected `codex-acp` adapter
+(`CODEX_ACP_COMMAND` or the release-bundled binary), not `codex --version`.
+Agy runs the locked `antigravity-acp` adapter, not a native `stream-json`
+parser. Cursor runs `cursor-agent acp` and selects ACP session modes
+`ask` (safe/read-only) or `agent` (trusted); it does not use the old native
+`--mode ... --trust` or `--sandbox disabled` flags in this path.
 
-Agy qualification uses the same native `stream-json` output contract as managed runtime execution. Fresh checks require a valid terminal result; a provider that exposes an invocation-attributable conversation ID is also tested for resume, while a provider that exposes no resumable ID records `session_resume` as `not_applicable`. Resume checks require the matching conversation ID. Contradictory or malformed terminal results fail qualification; in particular, an Agy `ERROR` result carrying a non-empty `response` is a contract failure.
+A qualification record is current only for the selected provider, observed
+version, contract version, and resolved `executionRuntime` identity.
+When captured, the candidate executable path and SHA-256 must still match.
+A staged candidate's evidence does not qualify the active runtime. The exact
+executed runtime, not package-manager metadata or an earlier native-CLI
+qualification, is authoritative.
 
 Check states are `pass`, `fail`, `not_applicable`, `unsupported`, `not_authenticated`, `capacity_exhausted`, `model_unavailable`, and `transient`. A qualification record has `overall: pass|degraded|fail`. Authentication, capacity/model availability and transient upstream prerequisites are distinguished from deterministic contract failure rather than being collapsed into a boolean.
 
@@ -34,9 +40,9 @@ The managed production trigger is a CLI install/upgrade or a subsequently observ
 - `scripts/upgrade.sh --clis-only` verifies the installed Claude/Codex versions and invokes the qualifier with `--if-needed`.
 - Qualification evidence is cached by provider version and Agent Bridge provider-contract version, so an already-qualified tuple is not re-run.
 - The health service checks established evidence for out-of-band/self-updated provider versions. When `installed_version != last_qualified_version`, it qualifies that provider once and persists the new result.
-- Only the changed provider is qualified. A contract-version change invalidates prior tuples once, so contract v4 adds one repository-grounding fresh invocation to the next required qualification for each affected provider and then reuses the cached evidence.
+- Only the changed provider is qualified. A contract-version change invalidates earlier evidence; the next needed qualification checks the current contract, including repository grounding, and then reuses current evidence.
 
-Grok and Cursor are not part of the managed automatic upgrade set. Their qualifiers can be run explicitly after installation, an upgrade, or when troubleshooting:
+Grok and Cursor can also be qualified explicitly after installation, an upgrade, or when troubleshooting. Cursor's release-locked binary is converged by guarded release activation and `scripts/upgrade.sh --update`; `--clis-only` does not install or upgrade Cursor. Ordinary Runs never auto-update either provider:
 
 ```bash
 npm run qualify:provider -- --provider grok
@@ -47,7 +53,7 @@ Qualification is diagnostic rather than a positive routing prerequisite. An auth
 
 Cursor Skills use the canonical managed projection `~/.cursor/skills/<name>/SKILL.md`. Managed skill install does not auto-project into Cursor alongside Claude/Codex. Explicit Cursor projection is available through `npm run skills -- project-cursor <name>` or `install`/`project-user --project-cursor`, and refuses to overwrite unmanaged Cursor skill paths. Cursor may still discover Claude/Codex skill directories; duplicate skill names across those paths are ambiguous and were observed to prefer the Claude-compatible copy during #552.
 
-Cursor `safe` execution uses `--mode ask --trust` (read-only Ask contract). Cursor `trusted` execution uses `--trust --sandbox disabled`. Auth readiness uses only `cursor-agent status --format json`; credential files and API keys are not Agent Bridge authentication evidence for Cursor.
+Cursor's selected ACP adapter requests `ask` for safe execution and `agent` for trusted execution via session mode configuration. Runtime availability uses the provider's own authenticated status; cached account login is required before requesting ACP `cursor_login`, while candidate API-key authentication is verified separately.
 
 No separate qualification scheduler is installed.
 
@@ -61,7 +67,7 @@ The default evidence file is:
 
 It can be overridden with `AGENT_BRIDGE_PROVIDER_QUALIFICATION_PATH`.
 
-Each provider record includes the provider/version, prior version when known, Agent Bridge commit/release identity, contract version, UTC timestamp, environment class, overall result, and bounded per-check diagnostics. The file is written atomically with mode `0600`; its parent directory is created with mode `0700`.
+Each provider record includes the provider/version, prior version when known, Agent Bridge commit/release identity, contract version, resolved runtime identity, UTC timestamp, environment class, overall result, and bounded per-check diagnostics. It also records candidate executable path/digest when available. The file is written atomically with mode `0600`; its parent directory is created with mode `0700`.
 
 Run an explicit qualification with:
 

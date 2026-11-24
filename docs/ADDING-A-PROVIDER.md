@@ -78,7 +78,9 @@ Keep capabilities factual and deterministic. Do not infer them from model respon
 
 If Bridge-facing vocabulary differs from the canonical provider ID, update the mapping deliberately. Agy is the existing example: its provider ID is `agy`, while Bridge surface vocabulary uses `antigravity`.
 
-Adding a `ProviderId` also widens exhaustive provider records. Inspect compiler failures and existing `Record<ProviderId, ...>` structures rather than adding a default branch that hides missing provider behavior. One current example is `CAPACITY_PATTERNS` in `src/providers/errorClassification.ts`.
+Adding a `ProviderId` also widens exhaustive provider records. Inspect compiler failures and existing `Record<ProviderId, ...>` structures rather than adding a default branch that hides missing provider behavior. Examples include `CAPACITY_PATTERNS` in `src/providers/errorClassification.ts` and the managed-provider credential records in `src/providers/apiKeyAuth.ts`.
+
+`PROVIDER_IDS` contains **managed first-class providers**; `ROUTEABLE_PROVIDER_IDS` additionally contains the opt-in `custom-acp` slot. A configured `custom-acp` launch is not automatically a managed, qualified, or outward-ACP-selectable provider. Use `src/providers/externalAcpLaunch.ts` for an operator-only spike, not as a substitute for a named provider that must work across surfaces.
 
 ## 2. Lock the ACP distribution and add policy only where needed
 
@@ -139,6 +141,12 @@ provider later completes ACP migration and its rollback window closes.
 
 Run `npm run typecheck` early after widening `ProviderId` or `BotKind`; exhaustive records are intentionally useful signals for integration points that otherwise drift.
 
+### Outward ACP and Farstax Desk are separate routing boundaries
+
+When the provider must appear in outward ACP Workstreams, also inspect `src/acpServer/execution.ts` (provider chain, `BridgeConfig.bots`, engine construction) and `src/acpServer/commands.ts` (model/effort selection). The outward service deliberately rejects `custom-acp` because its generic configuration is not present in the static bot map; do not remove that fail-closed guard without making the runtime configuration authoritative and testable.
+
+Farstax Desk lives in the separate Platform repository. Its supported-provider lists, authenticated-provider readiness, workspace installation and browser login/selector must be extended there when customer-facing selection is required. OSS registration alone does not make a provider selectable in Desk.
+
 ### Dedicated surfaces and services are optional
 
 Do **not** create a dedicated Telegram bot, environment file, or systemd unit merely because a provider exists.
@@ -157,7 +165,11 @@ Trace `src/providers/errorClassification.ts` and related fallback eligibility wh
 
 Keep secrets out of command arguments, logs, diagnostics, and persisted qualification evidence. The shared supervisor owns environment scrubbing and output redaction; extend those protections only for a genuinely new secret class.
 
-If a provider-specific API key must reach the child process, extend the existing credential verification/filtering path narrowly rather than bypassing it.
+If a provider-specific API key must reach the child process, extend the existing credential verification/filtering path narrowly rather than bypassing it. In `src/providers/apiKeyAuth.ts`, `PROVIDER_API_KEY_AUTH` and `PROVIDER_ALLOWED_SECRET_ENV_KEYS` are exhaustive over `ManagedProviderId`: account for both when registering a managed provider. For cached OAuth-only agents, do not invent an API-key environment variable or count credential-file presence alone as working authentication; use the existing provider-owned auth/readiness boundary and keep the capability definition truthful.
+
+### Prove effective safe/trusted authority
+
+ACP permission callbacks cover requests the agent **actually sends**; they do not stop tools the agent auto-allows. If a provider can execute without a permission request, prove that safe mode mechanically rejects writes, mutating shell commands and alternate tool paths at the effective provider/tool boundary, including weaker project config, saved approvals, plugins, subagents and MCP where applicable. Test negative actions only in disposable OS-isolated workspaces. Use a small provider-native policy hook rather than a second Bridge permissions engine; fail closed if the authority cannot be enforced.
 
 ## 6. Decide fallback participation explicitly
 
@@ -182,7 +194,7 @@ If Agent Bridge should manage it, inspect and extend the applicable lifecycle pa
 - production initial installation;
 - CLI-only upgrade handling;
 - executable path propagation into service configuration;
-- runtime version discovery;
+- runtime version discovery and exact executable/digest verification for the installed artifact;
 - authentication prerequisites;
 - rollback and cleanup behavior.
 
@@ -255,6 +267,9 @@ src/providers/exampleAcpPolicy.ts (only when defaults are insufficient)
 src/providers/errorClassification.ts
   + exhaustive provider classification entry
 
+src/providers/apiKeyAuth.ts
+  + managed credential capability/secret policy (including OAuth-only decision)
+
 test/...
   + deterministic provider-boundary fixtures
 ```
@@ -267,6 +282,7 @@ src/config.ts
 routing / fallback / timeout records
 provider-ID <-> BotKind mapping
 src/providers/qualification.ts
+src/acpServer/execution.ts (outward ACP/Desk only)
 ```
 
 Only add these when the product requires them:
@@ -289,7 +305,9 @@ Before opening the PR:
 - [ ] Keep execution on the shared `cliSupervisor.ts` path.
 - [ ] For an explicitly non-ACP provider only, add native launch metadata, a fail-closed runtime/parser, and `src/cli.ts` dispatch.
 - [ ] If routeable, add `BotKind`, Bridge config, routing/provider-lock mappings, and exhaustive `BotKind` records.
-- [ ] Define authoritative authentication/readiness evidence.
+- [ ] Define authoritative authentication/readiness evidence and resolve managed credential records without inventing a key.
+- [ ] If outward ACP/Desk needs the provider, update those explicit routing and Platform admission boundaries.
+- [ ] Verify effective safe/trusted tool authority, not just ACP permission callbacks.
 - [ ] Decide explicitly whether the provider participates in fallback.
 - [ ] Decide explicitly whether Agent Bridge owns installation/upgrades.
 - [ ] Add deterministic provider and qualification regressions.
