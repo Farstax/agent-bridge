@@ -15,7 +15,7 @@ import { appendAttachmentAnnotations, appendOutputDirInstruction, wrapPromptCont
 import { mimeTypeFromExtension } from "../fileDownload.js";
 import type { RunActivity } from "../runActivity.js";
 import type { BotKind, CliOptions, CliResult, RouteableBotKind, RunTelemetry } from "../types.js";
-import { type as bridgeEventType } from "../events/types.js";
+import { type as bridgeEventType, type BridgeEvent } from "../events/types.js";
 import {
   getProviderApiKeySecretValues,
   redactProviderApiKeySecrets,
@@ -614,6 +614,7 @@ export async function runResolvedAcpProviderTurn(
     // Never reuse a preview classifier or its buffered text across an ACP retry.
     if (attempt === 2) {
       bridgeCallback(() => options.onInterimCommentary?.(null));
+      if (bridgeFailure) throw bridgeFailure;
       answerPreview = newAnswerPreview();
     }
     const credentialExecutionLock = policy.credentialExecutionLock?.(effectiveEnv, attempt) ?? null;
@@ -715,6 +716,7 @@ export async function runResolvedAcpProviderTurn(
               { attempt: 1, successorStarted, retryEligible: true, promptSubmitted: promptEverSubmitted },
             ));
           }
+          if (bridgeFailure) throw bridgeFailure;
           if (successorStarted) currentAttempt = 2;
         },
       });
