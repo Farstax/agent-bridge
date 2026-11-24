@@ -196,6 +196,10 @@ export interface SurfaceNeutralTurnInput {
   contextWorkstreamId?: string;
   /** A claimed ordinary wake must not silently abandon its bound native session. */
   requireBoundProviderSession?: boolean;
+  /** Retry/handoff must create its own native session, not reuse an abandoned one. */
+  freshProviderSession?: boolean;
+  /** Stop/Reset and ownership are checked by the original lane owner before any retry. */
+  mayContinueRecovery?: () => boolean;
 }
 
 export const MAX_QUEUE_DEPTH = 5;
@@ -955,7 +959,10 @@ export class BridgeEngine {
         outcome = "failed";
         return "failed";
       }
-      if (error instanceof MissingRunOutcomeError || error instanceof RunOutcomeReconciliationError) {
+      // A provider-origin failure may be wrapped by outcome reconciliation.
+      // Only validation-only outcome failures remain terminal here.
+      if ((error instanceof MissingRunOutcomeError || error instanceof RunOutcomeReconciliationError)
+        && decideProviderRecovery(providerIdForBotName(this._executionKind()), error).reason === null) {
         await sendSurfaceMessage({
           client: this.client, kind: this._deliveryKind(), chatId,
           body: { text: `Error: ${error.message} The original intent remains unresolved.`, message_thread_id: threadId },
@@ -969,24 +976,15 @@ export class BridgeEngine {
       let decision = decideProviderRecovery(executionProvider, providerError);
       const sourceKind = this.kind;
 
-      // Tier 2: one silent same-provider, fresh-session retry for a
-      // transient failure, before falling to cross-provider fallback (tier
-      // 3). Tier 1 (same-session retry) already ran and failed inside
-      // runWithAcpTransientRetry -- reaching here means the ACP layer gave
-      // up on this session entirely. Reuses the same handoff-context
-      // mechanism cross-provider fallback uses (markHandoffRequired plus a
-      // fresh nativeSessionMode triggers _buildPromptForCli's existing
-      // fallback-continuation prefix), just targeting this same provider
-      // instead of the next one in the chain -- so no new context-injection
-      // path is needed. Not attempted for any other classification
-      // (capacity_exhausted, auth_required, model_unavailable, fatal,
-      // unknown): those are either account/config-level conditions a fresh
-      // session on this same account cannot fix, or -- for unknown -- an
-      // unclassifiable error this coarse a boundary cannot tell apart from
-      // an ordinary task/repository failure (see providerFallbackReasonForError
-      // and runWithAcpTransientRetry's narrower, structurally-confined
-      // same-session retry for the one place "unknown" is safe to recover).
-      if (decision.freshSessionRetry && isRouteableKind(sourceKind)) {
+      // Before requesting an authorised fallback, give the original provider
+      // one bounded inspection-first fresh-session recovery. This also covers
+      // unknown ACP failures with explicit provider-origin evidence and wrapped
+      // reconciliation failures; untagged local failures stay terminal.
+      // Known quota/auth/model failures retain their existing targeted paths.
+      const providerOrigin = readProviderFailureEvidence(providerError)
+        ?? (providerError.cause instanceof Error ? readProviderFailureEvidence(providerError.cause) : null);
+      if ((decision.freshSessionRetry || (providerOrigin && decision.reason === "provider_transport_failure"))
+        && isRouteableKind(sourceKind)) {
         // Submission evidence is monotonic across the admitted action: a first
         // attempt without evidence is treated as possibly submitted.
         priorEvidence = readProviderFailureEvidence(providerError) ?? { promptSubmitted: true };
@@ -997,10 +995,18 @@ export class BridgeEngine {
           resetAbandonedRunDisposition(this.db, runId);
           persistEngineProviderSession(this.db, { surfaceIdentity: this.surfaceIdentity, chatKey }, sourceKind, null);
         });
-        markHandoffRequired(this.db, this.surfaceIdentity, chatKey, sourceKind, `fallback_from_${sourceKind}`);
+        markHandoffRequired(this.db, this.surfaceIdentity, chatKey, sourceKind, "provider_recovery");
         try {
           const retryResult = await this._executeAndDeliverTurn({
-            prompt, sessionId: null, chatId, chatKey, threadId, attachments, laneHandle, runId, eventContext, collect,
+            prompt: [
+              "[Agent Bridge provider recovery]",
+              "The previous provider attempt failed. Inspect earlier tool effects, durable outcomes and workspace state before changing anything.",
+              "Preserve completed work; continue only unfinished tasks. Do not blindly repeat uncertain side effects.",
+              "Sanitised original error: " + toUserMessage(providerError.name === "RunOutcomeReconciliationError" && providerError.cause instanceof Error
+                ? providerError.cause : providerError).slice(0, 1_000),
+              "",
+              prompt,
+            ].join("\n"), sessionId: null, chatId, chatKey, threadId, attachments, laneHandle, runId, eventContext, collect,
             suppressTransientRetry: true,
             executionMode, verificationOnly,
           });

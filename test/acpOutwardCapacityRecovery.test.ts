@@ -5,7 +5,9 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { openDb } from "../src/db.js";
 import { OutwardAcpSessionRepository } from "../src/repositories/outwardAcpSessionRepository.js";
 import { claimDueRunContinuation, listRunContinuations, linkCapacityContinuationRun, linkRunContinuationRun, requestRunContinuation, settleRunContinuation } from "../src/runContinuation.js";
-import { persistProviderSession } from "../src/providers/sessionRuntime.js";
+import { lookupProviderSession, persistProviderSession } from "../src/providers/sessionRuntime.js";
+import { attachProviderFailureEvidence } from "../src/providers/failureEvidence.js";
+import { recordRunOutcome } from "../src/runOutcome.js";
 import { stageOutwardAcpAttachments, retainOutwardAcpAttachmentsForWait } from "../src/acpServer/attachments.js";
 import { outwardCapacityCompletionProven, resumeOutwardCapacityWait, resumeOutwardOrdinaryContinuation } from "../src/acpServer/continuationWorker.js";
 import { BridgeOutwardAcpPromptExecutor, OUTWARD_ACP_SURFACE, type OutwardAcpPromptExecutor } from "../src/acpServer/execution.js";
@@ -65,6 +67,104 @@ describe("outward ACP durable capacity worker (#1114)", () => {
     } finally { db.close(); }
   });
 
+
+
+  for (const failureMode of ["systemError", "quota"] as const) {
+  it(`a claimed Codex continuation reaches Claude in its original fenced successor Run (${failureMode})`, async () => {
+    const root = mkdtempSync(join(tmpdir(), "bridge-1281-portable-wake-"));
+    roots.push(root);
+    const db = openDb(join(root, "state.sqlite"), { databaseRole: "interactive" });
+    const identity = { surfaceIdentity: OUTWARD_ACP_SURFACE, chatKey: "acp:portable-continuation" };
+    const session = new OutwardAcpSessionRepository(db.raw).create({
+      sessionId: "portable-workstream", conversationId: identity.chatKey, cwd: root,
+    });
+    db.insertRun("portable-origin", identity, "codex");
+    persistProviderSession(db, identity, "codex", "codex-original-native-session", "portable-origin");
+    const now = Date.now();
+    const wake = requestRunContinuation(db, {
+      originRunId: "portable-origin", ...identity, provider: "codex",
+      reason: "finish the previously started task", afterSeconds: 5,
+      outwardSessionId: session.sessionId,
+    }, now);
+    expect(db.updateRunCompleted("portable-origin", "partial", "codex-original-native-session")).toBe(true);
+    const claimed = claimDueRunContinuation(db, wake.id, now + 5_001, {
+      runId: "portable-worker", claimToken: "portable-claim",
+    })!;
+    const attempts: Array<{ provider: string; session: string | null; bound: boolean | undefined; prompt: string }> = [];
+    let priorToolEffects = 0;
+    const executor = new BridgeOutwardAcpPromptExecutor({
+      db, providerChain: ["codex", "claude"],
+      isProviderAvailable: () => true,
+      enableDeferredCapacity: true,
+      lookupSession: (id) => new OutwardAcpSessionRepository(db.raw).get(id),
+      runId: () => "portable-successor",
+      createEngine: (_session, provider) => ({
+        executeSurfaceNeutralTurn: async (turn) => {
+          const nativeSession = turn.freshProviderSession ? null : lookupProviderSession(db, identity, provider);
+          attempts.push({
+            provider, session: nativeSession, bound: turn.requireBoundProviderSession, prompt: turn.prompt,
+          });
+          turn.collect(eventType.runStarted({
+            runId: turn.runId, bot: provider, chatId: String(turn.chatId),
+            chatKey: turn.chatKey, command: "fake", cwd: root, model: null,
+          }));
+          if (provider === "codex") {
+            if (attempts.length === 1) priorToolEffects = 9; // simulated prior tool activity
+            const error = failureMode === "quota"
+              ? new Error("RequestError: Codex usage limit reached; try again after quota reset")
+              : new Error("AcpSystemError: resumed Codex session stopped after tool activity");
+            error.name = failureMode === "quota" ? "RequestError" : "AcpSystemError";
+            throw attachProviderFailureEvidence(error, { promptSubmitted: true });
+          }
+          expect(priorToolEffects).toBe(9); // no earlier operation was replayed
+          expect(turn.prompt).toContain("Inspect previous tool actions");
+          recordRunOutcome(db, {
+            runId: turn.runId, ...identity, chatKey: identity.chatKey, provider,
+            status: "continue", detail: "check final external result",
+            lock: {
+              serviceId: turn.laneHandle.serviceId, runId: turn.laneHandle.runId,
+              acquisitionId: turn.laneHandle.acquisitionId,
+            },
+          });
+          requestRunContinuation(db, {
+            originRunId: turn.runId, ...identity, provider,
+            reason: "check final external result", afterSeconds: 60,
+            outwardSessionId: session.sessionId,
+          });
+          return { text: "Outstanding task advanced; final check scheduled.", sessionId: "claude-new-native-session", stopReason: "end_turn" as const };
+        },
+      }),
+    });
+    try {
+      const ok = await resumeOutwardOrdinaryContinuation(
+        db, (id) => new OutwardAcpSessionRepository(db.raw).get(id), executor, claimed,
+      );
+      expect(ok).toBe(true);
+      expect(attempts.map((item) => item.provider)).toEqual(
+        failureMode === "quota" ? ["codex", "claude"] : ["codex", "codex", "claude"]);
+      expect(attempts.map((item) => item.session)).toEqual(
+        failureMode === "quota" ? ["codex-original-native-session", null] : ["codex-original-native-session", null, null]);
+      expect(attempts.map((item) => item.bound)).toEqual(
+        failureMode === "quota" ? [true, false] : [true, false, false]);
+      expect(attempts.at(-1)?.prompt).toContain(failureMode === "quota" ? "usage limit" : "AcpSystemError");
+      expect(db.getRun("portable-successor")).toMatchObject({
+        status: "done", bot: "claude", outcome_status: "continue",
+        session_id: "claude-new-native-session",
+      });
+      expect(lookupProviderSession(db, identity, "codex")).toBe("codex-original-native-session");
+      expect(lookupProviderSession(db, identity, "claude")).toBe("claude-new-native-session");
+      const continuations = listRunContinuations(db, OUTWARD_ACP_SURFACE);
+      expect(continuations.find((item) => item.id === wake.id)).toMatchObject({
+        state: "claimed", successorRunId: "portable-successor",
+      });
+      expect(continuations.find((item) => item.originRunId === "portable-successor")).toMatchObject({
+        provider: "claude", state: "pending", outwardSessionId: session.sessionId,
+      });
+      expect((db.raw.prepare("SELECT count(*) AS n FROM bridge_runs WHERE chat_id = ?")
+        .get(identity.chatKey) as { n: number }).n).toBe(2);
+    } finally { await executor.shutdown(); db.close(); }
+  });
+  }
 
   it("Stop cancels a claimed ordinary wake before successor Run admission", async () => {
     const root = mkdtempSync(join(tmpdir(), "bridge-acp-ordinary-stop-"));
