@@ -153,8 +153,8 @@ export function createSurfaceNeutralProviderRouter(
           // for an actual provider failure, preserve the existing stale-wake
           // cleanup and inspection-first successor behaviour.
           const disposition = readRunOutcome(options.db, input.runId);
-          const settled = disposition?.status === "complete" || disposition?.status === "blocked"
-            || (disposition?.status === "continue" && failure.name === "MissingAcpAnswerError");
+          const settled = disposition?.status === "complete"
+            || disposition?.status === "continue" || disposition?.status === "blocked";
           const recoverable = decision.reason !== null && !settled && input.mayContinueRecovery?.() !== false;
           if (!recoverable) {
             input.onProviderRecoveryDecision?.(null, false);
