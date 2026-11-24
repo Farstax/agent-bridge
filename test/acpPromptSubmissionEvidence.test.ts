@@ -101,6 +101,17 @@ describe("ACP prompt submission evidence at the runtime boundary", () => {
     expect(decideProviderRecovery("codex", error as Error).reason).toBeNull();
   });
 
+  it("does not tag Bridge event delivery errors as provider failures", async () => {
+    const local = new Error("ECONNRESET recording Bridge event");
+    await expect(runResolvedAcpProviderTurn(policy, runtime, request, process.cwd(), {
+      timeoutMs: 20_000, idleTimeoutMs: 20_000, chatId: "local-event",
+      eventContext: { runId: "local-event", bot: "codex", chatId: "c", chatKey: "c" },
+      onEvent: () => { throw local; },
+    }, { conversationId: "local-event", runId: "local-event" })).rejects.toBe(local);
+    expect(readProviderFailureEvidence(local)).toBeNull();
+    expect(decideProviderRecovery("codex", local).reason).toBeNull();
+  });
+
   it("proves no submission when every attempt fails during session setup", async () => {
     const events: any[] = [];
     const error = await failureFor("setup-fail", undefined, events);
