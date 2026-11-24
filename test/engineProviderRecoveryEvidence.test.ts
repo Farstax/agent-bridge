@@ -342,7 +342,7 @@ describe("the surface-neutral route owner consumes the same verdict", () => {
         eventContext: { runId: "r", bot: "codex", chatId: "c", chatKey: "k" } as any,
         collect: (event) => diagnostics.push(event),
       });
-      expect(diagnostics.map((event) => event.type)).toEqual(["run.diagnostic"]);
+      expect(diagnostics.map((event) => event.type)).toEqual(["run.diagnostic", "run.diagnostic"]);
       expect((diagnostics[0] as any).promptSubmitted).toBe(false);
     } finally { db.close(); }
   });
