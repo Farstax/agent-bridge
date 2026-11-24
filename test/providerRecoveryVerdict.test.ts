@@ -76,6 +76,15 @@ describe("provider recovery verdict", () => {
     });
   });
 
+  it("does not route wrapped host contention even if it carries submission evidence", () => {
+    for (const name of ["ProviderExecutionCapacityError", "WorkspaceLockBusyError", "LostExecutionLeaseError"]) {
+      const cause = tagged("permission denied", true);
+      cause.name = name;
+      expect(decideProviderRecovery("codex", new RunOutcomeReconciliationError("reconciliation failed", { cause })))
+        .toMatchObject({ reason: null, capacityExhausted: false, authRequired: false });
+    }
+  });
+
   it("keeps submission evidence monotonic across attempts of the same admitted action", () => {
     const laterSetupFailure = tagged("Internal error: setup failed", false);
     const earlier = readProviderFailureEvidence(tagged("first attempt died", true));
