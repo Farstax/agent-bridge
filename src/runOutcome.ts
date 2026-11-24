@@ -1,6 +1,6 @@
 import Database from "better-sqlite3";
 import { BridgeDb } from "./db.js";
-import { RunContinuationLimitError, cancelPendingRunContinuation, recordContinuationLimitNotice, requestRunContinuation } from "./runContinuation.js";
+import { RunContinuationLimitError, cancelPendingRunContinuation, recordContinuationLimitNotice, requestRunContinuation, listRunContinuations } from "./runContinuation.js";
 import type { RouteableBotKind } from "./types.js";
 
 /** Original provider turn may already have executed side effects. Never replay it merely because reconciliation failed. */
@@ -60,6 +60,22 @@ export function readRunOutcome(db: BridgeDb, runId: string): RunOutcome | null {
   const row = db.getRun(runId) as { outcome_status?: RunOutcomeStatus | null; outcome_detail?: string | null } | undefined;
   if (!row?.outcome_status) return null;
   return { status: row.outcome_status, detail: row.outcome_detail ?? "" };
+}
+
+/** A committed outcome prevents recovery from repeating already-accounted work.
+ * A continue claim is authoritative only while its matching wake is actionable. */
+export function hasAuthoritativeRunOutcome(db: BridgeDb, runId: string, outwardSessionId?: string): boolean {
+  const run = db.getRun(runId);
+  const outcome = readRunOutcome(db, runId);
+  if (!run || !outcome) return false;
+  if (outcome.status !== "continue") return true;
+  const wake = listRunContinuations(db, run.surface_identity).find(item => item.id === runId);
+  return Boolean(wake && wake.originRunId === runId && wake.chatKey === run.chat_id
+    && wake.provider === run.bot && wake.reason === outcome.detail && !wake.capacityWait
+    && (wake.state === "pending" || wake.state === "claimed")
+    && Number.isFinite(Date.parse(wake.dueAt))
+    && Date.parse(wake.expiresAt) > Math.max(Date.now(), Date.parse(wake.dueAt))
+    && (run.surface_identity !== "acp:outward" || (outwardSessionId && wake.outwardSessionId === outwardSessionId)));
 }
 
 /** Atomic, fenced, single-disposition update against the actual persisted Run. */
