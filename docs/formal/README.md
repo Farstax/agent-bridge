@@ -23,9 +23,9 @@ For changes to critical durable or concurrent lifecycle behaviour—Run/Stop, cl
 
 ## Historical investigation and model notes
 
-For the source-reviewed model → production-owner → executable-test mapping and
-outstanding exact-head qualification, see [TRANSITION-MAP.md](TRANSITION-MAP.md).
-The initial results below remain historical, not proof of the current PR head.
+For the maintained model → production-owner → executable-test mapping, see
+[TRANSITION-MAP.md](TRANSITION-MAP.md). The initial results below document the
+pre-merge investigation; they do not qualify subsequent revisions.
 
 This inventory is a starting point, not a claim of exhaustive repository coverage. The initial source inventory targeted main `07ca07770a99af91c4461fb3fed82687ea6cb5cb`. The worktree has since advanced to `e435ce689e7fbe577026f9bd28adedf565edd427`; relevant targeted tests are identified below, and the inventory and all tests have not yet been requalified for that head. The first test run below was on `7793aed` and is not exact-head evidence. The separate uncommitted rollout-recovery candidate is not included.
 
