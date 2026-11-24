@@ -99,7 +99,8 @@ export function createSurfaceNeutralProviderRouter(
             "[Agent Bridge provider recovery]",
             "Original objective follows below. Inspect previous tool actions, repository state, artifacts and durable outcomes before any side effect.",
             "Preserve verified progress and perform only unfinished work. Do not retry an action whose result is uncertain without inspecting it first.",
-            ...failures.slice(-3).map((failure) => "Previous provider error: " + failure),
+            ...(failures.length <= 3 ? failures : [failures[0], ...failures.slice(-2)])
+              .map((failure) => "Previous provider error: " + failure),
             "",
             input.prompt,
           ].join("\n"),
