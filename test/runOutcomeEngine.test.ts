@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { BridgeEngine } from "../src/engine.js";
 import { MissingAcpAnswerError } from "../src/providers/acpRuntime.js";
-import { readProviderFailureEvidence } from "../src/providers/failureEvidence.js";
+import { attachProviderFailureEvidence, readProviderFailureEvidence } from "../src/providers/failureEvidence.js";
 import { openDb } from "../src/db.js";
 import { MissingRunOutcomeError, RunOutcomeReconciliationError, requestAgentBridgeOutcome } from "../src/runOutcome.js";
 import { listRunContinuations, RUN_CONTINUATION_PREFIX } from "../src/runContinuation.js";
@@ -24,6 +24,12 @@ function fixture(mode: "complete-after-retry" | "continue-after-retry" | "blocke
   db.insertRun("run-one", identity, provider);
   const handle = db.acquireLock(identity.surfaceIdentity, identity.chatKey);
   if (!handle) throw new Error("missing fixture lane ownership");
+  // A recovery attempt may discard a stale, mismatched wake, not a valid committed continuation.
+  function mismatchWake() {
+    const key = `${RUN_CONTINUATION_PREFIX}run-one`;
+    const row = db.raw.prepare("SELECT value FROM settings WHERE key = ?").get(key) as { value: string };
+    db.raw.prepare("UPDATE settings SET value = ? WHERE key = ?").run(JSON.stringify({ ...JSON.parse(row.value), chatKey: "stale-workstream" }), key);
+  }
   let calls = 0;
   const invocation = vi.fn(async (_provider: unknown, _invocation: unknown, _cwd: unknown, options: any, request: any) => {
     calls += 1;
@@ -40,14 +46,17 @@ function fixture(mode: "complete-after-retry" | "continue-after-retry" | "blocke
     }
     if (mode === "continue-then-invalid-session" && calls === 1) {
       requestAgentBridgeOutcome(["continue", "--after-seconds", "60", "--reason", "stale wake"], options.contextEnv);
-      throw new Error("No conversation found with session ID: stale-session");
+      if (surfaceIdentity !== "acp:outward") mismatchWake();
+      throw attachProviderFailureEvidence(new Error("No conversation found with session ID: stale-session"), { promptSubmitted: false });
     }
     if (mode === "continue-then-model-fallback" && calls === 1) {
       requestAgentBridgeOutcome(["continue", "--after-seconds", "60", "--reason", "stale model wake"], options.contextEnv);
-      throw new Error("usage limit reached");
+      if (surfaceIdentity !== "acp:outward") mismatchWake();
+      throw attachProviderFailureEvidence(new Error("usage limit reached"), { promptSubmitted: false });
     }
     if (mode === "continue-then-internal-retry") {
       requestAgentBridgeOutcome(["continue", "--after-seconds", "60", "--reason", "stale internal wake"], options.contextEnv);
+      mismatchWake();
       await options.onProviderRetry();
     }
     if (mode === "report-first" || (mode === "complete-after-retry" && calls === 2) || (mode === "continue-then-invalid-session" && calls === 2) || (mode === "continue-then-model-fallback" && calls === 2) || mode === "continue-then-internal-retry") {
