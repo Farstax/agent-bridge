@@ -1,3 +1,4 @@
+import { attachProviderFailureEvidence } from "../src/providers/failureEvidence.js";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -246,9 +247,9 @@ describe("outward ACP prompt execution", () => {
             }));
             if (provider === "claude") {
               input.onInterimCommentary?.("Checking the current provider response.");
-              throw new Error("rate limit capacity exhausted");
+              throw attachProviderFailureEvidence(new Error("rate limit capacity exhausted"), { promptSubmitted: false });
             }
-            if (provider === "codex") throw new Error("authentication required");
+            if (provider === "codex") throw attachProviderFailureEvidence(new Error("authentication required"), { promptSubmitted: false });
             input.collect(eventType.runCompleted({
               runId: input.runId, bot: provider, chatId: String(input.chatId),
               chatKey: input.chatKey, text: "completed", sessionId: "grok-session",
