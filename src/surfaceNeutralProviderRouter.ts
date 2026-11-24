@@ -8,6 +8,7 @@ import { providerIdForBotName } from "./providers/registry.js";
 import { decideProviderRecovery } from "./providers/recoveryVerdict.js";
 import { markHandoffRequired } from "./handoffState.js";
 import { toUserMessage } from "./cli.js";
+import { sanitizeProviderFailureText } from "./providers/providerFailureDetail.js";
 import type { BotKind } from "./types.js";
 
 export interface SurfaceNeutralProviderRouterOptions {
@@ -154,8 +155,8 @@ export function createSurfaceNeutralProviderRouter(
           // for an actual provider failure, preserve the existing stale-wake
           // cleanup and inspection-first successor behaviour.
           const disposition = readRunOutcome(options.db, input.runId);
-          const settled = disposition?.status === "complete"
-            || disposition?.status === "continue" || disposition?.status === "blocked";
+          const settled = disposition?.status === "complete" || disposition?.status === "blocked"
+            || (disposition?.status === "continue" && failure.name === "MissingAcpAnswerError");
           const recoverable = decision.reason !== null && !settled && input.mayContinueRecovery?.() !== false;
           if (!recoverable) {
             input.onProviderRecoveryDecision?.(null, false);
@@ -167,7 +168,12 @@ export function createSurfaceNeutralProviderRouter(
           // a fresh native session receives inspection-first context instead.
           const originalError = failure.name === "RunOutcomeReconciliationError" && failure.cause instanceof Error
             ? failure.cause : failure;
-          failures.push(toUserMessage(originalError).slice(0, 1_000));
+          const summarizedError = toUserMessage(originalError);
+          const errorContext = originalError.message.includes(":")
+            && summarizedError === originalError.message.split(":")[0]
+            ? sanitizeProviderFailureText(originalError.message)
+            : summarizedError;
+          failures.push(errorContext.slice(0, 1_000));
           if (attemptMode !== "recovery" &&
               decision.reason !== "auth_required" && decision.reason !== "capacity" &&
               decision.reason !== "provider_unavailable") {
