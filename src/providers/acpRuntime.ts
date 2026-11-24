@@ -291,38 +291,42 @@ export function resolveProviderRuntime(
   providerId: ProviderId,
   env: Record<string, string | undefined> = process.env,
 ): ResolvedProviderRuntime {
-  if (providerId === "custom-acp") return resolveCustomAcpProviderRuntime(env);
-  const policy = getAcpProviderPolicy(providerId);
-  if (policy) {
-    const entry = getLockedAcpRegistryEntry(providerId);
-    if (!entry) throw new Error(`ACP provider ${providerId} has no release-locked registry entry`);
-    return resolveAcpProviderRuntime(policy, entry, {
-      env,
-      ...(policy.resolveExecutable ? { executable: resolveProviderExecutable(providerId, env) } : {}),
-    });
+  try {
+    if (providerId === "custom-acp") return resolveCustomAcpProviderRuntime(env);
+    const policy = getAcpProviderPolicy(providerId);
+    if (policy) {
+      const entry = getLockedAcpRegistryEntry(providerId);
+      if (!entry) throw new Error(`ACP provider ${providerId} has no release-locked registry entry`);
+      return resolveAcpProviderRuntime(policy, entry, {
+        env,
+        ...(policy.resolveExecutable ? { executable: resolveProviderExecutable(providerId, env) } : {}),
+      });
+    }
+    const adapter = getProviderAdapter(providerId);
+    if (
+      !adapter.executable
+      || !adapter.versionArgs
+      || !adapter.defaultArgs
+      || adapter.capabilities.toolFree === undefined
+    ) {
+      throw new Error(`Native provider ${providerId} is missing launch metadata`);
+    }
+    return {
+      providerId,
+      transport: "oneshot",
+      executable: resolveProviderExecutable(providerId, env),
+      args: adapter.defaultArgs,
+      versionArgs: adapter.versionArgs,
+      runtimeIdentity: `native:${providerId}`,
+      selectedVersion: null,
+      registryAgentId: null,
+      distribution: null,
+      toolFree: adapter.capabilities.toolFree,
+      provisionalAnswers: false,
+    };
+  } catch (error) {
+    throw attachProviderFailureEvidence(redactAcpFailure(error, env), { promptSubmitted: false });
   }
-  const adapter = getProviderAdapter(providerId);
-  if (
-    !adapter.executable
-    || !adapter.versionArgs
-    || !adapter.defaultArgs
-    || adapter.capabilities.toolFree === undefined
-  ) {
-    throw new Error(`Native provider ${providerId} is missing launch metadata`);
-  }
-  return {
-    providerId,
-    transport: "oneshot",
-    executable: resolveProviderExecutable(providerId, env),
-    args: adapter.defaultArgs,
-    versionArgs: adapter.versionArgs,
-    runtimeIdentity: `native:${providerId}`,
-    selectedVersion: null,
-    registryAgentId: null,
-    distribution: null,
-    toolFree: adapter.capabilities.toolFree,
-    provisionalAnswers: false,
-  };
 }
 
 /** Resolve a messaging/CLI-kind name through the runtime descriptor used by execution. */
@@ -558,6 +562,8 @@ export async function runResolvedAcpProviderTurn(
   observeSettledTurn?: (result: AcpTurnResult) => void,
 ): Promise<CliResult> {
   const providerId = runtime.providerId;
+  // Attachment reads and prompt construction are Bridge-local, not provider failures.
+  const blocks = promptBlocks(request);
   if (policy.providerId !== providerId) {
     throw new Error(`ACP runtime/policy mismatch: ${providerId} != ${policy.providerId}`);
   }
@@ -589,8 +595,17 @@ export async function runResolvedAcpProviderTurn(
     : null;
   const chatId = options.chatId;
   const eventContext = options.eventContext;
-  const onEvent = options.onEvent;
-  const abortRequested = () => chatId != null && isAbortRequested(chatId);
+  // Preserve failures in Bridge-owned event/delivery callbacks rather than
+  // converting them into provider transport errors. Do not throw through
+  // the supervisor's spawn/notification callbacks.
+  let bridgeFailure: Error | null = null;
+  const bridgeCallback = (callback: () => void): void => {
+    if (bridgeFailure) return;
+    try { callback(); }
+    catch (error) { bridgeFailure = error instanceof Error ? error : new Error(String(error)); }
+  };
+  const onEvent = options.onEvent ? (event: BridgeEvent) => bridgeCallback(() => options.onEvent!(event)) : undefined;
+  const abortRequested = () => bridgeFailure !== null || (chatId != null && isAbortRequested(chatId));
   // Monotonic across same-session retry attempts: once any attempt sent
   // session/prompt the provider may have started the task.
   let promptEverSubmitted = false;
@@ -598,7 +613,7 @@ export async function runResolvedAcpProviderTurn(
   const runTurn = async (attempt: 1 | 2): Promise<AcpTurnResult> => {
     // Never reuse a preview classifier or its buffered text across an ACP retry.
     if (attempt === 2) {
-      options.onInterimCommentary?.(null);
+      bridgeCallback(() => options.onInterimCommentary?.(null));
       answerPreview = newAnswerPreview();
     }
     const credentialExecutionLock = policy.credentialExecutionLock?.(effectiveEnv, attempt) ?? null;
@@ -608,6 +623,7 @@ export async function runResolvedAcpProviderTurn(
       cwd,
       {
         ...options,
+        onEvent,
         contextEnv,
         bot: options.bot ?? providerBotKind(providerId),
         ...(credentialExecutionLock ? { providerCredentialLock: credentialExecutionLock } : {}),
@@ -622,7 +638,7 @@ export async function runResolvedAcpProviderTurn(
         conversationId: identities.conversationId,
         runId: identities.runId,
         existingAcpSessionId: request.sessionId,
-        prompt: promptBlocks(request),
+        prompt: blocks,
         executionMode: request.executionMode,
         sessionMeta: sessionSettings?.meta,
         sessionModeId: sessionSettings?.modeId,
@@ -631,15 +647,16 @@ export async function runResolvedAcpProviderTurn(
         abortRequested,
         onPromptSubmitted: (sessionId) => { promptEverSubmitted = true; submittedSessionId = sessionId; },
         signal: io.signal,
-        onSteerReady: policy.steeringSupported ? options.onSteerReady : undefined,
+        onSteerReady: policy.steeringSupported && options.onSteerReady
+          ? (steer) => bridgeCallback(() => options.onSteerReady!(steer)) : undefined,
         onLiveText: options.onProgress
           ? (text) => {
             const safe = liveRedactor.push(text);
-            if (safe) options.onProgress?.(safe);
+            if (safe) bridgeCallback(() => options.onProgress?.(safe));
           }
           : undefined,
         onEvent: answerPreview || activityProjector || (eventContext && onEvent)
-          ? (event) => {
+          ? (event) => bridgeCallback(() => {
             const runActivity = activityProjector?.observe(event);
             if (runActivity) options.onProgress?.activity?.(runActivity);
             answerPreview?.observe(event);
@@ -654,10 +671,11 @@ export async function runResolvedAcpProviderTurn(
               sessionMode: event.sessionMode,
               event: redactAcpEventCredentials(event, redactionEnv),
             }));
-          }
+          })
           : undefined,
       }),
     );
+    if (bridgeFailure) throw bridgeFailure;
     const providerError = policy.detectTurnError?.(turn);
     if (providerError) throw providerError;
     return turn;
@@ -679,7 +697,13 @@ export async function runResolvedAcpProviderTurn(
         abortRequested,
         promptSubmitted: () => promptEverSubmitted,
         onRetryDecision: async (error, successorStarted) => {
-          if (successorStarted) await options.onProviderRetry?.();
+          if (successorStarted) {
+            try { await options.onProviderRetry?.(); }
+            catch (error) {
+              bridgeFailure = error instanceof Error ? error : new Error(String(error));
+              throw bridgeFailure;
+            }
+          }
           priorAttemptRecorded = true;
           if (eventContext && onEvent) {
             const redacted = redactAcpFailure(error, redactionEnv);
@@ -695,6 +719,7 @@ export async function runResolvedAcpProviderTurn(
         },
       });
   } catch (error) {
+    if (bridgeFailure) throw bridgeFailure;
     const redacted = redactAcpFailure(error, redactionEnv);
     if (eventContext && onEvent && !(priorAttemptRecorded && currentAttempt === 1)) {
       onEvent(buildAcpFailureDiagnosticEvent(
@@ -712,9 +737,11 @@ export async function runResolvedAcpProviderTurn(
       markProviderRuntimeAuthDegraded("claude", runtimeHome);
     }
     // Cancellation is never a provider failure and must not gain recovery evidence.
+    if (bridgeFailure) throw bridgeFailure;
     if (abortRequested() || redacted instanceof AcpTransientRetryCancelledError) throw redacted;
     throw attachProviderFailureEvidence(redacted, { promptSubmitted: promptEverSubmitted, sessionId: submittedSessionId });
   }
+  if (bridgeFailure) throw bridgeFailure;
   if (providerId === "claude") clearProviderRuntimeAuthDegraded("claude", runtimeHome);
   const flushed = liveRedactor.flush();
   if (flushed) options.onProgress?.(flushed);
@@ -739,6 +766,7 @@ export async function runResolvedAcpProviderTurn(
         { attempt: currentAttempt, successorStarted: false, retryEligible: false, promptSubmitted: promptEverSubmitted },
       ));
     }
+    if (bridgeFailure) throw bridgeFailure;
     throw attachProviderFailureEvidence(classifiedError, { promptSubmitted: promptEverSubmitted, sessionId: submittedSessionId });
   }
   if (parsed.stopReason === "cancelled" && request.outputDir) {
@@ -766,15 +794,9 @@ export async function runAcpProviderTurn(
   const policy = getAcpProviderPolicy(providerId);
   if (!policy) throw new Error(`Provider ${providerId} has no ACP runtime policy`);
   const effectiveEnv = { ...process.env, ...(options.contextEnv ?? {}) };
-  let runtime: ReturnType<typeof resolveProviderRuntime>;
-  try {
-    runtime = resolveProviderRuntime(providerId, effectiveEnv);
-  } catch (error) {
-    throw attachProviderFailureEvidence(redactAcpFailure(error, effectiveEnv), { promptSubmitted: false });
-  }
   return runResolvedAcpProviderTurn(
     policy,
-    runtime,
+    resolveProviderRuntime(providerId, effectiveEnv),
     request,
     cwd,
     options,
