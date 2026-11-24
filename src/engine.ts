@@ -8,7 +8,7 @@
  */
 
 import { SCRATCH_SIGNPOST, readScratch, renderFreshScratch } from "./scratchpad.js";
-import { MissingRunOutcomeError, RunOutcomeReconciliationError, readRunOutcome, missingOutcomeRetries, resetAbandonedRunDisposition } from "./runOutcome.js";
+import { MissingRunOutcomeError, RunOutcomeReconciliationError, readRunOutcome, hasAuthoritativeRunOutcome, missingOutcomeRetries, resetAbandonedRunDisposition } from "./runOutcome.js";
 import { EVENT_RECEIPT_CORRELATION_PREFIX } from "./interactiveIngress.js";
 import { randomUUID } from "node:crypto";
 import { basename, dirname, join } from "node:path";
@@ -21,7 +21,6 @@ import {
   runCliAsync as _runCliAsync,
   runProviderInvocation as _runProviderInvocation,
   parseCliResult,
-  isCapacityExhaustedError,
   getNextFallbackModel,
   abortCliProcess,
   abortExecutionAndWait,
@@ -975,6 +974,11 @@ export class BridgeEngine {
       const executionProvider = providerIdForBotName(this._executionKind());
       let decision = decideProviderRecovery(executionProvider, providerError);
       const sourceKind = this.kind;
+      // An existing durable objective outcome is not a new attempt invitation.
+      if (hasAuthoritativeRunOutcome(this.db, runId)) {
+        outcome = "failed";
+        return "failed";
+      }
 
       // Before requesting an authorised fallback, give the original provider
       // one bounded inspection-first fresh-session recovery. This also covers
@@ -1046,6 +1050,10 @@ export class BridgeEngine {
         this._linkScheduledOccurrences(scheduledOccurrenceKeys, runId);
       } catch (linkError) {
         console.error(`[${this.kind}] scheduled occurrence correlation failed after execution error`, linkError);
+      }
+      if (hasAuthoritativeRunOutcome(this.db, runId)) {
+        outcome = "failed";
+        return "failed";
       }
       const capacityExhausted = decision.capacityExhausted;
       const capacityRetryAfter = capacityExhausted ? capacityRetryAfterSeconds(providerError) : null;
@@ -2296,15 +2304,20 @@ export class BridgeEngine {
     // An outcome is a durable provider claim, not a reason to execute the
     // original task again because its final presentation was omitted.
     const recordedOutcomeWithoutAnswer = (error: unknown): CliResult | null => {
-      if (!(error instanceof MissingAcpAnswerError) || !runId || error.stopReason === "refusal"
-        || this.laneCoordinator.hasCancellation(executionLane) || this.laneCoordinator.isAborted(executionLane)) return null;
-      const disposition = readRunOutcome(this.db, runId);
-      if (!disposition) return null;
+      if (!runId || this.laneCoordinator.hasCancellation(executionLane)
+        || this.laneCoordinator.isAborted(executionLane) || !this.db.ownsLock(laneHandle)) return null;
+      if (error instanceof MissingAcpAnswerError && (error.stopReason === "refusal" || error.stopReason === "cancelled")) return null;
+      const evidence = readProviderFailureEvidence(error);
+      const nativeSession = error instanceof MissingAcpAnswerError ? error.sessionId : evidence?.sessionId;
+      // Do not fabricate a native session or resume an older binding from a
+      // failed fresh-session attempt. The submitted ACP session is authoritative.
+      if (!nativeSession || !hasAuthoritativeRunOutcome(this.db, runId, ordinaryWorkstreamId)) return null;
+      const disposition = readRunOutcome(this.db, runId)!;
       return {
         text: "The agent recorded " + disposition.status
           + " but did not provide a final answer. Recorded details: " + disposition.detail,
-        sessionId: error.sessionId,
-        stopReason: error.stopReason,
+        sessionId: nativeSession,
+        stopReason: error instanceof MissingAcpAnswerError ? error.stopReason : "end_turn",
       };
     };
     try {
@@ -2541,14 +2554,7 @@ export class BridgeEngine {
       if (eligibleOutcome) {
         const disposition = readRunOutcome(this.db, runId!);
         if (disposition?.status === "continue") {
-          const wake = listRunContinuations(this.db, this.surfaceIdentity)
-            .find((item) => item.id === runId && item.originRunId === runId);
-          if (!wake || wake.chatKey !== chatKey || wake.provider !== executionKind
-            || wake.reason !== disposition.detail
-            || (wake.state !== "pending" && wake.state !== "claimed")
-            || !Number.isFinite(Date.parse(wake.dueAt))
-            || !(Date.parse(wake.expiresAt) > Math.max(Date.now(), Date.parse(wake.dueAt)))
-            || (this.surfaceIdentity === "acp:outward" && wake.outwardSessionId !== ordinaryWorkstreamId)) {
+          if (!hasAuthoritativeRunOutcome(this.db, runId!, ordinaryWorkstreamId)) {
             throw new RunOutcomeReconciliationError(
               "The continue outcome has no matching durable, actionable scheduled continuation; original intent remains unresolved.",
             );
@@ -2625,19 +2631,23 @@ export class BridgeEngine {
         || this.laneCoordinator.isAborted(executionLane)
         || !this.db.ownsLock(laneHandle)
       )) {
-        attachProviderFailureEvidence(error, { promptSubmitted: true });
+        await this._cleanTerminalOutputDir(outDir, "fenced provider attempt");
+        throw new LostExecutionLeaseError();
       }
-      const providerFallbackReason = decideProviderRecovery(
+      const recovery = decideProviderRecovery(
         providerIdForBotName(executionKind),
         error instanceof Error ? error : new Error(String(error)),
-      ).transportReason;
+      );
+      const providerFallbackReason = recovery.transportReason;
       const canPublish = this._canPublish(laneHandle);
       if (providerFallbackReason || !publishArtifacts) {
         await this._cleanTerminalOutputDir(outDir, providerFallbackReason ? "provider fallback" : "non-messaging Run");
       } else if (canPublish) {
         await uploadOutputFiles(outDir, chatId, this.client, fileSendOptions, () => this._canPublish(laneHandle)).catch(() => {});
       }
-      if (!(body as { requireBoundProviderSession?: boolean }).requireBoundProviderSession && sessionId && isInvalidProviderSessionError(error)) {
+      const mayRetry = recovery.reason !== null && canPublish
+        && !(runId && hasAuthoritativeRunOutcome(this.db, runId, ordinaryWorkstreamId));
+      if (mayRetry && !(body as { requireBoundProviderSession?: boolean }).requireBoundProviderSession && sessionId && isInvalidProviderSessionError(error)) {
         console.warn(`[${this.kind}] session ID invalid, retrying with fresh session...`);
         const kind = this.kind;
         this._discardAbandonedAttemptOutcome(laneHandle, runId);
@@ -2646,7 +2656,7 @@ export class BridgeEngine {
       }
       // One bounded same-provider alternate-model attempt; the alternate attempt
       // never falls back again.
-      if (!(body as { requireBoundProviderSession?: boolean }).requireBoundProviderSession && !modelFallback && isCapacityExhaustedError(error as Error) && this.opts.botConfig.modelPreference.length > 1) {
+      if (mayRetry && !(body as { requireBoundProviderSession?: boolean }).requireBoundProviderSession && !modelFallback && recovery.capacityExhausted && this.opts.botConfig.modelPreference.length > 1) {
         const fallbackModel = getNextFallbackModel(model, this.opts.botConfig.modelPreference);
         if (fallbackModel) {
           this._discardAbandonedAttemptOutcome(laneHandle, runId);
@@ -2664,7 +2674,7 @@ export class BridgeEngine {
       // for a fenced lane (e.g. a "killed by signal" message) and would
       // otherwise skip straight past any cleanup placed after it.
       if (!canPublish) await this._cleanTerminalOutputDir(outDir, "terminal provider attempt");
-      this._handleCircuitBreaker(error as Error, chatKey, laneHandle);
+      if (mayRetry) this._handleCircuitBreaker(error as Error, chatKey, laneHandle);
       throw error;
     }
   }
