@@ -567,7 +567,7 @@ export async function runResolvedAcpProviderTurn(
   // Provider-owned setup may fail before a native session exists. Keep
   // provenance confined to the provider hooks, not Bridge delivery/storage.
   let providerEnv: ReturnType<NonNullable<typeof policy.buildChildEnv>>;
-  let sessionSettings: ReturnType<NonNullable<typeof policy.sessionSettings>>;
+  let sessionSettings: ReturnType<NonNullable<typeof policy.sessionSettings>> | undefined;
   try {
     policy.validateRuntime?.(runtime, effectiveEnv);
     providerEnv = policy.buildChildEnv?.(request, effectiveEnv) ?? {};
