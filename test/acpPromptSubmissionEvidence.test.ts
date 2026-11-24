@@ -84,15 +84,15 @@ describe("ACP prompt submission evidence at the runtime boundary", () => {
     expect(decideProviderRecovery("codex", error as Error).reason).toBe("provider_transport_failure");
   }, 30_000);
 
-  it("does not reset to pre-prompt when the retry attempt fails during setup after attempt 1 submitted", async () => {
+  it("retains prompt-submitted provenance without replaying a failed prompt", async () => {
     const dir = mkdtempSync(join(tmpdir(), "acp-evidence-"));
     try {
       const events: any[] = [];
       const error = await failureFor("prompt-then-setup-fail", join(dir, "count"), events);
       expect(readProviderFailureEvidence(error)).toEqual({ promptSubmitted: true });
-      // Attempt 1 submitted; the later setup failure must not be recorded as pre-prompt.
+      // Attempt 1 submitted: do not launch another adapter process blindly.
       expect(events.filter((event) => event.type === "run.diagnostic").map((event) => event.promptSubmitted))
-        .toEqual([true, true]);
+        .toEqual([true]);
       expect(decideProviderRecovery("codex", error as Error).reason).toBe("provider_transport_failure");
     } finally {
       rmSync(dir, { recursive: true, force: true });
