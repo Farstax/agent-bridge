@@ -1,3 +1,4 @@
+import { attachProviderFailureEvidence } from "../src/providers/failureEvidence.js";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { mkdirSync, writeFileSync, existsSync } from "node:fs";
@@ -83,8 +84,8 @@ describe("interactive capacity fallback durable admission", () => {
     const fallbackRequests = new Map<string, import("../src/engine.js").ProviderFallbackReason>();
     const capacityFallbackAttempts = new Map<string, { runId: string; chatId: number | string; chatType: string; threadId?: number | string }>();
     const notifications: string[] = [];
-    const codexRun = vi.fn().mockRejectedValue(new Error("MODEL_CAPACITY_EXHAUSTED"));
-    const claudeRun = vi.fn().mockRejectedValue(new Error("MODEL_CAPACITY_EXHAUSTED"));
+    const codexRun = vi.fn().mockRejectedValue(attachProviderFailureEvidence(new Error("MODEL_CAPACITY_EXHAUSTED"), { promptSubmitted: false }));
+    const claudeRun = vi.fn().mockRejectedValue(attachProviderFailureEvidence(new Error("MODEL_CAPACITY_EXHAUSTED"), { promptSubmitted: false }));
     const makeEngine = (kind: "codex" | "claude", runCli: typeof codexRun) => new BridgeEngine(
       {
         surfaceIdentity: "telegram:interactive",
@@ -157,7 +158,7 @@ describe("interactive capacity fallback durable admission", () => {
     client.deleteMessage.mockRejectedValue(new Error("Telegram delete failed"));
     const run = vi.fn().mockImplementation(async (_cmd: string, _args: string[], _cwd: string, options: any) => {
       options.onProviderOutputChunk?.(`${JSON.stringify({ type: "stream_event", event: { type: "content_block_delta", delta: { type: "text_delta", text: "preview" } } })}\n`);
-      throw new Error("rate limit capacity exhausted");
+      throw attachProviderFailureEvidence(new Error("rate limit capacity exhausted"), { promptSubmitted: false });
     });
     const engine = new BridgeEngine({
       surfaceIdentity: "telegram:interactive", kind: "claude", botConfig: { command: "claude", modelPreference: [] },
@@ -188,7 +189,7 @@ describe("interactive capacity fallback durable admission", () => {
     const notifications: string[] = [];
     const claudeRun = vi.fn().mockImplementation(async (_cmd: string, _args: string[], _cwd: string, options: any) => {
       options.onProviderOutputChunk?.(`${JSON.stringify({ type: "stream_event", event: { type: "content_block_delta", delta: { type: "text_delta", text: "stale Claude preview" } } })}\n`);
-      throw new Error("rate limit capacity exhausted");
+      throw attachProviderFailureEvidence(new Error("rate limit capacity exhausted"), { promptSubmitted: false });
     });
     const codexRun = vi.fn().mockResolvedValue([
       JSON.stringify({ type: "thread.started", thread_id: "must-not-run" }),
@@ -247,7 +248,7 @@ describe("interactive capacity fallback durable admission", () => {
     const notifications: string[] = [];
     const claudeRun = vi.fn().mockImplementation(async (_cmd: string, _args: string[], _cwd: string, options: any) => {
       options.onProviderOutputChunk?.(`${JSON.stringify({ type: "stream_event", event: { type: "content_block_delta", delta: { type: "text_delta", text: "stale Claude preview" } } })}\n`);
-      throw new Error("rate limit capacity exhausted");
+      throw attachProviderFailureEvidence(new Error("rate limit capacity exhausted"), { promptSubmitted: false });
     });
     const codexRun = vi.fn().mockResolvedValue(JSON.stringify({ event: "result", result: { conversation_id: "11111111-2222-4333-8444-555555555555", status: "SUCCESS", response: "authoritative Agy fallback" } }));
     const makeEngine = (kind: "claude" | "antigravity", runCli: any) => new BridgeEngine(
@@ -301,8 +302,8 @@ describe("interactive capacity fallback durable admission", () => {
          () => true);
     const notifications: string[] = [];
 
-    const codexRun = vi.fn().mockRejectedValue(new Error("session limit reached"));
-    const claudeRun = vi.fn().mockRejectedValue(new Error("session limit reached"));
+    const codexRun = vi.fn().mockRejectedValue(attachProviderFailureEvidence(new Error("session limit reached"), { promptSubmitted: false }));
+    const claudeRun = vi.fn().mockRejectedValue(attachProviderFailureEvidence(new Error("session limit reached"), { promptSubmitted: false }));
     const antigravityRun = vi.fn().mockResolvedValue(JSON.stringify({
       type: "result",
       session_id: "fallback-success-session",
@@ -404,9 +405,9 @@ describe("interactive capacity fallback durable admission", () => {
          () => true);
     const notifications: string[] = [];
 
-    const codexRun = vi.fn().mockRejectedValue(new Error("session limit reached"));
-    const claudeRun = vi.fn().mockRejectedValue(new Error("session limit reached"));
-    const antigravityRun = vi.fn().mockRejectedValue(new Error("session limit reached"));
+    const codexRun = vi.fn().mockRejectedValue(attachProviderFailureEvidence(new Error("session limit reached"), { promptSubmitted: false }));
+    const claudeRun = vi.fn().mockRejectedValue(attachProviderFailureEvidence(new Error("session limit reached"), { promptSubmitted: false }));
+    const antigravityRun = vi.fn().mockRejectedValue(attachProviderFailureEvidence(new Error("session limit reached"), { promptSubmitted: false }));
 
     const makeEngine = (runCli: typeof codexRun) => new BridgeEngine(
       {
@@ -484,8 +485,8 @@ describe("interactive capacity fallback durable admission", () => {
     const fallbackRequests = new Map<string, import("../src/engine.js").ProviderFallbackReason>();
     const capacityFallbackAttempts = new Map<string, { runId: string; chatId: number | string; chatType: string; threadId?: number | string }>();
     const notifications: string[] = [];
-    const codexRun = vi.fn().mockRejectedValue(new Error("MODEL_CAPACITY_EXHAUSTED"));
-    const claudeRun = vi.fn().mockRejectedValue(new Error("MODEL_CAPACITY_EXHAUSTED"));
+    const codexRun = vi.fn().mockRejectedValue(attachProviderFailureEvidence(new Error("MODEL_CAPACITY_EXHAUSTED"), { promptSubmitted: false }));
+    const claudeRun = vi.fn().mockRejectedValue(attachProviderFailureEvidence(new Error("MODEL_CAPACITY_EXHAUSTED"), { promptSubmitted: false }));
 
     const makeEngine = (kind: "codex" | "claude", runCli: typeof codexRun) => new BridgeEngine(
       {
@@ -588,8 +589,8 @@ describe("interactive capacity fallback durable admission", () => {
     const fallbackRequests = new Map<string, import("../src/engine.js").ProviderFallbackReason>();
     const capacityFallbackAttempts = new Map<string, { runId: string; chatId: number | string; chatType: string; threadId?: number | string }>();
     const notifications: string[] = [];
-    const codexRun = vi.fn().mockRejectedValue(new Error("MODEL_CAPACITY_EXHAUSTED"));
-    const claudeRun = vi.fn().mockRejectedValue(new Error("MODEL_CAPACITY_EXHAUSTED"));
+    const codexRun = vi.fn().mockRejectedValue(attachProviderFailureEvidence(new Error("MODEL_CAPACITY_EXHAUSTED"), { promptSubmitted: false }));
+    const claudeRun = vi.fn().mockRejectedValue(attachProviderFailureEvidence(new Error("MODEL_CAPACITY_EXHAUSTED"), { promptSubmitted: false }));
 
     const makeEngine = (kind: "codex" | "claude", runCli: typeof codexRun) => new BridgeEngine(
       {
@@ -711,8 +712,8 @@ describe("interactive capacity fallback durable admission", () => {
         },
       );
 
-      const codexError = new Error("MODEL_CAPACITY_EXHAUSTED");
-      const claudeError = new Error("MODEL_CAPACITY_EXHAUSTED");
+      const codexError = attachProviderFailureEvidence(new Error("MODEL_CAPACITY_EXHAUSTED"), { promptSubmitted: false });
+      const claudeError = attachProviderFailureEvidence(new Error("MODEL_CAPACITY_EXHAUSTED"), { promptSubmitted: false });
       const engines = {
         codex: makeEngine("codex", codexError),
         claude: makeEngine("claude", claudeError),
@@ -771,12 +772,12 @@ describe("interactive capacity fallback durable admission", () => {
     const codexRun = vi.fn().mockImplementation(async () => {
       codexCalls++;
       if (codexCalls === 1) {
-        throw new Error("MODEL_CAPACITY_EXHAUSTED");
+        throw attachProviderFailureEvidence(new Error("MODEL_CAPACITY_EXHAUSTED"), { promptSubmitted: false });
       }
       return "Result from Codex after wake";
     });
 
-    const claudeRun = vi.fn().mockRejectedValue(new Error("MODEL_CAPACITY_EXHAUSTED"));
+    const claudeRun = vi.fn().mockRejectedValue(attachProviderFailureEvidence(new Error("MODEL_CAPACITY_EXHAUSTED"), { promptSubmitted: false }));
 
     const makeEngine = (kind: "codex" | "claude", runCli: any) => new BridgeEngine(
       {
@@ -877,10 +878,10 @@ describe("interactive capacity fallback durable admission", () => {
     let codexCalls = 0;
     const codexRun = vi.fn().mockImplementation(async (cmd: any, args: any) => {
       codexCalls++;
-      if (codexCalls === 1 || codexCalls >= 3) throw new Error("MODEL_CAPACITY_EXHAUSTED");
+      if (codexCalls === 1 || codexCalls >= 3) throw attachProviderFailureEvidence(new Error("MODEL_CAPACITY_EXHAUSTED"), { promptSubmitted: false });
       return "Result from Codex";
     });
-    const claudeRun = vi.fn().mockRejectedValue(new Error("MODEL_CAPACITY_EXHAUSTED"));
+    const claudeRun = vi.fn().mockRejectedValue(attachProviderFailureEvidence(new Error("MODEL_CAPACITY_EXHAUSTED"), { promptSubmitted: false }));
 
     const makeEngine = (kind: "codex" | "claude", runCli: any) => new BridgeEngine(
       {
@@ -992,12 +993,12 @@ describe("interactive capacity fallback durable admission", () => {
         client,
         {
           runCli: (async () => {
-            if (kind === "codex") throw new Error("MODEL_CAPACITY_EXHAUSTED");
-            throw new Error("authentication required: please run auth");
+            if (kind === "codex") throw attachProviderFailureEvidence(new Error("MODEL_CAPACITY_EXHAUSTED"), { promptSubmitted: false });
+            throw attachProviderFailureEvidence(new Error("authentication required: please run auth"), { promptSubmitted: false });
           }) as any,
           runProviderInvocation: asAcpAdapter(async () => {
-            if (kind === "codex") throw new Error("MODEL_CAPACITY_EXHAUSTED");
-            throw new Error("authentication required: please run auth");
+            if (kind === "codex") throw attachProviderFailureEvidence(new Error("MODEL_CAPACITY_EXHAUSTED"), { promptSubmitted: false });
+            throw attachProviderFailureEvidence(new Error("authentication required: please run auth"), { promptSubmitted: false });
           }),
         },
       );
@@ -1047,12 +1048,12 @@ describe("interactive capacity fallback durable admission", () => {
 
     let wakePhase = false;
     const codexRun = vi.fn().mockImplementation(async () => {
-      if (!wakePhase) throw new Error("MODEL_CAPACITY_EXHAUSTED");
-      throw new Error("authentication required: please run auth");
+      if (!wakePhase) throw attachProviderFailureEvidence(new Error("MODEL_CAPACITY_EXHAUSTED"), { promptSubmitted: false });
+      throw attachProviderFailureEvidence(new Error("authentication required: please run auth"), { promptSubmitted: false });
     });
     const claudeRun = vi.fn().mockImplementation(async () => {
-      if (!wakePhase) throw new Error("MODEL_CAPACITY_EXHAUSTED");
-      throw new Error("authentication required: please run auth");
+      if (!wakePhase) throw attachProviderFailureEvidence(new Error("MODEL_CAPACITY_EXHAUSTED"), { promptSubmitted: false });
+      throw attachProviderFailureEvidence(new Error("authentication required: please run auth"), { promptSubmitted: false });
     });
 
     const makeEngine = (kind: "codex" | "claude", runCli: any) => new BridgeEngine(
@@ -1151,12 +1152,12 @@ describe("interactive capacity fallback durable admission", () => {
 
     let wakePhase = false;
     const codexRun = vi.fn().mockImplementation(async () => {
-      if (!wakePhase) throw new Error("MODEL_CAPACITY_EXHAUSTED");
-      throw new Error("authentication required: please run auth");
+      if (!wakePhase) throw attachProviderFailureEvidence(new Error("MODEL_CAPACITY_EXHAUSTED"), { promptSubmitted: false });
+      throw attachProviderFailureEvidence(new Error("authentication required: please run auth"), { promptSubmitted: false });
     });
     const claudeRun = vi.fn().mockImplementation(async () => {
-      if (!wakePhase) throw new Error("MODEL_CAPACITY_EXHAUSTED");
-      throw new Error("authentication required: please run auth");
+      if (!wakePhase) throw attachProviderFailureEvidence(new Error("MODEL_CAPACITY_EXHAUSTED"), { promptSubmitted: false });
+      throw attachProviderFailureEvidence(new Error("authentication required: please run auth"), { promptSubmitted: false });
     });
 
     const makeEngine = (kind: "codex" | "claude", runCli: any) => new BridgeEngine(
@@ -1246,8 +1247,8 @@ describe("interactive capacity fallback durable admission", () => {
 
     let wakePhase = false;
     const codexRun = vi.fn().mockImplementation(async () => {
-      if (!wakePhase) throw new Error("MODEL_CAPACITY_EXHAUSTED");
-      throw new Error("authentication required: please run auth");
+      if (!wakePhase) throw attachProviderFailureEvidence(new Error("MODEL_CAPACITY_EXHAUSTED"), { promptSubmitted: false });
+      throw attachProviderFailureEvidence(new Error("authentication required: please run auth"), { promptSubmitted: false });
     });
 
     const engine = new BridgeEngine(
