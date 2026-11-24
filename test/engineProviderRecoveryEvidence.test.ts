@@ -28,9 +28,8 @@ function client() {
 const submitted = (message: string, promptSubmitted: boolean) =>
   attachProviderFailureEvidence(new Error(message), { promptSubmitted });
 
-async function runCodexThenClaude(sourceRun: ReturnType<typeof vi.fn>, sourceKind: "codex" | "claude" = "codex", locked = false) {
+async function runCodexThenClaude(sourceRun: ReturnType<typeof vi.fn>, sourceKind: "codex" | "claude" = "codex", locked = false, db = openDb(":memory:")) {
   const targetKind = sourceKind === "codex" ? "claude" : "codex";
-  const db = openDb(":memory:");
   const chatKey = "946";
   const fallbackRequests = new Map<string, ProviderFallbackReason>();
   const fallbackChain = new ProviderFallbackChain(locked ? [sourceKind] : [sourceKind, targetKind], db, "telegram:interactive", () => true);
@@ -113,6 +112,35 @@ describe("evidence-based provider recovery through the interactive route owner",
       ]);
     } finally { db.unlock(lane); db.close(); }
   });
+  it("reports a recorded continuation when its native session cannot be verified, without replay", async () => {
+    const db = openDb(":memory:");
+    const identity = { surfaceIdentity: "telegram:interactive", chatKey: "946" };
+    const sourceRun = vi.fn(async (_cmd: string, _args: string[], _cwd: string, options: any) => {
+      const runId = options.eventContext.runId;
+      if (!db.getRun(runId)) db.insertRun(runId, identity, "codex");
+      const lock = db.raw.prepare("SELECT service_id, run_id, acquisition_id FROM execution_locks WHERE surface = ? AND chat_key = ?")
+        .get(identity.surfaceIdentity, identity.chatKey) as { service_id: string; run_id: string; acquisition_id: string };
+      recordRunOutcome(db, {
+        ...identity, runId, provider: "codex", status: "continue", detail: "verify the result",
+        lock: { serviceId: lock.service_id, runId: lock.run_id, acquisitionId: lock.acquisition_id },
+      });
+      requestRunContinuation(db, {
+        ...identity, originRunId: runId, provider: "codex", reason: "verify the result", afterSeconds: 60,
+      });
+      throw submitted("ECONNRESET after recording continuation", true);
+    });
+    try {
+      const { targetRun, texts } = await runCodexThenClaude(sourceRun, "codex", false, db);
+      expect(sourceRun).toHaveBeenCalledTimes(1);
+      expect(targetRun).not.toHaveBeenCalled();
+      expect(texts.join("\n")).toContain("The agent recorded continue: verify the result");
+      expect(texts.join("\n")).toContain("Automatic continuation is not confirmed");
+      expect(listRunContinuations(db, identity.surfaceIdentity)).toEqual([
+        expect.objectContaining({ state: "cancelled", reason: "verify the result" }),
+      ]);
+    } finally { db.close(); }
+  });
+
   it("attempts same-provider recovery before fallback for evidenced unclassified failure", async () => {
     const sourceRun = vi.fn(async () => { throw submitted("Internal error: could not initialise", false); });
     const { db, targetRun, texts } = await runCodexThenClaude(sourceRun);
