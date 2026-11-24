@@ -28,18 +28,20 @@ export class EventReceiptRepository {
    * is the first (a retry of an already admitted event must not redispatch).
    */
   admitReceipt(input: Parameters<EventReceiptRepository["createReceipt"]>[0]): { receipt: EventReceipt; created: boolean } {
-    const inserted = this.db.prepare(
-      `INSERT INTO event_receipts
-         (event_id, source, event_kind, idempotency_key, received_at, occurred_at, payload_json, authority_scope)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-       ON CONFLICT(idempotency_key) DO NOTHING
-       RETURNING *`
-    ).get(
-      input.event_id, input.source, input.event_kind, input.idempotency_key,
-      input.received_at, input.occurred_at, input.payload_json, input.authority_scope,
-    ) as EventReceipt | undefined;
-    if (inserted) return { receipt: inserted, created: true };
-    return { receipt: this.getByIdempotencyKey(input.idempotency_key)!, created: false };
+    return this.db.transaction(() => {
+      const inserted = this.db.prepare(
+        `INSERT INTO event_receipts
+           (event_id, source, event_kind, idempotency_key, received_at, occurred_at, payload_json, authority_scope)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(idempotency_key) DO NOTHING
+         RETURNING *`
+      ).get(
+        input.event_id, input.source, input.event_kind, input.idempotency_key,
+        input.received_at, input.occurred_at, input.payload_json, input.authority_scope,
+      ) as EventReceipt | undefined;
+      if (inserted) return { receipt: inserted, created: true };
+      return { receipt: this.getByIdempotencyKey(input.idempotency_key)!, created: false };
+    }).immediate();
   }
 
   /** Exactly one caller wins the right to dispatch a receipt. */

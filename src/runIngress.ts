@@ -91,29 +91,33 @@ export function acceptRunIngressRequest(
     throw new RunIngressAuthenticationError("run ingress authentication failed");
   }
   validateRequest(input);
-  const existing = db.getEventReceiptByIdempotencyKey(input.idempotencyKey);
-  if (existing) {
-    if (!existing.run_id) throw new Error("run ingress receipt has no linked Run");
-    return { receiptId: existing.id, runId: existing.run_id, created: false };
-  }
-  const receipt = db.createEventReceipt({
-    event_id: input.requestId,
-    source: RUN_INGRESS_SOURCE,
-    event_kind: RUN_INGRESS_EVENT_KIND,
-    idempotency_key: input.idempotencyKey,
-    occurred_at: input.occurredAt ?? new Date().toISOString(),
-    received_at: options.now?.() ?? new Date().toISOString(),
-    payload_json: JSON.stringify({ scopeKey: input.scopeKey, prompt: input.prompt }),
-    authority_scope: "ordinary-run",
-  });
-  return db.runInTransaction(() => {
-    const current = db.getEventReceipt(receipt.id);
-    if (!current) throw new Error("run ingress receipt disappeared");
-    if (current.run_id) return { receiptId: current.id, runId: current.run_id, created: false };
+  return db.runInImmediateTransaction(() => {
+    const existing = db.getEventReceiptByIdempotencyKey(input.idempotencyKey);
+    if (existing) {
+      if (existing.source !== RUN_INGRESS_SOURCE || existing.event_kind !== RUN_INGRESS_EVENT_KIND || existing.authority_scope !== "ordinary-run") {
+        throw new RunIngressRequestError("idempotency key belongs to another receipt authority");
+      }
+      if (!existing.run_id) throw new Error("run ingress receipt has no linked Run");
+      const run = db.getRun(existing.run_id);
+      if (!run || run.surface_identity !== RUN_INGRESS_SOURCE || run.chat_id !== runChatKey(input.scopeKey)) {
+        throw new RunIngressRequestError("idempotency key belongs to another ingress scope");
+      }
+      return { receiptId: existing.id, runId: existing.run_id, created: false };
+    }
+    const receipt = db.createEventReceipt({
+      event_id: input.requestId,
+      source: RUN_INGRESS_SOURCE,
+      event_kind: RUN_INGRESS_EVENT_KIND,
+      idempotency_key: input.idempotencyKey,
+      occurred_at: input.occurredAt ?? new Date().toISOString(),
+      received_at: options.now?.() ?? new Date().toISOString(),
+      payload_json: JSON.stringify({ scopeKey: input.scopeKey, prompt: input.prompt }),
+      authority_scope: "ordinary-run",
+    });
     const runId = options.runId?.() ?? randomUUID();
     db.insertRun(runId, { surfaceIdentity: RUN_INGRESS_SOURCE, chatKey: runChatKey(input.scopeKey) }, options.bot ?? "claude");
-    db.linkEventReceiptRun(current.id, runId);
-    return { receiptId: current.id, runId, created: true };
+    db.linkEventReceiptRun(receipt.id, runId);
+    return { receiptId: receipt.id, runId, created: true };
   });
 }
 

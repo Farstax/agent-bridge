@@ -2,6 +2,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { EventReceiptRepository } from "../src/repositories/eventReceiptRepository.js";
 import { openDb, DEFAULT_CONTEXT_MAX_CHARS, DEFAULT_CONTEXT_RECENT_TURN_LIMIT } from "../src/db.js";
 import type { BridgeDb } from "../src/db.js";
 
@@ -91,6 +92,26 @@ describe("BridgeDb ordinary Run state", () => {
       firstDb.close();
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+
+  it("returns a receipt when retention races duplicate admission", () => {
+    const dir = mkdtempSync(join(tmpdir(), "bridge-receipt-retention-"));
+    const first = openDb(join(dir, "bridge.sqlite"));
+    const second = openDb(join(dir, "bridge.sqlite"));
+    try {
+      const repo = new EventReceiptRepository(first.raw);
+      const input = { event_id: "event", source: "health", event_kind: "red", idempotency_key: "health:retention", received_at: "2020-01-01T00:00:00.000Z", occurred_at: "2020-01-01T00:00:00.000Z", payload_json: "{}", authority_scope: "health" };
+      const receipt = repo.createReceipt(input);
+      repo.claimDispatch(receipt.id);
+      repo.finish(receipt.id, { status: "completed" });
+      const read = repo.getByIdempotencyKey.bind(repo);
+      repo.getByIdempotencyKey = (key) => {
+        try { second.raw.pragma("busy_timeout = 0"); new EventReceiptRepository(second.raw).pruneSettled("health", "2021-01-01T00:00:00.000Z"); }
+        catch (error) { if ((error as { code?: string }).code !== "SQLITE_BUSY") throw error; }
+        return read(key);
+      };
+      expect(repo.admitReceipt(input)).toMatchObject({ created: false, receipt: { id: receipt.id } });
+    } finally { first.close(); second.close(); rmSync(dir, { recursive: true, force: true }); }
   });
 
   it("retains exact conversation turns for fresh-session continuity", () => {

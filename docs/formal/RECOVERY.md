@@ -12,3 +12,35 @@ This is incomplete recovered work, not merge-ready. The source was an uncommitte
 ## Incomplete and unverified
 
 Repository-wide inventory and state/transition coverage are incomplete. Several models omit concurrency, crash, external effect, time, identity or terminal-correction behavior; see README for per-model limits. The caller-chain database-handle containment change is a candidate, not a proof of exclusivity: the scan is point-in-time and helper descendants are excluded. A disposable test demonstrated a caller-chain write after checkpoint invocation under the earlier behavior, not a production exploit. Review production handoff ancestry, later opens and independent safety qualification. Changes have not been independently reviewed or qualified on current main. No release or deployment was performed as part of recovery.
+
+## Recheck of recovered models
+
+On recovered commit `e3e80e81f29b7f065902e4cd0381c4b155d4c289`, all 14 checked-in configurations completed with exit code 0 using TLC `2026.11.19.180144` (revision `bc1b506`), Java Temurin 21.0.13.1, one worker, and `tla2tools.jar` SHA-256 `fdffef247f563ef6edbfd44958d2a82db79e7564e07cb673262d896353fa6713`. Generated / distinct states:
+
+| Model | Generated | Distinct |
+| --- | ---: | ---: |
+| AutonomousGoal | 13 | 13 |
+| AutonomyReconcile | 6 | 5 |
+| CapacityWait | 23 | 18 |
+| EventReceipt | 34 | 17 |
+| LateProviderResult | 7 | 6 |
+| MultiRoleFence | 36 | 20 |
+| OrdinaryContinuation | 121 | 80 |
+| OutputDelivery | 27 | 21 |
+| QueueStop | 106 | 39 |
+| RolloutFence | 43 | 24 |
+| RolloutRecovery | 134 | 34 |
+| RunTerminal | 4 | 4 |
+| ScheduledCorrelation | 717 | 170 |
+| SlackReadiness | 25682 | 1752 |
+
+From this directory, with the named verified jar supplied locally:
+
+```sh
+for config in *.cfg; do
+  model=${config%.cfg}
+  java -XX:+UseParallelGC -cp "$TLA2TOOLS_JAR" tlc2.TLC -workers 1 -config "$config" "$model.tla" || exit
+done
+```
+
+On a temporary copy of `OrdinaryContinuation.tla`, replacing `t \in Tokens \ used` with `t \in Tokens` caused TLC exit 12 and a `NoRetiredClaim` counterexample (25 generated, 23 distinct). The committed model was not modified. These are finite abstraction results, not evidence of continuous SQLite exclusion or implementation refinement. Recheck the exact final candidate after changes.

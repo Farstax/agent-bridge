@@ -6,7 +6,7 @@
  * LOGIC: Migration barrier hooks are impossible without an explicit canonical test root and may only target paths inside it.
  */
 
-import { realpathSync } from "node:fs";
+import { chmodSync, realpathSync, statSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, sep } from "node:path";
 
 const TEST_ROOT_ENV = "AGENT_BRIDGE_ROLLOUT_TEST_ROOT";
@@ -57,5 +57,50 @@ if (!testRoot) {
     if (!barrierFile) fail("migration pause index requires a barrier file");
   }
 }
+
+/**
+ * Offline-exclusion fence (see contain_sqlite_writers in the rollout helper):
+ * after writer containment the helper sets each managed database and sidecar
+ * to mode 000, so no other process of the runtime user can open one. This tool
+ * runs as that owner, so it alone may lift the fence for the duration of one
+ * invocation and must restore it on exit. Only a mode of exactly 000 counts as
+ * fenced; ordinary databases are never touched.
+ */
+const fencedPaths = new Map<string, number>();
+function liftFence(): void {
+  const args = process.argv.slice(2);
+  for (let i = 0; i < args.length - 1; i += 1) {
+    if ((args[i] !== "--db" && args[i] !== "--from") || !args[i + 1].startsWith("/")) continue;
+    const base = args[i + 1];
+    try {
+      if ((statSync(base).mode & 0o777) !== 0) continue;
+    } catch {
+      continue;
+    }
+    for (const suffix of ["", "-wal", "-shm"]) {
+      try {
+        if ((statSync(base + suffix).mode & 0o777) === 0) {
+          chmodSync(base + suffix, 0o600);
+          fencedPaths.set(base + suffix, 0);
+        }
+      } catch { /* absent sidecar */ }
+    }
+    fencedPaths.set(base, 0);
+    // A relocation copy of a fenced database is itself fenced when the tool exits.
+    if (args[i] === "--from") {
+      const target = args[args.indexOf("--to") + 1];
+      if (target?.startsWith("/")) fencedPaths.set(target, 0);
+    }
+  }
+}
+liftFence();
+process.on("exit", () => {
+  for (const base of fencedPaths.keys()) {
+    if (base.endsWith("-wal") || base.endsWith("-shm")) continue;
+    for (const suffix of ["", "-wal", "-shm"]) {
+      try { chmodSync(base + suffix, 0o000); } catch { /* absent sidecar */ }
+    }
+  }
+});
 
 await import("./rollout-db-impl.js");

@@ -231,6 +231,17 @@ describe("guarded rollout helper", { timeout: 30_000 }, () => {
       throw new Error("writer never opened the database");
     }
 
+    /** Records, at the start of every offline database phase, which processes still hold the database. */
+    function recordHoldersBeforeOfflinePhases(fixture: ReturnType<typeof createFixture>, dbPath: string): string {
+      const heldFile = join(fixture.root, "held-during-offline-phase");
+      const runuser = join(fixture.root, "bin", "runuser");
+      const script = readFileSync(runuser, "utf8");
+      const hook = `if [[ "$phase" =~ ^(checkpoint|backup|prune|migrate)$ ]]; then for f in /proc/[0-9]*/fd/*; do [ "$(readlink "$f" 2>/dev/null)" = ${JSON.stringify(dbPath)} ] && echo "$phase:$f:$(tr "\\0" " " < \${f%/fd/*}/cmdline | cut -c1-120)" >> ${JSON.stringify(heldFile)}; done; fi\n`;
+      expect(script).toContain('exec "${cmd[@]}"');
+      executable(runuser, script.replace('exec "${cmd[@]}"', hook + 'exec "${cmd[@]}"'));
+      return heldFile;
+    }
+
     it("interrupts a live outward writer outside the stopped units, then completes the release", async () => {
       const fixture = createFixture();
       const bridge = openDb(fixture.dbPaths[0], { serviceId: "telegram:interactive", runId: "bot-run" });
@@ -272,18 +283,67 @@ describe("guarded rollout helper", { timeout: 30_000 }, () => {
       } finally { callerHandle.close(); }
     }, 60_000);
 
-    it("fails closed before any offline database operation when a writer keeps reappearing", async () => {
+    it("does not kill a caller that opens a database during writer termination", async () => {
       const fixture = createFixture();
       prepareImmutableRelease(fixture, fixture.previousCommit);
+      const marker = join(fixture.root, "writer-term");
+      const callerOutcome = join(fixture.root, "caller-open-outcome");
+      const heldFile = recordHoldersBeforeOfflinePhases(fixture, fixture.dbPaths[0]);
+      const writerScript = `const fs=require('fs');const D=require(${JSON.stringify(join(repoRoot, "node_modules", "better-sqlite3"))});const d=new D(${JSON.stringify(fixture.dbPaths[0])});process.on('SIGTERM',()=>fs.writeFileSync(${JSON.stringify(marker)},'term'));setInterval(()=>d.prepare('select 1').get(),50)`;
+      const writer = spawn(process.execPath, ["-e", writerScript], { cwd: repoRoot, stdio: "ignore", detached: true });
+      holders.push(writer);
+      await waitForHolder(fixture.dbPaths[0]);
+      const thread = `const {workerData}=require('worker_threads');const fs=require('fs');const D=require(workerData.module);const timer=setInterval(()=>{if(!fs.existsSync(workerData.marker))return;clearInterval(timer);try{const db=new D(workerData.db);setInterval(()=>db.prepare('select 1').get(),50);fs.writeFileSync(workerData.outcome,'opened')}catch(e){fs.writeFileSync(workerData.outcome,'denied:'+e.code)}},10)`;
+      const caller = `const {Worker}=require('worker_threads');const {spawnSync}=require('child_process');new Worker(${JSON.stringify(thread)},{eval:true,workerData:{module:${JSON.stringify(join(repoRoot, "node_modules", "better-sqlite3"))},marker:${JSON.stringify(marker)},outcome:${JSON.stringify(callerOutcome)},db:${JSON.stringify(fixture.dbPaths[0])}}});const r=spawnSync('bash',[${JSON.stringify(helperPath)},'--expected-commit',${JSON.stringify(fixture.expectedCommit)}],{env:{...process.env,AGENT_BRIDGE_ROLLOUT_TEST_ROOT:${JSON.stringify(fixture.root)}},encoding:'utf8'});process.stdout.write(JSON.stringify({status:r.status,stdout:r.stdout,stderr:r.stderr}));process.exit(0)`;
+      const result = spawnSync(process.execPath, ["-e", caller], { cwd: repoRoot, encoding: "utf8", timeout: 40_000 });
+      expect(existsSync(marker)).toBe(true);
+      expect(result.signal, "containment must never kill the caller").toBeNull();
+      expect(result.status).toBe(0);
+      // The caller's late open is either denied by the fence or the rollout refused; it must never coexist with an offline phase.
+      if (existsSync(callerOutcome)) expect(readFileSync(callerOutcome, "utf8")).toMatch(/^denied:SQLITE_(CANTOPEN|BUSY|LOCKED|READONLY)/);
+      expect(existsSync(heldFile) ? readFileSync(heldFile, "utf8") : "").toBe("");
+    }, 60_000);
+
+    it("refuses offline work if an independent writer opens after the containment scan", () => {
+      const fixture = createFixture();
+      prepareImmutableRelease(fixture, fixture.previousCommit);
+      const marker = join(fixture.root, "late-writer-finished");
+      const runuser = join(fixture.root, "bin", "runuser");
+      const script = readFileSync(runuser, "utf8");
+      const hook = `if [ "$phase" = checkpoint ]; then for i in {1..100}; do [ -f ${JSON.stringify(marker)} ] && break; sleep 0.05; done; [ -f ${JSON.stringify(marker)} ] || exit 99; fi\n`;
+      expect(script).toContain('exec "${cmd[@]}"');
+      executable(runuser, script.replace('exec "${cmd[@]}"', hook + 'exec "${cmd[@]}"'));
+      const worker = `const fs=require('fs');const D=require(${JSON.stringify(join(repoRoot, "node_modules", "better-sqlite3"))});const log=${JSON.stringify(fixture.actionLog)};const timer=setInterval(()=>{if(!fs.existsSync(log)||!fs.readFileSync(log,'utf8').includes(' checkpoint '))return;clearInterval(timer);try{const d=new D(${JSON.stringify(fixture.dbPaths[0])},{timeout:100});d.prepare("INSERT OR REPLACE INTO settings(key,value) VALUES ('late-writer','written')").run();d.close();fs.writeFileSync(${JSON.stringify(marker)},'wrote')}catch(e){fs.writeFileSync(${JSON.stringify(marker)},'denied:'+e.code)}},10)`;
+      const child = spawn(process.execPath, ["-e", worker], { cwd: repoRoot, stdio: "ignore", detached: true });
+      holders.push(child);
+      const result = runRollout(fixture);
+      if (!existsSync(marker)) {
+        expect(result.status).not.toBe(0);
+        expect(actions(fixture)).not.toMatch(/runuser:.* (checkpoint|backup|migrate)\b/);
+        return;
+      }
+      expect(readFileSync(marker, "utf8")).toMatch(/^denied:SQLITE_(BUSY|LOCKED|READONLY|CANTOPEN)/);
+      const db = new Database(fixture.dbPaths[0], { readonly: true });
+      try {
+        expect(db.prepare("SELECT value FROM settings WHERE key = 'late-writer'").get()).toBeUndefined();
+      } finally { db.close(); }
+    }, 60_000);
+
+    it("never lets a respawning writer hold the database during an offline phase", async () => {
+      const fixture = createFixture();
+      prepareImmutableRelease(fixture, fixture.previousCommit);
+      const heldFile = recordHoldersBeforeOfflinePhases(fixture, fixture.dbPaths[0]);
       startWriter(fixture.dbPaths[0], true);
       await waitForHolder(fixture.dbPaths[0]);
-      const before = sha256(fixture.dbPaths[0]);
 
       const result = runRollout(fixture);
-      expect(result.status).not.toBe(0);
-      expect(`${result.stdout}\n${result.stderr}`).toContain("SQLite writers could not be contained");
-      expect(actions(fixture)).not.toMatch(/runuser:.* (checkpoint|backup|migrate)\b/);
-      expect(sha256(fixture.dbPaths[0])).toBe(before);
+      const output = `${result.stdout}\n${result.stderr}`;
+      // Safe outcomes: refusal before any offline operation, or completion with the respawned writer denied by the fence.
+      if (result.status !== 0) {
+        expect(output).toMatch(/SQLite writers? (could not be contained|appeared during offline database tool)/);
+        expect(actions(fixture)).not.toMatch(/runuser:.* (checkpoint|backup|migrate)\b/);
+      }
+      expect(existsSync(heldFile) ? readFileSync(heldFile, "utf8") : "").toBe("");
     }, 60_000);
   });
 
