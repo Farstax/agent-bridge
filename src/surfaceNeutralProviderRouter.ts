@@ -144,9 +144,8 @@ export function createSurfaceNeutralProviderRouter(
         } catch (error) {
           // Same authoritative verdict as interactive routing; this router only
           // advances along the chain it was constructed with.
-          // Without the interactive handoff context a non-messaging Run must not
-          // be blindly replayed: only provider rejections (capacity/auth) or a
-          // failure proven to precede prompt submission may advance the chain.
+          // Retry only a provider-origin failure and always hand off with
+          // inspection-first context if earlier tool effects are uncertain.
           const failure = error instanceof Error ? error : new Error(String(error));
           const decision = decideProviderRecovery(providerIdForBotName(provider), failure);
           // A completed/blocked outcome is not an abandoned attempt. Keep a
@@ -167,7 +166,7 @@ export function createSurfaceNeutralProviderRouter(
           // a fresh native session receives inspection-first context instead.
           const originalError = failure.name === "RunOutcomeReconciliationError" && failure.cause instanceof Error
             ? failure.cause : failure;
-          failures.push(`${provider}: ${toUserMessage(originalError).slice(0, 1_000)}`);
+          failures.push(toUserMessage(originalError).slice(0, 1_000));
           if (attemptMode !== "recovery" &&
               decision.reason !== "auth_required" && decision.reason !== "capacity" &&
               decision.reason !== "provider_unavailable") {
