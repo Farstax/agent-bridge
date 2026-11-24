@@ -3062,13 +3062,15 @@ if [[ -n "$health_relocation_source" ]] && (( retiring_health == 0 )); then
   echo "relocating legacy health database source=$health_relocation_source target=$health_relocation_target"
   run_db_tool relocate --from "$health_relocation_source" --to "$health_relocation_target"
   # The relocated copy inherits the fence; record the source's original mode for it.
-  /usr/bin/python3 - "$sqlite_fence_record" "$health_relocation_source" "$health_relocation_target" <<'PY'
+  /usr/bin/python3 - "$sqlite_fence_record" "$health_relocation_source" "$health_relocation_target" <<'PY' || die "SQLite fence record could not be extended to the relocated database"
 import json, sys
 record, source, target = sys.argv[1:]
 data = json.load(open(record))
-if source in data:
-    data[target] = data[source]
-    json.dump(data, open(record, "w"))
+if source not in data:
+    sys.exit("relocated database has no recorded fence mode: " + source)
+data[target] = data[source]
+with open(record, "w") as handle:
+    json.dump(data, handle)
 PY
   for database_index in "${!databases[@]}"; do
     [[ "${databases[$database_index]}" == "$health_relocation_source" ]] && databases[$database_index]="$health_relocation_target"

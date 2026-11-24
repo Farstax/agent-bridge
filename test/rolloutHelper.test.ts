@@ -300,7 +300,8 @@ describe("guarded rollout helper", { timeout: 30_000 }, () => {
       expect(result.signal, "containment must never kill the caller").toBeNull();
       expect(result.status).toBe(0);
       // The caller's late open is either denied by the fence or the rollout refused; it must never coexist with an offline phase.
-      if (existsSync(callerOutcome)) expect(readFileSync(callerOutcome, "utf8")).toMatch(/^denied:SQLITE_(CANTOPEN|BUSY|LOCKED|READONLY)/);
+      expect(existsSync(callerOutcome), "caller thread must have attempted its late open").toBe(true);
+      expect(readFileSync(callerOutcome, "utf8")).toMatch(/^denied:SQLITE_(CANTOPEN|BUSY|LOCKED|READONLY)/);
       expect(existsSync(heldFile) ? readFileSync(heldFile, "utf8") : "").toBe("");
     }, 60_000);
 
