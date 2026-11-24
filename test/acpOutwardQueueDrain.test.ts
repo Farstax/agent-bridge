@@ -1,3 +1,4 @@
+import { attachProviderFailureEvidence } from "../src/providers/failureEvidence.js";
 import { mkdtempSync, realpathSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -200,7 +201,7 @@ describe("outward ACP durable queue ownership", () => {
             input.collect(eventType.runStarted({ runId: input.runId, bot: "codex", chatId: String(input.chatId), chatKey: input.chatKey, command: "fake", cwd: f.root, model: null }));
             if (attempts === 1) {
               input.onProviderRecoveryDecision?.("capacity", true);
-              throw new Error("MODEL_CAPACITY_EXHAUSTED");
+              throw attachProviderFailureEvidence(new Error("MODEL_CAPACITY_EXHAUSTED"), { promptSubmitted: false });
             }
             // The fake provider consumes the staged CSV and a deterministic
             // native-tool result to generate the answer; asserting only
@@ -260,7 +261,7 @@ describe("outward ACP durable queue ownership", () => {
             f.db.deletePendingMsg(rowId);
             f.db.setSetting(`outward-queue-receipt:${key}`, JSON.stringify({ outcome: "settled", status: "cancelled", reason: "stopped" }));
           });
-          throw new Error("MODEL_CAPACITY_EXHAUSTED");
+          throw attachProviderFailureEvidence(new Error("MODEL_CAPACITY_EXHAUSTED"), { promptSubmitted: false });
         }, recoverPendingQueue: (chatKey) => core.recoverPendingQueue(chatKey) }),
       });
       await executor.drainQueued(f.session);
@@ -310,7 +311,7 @@ describe("outward ACP durable queue ownership", () => {
           executeSurfaceNeutralTurn: async (input) => {
             attempts += 1;
             input.collect(eventType.runStarted({ runId: input.runId, bot: "codex", chatId: String(input.chatId), chatKey: input.chatKey, command: "fake", cwd: f.root, model: null }));
-            throw new Error("MODEL_CAPACITY_EXHAUSTED");
+            throw attachProviderFailureEvidence(new Error("MODEL_CAPACITY_EXHAUSTED"), { promptSubmitted: false });
           },
           recoverPendingQueue: (chatKey) => core.recoverPendingQueue(chatKey),
         }),
@@ -378,7 +379,7 @@ describe("outward ACP durable queue ownership", () => {
             runId: input.runId, bot: "codex", chatId: String(input.chatId),
             chatKey: input.chatKey, command: "fake", cwd: f.root, model: null,
           }));
-          throw new Error("MODEL_CAPACITY_EXHAUSTED");
+          throw attachProviderFailureEvidence(new Error("MODEL_CAPACITY_EXHAUSTED"), { promptSubmitted: false });
         } }),
       });
       await expect(executor.execute(base(f.session, "capacity task", { deferCapacity: true })))
@@ -398,7 +399,7 @@ describe("outward ACP durable queue ownership", () => {
         db: f.db, providerChain: ["codex"] as const, enableDeferredCapacity: true,
         createEngine: () => ({ executeSurfaceNeutralTurn: async (input) => {
           input.collect(eventType.runStarted({ runId: input.runId, bot: "codex", chatId: String(input.chatId), chatKey: input.chatKey, command: "fake", cwd: f.root, model: null }));
-          throw new Error("MODEL_CAPACITY_EXHAUSTED");
+          throw attachProviderFailureEvidence(new Error("MODEL_CAPACITY_EXHAUSTED"), { promptSubmitted: false });
         } }),
       });
       const requestId = "direct-capacity-turn";
