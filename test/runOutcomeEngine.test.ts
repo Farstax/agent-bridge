@@ -87,6 +87,7 @@ function fixture(mode: "complete-after-retry" | "continue-after-retry" | "blocke
     }
     if (mode === "blocked-after-retry" && calls === 2) {
       requestAgentBridgeOutcome(["blocked", "--reason", "Owner approval required"], options.contextEnv);
+      if (transportFailure) throw missingFinalAnswer("same-acp-session");
     }
     return {
       text: calls === 1 ? "Original user-facing answer" : "Reconciliation was recorded",
@@ -163,6 +164,7 @@ describe("ordinary Run objective settlement", () => {
     ["continue", "report-continue", 1, "submitted-native-session"],
     ["complete", "report-on-reconcile-empty", 2, "same-acp-session"],
     ["continue", "continue-on-reconcile-empty", 2, "same-acp-session"],
+    ["blocked", "blocked-after-retry", 2, "same-acp-session"],
   ] as const)("reconciles committed %s after provider transport failure (%s)", async (status, mode, calls, sessionId) => {
     const { db, engine, handle, invocation } = fixture(mode, "acp:outward", true);
     try {
