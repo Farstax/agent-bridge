@@ -305,7 +305,7 @@ reap_worktree_repo() {
   default_branch="$(git -C "$repo" symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null | sed 's#^origin/##')"
   default_branch="${default_branch:-main}"
 
-  local wt="" branch="" status="" locked=0
+  local wt="" branch="" status="" locked=0 detached=0
   while IFS= read -r line; do
     case "$line" in
       "worktree "*) wt="${line#worktree }" ;;
@@ -314,17 +314,15 @@ reap_worktree_repo() {
         branch="${branch#refs/heads/}"
         ;;
       "detached")
-        if [[ -n "$wt" && "$wt" != "$repo" ]]; then
-          reap_detached_checkout_dependencies "$wt"
-        fi
-        wt=""
-        branch=""
+        detached=1
         ;;
       "locked"|"locked "*)
         locked=1
         ;;
       "")
-        if [[ -n "$wt" && -n "$branch" && "$wt" != "$repo" && "$branch" != "$default_branch" ]] && (( ! locked )); then
+        if [[ -n "$wt" && "$wt" != "$repo" ]] && (( detached && ! locked )); then
+          reap_detached_checkout_dependencies "$wt"
+        elif [[ -n "$wt" && -n "$branch" && "$wt" != "$repo" && "$branch" != "$default_branch" ]] && (( ! locked )); then
           # An error is not a clean status. Also preserve a live checkout even
           # when its branch is already integrated and its index is clean.
           if ! status="$(git -C "$wt" status --porcelain=v1 --untracked-files=all 2>/dev/null)"; then
@@ -347,6 +345,7 @@ reap_worktree_repo() {
         wt=""
         branch=""
         locked=0
+        detached=0
         ;;
     esac
   done < <(git -C "$repo" worktree list --porcelain; echo)
