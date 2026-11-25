@@ -364,7 +364,9 @@ reap_worktree_repo() {
         detached=0
         ;;
     esac
-  done <<< "$worktrees"
+  # Command substitution strips trailing newlines. Supply the final blank
+  # record separator explicitly so the last listed worktree is processed.
+  done < <(printf '%s\n\n' "$worktrees")
 }
 
 
