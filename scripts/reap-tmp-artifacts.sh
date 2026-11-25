@@ -191,6 +191,18 @@ managed_tree_safe() {
   return 0
 }
 
+# Git status deliberately hides modifications under assume-unchanged and
+# skip-worktree. Never use such an index as evidence that a checkout is clean.
+checkout_index_visible() {
+  local entries
+  entries="$(git -C "$1" ls-files -v 2>/dev/null)" || return 1
+  if grep -qE '^[a-zS] ' <<< "$entries"; then
+    log "preserving (hidden index entries): $1"
+    return 1
+  fi
+  return 0
+}
+
 # Recheck filesystem ownership and both activity scopes at the mutation boundary.
 managed_worktree_removable() {
   local checkout="$1" primary="$2" foreign
@@ -271,7 +283,8 @@ reap_checkout_dependencies() {
     (( head_status == 1 )) || return 0
     merge_ref=refs/remotes/origin/main
   fi
-  status="$(git -C "$checkout" status --porcelain=v1 --untracked-files=all 2>/dev/null)" || return 0
+  checkout_index_visible "$checkout" || return 0
+  status="$(git -C "$checkout" status --porcelain=v1 --untracked-files=all --ignore-submodules=none 2>/dev/null)" || return 0
   [[ -z "$status" ]] || { log "preserving (dirty checkout): $checkout"; return 0; }
   commit_integrated "$checkout" HEAD "$merge_ref" || {
     log "preserving (unverified detached commit): $checkout"
@@ -451,7 +464,9 @@ reap_worktree_repo() {
           # Ordinary git worktree remove can delete ignored files too.
           # Leave such worktrees intact until their disposable content is
           # separately verified and reclaimed by its owner.
-          if ! status="$(git -C "$wt" status --porcelain=v1 --untracked-files=all --ignored=matching 2>/dev/null)"; then
+          if ! checkout_index_visible "$wt"; then
+            :
+          elif ! status="$(git -C "$wt" status --porcelain=v1 --untracked-files=all --ignored=matching --ignore-submodules=none 2>/dev/null)"; then
             log "preserving (unverified worktree status): $wt"
           elif [[ -z "$status" ]] && commit_integrated "$repo" "refs/heads/$branch" "$merge_ref"; then
             if has_ownership_signal "$wt" || checkout_has_active_process "$wt"; then
@@ -461,6 +476,7 @@ reap_worktree_repo() {
             elif branch_tip="$(git -C "$repo" rev-parse --verify "refs/heads/$branch^{commit}" 2>/dev/null)" \
               && commit_integrated "$repo" "$branch_tip" "$merge_ref" \
               && [[ "$(git -C "$wt" rev-parse --verify 'HEAD^{commit}' 2>/dev/null)" == "$branch_tip" ]] \
+              && checkout_index_visible "$wt" \
               && { (( ! MANAGED_MODE )) || managed_worktree_removable "$wt" "$repo"; } \
               && git -C "$repo" worktree remove "$wt" 2>/dev/null; then
               log "removed worktree (merged+clean): $wt [$branch]"
