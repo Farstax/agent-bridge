@@ -1719,7 +1719,7 @@ try:
     require(len({official, binary_link, harness_link}) == 3)
     secure(root, stat.S_ISDIR)
     present = {}
-    verified_versions = set()
+    version = None
     for link, artifact in links.items():
         require(os.path.isabs(link) and os.path.normpath(link) == link)
         if not os.path.lexists(link):
@@ -1731,41 +1731,45 @@ try:
         relative = os.path.relpath(target, root).split(os.sep)
         require(len(relative) == 3 and re.fullmatch(r"[0-9A-Za-z][0-9A-Za-z._+-]*", relative[0])
                 and relative[1:] == [platform, artifact])
+        require(version is None or version == relative[0])
         version = relative[0]
-        directory = os.path.join(root, version, platform)
-        require(target == os.path.join(directory, artifact))
-        secure(os.path.join(root, version), stat.S_ISDIR)
-        secure(directory, stat.S_ISDIR)
-        secure(target, stat.S_ISREG)
-        if version not in verified_versions:
-            manifest_path = os.path.join(directory, "manifest.json")
-            secure(manifest_path, stat.S_ISREG)
-            manifest = json.loads(pathlib.Path(manifest_path).read_text())
-            require(manifest.get("schemaVersion") == 2 and manifest.get("version") == version
-                    and manifest.get("platform") == platform
-                    and manifest.get("harnessName") == "localharness_external"
-                    and manifest.get("harnessVersion") == version
-                    and manifest.get("harnessPath") == os.path.join(directory, "localharness_external")
-                    and re.fullmatch(r"[0-9a-f]{64}", manifest.get("archiveSha256", "")))
-            # The historical installer recorded both payload hashes. Validate both
-            # before unlinking even if an interrupted attempt left only one link.
-            for name, key in (("agy_acp_server.par", "binarySha256"), ("localharness_external", "harnessSha256")):
-                payload = os.path.join(directory, name)
-                secure(payload, stat.S_ISREG)
-                with open(payload, "rb") as stream:
-                    require(hashlib.file_digest(stream, "sha256").hexdigest() == manifest.get(key))
-            verified_versions.add(version)
-        present[link] = (version, target, info.st_ino, info.st_dev)
+        require(target == os.path.join(root, version, platform, artifact))
+        present[link] = (target, info.st_ino, info.st_dev)
 
-    versions = {value[0] for value in present.values()}
-    require(len(versions) <= 1)
+    if version is not None:
+        directory = os.path.join(root, version, platform)
+        secure(os.path.dirname(directory), stat.S_ISDIR)
+        secure(directory, stat.S_ISDIR)
+        manifest_path = os.path.join(directory, "manifest.json")
+        secure(manifest_path, stat.S_ISREG)
+        manifest = json.loads(pathlib.Path(manifest_path).read_text())
+        require(manifest.get("schemaVersion") == 2 and manifest.get("version") == version
+                and manifest.get("platform") == platform
+                and manifest.get("harnessName") == "localharness_external"
+                and manifest.get("harnessVersion") == version
+                and manifest.get("harnessPath") == os.path.join(directory, "localharness_external")
+                and re.fullmatch(r"[0-9a-f]{64}", manifest.get("archiveSha256", "")))
+        # Both payloads must still be installer-owned, including after the
+        # first link of an interrupted retirement has already been removed.
+        for name, key in (("agy_acp_server.par", "binarySha256"), ("localharness_external", "harnessSha256")):
+            payload = os.path.join(directory, name)
+            secure(payload, stat.S_ISREG)
+            digest = hashlib.sha256()
+            with open(payload, "rb") as stream:
+                for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                    digest.update(chunk)
+            require(digest.hexdigest() == manifest.get(key))
+
     if rollback_command == "./agy_acp_server.par":
-        require(len(present) == 2 and versions == {rollback})
+        require(len(present) == 2 and version == rollback)
         sys.exit(0)  # The rollback release still owns the pair.
-    require(not versions.intersection({current, rollback}))
+    require(version not in (current, rollback))
     # Check actual path references, not arbitrary substrings in process text.
     old_paths = [entry.path for entry in os.scandir(root)
-                 if entry.name not in (current, rollback) and entry.is_dir(follow_symlinks=False)]
+                 if entry.name not in (current, rollback) and entry.is_dir(follow_symlinks=False)
+                 and re.fullmatch(r"[0-9A-Za-z][0-9A-Za-z._+-]*", entry.name)]
+    if not present and not old_paths:
+        sys.exit(0)
     def retired_path(path):
         path = path.removesuffix(" (deleted)")
         return path in links or any(path == old or path.startswith(old + "/") for old in old_paths)
@@ -1808,7 +1812,7 @@ try:
             continue
     # Recheck the complete set before the first mutation. Each subsequent
     # retry accepts an absent partner but never an unmanaged remaining link.
-    for link, (_, target, inode, device) in present.items():
+    for link, (target, inode, device) in present.items():
         info = os.lstat(link)
         require(stat.S_ISLNK(info.st_mode) and info.st_ino == inode and info.st_dev == device
                 and os.readlink(link) == target)
@@ -1830,21 +1834,19 @@ prune_host_component_versions() {
     return 0
   fi
   [[ -d "$versions_dir" && ! -L "$versions_dir" ]] || { echo "host component retention skipped provider=$provider reason=unsafe_root"; return 0; }
+  local pin_field=version
+  platform=""
   if [[ "$provider" == agy ]]; then
     platform="$(agy_registry_platform)" \
       || { echo "host component retention skipped provider=agy reason=unsupported_platform"; return 0; }
-    current_pin="$(locked_host_component_version "$release_root/$expected_commit" agy agy-pin "$platform")" \
-      || { echo "host component retention skipped provider=agy reason=current_pin_unavailable"; return 0; }
-    rollback_pin="$(locked_host_component_version "$release_root/$previous_pointer_target" agy agy-pin "$platform")" \
-      || { echo "host component retention skipped provider=agy reason=rollback_pin_unavailable"; return 0; }
-    IFS=$'\t' read -r current_version agy_command <<<"$current_pin"
-    IFS=$'\t' read -r previous_version rollback_command <<<"$rollback_pin"
-  else
-    current_version="$(locked_host_component_version "$release_root/$expected_commit" "$provider")" \
-      || { echo "host component retention skipped provider=$provider reason=current_pin_unavailable"; return 0; }
-    previous_version="$(locked_host_component_version "$release_root/$previous_pointer_target" "$provider")" \
-      || { echo "host component retention skipped provider=$provider reason=rollback_pin_unavailable"; return 0; }
+    pin_field=agy-pin
   fi
+  current_pin="$(locked_host_component_version "$release_root/$expected_commit" "$provider" "$pin_field" "$platform")" \
+    || { echo "host component retention skipped provider=$provider reason=current_pin_unavailable"; return 0; }
+  rollback_pin="$(locked_host_component_version "$release_root/$previous_pointer_target" "$provider" "$pin_field" "$platform")" \
+    || { echo "host component retention skipped provider=$provider reason=rollback_pin_unavailable"; return 0; }
+  IFS=$'\t' read -r current_version agy_command <<<"$current_pin"
+  IFS=$'\t' read -r previous_version rollback_command <<<"$rollback_pin"
   [[ -d "$versions_dir/$current_version" && ! -L "$versions_dir/$current_version" ]] \
     || { echo "host component retention skipped provider=$provider reason=current_version_not_installed"; return 0; }
   if [[ -n "$(/usr/bin/find "$(/usr/bin/dirname -- "$versions_dir")" -mindepth 1 -maxdepth 1 -name '.install-*' -print -quit)" ]]; then
