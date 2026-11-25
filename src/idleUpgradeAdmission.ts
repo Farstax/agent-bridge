@@ -217,7 +217,24 @@ export function canReapConversationArtifacts(db: Database.Database, directoryKey
   if (!db.inTransaction || storedFence(db).exists) return false;
   // Reservations and receipts can precede a durable lane identity. Preserve
   // all candidates during these short, ambiguous ingress transitions.
-  if (TRANSIENT_QUERIES.slice(1).some((sql) => db.prepare(sql).get())) return false;
+  if (db.prepare("SELECT 1 FROM settings WHERE key LIKE 'outward-queue-reservation:%' AND value IS NOT NULL LIMIT 1").get()) return false;
+  // A linked receipt or capacity claim has a durable Run owner. Unlinked
+  // or malformed ownership remains ambiguous and defers all cleanup.
+  const ingress = db.prepare(`
+    SELECT r.surface_identity AS surfaceIdentity, r.chat_id AS chatKey
+      FROM event_receipts e LEFT JOIN bridge_runs r ON r.run_id = e.run_id
+      WHERE e.status IN ('dispatching', 'run_created')
+    UNION
+    SELECT r.surface_identity, r.chat_id
+      FROM execution_capacity_claims c LEFT JOIN bridge_runs r ON r.run_id = c.run_id
+      WHERE c.lease_expires_at IS NULL OR c.lease_expires_at > strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+        OR strftime('%Y-%m-%dT%H:%M:%fZ', c.lease_expires_at) IS NULL
+        OR strftime('%Y-%m-%dT%H:%M:%fZ', c.lease_expires_at) != c.lease_expires_at
+  `).all() as Array<{ surfaceIdentity: string | null; chatKey: string | null }>;
+  for (const lane of ingress) {
+    if (!lane.surfaceIdentity || !lane.chatKey) return false;
+    if (conversationDirectorySettingKey({ surfaceIdentity: lane.surfaceIdentity, chatKey: lane.chatKey }) === directoryKey) return false;
+  }
   const lanes = db.prepare(`
     SELECT surface AS surfaceIdentity, chat_key AS chatKey FROM execution_locks
     UNION SELECT surface_identity, chat_id FROM bridge_runs WHERE status = 'running'
