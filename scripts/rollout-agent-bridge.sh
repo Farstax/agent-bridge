@@ -1592,15 +1592,15 @@ import { pathToFileURL } from "node:url";
 const [modulePath, provider, field, platform] = process.argv.slice(2);
 const { getLockedAcpRegistryEntry } = await import(pathToFileURL(modulePath).href);
 const entry = getLockedAcpRegistryEntry(provider);
-if (field === "agy-command") {
-  const command = entry?.distribution?.binary?.[platform]?.cmd;
-  if (command !== "./agy" && command !== "./agy_acp_server.par") process.exit(2);
-  process.stdout.write(command);
-  process.exit(0);
-}
 const version = entry?.version;
 if (typeof version !== "string" || !/^[0-9A-Za-z][0-9A-Za-z._+-]*$/.test(version)) process.exit(2);
-process.stdout.write(version);
+if (field === "agy-pin") {
+  const command = entry.distribution?.binary?.[platform]?.cmd;
+  if (command !== "./agy" && command !== "./agy_acp_server.par") process.exit(2);
+  process.stdout.write(version + "\t" + command);
+} else {
+  process.stdout.write(version);
+}
 NODE
 }
 
@@ -1663,12 +1663,11 @@ cursor_version_dir_is_managed() {
 # commands, all present links and the accepted service configuration must
 # agree before either legacy link is changed.
 agy_legacy_links_allow_pruning() {
-  local versions_dir="$1" current_version="$2" previous_version="$3" official_link="$4" platform="$5"
+  local versions_dir="$1" current_version="$2" previous_version="$3" official_link="$4" platform="$5" rollback_command="$6"
   local legacy_binary_link="${AGENT_BRIDGE_AGY_LEGACY_LINK:-/usr/local/bin/agy_acp_server.par}"
   local legacy_harness_link="${AGENT_BRIDGE_AGY_HARNESS_LINK:-/usr/local/bin/agy_localharness_external}"
-  local rollback_command module release unit unit_config unit_env
+  local module release unit unit_config unit_env
   local -a env_files=("$shared_env" "$release_env")
-  rollback_command="$(locked_host_component_version "$release_root/$previous_pointer_target" agy agy-command "$platform")" || return 1
   [[ "$(/usr/bin/readlink -f -- "$official_link")" == "$versions_dir/$current_version/$platform/agy" ]] || return 1
   if [[ "$rollback_command" == "./agy" ]]; then
     [[ -f "$versions_dir/$previous_version/$platform/agy" && ! -L "$versions_dir/$previous_version/$platform/agy" ]] || return 1
@@ -1682,7 +1681,7 @@ agy_legacy_links_allow_pruning() {
 import { pathToFileURL } from "node:url";
 const [modulePath, official, legacy] = process.argv.slice(2);
 const { resolveAgyAcpCommand } = await import(pathToFileURL(modulePath).href);
-for (const command of [undefined, "agy", official, legacy]) {
+for (const command of [undefined, "agy", legacy]) {
   if (resolveAgyAcpCommand({ AGY_ACP_COMMAND: command, AGENT_BRIDGE_AGY_ACP_LINK: official }) !== official) process.exit(1);
 }
 NODE
@@ -1764,12 +1763,13 @@ try:
         require(len(present) == 2 and versions == {rollback})
         sys.exit(0)  # The rollback release still owns the pair.
     require(not versions.intersection({current, rollback}))
-    # The accepted official service and rollback resolver own future managed
-    # launches. Refuse unknown overrides or any observed use of retired paths.
-    old_paths = [entry.path for entry in os.scandir(root) if entry.name not in (current, rollback)]
-    forbidden = [binary_link, harness_link, *old_paths]
-    def refers_to_retired(text):
-        return any(item in text for item in forbidden)
+    # Check actual path references, not arbitrary substrings in process text.
+    old_paths = [entry.path for entry in os.scandir(root)
+                 if entry.name not in (current, rollback) and entry.is_dir(follow_symlinks=False)]
+    def retired_path(path):
+        path = path.removesuffix(" (deleted)")
+        return path in links or any(path == old or path.startswith(old + "/") for old in old_paths)
+
     for filename in env_files:
         if not os.path.lexists(filename):
             continue
@@ -1782,29 +1782,28 @@ try:
                             "AGY_ACP_COMMAND=" + official, "AGENT_BRIDGE_AGY_ACP_LINK=" + official):
                     continue
                 require("AGY_ACP_COMMAND" not in line and "AGENT_BRIDGE_AGY_ACP_LINK" not in line
-                        and not refers_to_retired(line))
+                        and not any(path in line for path in (binary_link, harness_link, *old_paths)))
     for pid in os.listdir("/proc"):
         if not pid.isdigit() or int(pid) == os.getpid():
             continue
         proc = "/proc/" + pid
         try:
-            # Non-root execution is only the repository's isolated test
-            # fixture; production retention runs as the privileged owner.
-            if os.geteuid() != 0 and os.stat(proc).st_uid != os.geteuid():
-                continue
-            for name in ("exe", "cwd"):
+            for name in ("exe", "cwd", *("fd/" + fd for fd in os.listdir(proc + "/fd"))):
                 try:
-                    require(not refers_to_retired(os.readlink(proc + "/" + name)))
+                    require(not retired_path(os.readlink(proc + "/" + name)))
                 except FileNotFoundError:
                     pass
-            for name in ("cmdline", "maps"):
-                with open(proc + "/" + name, "rb") as stream:
-                    require(not refers_to_retired(os.fsdecode(stream.read())))
-            for fd in os.listdir(proc + "/fd"):
-                try:
-                    require(not refers_to_retired(os.readlink(proc + "/fd/" + fd)))
-                except FileNotFoundError:
-                    pass
+            with open(proc + "/cmdline", "rb") as stream:
+                require(not any(retired_path(os.fsdecode(arg)) for arg in stream.read().split(b"\x00")))
+            with open(proc + "/maps", encoding="utf-8", errors="surrogateescape") as stream:
+                for line in stream:
+                    fields = line.rstrip("\n").split(maxsplit=5)
+                    require(len(fields) < 6 or not retired_path(fields[5]))
+        except PermissionError:
+            # As in the existing rollout holder scan, only the unprivileged
+            # test runner may lack access. Privileged retention fails closed.
+            if os.geteuid() == 0:
+                raise
         except (FileNotFoundError, ProcessLookupError):
             continue
     # Recheck the complete set before the first mutation. Each subsequent
@@ -1815,23 +1814,37 @@ try:
                 and os.readlink(link) == target)
     for link in present:
         os.unlink(link)
-except (OSError, ValueError, TypeError):
+except OSError as error:
+    print(f"host component retention legacy inspection failed errno={error.errno}", file=sys.stderr)
+    sys.exit(1)
+except (ValueError, TypeError):
     sys.exit(1)
 PY
 }
 
 prune_host_component_versions() {
-  local provider="$1" versions_dir="$2" remover="$3" managed_check="$4" current_version previous_version link linked entry name platform agy_command pruned=0
+  local provider="$1" versions_dir="$2" remover="$3" managed_check="$4" current_version previous_version link linked entry name platform agy_command rollback_command current_pin rollback_pin pruned=0
   shift 4
   if [[ ! -e "$versions_dir" && ! -L "$versions_dir" ]]; then
     echo "host component retention provider=$provider pruned=0 reason=not_installed"
     return 0
   fi
   [[ -d "$versions_dir" && ! -L "$versions_dir" ]] || { echo "host component retention skipped provider=$provider reason=unsafe_root"; return 0; }
-  current_version="$(locked_host_component_version "$release_root/$expected_commit" "$provider")" \
-    || { echo "host component retention skipped provider=$provider reason=current_pin_unavailable"; return 0; }
-  previous_version="$(locked_host_component_version "$release_root/$previous_pointer_target" "$provider")" \
-    || { echo "host component retention skipped provider=$provider reason=rollback_pin_unavailable"; return 0; }
+  if [[ "$provider" == agy ]]; then
+    platform="$(agy_registry_platform)" \
+      || { echo "host component retention skipped provider=agy reason=unsupported_platform"; return 0; }
+    current_pin="$(locked_host_component_version "$release_root/$expected_commit" agy agy-pin "$platform")" \
+      || { echo "host component retention skipped provider=agy reason=current_pin_unavailable"; return 0; }
+    rollback_pin="$(locked_host_component_version "$release_root/$previous_pointer_target" agy agy-pin "$platform")" \
+      || { echo "host component retention skipped provider=agy reason=rollback_pin_unavailable"; return 0; }
+    IFS=$'\t' read -r current_version agy_command <<<"$current_pin"
+    IFS=$'\t' read -r previous_version rollback_command <<<"$rollback_pin"
+  else
+    current_version="$(locked_host_component_version "$release_root/$expected_commit" "$provider")" \
+      || { echo "host component retention skipped provider=$provider reason=current_pin_unavailable"; return 0; }
+    previous_version="$(locked_host_component_version "$release_root/$previous_pointer_target" "$provider")" \
+      || { echo "host component retention skipped provider=$provider reason=rollback_pin_unavailable"; return 0; }
+  fi
   [[ -d "$versions_dir/$current_version" && ! -L "$versions_dir/$current_version" ]] \
     || { echo "host component retention skipped provider=$provider reason=current_version_not_installed"; return 0; }
   if [[ -n "$(/usr/bin/find "$(/usr/bin/dirname -- "$versions_dir")" -mindepth 1 -maxdepth 1 -name '.install-*' -print -quit)" ]]; then
@@ -1839,10 +1852,6 @@ prune_host_component_versions() {
     return 0
   fi
   if [[ "$provider" == agy ]]; then
-    platform="$(agy_registry_platform)" \
-      || { echo "host component retention skipped provider=agy reason=unsupported_platform"; return 0; }
-    agy_command="$(locked_host_component_version "$release_root/$expected_commit" agy agy-command "$platform")" \
-      || { echo "host component retention skipped provider=agy reason=current_command_unavailable"; return 0; }
     if [[ "$agy_command" == "./agy" ]]; then
       set -- "${AGENT_BRIDGE_AGY_ACP_LINK:-/usr/local/bin/agy}"
     else
@@ -1859,7 +1868,7 @@ prune_host_component_versions() {
       || { echo "host component retention skipped provider=$provider reason=link_not_current"; return 0; }
   done
   if [[ "$provider" == agy && "$agy_command" == "./agy" ]]; then
-    if ! agy_legacy_links_allow_pruning "$versions_dir" "$current_version" "$previous_version" "$1" "$platform"; then
+    if ! agy_legacy_links_allow_pruning "$versions_dir" "$current_version" "$previous_version" "$1" "$platform" "$rollback_command"; then
       echo "host component retention skipped provider=agy reason=legacy_link_ownership_or_consumer_ambiguous"
       return 0
     fi
