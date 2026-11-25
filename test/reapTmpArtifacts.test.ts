@@ -625,7 +625,8 @@ exec "$REAP_TEST_REAL_GIT" "$@"
       writeFileSync(join(source, ".gitignore"), "node_modules/\nprivate.txt\n");
       execFileSync("git", ["-C", source, "add", ".gitignore"]);
       execFileSync("git", ["-C", source, "commit", "-q", "-m", "ignore reproducible dependencies"]);
-      const origin = "https://example.invalid/repo.git";
+      // Real local upstream; no external network or mutable cached ref is proof.
+      const origin = source;
       execFileSync("git", ["-C", source, "remote", "add", "origin", origin]);
       execFileSync("git", ["-C", source, "update-ref", "refs/remotes/origin/main", "HEAD"]);
       const identity = { surfaceIdentity: "acp:outward", chatKey: "acp:managed" };
@@ -677,6 +678,7 @@ exec "$REAP_TEST_REAL_GIT" "$@"
       const dry = run(env, ["--dry-run"]);
       expect(dry.status, dry.stderr).toBe(0);
       expect(dry.stdout).toContain("would remove (inactive clean managed dependencies)");
+      expect(dry.stdout).toContain("would remove worktree (merged+clean): " + merged);
       expect(existsSync(merged)).toBe(true);
       expect(existsSync(dependencies)).toBe(true);
       const result = run(env);
@@ -772,17 +774,68 @@ exec "$REAP_TEST_REAL_GIT" "$@"
       const deps = addDependencies(checkout);
       const bin = join(root, "bin");
       mkdirSync(bin);
-      const gh = join(bin, "gh");
-      writeFileSync(gh, "#!/usr/bin/env bash\nprintf '%s\\n' \"$REAP_TEST_PR_RECORD\"\n");
-      chmodSync(gh, 0o755);
-      const proofEnv = { ...env, GH_TOKEN: "fixture-token", PATH: bin + ":" + process.env.PATH };
-      const wrong = run({ ...proofEnv, REAP_TEST_PR_RECORD: merged + "\t" + merged + "\tmain\texample/repo" });
+      const curl = join(bin, "curl");
+      writeFileSync(curl, [
+        "#!/usr/bin/env bash",
+        "config=$(cat)",
+        'url="${@: -1}"',
+        'case "$url" in',
+        '  */repos/example/repo) printf \'%s\\n\' \'{"full_name":"example/repo","default_branch":"main"}\' ;;',
+        '  */branches/main) printf \'{"commit":{"sha":"%s"}}\\n\' "$REAP_TEST_MERGE" ;;',
+        '  */compare/*) printf \'{"status":"diverged"}\\n\' ;;',
+        '  */commits/*/pulls*) printf \'[{"head":{"sha":"%s"},"merged_at":"2026-11-24T12:00:00Z","merge_commit_sha":"%s","base":{"ref":"main","repo":{"full_name":"example/repo"}}}]\\n\' "$REAP_TEST_PR_HEAD" "$REAP_TEST_MERGE" ;;',
+        '  *) exit 1 ;;',
+        'esac',
+      ].join("\n") + "\n");
+      chmodSync(curl, 0o755);
+      const proofEnv = { ...env, GH_TOKEN: "", GITHUB_TOKEN: "", PATH: bin + ":" + process.env.PATH, REAP_TEST_MERGE: merged };
+      const wrong = run({ ...proofEnv, REAP_TEST_PR_HEAD: merged });
       expect(wrong.status, wrong.stderr).toBe(0);
       expect(existsSync(deps)).toBe(true);
-      const correct = run({ ...proofEnv, REAP_TEST_PR_RECORD: tip + "\t" + merged + "\tmain\texample/repo" });
+      const correct = run({ ...proofEnv, REAP_TEST_PR_HEAD: tip });
       expect(correct.status, correct.stderr).toBe(0);
       expect(existsSync(checkout), correct.stdout).toBe(false);
       expect(execFileSync("git", ["-C", source, "branch", "--list", "squashed"], { encoding: "utf8" })).toBe("");
+    });
+
+    it("preserves a merged dependency target referenced by another conversation", () => {
+      const { env, database, source, addDependencies, addWorktree } = managedFixture();
+      const target = addWorktree("shared-target");
+      const dependencies = addDependencies(target);
+      const other = { surfaceIdentity: "acp:outward", chatKey: "acp:consumer" };
+      const directory = ensureConversationDirectory(source, other);
+      const db = openDb(database, { databaseRole: "interactive" });
+      new OutwardAcpSessionRepository(db.raw).create({
+        sessionId: "consumer-session", conversationId: other.chatKey, cwd: source, executionCwd: directory,
+      });
+      db.close();
+      const consumer = join(directory, "consumer");
+      execFileSync("git", ["-C", source, "worktree", "add", "-q", "-b", "consumer", consumer]);
+      symlinkSync(dependencies, join(consumer, "node_modules"));
+      writeFileSync(join(consumer, "keep.txt"), "dirty");
+      const dry = run(env, ["--dry-run"]);
+      expect(dry.status, dry.stderr).toBe(0);
+      expect(dry.stdout).toContain("shared dependency target");
+      expect(dry.stdout).not.toContain("would remove worktree (merged+clean): " + target);
+      const result = run(env);
+      expect(result.status, result.stderr).toBe(0);
+      expect(existsSync(dependencies)).toBe(true);
+      expect(readFileSync(join(consumer, "node_modules", "cached"), "utf8")).toBe("reproducible");
+      expect(existsSync(join(consumer, "keep.txt"))).toBe(true);
+    });
+
+    it("uses actual upstream HEAD instead of a stale local tracking ref", () => {
+      const { env, source, addWorktree } = managedFixture();
+      const checkout = addWorktree("not-yet-fetched");
+      writeFileSync(join(checkout, "integrated.txt"), "new upstream commit");
+      execFileSync("git", ["-C", checkout, "add", "integrated.txt"]);
+      execFileSync("git", ["-C", checkout, "commit", "-q", "-m", "feature"]);
+      execFileSync("git", ["-C", source, "merge", "--ff-only", "not-yet-fetched"]);
+      const before = execFileSync("git", ["-C", source, "rev-parse", "refs/remotes/origin/main"], { encoding: "utf8" });
+      const result = run(env);
+      expect(result.status, result.stderr).toBe(0);
+      expect(existsSync(checkout), result.stdout).toBe(false);
+      expect(execFileSync("git", ["-C", source, "rev-parse", "refs/remotes/origin/main"], { encoding: "utf8" })).toBe(before);
     });
 
     it("does not defer safe cleanup because an unrelated conversation owns a lane", () => {
