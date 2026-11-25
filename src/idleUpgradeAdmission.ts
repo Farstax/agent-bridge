@@ -17,6 +17,7 @@ import { readFileSync, realpathSync } from "node:fs";
 import { readProcessStartTicks } from "./cliSupervisor.js";
 import { parseRunContinuation, OUTWARD_RUN_ACCEPTED_TURN_PREFIX } from "./runContinuation.js";
 import { ConversationRepository } from "./repositories/conversationRepository.js";
+import { conversationDirectorySettingKey } from "./conversationDirectory.js";
 
 export const IDLE_UPGRADE_FENCE_KEY = "agent-bridge:idle-maintenance:v1";
 export type IdleUpgradeState = "idle" | "deferred_busy" | "unknown";
@@ -207,21 +208,34 @@ function idleState(db: Database.Database, options: IdleUpgradeAdmissionOptions =
 }
 
 /**
- * Filesystem janitor admission is stricter than rollout: dormant queued work
- * must retain its artifacts. Caller holds the existing SQLite write
- * transaction across the check and the synchronous filesystem operation.
- * No durable fence/lease is created for ordinary housekeeping.
+ * The janitor must preserve dormant work, unlike rollout. Use the same
+ * durable Run/queue/lane owners inside the existing IMMEDIATE transaction,
+ * scoped to the directory's persisted identity. An unrelated idle/active
+ * Workstream must not prevent reclaiming this one.
  */
-export function canReapConversationArtifacts(db: Database.Database): boolean {
-  if (!db.inTransaction || idleState(db) !== "idle") return false;
-  if (db.prepare("SELECT 1 FROM pending_messages LIMIT 1").get()) return false;
+export function canReapConversationArtifacts(db: Database.Database, directoryKey: string): boolean {
+  if (!db.inTransaction || storedFence(db).exists) return false;
+  // Reservations and receipts can precede a durable lane identity. Preserve
+  // all candidates during these short, ambiguous ingress transitions.
+  if (TRANSIENT_QUERIES.slice(1).some((sql) => db.prepare(sql).get())) return false;
+  const lanes = db.prepare(`
+    SELECT surface AS surfaceIdentity, chat_key AS chatKey FROM execution_locks
+    UNION SELECT surface_identity, chat_id FROM bridge_runs WHERE status = 'running'
+    UNION SELECT surface, chat_key FROM pending_messages
+  `).all() as Array<{ surfaceIdentity: string | null; chatKey: string | null }>;
+  for (const lane of lanes) {
+    if (!lane.surfaceIdentity || !lane.chatKey) return false;
+    if (conversationDirectorySettingKey({ surfaceIdentity: lane.surfaceIdentity, chatKey: lane.chatKey }) === directoryKey) return false;
+  }
   const rows = db.prepare("SELECT value FROM settings WHERE key LIKE 'run-continuation:v1:%'")
     .all() as Array<{ value: string | null }>;
-  return rows.every(({ value }) => {
+  for (const { value } of rows) {
     if (!value) return false;
     const record = parseRunContinuation(value);
-    return !!record && !["pending", "claimed"].includes(record.state);
-  });
+    if (!record) return false;
+    if (["pending", "claimed"].includes(record.state) && conversationDirectorySettingKey(record) === directoryKey) return false;
+  }
+  return true;
 }
 
 /** Read-only, non-sensitive explanation; never changes admission authority. */
