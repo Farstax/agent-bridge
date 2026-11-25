@@ -185,26 +185,33 @@ describe("provider binary retention after accepted rollout", () => {
     expect(existsSync(join(paths.agyRoot, "3.0.0"))).toBe(true);
   }, 45_000);
 
-  it("preserves obsolete components while a live process holds a retired payload", async () => {
-    const { fixture, paths, env } = officialFixture();
-    const payload = join(paths.agyRoot, "1.0.0", registryPlatform, "agy_acp_server.par");
-    const child = spawn(process.execPath, ["-e",
-      'const fs = require("node:fs"); fs.openSync(process.argv[1], "r"); console.log("ready"); setInterval(() => {}, 1000);',
-      payload], { stdio: ["ignore", "pipe", "ignore"] });
-    const exited = once(child, "exit");
-    try {
-      await once(child.stdout!, "data");
-      const result = runRollout(fixture, undefined, undefined, env);
-      expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
-      expect(result.stdout).toContain("legacy_link_ownership_or_consumer_ambiguous");
-      expect(existsSync(payload)).toBe(true);
-      expect(existsSync(paths.agyLink)).toBe(true);
-      expect(existsSync(paths.harnessLink)).toBe(true);
-    } finally {
-      child.kill();
-      await exited;
-    }
-  }, 25_000);
+  for (const holdsRetired of [true, false]) {
+    it(holdsRetired ? "preserves obsolete components while a live process holds a retired payload"
+      : "ignores a live process holding an independently owned similarly named file", async () => {
+      const { fixture, paths, env } = officialFixture();
+      const payload = holdsRetired
+        ? join(paths.agyRoot, "1.0.0", registryPlatform, "agy_acp_server.par")
+        : join(paths.agyRoot, "1.0.0-independent");
+      if (!holdsRetired) writeFileSync(payload, "independently owned");
+      const child = spawn(process.execPath, ["-e",
+        'const fs = require("node:fs"); fs.openSync(process.argv[1], "r"); console.log("ready"); setInterval(() => {}, 1000);',
+        payload], { stdio: ["ignore", "pipe", "ignore"] });
+      const exited = once(child, "exit");
+      try {
+        await once(child.stdout!, "data");
+        const result = runRollout(fixture, undefined, undefined, env);
+        expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
+        expect(result.stdout).toContain(holdsRetired ? "legacy_link_ownership_or_consumer_ambiguous"
+          : "host component retention provider=agy pruned=2");
+        expect(existsSync(payload)).toBe(true);
+        expect(existsSync(paths.agyLink)).toBe(holdsRetired);
+        expect(existsSync(paths.harnessLink)).toBe(holdsRetired);
+      } finally {
+        child.kill();
+        await exited;
+      }
+    }, 25_000);
+  }
 
   for (const ambiguous of ["mixed targets", "unmanaged link", "changed payload", "consumer override"] as const) {
     it(`preserves all obsolete versions when legacy retirement is ambiguous (${ambiguous})`, () => {
