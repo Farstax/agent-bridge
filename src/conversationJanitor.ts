@@ -7,11 +7,12 @@ import { existsSync, lstatSync, readFileSync, readdirSync, realpathSync } from "
 import { basename, dirname, join, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { BridgeDb } from "./db.js";
-import { conversationDirectoryPath } from "./conversationDirectory.js";
+import { conversationDirectoryPath, conversationDirectorySettingKey } from "./conversationDirectory.js";
 import { canReapConversationArtifacts } from "./idleUpgradeAdmission.js";
 import { OutwardAcpSessionRepository } from "./repositories/outwardAcpSessionRepository.js";
 
 interface OwnedDirectory {
+  key: string;
   root: string;
   source: string;
   stillOwned: () => boolean;
@@ -37,11 +38,12 @@ function ownedDirectories(db: BridgeDb, workspaceRoot: string): OwnedDirectory[]
       try { expected = conversationDirectoryPath(source, identity); } catch { continue; }
       if (session.executionCwd !== expected) continue;
       directories.set(expected, {
-        root: expected, source,
+        key: conversationDirectorySettingKey(identity), root: expected, source,
         stillOwned: () => {
           const current = sessions.get(session.sessionId);
           return current?.executionCwd === expected && current.cwd === source
-            && current.conversationId === session.conversationId && !current.archivedAt;
+            && current.conversationId === session.conversationId && !current.archivedAt
+            && conversationDirectoryPath(current.cwd, identity) === expected;
         },
       });
     }
@@ -63,7 +65,8 @@ function ownedDirectories(db: BridgeDb, workspaceRoot: string): OwnedDirectory[]
     const expected = join(partition, digest.slice(0, 32));
     if (value !== expected || directories.has(expected)) continue;
     directories.set(expected, {
-      root: expected, source, stillOwned: () => db.getSetting(key) === expected,
+      key, root: expected, source, stillOwned: () => db.getSetting(key) === expected
+        && dirname(conversationDirectoryPath(source, { surfaceIdentity: "janitor", chatKey: "inventory" })) === partition,
     });
   }
   return [...directories.values()];
@@ -124,13 +127,13 @@ function installedReleaseCommit(): string {
 export function reapManagedConversationArtifacts(db: BridgeDb, workspaceRoot: string, dryRun: boolean): void {
   const directories = ownedDirectories(db, workspaceRoot);
   if (!directories.length) return;
-  if (!db.runInImmediateTransaction(() => canReapConversationArtifacts(db.raw))) {
-    console.log("[reap-tmp-artifacts] managed conversation cleanup deferred (execution or pending work)");
-    return;
-  }
   const releaseCommit = installedReleaseCommit();
   const script = fileURLToPath(new URL("../scripts/reap-tmp-artifacts.sh", import.meta.url));
   for (const directory of directories) {
+    if (!db.runInImmediateTransaction(() => canReapConversationArtifacts(db.raw, directory.key))) {
+      console.log("[reap-tmp-artifacts] managed conversation cleanup deferred (execution or pending work): " + directory.root);
+      continue;
+    }
     for (const checkout of discoverCheckouts(directory.root)) {
       // The existing SQLite write admission transaction excludes a new Run,
       // queue claim or continuation while we inspect and reclaim this exact
@@ -139,10 +142,10 @@ export function reapManagedConversationArtifacts(db: BridgeDb, workspaceRoot: st
       const admitted = db.runInImmediateTransaction(() => {
         if (!directory.stillOwned() || !safeDirectory(directory.root)
           || !checkout.startsWith(directory.root + sep) || !safeDirectory(checkout, lstatSync(directory.root).dev)
-          || !canReapConversationArtifacts(db.raw)) return false;
+          || !canReapConversationArtifacts(db.raw, directory.key)) return false;
         const result = spawnSync("bash", [script, "--conversation-checkout", ...(dryRun ? ["--dry-run"] : [])], {
           env: {
-            ...process.env, GIT_OPTIONAL_LOCKS: "0",
+            ...process.env, GIT_OPTIONAL_LOCKS: "0", GIT_NO_REPLACE_OBJECTS: "1",
             REAP_MANAGED_ROOT: directory.root,
             REAP_MANAGED_SOURCE: directory.source,
             REAP_MANAGED_CHECKOUT: checkout,
