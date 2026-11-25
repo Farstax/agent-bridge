@@ -13,8 +13,7 @@ MAX_AGE_MIN=$(( MAX_AGE_HOURS * 60 ))
 DRY_RUN=0
 FAILURES=0
 MANAGED_MODE=0
-MANAGED_SQUASH_TIP=""
-MANAGED_SQUASH_MERGE=""
+MANAGED_DEPENDENCIES_PLANNED=0
 if [[ "${1:-}" == "--conversation-checkout" ]]; then
   MANAGED_MODE=1
   shift
@@ -213,43 +212,16 @@ managed_worktree_removable() {
     && ! has_ownership_signal "$primary" && ! checkout_has_active_process "$primary"
 }
 
-# Exact ancestry is normal proof; a squash requires exact PR head and
-# merge commit independently verified in the trusted base.
+# Managed proof was acquired outside the DB transaction and is scoped to
+# the exact immutable tip. Never substitute a cached ref for this proof.
 commit_integrated() {
   local repo="$1" tip="$2" base="$3" resolved
-  git -C "$repo" merge-base --is-ancestor "$tip" "$base" 2>/dev/null && return 0
-  [[ -n "$MANAGED_SQUASH_TIP" && -n "$MANAGED_SQUASH_MERGE" ]] || return 1
-  resolved="$(git -C "$repo" rev-parse --verify "$tip^{commit}" 2>/dev/null)" || return 1
-  [[ "$resolved" == "$MANAGED_SQUASH_TIP" ]] || return 1
-  git -C "$repo" merge-base --is-ancestor "$MANAGED_SQUASH_MERGE" "$base" 2>/dev/null
-}
-
-# Use only existing explicitly supplied GitHub authentication. No login,
-# credential discovery, network prerequisite or patch-equivalence guessing.
-verify_managed_squash() {
-  local repo="$1" origin="$2" tip="$3" base="$4" default_branch="$5"
-  local slug records head merged target target_repo
-  [[ -n "${GH_TOKEN:-}${GITHUB_TOKEN:-}" ]] || return 1
-  case "$origin" in
-    https://github.com/*) slug="${origin#https://github.com/}" ;;
-    git@github.com:*) slug="${origin#git@github.com:}" ;;
-    ssh://git@github.com/*) slug="${origin#ssh://git@github.com/}" ;;
-    *) return 1 ;;
-  esac
-  slug="${slug%.git}"
-  [[ "$slug" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ && "$tip" =~ ^[0-9a-f]{40}$ ]] || return 1
-  command -v gh >/dev/null 2>&1 && command -v timeout >/dev/null 2>&1 || return 1
-  records="$(GH_PROMPT_DISABLED=1 timeout --kill-after=1 3 gh api --hostname github.com \
-    "repos/$slug/commits/$tip/pulls?per_page=100" \
-    --jq '.[] | select(.merged_at != null) | [.head.sha,.merge_commit_sha,.base.ref,.base.repo.full_name] | @tsv' 2>/dev/null)" || return 1
-  while IFS=$'\t' read -r head merged target target_repo; do
-    [[ "$head" == "$tip" && "$merged" =~ ^[0-9a-f]{40}$ && "$target" == "$default_branch" && "${target_repo,,}" == "${slug,,}" ]] || continue
-    git -C "$repo" merge-base --is-ancestor "$merged" "$base" 2>/dev/null || continue
-    MANAGED_SQUASH_TIP="$tip"
-    MANAGED_SQUASH_MERGE="$merged"
-    return 0
-  done <<< "$records"
-  return 1
+  if (( MANAGED_MODE )); then
+    resolved="$(git -C "$repo" rev-parse --verify "$tip^{commit}" 2>/dev/null)" || return 1
+    [[ "$resolved" == "${REAP_MANAGED_PROVEN_TIP:-}" ]]
+  else
+    git -C "$repo" merge-base --is-ancestor "$tip" "$base" 2>/dev/null
+  fi
 }
 
 # A supplied merge ref is verified by the managed-conversation owner.
@@ -330,6 +302,7 @@ reap_checkout_dependencies() {
       return 0
     fi
     if (( DRY_RUN )); then
+      MANAGED_DEPENDENCIES_PLANNED=1
       log "would remove (inactive clean managed dependencies): $dependencies"
     elif rm -rf --one-file-system -- "$dependencies"; then
       log "removed (inactive clean managed dependencies): $dependencies"
@@ -430,7 +403,10 @@ reap_worktree_repo() {
   # A repository with no remote has only its own default branch as authority.
   # For a remote-backed repository, never substitute potentially unpushed main.
   [[ -n "$remotes" ]] || merge_ref="refs/heads/$default_branch"
-  [[ -z "$trusted_merge_ref" ]] || merge_ref="$trusted_merge_ref"
+  if [[ -n "$trusted_merge_ref" ]]; then
+    merge_ref="$trusted_merge_ref"
+    default_branch="${REAP_MANAGED_DEFAULT_BRANCH:-$default_branch}"
+  fi
   worktrees="$(git -C "$repo" worktree list --porcelain 2>/dev/null)" || return 0
 
   local wt="" branch="" status="" locked=0 detached=0 branch_tip remaining
@@ -456,6 +432,7 @@ reap_worktree_repo() {
         elif [[ -n "$wt" && ( "$wt" != "$repo" || -n "$target" ) && "$wt" != "$primary" ]] && (( detached && ! locked )); then
           reap_checkout_dependencies "$wt" "$trusted_merge_ref"
         elif [[ -n "$wt" && -n "$branch" && ( "$wt" != "$repo" || -n "$target" ) && "$wt" != "$primary" && "$branch" != "$default_branch" && "$branch" != main ]] && (( ! locked )); then
+          MANAGED_DEPENDENCIES_PLANNED=0
           if (( MANAGED_MODE )) && commit_integrated "$repo" "refs/heads/$branch" "$merge_ref"; then
             reap_checkout_dependencies "$wt" "$merge_ref"
           fi
@@ -468,11 +445,13 @@ reap_worktree_repo() {
             :
           elif ! status="$(git -C "$wt" status --porcelain=v1 --untracked-files=all --ignored=matching --ignore-submodules=none 2>/dev/null)"; then
             log "preserving (unverified worktree status): $wt"
-          elif [[ -z "$status" ]] && commit_integrated "$repo" "refs/heads/$branch" "$merge_ref"; then
+          elif { [[ -z "$status" ]] || { (( MANAGED_DEPENDENCIES_PLANNED )) && [[ "$status" == "!! node_modules/" ]]; }; } && commit_integrated "$repo" "refs/heads/$branch" "$merge_ref"; then
             if has_ownership_signal "$wt" || checkout_has_active_process "$wt"; then
               log "preserving (active worktree): $wt"
             elif (( DRY_RUN )); then
-              log "would remove worktree (merged+clean): $wt [$branch]"
+              if { (( ! MANAGED_MODE )) || managed_worktree_removable "$wt" "$repo"; }; then
+                log "would remove worktree (merged+clean): $wt [$branch]"
+              fi
             elif branch_tip="$(git -C "$repo" rev-parse --verify "refs/heads/$branch^{commit}" 2>/dev/null)" \
               && commit_integrated "$repo" "$branch_tip" "$merge_ref" \
               && [[ "$(git -C "$wt" rev-parse --verify 'HEAD^{commit}' 2>/dev/null)" == "$branch_tip" ]] \
@@ -514,8 +493,8 @@ reap_worktree_repo() {
 # Invoked by the existing database-backed housekeeping owner.
 reap_managed_checkout() {
   local root="${REAP_MANAGED_ROOT:-}" checkout="${REAP_MANAGED_CHECKOUT:-}" source="${REAP_MANAGED_SOURCE:-}"
-  local origin source_origin="" ref anchor="${REAP_MANAGED_RELEASE_COMMIT:-}" primary source_root worktrees first tip default_branch
-  [[ -n "$root" && -n "$checkout" && -n "$source" ]] || return 0
+  local origin ref="${REAP_MANAGED_PROVEN_TIP:-}" primary source_root worktrees first tip
+  [[ -n "$root" && -n "$checkout" && -n "$source" && "$ref" =~ ^[0-9a-f]{40}$ ]] || return 0
   [[ "$root/" == */.agent-bridge-conversations/* && "$(realpath -e -- "$root" 2>/dev/null)" == "$root" ]] || return 0
   managed_tree_safe "$checkout" "$root" || return 0
   [[ "$(git -C "$checkout" rev-parse --show-toplevel 2>/dev/null)" == "$checkout" ]] || return 0
@@ -524,31 +503,9 @@ reap_managed_checkout() {
     return 0
   fi
   origin="$(git -C "$checkout" remote get-url origin 2>/dev/null)" || return 0
-  source_origin="$(git -C "$source" remote get-url origin 2>/dev/null)" || source_origin=""
-  if [[ -n "$origin" && "$origin" == "$source_origin" ]]; then
-    ref="$(git -C "$source" symbolic-ref -q refs/remotes/origin/HEAD 2>/dev/null)" || ref=refs/remotes/origin/main
-    [[ "$ref" == refs/remotes/origin/* ]] || return 0
-    default_branch="${ref#refs/remotes/origin/}"
-    ref="$(git -C "$source" rev-parse --verify "$ref^{commit}" 2>/dev/null)" || return 0
-  elif [[ "$anchor" =~ ^[0-9a-f]{40}$ ]] && git -C "$checkout" cat-file -e "$anchor^{commit}" 2>/dev/null; then
-    # The installed release itself is independent integration evidence.
-    ref="$anchor"
-    default_branch=main
-  elif [[ -n "$origin" && "$origin" == "${REAP_OSS_ORIGIN:-}" ]]; then
-    ref="$(git -C "$checkout" symbolic-ref -q refs/remotes/origin/HEAD 2>/dev/null)" || ref=refs/remotes/origin/main
-    [[ "$ref" == refs/remotes/origin/* ]] || return 0
-    default_branch="${ref#refs/remotes/origin/}"
-  else
-    log "preserving (unverified managed repository): $checkout"
-    return 0
-  fi
+  [[ "$origin" == "${REAP_MANAGED_PROVEN_ORIGIN:-}" ]] || return 0
   tip="$(git -C "$checkout" rev-parse --verify 'HEAD^{commit}' 2>/dev/null)" || return 0
-  if ! commit_integrated "$checkout" "$tip" "$ref"; then
-    if ! verify_managed_squash "$checkout" "$origin" "$tip" "$ref" "$default_branch"; then
-      log "preserving (unverified managed merge): $checkout"
-      return 0
-    fi
-  fi
+  [[ "$tip" == "$ref" ]] || return 0
   if [[ -f "$checkout/.git" && ! -L "$checkout/.git" ]]; then
     worktrees="$(git -C "$checkout" worktree list --porcelain 2>/dev/null)" || return 0
     IFS= read -r first <<< "$worktrees"
