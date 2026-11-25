@@ -244,6 +244,49 @@ describe("reap-tmp-artifacts.sh", () => {
     expect(branches).toContain("feat/unmerged-clean");
   });
 
+  it("preserves merged worktrees when status fails, a lock is held, or a process is using the checkout", async () => {
+    const root = makeRoot();
+    const repo = join(root, "repo");
+    initGitRepo(repo);
+    const statusFailure = join(root, "status-failure");
+    const locked = join(root, "locked");
+    const active = join(root, "active");
+    for (const [branch, path] of [["status-failure", statusFailure], ["locked", locked], ["active", active]]) {
+      execFileSync("git", ["-C", repo, "worktree", "add", "-q", "-b", branch, path]);
+    }
+    execFileSync("git", ["-C", repo, "worktree", "lock", locked]);
+    const bin = join(root, "bin");
+    mkdirSync(bin);
+    const fakeGit = join(bin, "git");
+    writeFileSync(fakeGit, `#!/usr/bin/env bash
+if [[ "$1" == "-C" && "$2" == "$REAP_TEST_BAD_WORKTREE" && "$3" == "status" ]]; then exit 2; fi
+exec "$REAP_TEST_REAL_GIT" "$@"
+`);
+    chmodSync(fakeGit, 0o755);
+    const child = spawn("sleep", ["20"], { cwd: active, stdio: "ignore" });
+    try {
+      await new Promise<void>((resolve, reject) => {
+        child.once("spawn", () => resolve());
+        child.once("error", reject);
+      });
+      const result = run({
+        REAP_TMP_ROOT: join(root, "tmp"),
+        REAP_WORKTREE_REPOS: repo,
+        PATH: `${bin}:${process.env.PATH}`,
+        REAP_TEST_BAD_WORKTREE: statusFailure,
+        REAP_TEST_REAL_GIT: execFileSync("which", ["git"], { encoding: "utf8" }).trim(),
+      });
+      expect(result.status, result.stderr).toBe(0);
+      expect(result.stdout).toContain("unverified worktree status");
+      expect(result.stdout).toContain("active worktree");
+      for (const path of [statusFailure, locked, active]) expect(existsSync(path)).toBe(true);
+      const branches = execFileSync("git", ["-C", repo, "branch", "--list"], { encoding: "utf8" });
+      for (const name of ["status-failure", "locked", "active"]) expect(branches).toContain(name);
+    } finally {
+      child.kill();
+    }
+  });
+
   it("uses a bounded non-interactive admin fallback when ordinary removal is denied", () => {
     const tmpRoot = makeRoot();
     const staleScratch = join(tmpRoot, "agent-bridge-root-owned-rollout");
@@ -377,6 +420,48 @@ describe("reap-tmp-artifacts.sh", () => {
     expect(result.stdout).toContain("inactive clean detached OSS dependencies");
     const second = run({ REAP_TMP_ROOT: join(root, "tmp"), REAP_WORKTREE_REPOS: ",", REAP_DETACHED_CHECKOUTS: checkout });
     expect(second.status).toBe(0);
+  });
+
+  it("preserves tracked content in a detached node_modules directory", () => {
+    const root = makeRoot();
+    const { checkout, dependencies } = makeDetachedCheckout(root);
+    const tracked = join(dependencies, "tracked");
+    writeFileSync(tracked, "tracked content");
+    execFileSync("git", ["-C", checkout, "add", "-f", "node_modules/tracked"]);
+    execFileSync("git", ["-C", checkout, "commit", "-q", "-m", "track dependency content"]);
+    execFileSync("git", ["-C", checkout, "update-ref", "refs/remotes/origin/main", "HEAD"]);
+    ageEntry(tracked, 48);
+    ageEntry(dependencies, 48);
+    const result = run({
+      REAP_TMP_ROOT: join(root, "tmp"),
+      REAP_WORKTREE_REPOS: ",",
+      REAP_DETACHED_CHECKOUTS: checkout,
+      REAP_OSS_ORIGIN: "https://github.com/Farstax/agent-bridge.git",
+    });
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout).toContain("tracked dependencies");
+    expect(readFileSync(tracked, "utf8")).toBe("tracked content");
+  });
+
+  it("preserves dependencies of a locked detached linked worktree", () => {
+    const root = makeRoot();
+    const { checkout: repo } = makeDetachedCheckout(root);
+    const checkout = join(root, "locked-detached");
+    execFileSync("git", ["-C", repo, "worktree", "add", "-q", "--detach", checkout, "HEAD"]);
+    const dependencies = join(checkout, "node_modules");
+    mkdirSync(dependencies);
+    const module = join(dependencies, "rebuildable");
+    writeFileSync(module, "cached");
+    ageEntry(module, 48);
+    ageEntry(dependencies, 48);
+    execFileSync("git", ["-C", repo, "worktree", "lock", checkout]);
+    const result = run({
+      REAP_TMP_ROOT: join(root, "tmp"),
+      REAP_WORKTREE_REPOS: repo,
+      REAP_OSS_ORIGIN: "https://github.com/Farstax/agent-bridge.git",
+    });
+    expect(result.status, result.stderr).toBe(0);
+    expect(existsSync(module)).toBe(true);
   });
 
   it("preserves detached dependencies when the checkout is dirty, unverified or active", () => {
