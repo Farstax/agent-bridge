@@ -46,6 +46,22 @@ describe("shared skills catalog", () => {
     expect(instructions).toContain("--isolated");
   });
 
+  it("keeps sandbox cleanup portable and bound to verified Git ownership", () => {
+    const skill = readFileSync("skills/git-sandbox/SKILL.md", "utf8");
+    expect(listLocalCatalog().map((entry) => entry.name)).toContain("git-sandbox");
+    // The old executable recipe required gh and switched to a branch
+    // already checked out by the primary worktree. Neither is portable.
+    expect(skill).not.toMatch(/gh pr (?:create|merge)|git checkout main/);
+    expect(skill).toContain('git -C "$primary" worktree remove "$worktree"');
+    expect(skill).toContain('git -C "$primary" update-ref -d "refs/heads/$branch" "$verified_tip"');
+    expect(skill).toContain("merged PR's head equals that tip");
+    expect(skill).toContain("merge commit is reachable");
+    expect(skill).toContain("Unlink only an identified untracked disposable dependency symlink itself, never its target");
+    expect(skill).toContain("Do not link temporary worktrees to each other");
+    expect(skill).toContain("closed-unmerged");
+    expect(skill).toContain("report its path, exact blocker");
+  });
+
   it("lists the consolidated SDLC skills without the retired compatibility alias", () => {
     const names = listLocalCatalog().map((entry) => entry.name);
     expect(names).toContain("requirements-to-acceptance");
