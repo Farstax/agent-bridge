@@ -206,6 +206,24 @@ function idleState(db: Database.Database, options: IdleUpgradeAdmissionOptions =
   return "idle";
 }
 
+/**
+ * Filesystem janitor admission is stricter than rollout: dormant queued work
+ * must retain its artifacts. Caller holds the existing SQLite write
+ * transaction across the check and the synchronous filesystem operation.
+ * No durable fence/lease is created for ordinary housekeeping.
+ */
+export function canReapConversationArtifacts(db: Database.Database): boolean {
+  if (!db.inTransaction || idleState(db) !== "idle") return false;
+  if (db.prepare("SELECT 1 FROM pending_messages LIMIT 1").get()) return false;
+  const rows = db.prepare("SELECT value FROM settings WHERE key LIKE 'run-continuation:v1:%'")
+    .all() as Array<{ value: string | null }>;
+  return rows.every(({ value }) => {
+    if (!value) return false;
+    const record = parseRunContinuation(value);
+    return !!record && !["pending", "claimed"].includes(record.state);
+  });
+}
+
 /** Read-only, non-sensitive explanation; never changes admission authority. */
 function interruptibleDeferralReason(db: Database.Database): IdleUpgradeDeferralReason {
   const marker = storedFence(db);
