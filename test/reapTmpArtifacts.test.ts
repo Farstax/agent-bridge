@@ -778,6 +778,7 @@ exec "$REAP_TEST_REAL_GIT" "$@"
       writeFileSync(curl, [
         "#!/usr/bin/env bash",
         "config=$(cat)",
+        'if [[ "$REAP_TEST_REQUIRE_AUTH" == 1 && "$config" != *"Authorization: Bearer fixture-token"* ]]; then exit 22; fi',
         'url="${@: -1}"',
         'case "$url" in',
         '  */repos/example/repo) printf \'%s\\n\' \'{"full_name":"example/repo","default_branch":"main"}\' ;;',
@@ -792,7 +793,17 @@ exec "$REAP_TEST_REAL_GIT" "$@"
       const wrong = run({ ...proofEnv, REAP_TEST_PR_HEAD: merged });
       expect(wrong.status, wrong.stderr).toBe(0);
       expect(existsSync(deps)).toBe(true);
-      const correct = run({ ...proofEnv, REAP_TEST_PR_HEAD: tip });
+      const publicPlan = run({ ...proofEnv, REAP_TEST_PR_HEAD: tip }, ["--dry-run"]);
+      expect(publicPlan.status, publicPlan.stderr).toBe(0);
+      expect(publicPlan.stdout).toContain("would remove worktree (merged+clean): " + checkout);
+      const inaccessible = run({ ...proofEnv, REAP_TEST_PR_HEAD: tip, REAP_TEST_REQUIRE_AUTH: "1" });
+      expect(inaccessible.status, inaccessible.stderr).toBe(0);
+      expect(existsSync(deps)).toBe(true);
+      const helper = join(bin, "credential-helper");
+      writeFileSync(helper, "#!/usr/bin/env bash\ninput=$(cat)\n[[ \"$1\" == get && \"$input\" == *path=example/repo.git* ]] || exit 1\nprintf 'username=x-access-token\\npassword=fixture-token\\n'\n");
+      chmodSync(helper, 0o755);
+      execFileSync("git", ["-C", source, "config", "credential.helper", helper]);
+      const correct = run({ ...proofEnv, REAP_TEST_PR_HEAD: tip, REAP_TEST_REQUIRE_AUTH: "1" });
       expect(correct.status, correct.stderr).toBe(0);
       expect(existsSync(checkout), correct.stdout).toBe(false);
       expect(execFileSync("git", ["-C", source, "branch", "--list", "squashed"], { encoding: "utf8" })).toBe("");
@@ -852,6 +863,29 @@ exec "$REAP_TEST_REAL_GIT" "$@"
         db.unlock(lane);
         db.close();
       }
+    });
+
+    it("scopes a linked receipt to its Run and defers an ambiguous dispatch", () => {
+      const { database, env, addWorktree } = managedFixture();
+      const checkout = addWorktree("receipt-idle");
+      const db = openDb(database, { databaseRole: "interactive" });
+      try {
+        const receipt = db.createEventReceipt({
+          event_id: "receipt-test", source: "health", event_kind: "health",
+          idempotency_key: "receipt-test", received_at: new Date().toISOString(),
+          occurred_at: new Date().toISOString(), payload_json: "{}", authority_scope: "fixture",
+        });
+        expect(db.claimEventReceiptDispatch(receipt.id)).toBe(true);
+        const deferred = run(env);
+        expect(deferred.status, deferred.stderr).toBe(0);
+        expect(deferred.stdout).toContain("managed conversation cleanup deferred");
+        expect(existsSync(checkout)).toBe(true);
+        db.insertRun("unrelated-receipt-run", { surfaceIdentity: "acp:outward", chatKey: "acp:other" }, "codex");
+        db.linkEventReceiptRun(receipt.id, "unrelated-receipt-run");
+        const result = run(env);
+        expect(result.status, result.stderr).toBe(0);
+        expect(existsSync(checkout), result.stdout).toBe(false);
+      } finally { db.close(); }
     });
 
     it("discovers a new persisted messaging conversation without scanning an unowned sibling", () => {
