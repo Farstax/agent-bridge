@@ -1,7 +1,8 @@
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { once } from "node:events";
 import { afterEach, describe, expect, it } from "vitest";
 import { cleanupRoots, createFixture, prepareImmutableRelease, runRollout, type Fixture } from "./support/rolloutFixture.js";
 
@@ -88,9 +89,9 @@ describe("provider binary retention after accepted rollout", () => {
     symlinkSync(join(paths.agyRoot, "3.0.0", "linux-x86_64", "agy"), officialLink);
     symlinkSync(join(paths.agyRoot, legacyVersion, "linux-x86_64", "agy_acp_server.par"), paths.agyLink);
     symlinkSync(join(paths.agyRoot, legacyVersion, "linux-x86_64", "localharness_external"), paths.harnessLink);
-    const platformBinary = join(fixture.root, "platform-agy");
-    writeFileSync(platformBinary, "independently managed Platform executable");
-    return { fixture, paths, officialLink, platformBinary, env: {
+    const externalBinary = join(fixture.root, "external-agy");
+    writeFileSync(externalBinary, "independently managed executable");
+    return { fixture, paths, officialLink, externalBinary, env: {
       ...paths.env, AGENT_BRIDGE_AGY_ACP_LINK: officialLink, AGENT_BRIDGE_AGY_LEGACY_LINK: paths.agyLink,
     } };
   }
@@ -110,7 +111,7 @@ describe("provider binary retention after accepted rollout", () => {
 
   for (const rollbackVersion of ["3.0.0", "2.0.0"]) {
     it(`retires the obsolete legacy pair with official current and rollback pins (${rollbackVersion})`, () => {
-      const { fixture, paths, officialLink, platformBinary, env } = officialFixture(rollbackVersion);
+      const { fixture, paths, officialLink, externalBinary, env } = officialFixture(rollbackVersion);
       const result = runRollout(fixture, undefined, undefined, env);
       const output = `${result.stdout}\n${result.stderr}`;
       expect(result.status, output).toBe(0);
@@ -121,7 +122,7 @@ describe("provider binary retention after accepted rollout", () => {
       expect(existsSync(paths.agyLink)).toBe(false);
       expect(existsSync(paths.harnessLink)).toBe(false);
       expect(existsSync(officialLink)).toBe(true);
-      expect(readFileSync(platformBinary, "utf8")).toBe("independently managed Platform executable");
+      expect(readFileSync(externalBinary, "utf8")).toBe("independently managed executable");
       expect(existsSync(join(paths.cursorRoot, "1.0.0"))).toBe(false);
     }, 20_000);
   }
@@ -139,6 +140,70 @@ describe("provider binary retention after accepted rollout", () => {
       expect(existsSync(paths.harnessLink)).toBe(false);
     }, 20_000);
   }
+
+  it("preserves the manifest if payload deletion fails, then finishes on the next accepted rollout", () => {
+    const { fixture, paths, env } = officialFixture();
+    const version = join(paths.agyRoot, "1.0.0");
+    const component = join(version, "linux-x86_64");
+    const manifest = join(component, "manifest.json");
+    const protectedPayload = join(component, "protected-payload");
+    mkdirSync(protectedPayload);
+    writeFileSync(join(protectedPayload, "payload"), "retired data");
+    chmodSync(protectedPayload, 0o500);
+    try {
+      const first = runRollout(fixture, undefined, undefined, env);
+      const output = `${first.stdout}\n${first.stderr}`;
+      expect(first.status, output).toBe(0);
+      expect(output).toContain("host component retention could not remove provider=agy version=1.0.0");
+      expect(existsSync(manifest)).toBe(true);
+      expect(existsSync(join(protectedPayload, "payload"))).toBe(true);
+      expect(existsSync(paths.agyLink)).toBe(false);
+      expect(existsSync(paths.harnessLink)).toBe(false);
+    } finally {
+      chmodSync(protectedPayload, 0o700);
+    }
+    const retry = runRollout({
+      ...fixture, expectedCommit: fixture.previousCommit, previousCommit: fixture.expectedCommit,
+    }, undefined, undefined, env);
+    expect(retry.status, `${retry.stdout}\n${retry.stderr}`).toBe(0);
+    expect(retry.stdout).toContain("host component retention provider=agy pruned=1");
+    expect(existsSync(version)).toBe(false);
+    expect(existsSync(join(paths.agyRoot, "3.0.0"))).toBe(true);
+  }, 45_000);
+
+  it("is a true no-op on a subsequent accepted rollout with the same official Agy pin", () => {
+    const { fixture, paths, env } = officialFixture();
+    const first = runRollout(fixture, undefined, undefined, env);
+    expect(first.status, `${first.stdout}\n${first.stderr}`).toBe(0);
+    expect(first.stdout).toContain("host component retention provider=agy pruned=2");
+    const second = runRollout({
+      ...fixture, expectedCommit: fixture.previousCommit, previousCommit: fixture.expectedCommit,
+    }, undefined, undefined, env);
+    expect(second.status, `${second.stdout}\n${second.stderr}`).toBe(0);
+    expect(second.stdout).toContain("host component retention provider=agy pruned=0 retained_current=3.0.0 retained_rollback=3.0.0");
+    expect(existsSync(join(paths.agyRoot, "3.0.0"))).toBe(true);
+  }, 45_000);
+
+  it("preserves obsolete components while a live process holds a retired payload", async () => {
+    const { fixture, paths, env } = officialFixture();
+    const payload = join(paths.agyRoot, "1.0.0", "linux-x86_64", "agy_acp_server.par");
+    const child = spawn(process.execPath, ["-e",
+      'const fs = require("node:fs"); fs.openSync(process.argv[1], "r"); console.log("ready"); setInterval(() => {}, 1000);',
+      payload], { stdio: ["ignore", "pipe", "ignore"] });
+    const exited = once(child, "exit");
+    try {
+      await once(child.stdout!, "data");
+      const result = runRollout(fixture, undefined, undefined, env);
+      expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
+      expect(result.stdout).toContain("legacy_link_ownership_or_consumer_ambiguous");
+      expect(existsSync(payload)).toBe(true);
+      expect(existsSync(paths.agyLink)).toBe(true);
+      expect(existsSync(paths.harnessLink)).toBe(true);
+    } finally {
+      child.kill();
+      await exited;
+    }
+  }, 25_000);
 
   for (const ambiguous of ["mixed targets", "unmanaged link", "changed payload", "consumer override"] as const) {
     it(`preserves all obsolete versions when legacy retirement is ambiguous (${ambiguous})`, () => {
