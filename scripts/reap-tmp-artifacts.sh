@@ -12,6 +12,11 @@ MAX_AGE_HOURS="${REAP_MAX_AGE_HOURS:-24}"
 MAX_AGE_MIN=$(( MAX_AGE_HOURS * 60 ))
 DRY_RUN=0
 FAILURES=0
+MANAGED_MODE=0
+if [[ "${1:-}" == "--conversation-checkout" ]]; then
+  MANAGED_MODE=1
+  shift
+fi
 [[ "${1:-}" == "--dry-run" ]] && DRY_RUN=1
 
 if [[ ! "$MAX_AGE_HOURS" =~ ^[1-9][0-9]*$ ]]; then
@@ -35,6 +40,7 @@ retention_unavailable() {
   fi
 }
 prune_acp_telemetry() {
+  (( DRY_RUN )) && return 0
   local database="${DB_PATH:-${BRIDGE_DB_PATH:-}}" release node_bin
   [[ -n "$database" ]] || { retention_unavailable "configured interactive database path is unset"; return 0; }
   [[ "$database" == /* && -f "$database" && ! -L "$database" ]] || { retention_unavailable "database path is unsafe"; return 0; }
@@ -63,7 +69,6 @@ prune_acp_telemetry() {
 # the explicitly configured database and workspace root are eligible.
 run_acp_maintenance() {
   local database="${DB_PATH:-${BRIDGE_DB_PATH:-}}" release node_bin error
-  (( DRY_RUN )) && return 0
   [[ "$database" == /* && -f "$database" && ! -L "$database" ]] || return 0
   release="${BRIDGE_CURRENT_RELEASE_DIR:-}"
   [[ -L "$release" ]] || return 0
@@ -71,7 +76,10 @@ run_acp_maintenance() {
   node_bin="${NODE_BIN:-node}"
   command -v "$node_bin" >/dev/null 2>&1 || return 0
   [[ -f "$release/node_modules/tsx/dist/cli.mjs" && -f "$release/src/acpServer/maintenance.ts" ]] || return 0
-  if error="$("$node_bin" "$release/node_modules/tsx/dist/cli.mjs" "$release/src/acpServer/maintenance.ts" 2>&1 >/dev/null)"; then
+  local -a args=()
+  (( DRY_RUN )) && args+=(--dry-run)
+  if error="$("$node_bin" "$release/node_modules/tsx/dist/cli.mjs" "$release/src/acpServer/maintenance.ts" "${args[@]}" 2>&1)"; then
+    [[ -z "$error" ]] || printf '%s\n' "$error"
     return 0
   fi
   if [[ "$error" == *SQLITE_BUSY* || "$error" == *"database is locked"* ]]; then
@@ -160,8 +168,31 @@ checkout_has_active_process() {
   return 1
 }
 
-reap_detached_checkout_dependencies() {
-  local checkout="$1" root origin status dependencies age now git_dir head_status
+# Explicit inventories must not bypass the conversation admission owner.
+is_conversation_checkout() {
+  local path="$1" canonical
+  canonical="$(realpath -e -- "$path" 2>/dev/null)" || return 1
+  [[ "$canonical/" == */.agent-bridge-conversations/* ]]
+}
+
+# Reject mounts, including same-device bind mounts, within the candidate.
+managed_tree_safe() {
+  local path="$1" root="$2" mount_id parent dev fsroot mount rest
+  [[ "$path" == "$root/"* && "$path" != *[[:space:]\\]* ]] || return 1
+  [[ -d "$path" && ! -L "$path" && "$(realpath -e -- "$path" 2>/dev/null)" == "$path" ]] || return 1
+  [[ "$(stat -c %u -- "$path" 2>/dev/null)" == "$(id -u)" ]] || return 1
+  [[ "$(stat -c %d -- "$path" 2>/dev/null)" == "$(stat -c %d -- "$root" 2>/dev/null)" ]] || return 1
+  [[ -r /proc/self/mountinfo ]] || return 1
+  while read -r mount_id parent dev fsroot mount rest; do
+    if [[ "$mount" == "$path" || "$mount" == "$path/"* || ( "$path" == "$mount/"* && "$mount" == "$root/"* ) ]]; then return 1; fi
+  done < /proc/self/mountinfo
+  return 0
+}
+
+# A supplied merge ref is verified by the managed-conversation owner.
+reap_checkout_dependencies() {
+  local checkout="$1" merge_ref="${2:-}" root origin status dependencies age now git_dir head_status
+  if (( ! MANAGED_MODE )) && is_conversation_checkout "$checkout"; then return 0; fi
   [[ "$checkout" == /* && -d "$checkout" && ! -L "$checkout" ]] || return 0
   [[ "$(realpath -e -- "$checkout" 2>/dev/null)" == "$checkout" ]] || return 0
   [[ "$(stat -c %u -- "$checkout" 2>/dev/null)" == "$(id -u)" ]] || return 0
@@ -170,6 +201,7 @@ reap_detached_checkout_dependencies() {
   [[ "$root" == "$checkout" ]] || return 0
   git_dir="$(git -C "$checkout" rev-parse --absolute-git-dir 2>/dev/null)" || return 0
   [[ ! -e "$git_dir/locked" && ! -L "$git_dir/locked" ]] || return 0
+  if [[ -z "$merge_ref" ]]; then
   # The configured inventory provides the expected upstream identity.
   # No hosted-product name or arbitrary remote is hardcoded into OSS cleanup.
   origin="$(git -C "$checkout" remote get-url origin 2>/dev/null)" || return 0
@@ -186,9 +218,11 @@ reap_detached_checkout_dependencies() {
   git -C "$checkout" symbolic-ref -q HEAD >/dev/null 2>&1
   head_status=$?
   (( head_status == 1 )) || return 0
+  merge_ref=refs/remotes/origin/main
+  fi
   status="$(git -C "$checkout" status --porcelain=v1 --untracked-files=all 2>/dev/null)" || return 0
   [[ -z "$status" ]] || { log "preserving (dirty checkout): $checkout"; return 0; }
-  git -C "$checkout" merge-base --is-ancestor HEAD refs/remotes/origin/main 2>/dev/null || {
+  git -C "$checkout" merge-base --is-ancestor HEAD "$merge_ref" 2>/dev/null || {
     log "preserving (unverified detached commit): $checkout"
     return 0
   }
@@ -222,7 +256,22 @@ reap_detached_checkout_dependencies() {
     log "preserving (active checkout): $checkout"
     return 0
   fi
-  remove_entry "$dependencies" "inactive clean detached OSS dependencies"
+  if (( MANAGED_MODE )); then
+    managed_tree_safe "$checkout" "$REAP_MANAGED_ROOT" || return 0
+    local foreign
+    foreign="$(find "$dependencies" -xdev ! -uid "$(id -u)" -print -quit 2>/dev/null)" || return 0
+    [[ -z "$foreign" ]] || return 0
+    if (( DRY_RUN )); then
+      log "would remove (inactive clean managed dependencies): $dependencies"
+    elif rm -rf --one-file-system -- "$dependencies"; then
+      log "removed (inactive clean managed dependencies): $dependencies"
+    else
+      log "failed to remove eligible managed dependencies: $dependencies" >&2
+      FAILURES=$((FAILURES + 1))
+    fi
+  else
+    remove_entry "$dependencies" "inactive clean detached OSS dependencies"
+  fi
 }
 
 
@@ -301,7 +350,7 @@ sweep_agent_bridge_scratch() {
 # Preserve dirty, unmerged, locked and active worktrees. Verified inactive
 # detached checkouts are eligible only for the separate dependency cleanup.
 reap_worktree_repo() {
-  local repo="$1"
+  local repo="$1" target="${2:-}" trusted_merge_ref="${3:-}"
   [[ -e "$repo/.git" ]] || return 0
 
   local default_branch merge_ref remotes worktrees primary=""
@@ -313,6 +362,7 @@ reap_worktree_repo() {
   # A repository with no remote has only its own default branch as authority.
   # For a remote-backed repository, never substitute potentially unpushed main.
   [[ -n "$remotes" ]] || merge_ref="refs/heads/$default_branch"
+  [[ -z "$trusted_merge_ref" ]] || merge_ref="$trusted_merge_ref"
   worktrees="$(git -C "$repo" worktree list --porcelain 2>/dev/null)" || return 0
 
   local wt="" branch="" status="" locked=0 detached=0
@@ -333,9 +383,14 @@ reap_worktree_repo() {
         locked=1
         ;;
       "")
-        if [[ -n "$wt" && "$wt" != "$repo" && "$wt" != "$primary" ]] && (( detached && ! locked )); then
-          reap_detached_checkout_dependencies "$wt"
-        elif [[ -n "$wt" && -n "$branch" && "$wt" != "$repo" && "$wt" != "$primary" && "$branch" != "$default_branch" ]] && (( ! locked )); then
+        if [[ -n "$target" && "$wt" != "$target" ]] || { (( ! MANAGED_MODE )) && is_conversation_checkout "$wt"; }; then
+          :
+        elif [[ -n "$wt" && ( "$wt" != "$repo" || -n "$target" ) && "$wt" != "$primary" ]] && (( detached && ! locked )); then
+          reap_checkout_dependencies "$wt" "$trusted_merge_ref"
+        elif [[ -n "$wt" && -n "$branch" && ( "$wt" != "$repo" || -n "$target" ) && "$wt" != "$primary" && "$branch" != "$default_branch" ]] && (( ! locked )); then
+          if (( MANAGED_MODE )) && git -C "$repo" merge-base --is-ancestor "refs/heads/$branch" "$merge_ref" 2>/dev/null; then
+            reap_checkout_dependencies "$wt" "$merge_ref"
+          fi
           # An error is not a clean status. Also preserve a live checkout even
           # when its branch is already integrated and its index is clean.
           # Ordinary git worktree remove can delete ignored files too.
@@ -370,76 +425,46 @@ reap_worktree_repo() {
 }
 
 
-# Capacity is observed at the same chosen filesystem before and after cleanup.
-# Concurrent writers may change the counters; report observed free-space change,
-# not a claim that every extra free byte came from this janitor.
-REPORT_ROOT="${REAP_REPORT_ROOT:-${TMP_ROOT}}"
-[[ -d "$REPORT_ROOT" && ! -L "$REPORT_ROOT" ]] || REPORT_ROOT="/"
-read_capacity() {
-  df -P -B1 -- "$REPORT_ROOT" 2>/dev/null | awk 'NR == 2 { print $4 }'
-}
-read_inodes() {
-  df -P -i -- "$REPORT_ROOT" 2>/dev/null | awk 'NR == 2 { print $4 }'
-}
-capacity_before="$(read_capacity)"
-inodes_before="$(read_inodes)"
-
-sweep_by_age "${TMP_ROOT}/bridge-out"
-sweep_by_age "${TMP_ROOT}" "bridge-uploads-*"
-sweep_by_age "${TMP_ROOT}" "antigravity-*.log"
-sweep_by_age "${TMP_ROOT}" "agent-bridge-advisor-*.sock"
-sweep_by_age "${TMP_ROOT}/agent-bridge-voice" "voice-*"
-sweep_agent_bridge_scratch "${TMP_ROOT}"
-
-prune_acp_telemetry
-run_acp_maintenance
-
-# Named producer caches, never a blanket ~/.cache or ~/.npm sweep.
-cache_home="${HOME:-}"
-if [[ "$cache_home" == /* && -d "$cache_home" && ! -L "$cache_home" ]]; then
-  sweep_owned_build_cache "$cache_home/.npm/_cacache" "$cache_home/.npm" "tmp"
-  sweep_owned_build_cache "$cache_home/.cache/ms-playwright" "$cache_home/.cache" \
-    "chromium-[0-9]*" "chromium_headless_shell-[0-9]*" "firefox-[0-9]*" "webkit-[0-9]*"
-fi
-
-IFS=',' read -r -a REPOS <<< "${REAP_WORKTREE_REPOS:-${HOME:-}/agent-bridge}"
-for repo in "${REPOS[@]}"; do
-  [[ -n "$repo" ]] && reap_worktree_repo "$repo"
-done
-
-# Optional exact detached-checkout inventory, for standalone detached clones
-# that are not linked Git worktrees. All candidates receive the same checks.
-IFS=',' read -r -a DETACHED_CHECKOUTS <<< "${REAP_DETACHED_CHECKOUTS:-}"
-for checkout in "${DETACHED_CHECKOUTS[@]}"; do
-  [[ -n "$checkout" ]] && reap_detached_checkout_dependencies "$checkout"
-done
-
-
-capacity_after="$(read_capacity)"
-inodes_after="$(read_inodes)"
-if [[ "$capacity_before" =~ ^[0-9]+$ && "$capacity_after" =~ ^[0-9]+$ && "$inodes_after" =~ ^[0-9]+$ ]]; then
-  gain=$(( capacity_after > capacity_before ? capacity_after - capacity_before : 0 ))
-  log "disk_headroom root=$REPORT_ROOT free_bytes=$capacity_after observed_recovered_bytes=$gain free_inodes=$inodes_after before_free_inodes=$inodes_before"
-  required="${REAP_REQUIRED_HEADROOM_BYTES:-0}"
-  if [[ "$required" =~ ^[0-9]+$ && ${#required} -le 18 ]]; then
-    shortfall=$(( required > capacity_after ? required - capacity_after : 0 ))
-    log "disk_admission required_bytes=$required shortfall_bytes=$shortfall"
-  else
-    log "disk_admission=unknown reason=invalid_required_bytes"
+# Invoked by the existing database-backed housekeeping owner.
+reap_managed_checkout() {
+  local root="${REAP_MANAGED_ROOT:-}" checkout="${REAP_MANAGED_CHECKOUT:-}" source="${REAP_MANAGED_SOURCE:-}"
+  local origin source_origin="" ref anchor="${REAP_MANAGED_RELEASE_COMMIT:-}"
+  [[ -n "$root" && -n "$checkout" && -n "$source" ]] || return 0
+  [[ "$root/" == */.agent-bridge-conversations/* && "$(realpath -e -- "$root" 2>/dev/null)" == "$root" ]] || return 0
+  managed_tree_safe "$checkout" "$root" || return 0
+  [[ "$(git -C "$checkout" rev-parse --show-toplevel 2>/dev/null)" == "$checkout" ]] || return 0
+  if has_ownership_signal "$root" || checkout_has_active_process "$root"; then
+    log "preserving (active conversation): $root"
+    return 0
   fi
-else
-  log "disk_headroom=unknown root=$REPORT_ROOT"
-fi
-
-if (( FAILURES > 0 )); then
-  log "cleanup incomplete: ${FAILURES} eligible artifact(s) could not be removed" >&2
-  exit 1
-fi
-
-exit 0
-\n'
+  origin="$(git -C "$checkout" remote get-url origin 2>/dev/null)" || return 0
+  source_origin="$(git -C "$source" remote get-url origin 2>/dev/null)" || source_origin=""
+  if [[ -n "$origin" && ( "$origin" == "$source_origin" || "$origin" == "${REAP_OSS_ORIGIN:-}" ) ]]; then
+    ref="$(git -C "$checkout" symbolic-ref -q refs/remotes/origin/HEAD 2>/dev/null)" || ref=refs/remotes/origin/main
+    [[ "$ref" == refs/remotes/origin/* ]] || return 0
+  elif [[ "$anchor" =~ ^[0-9a-f]{40}$ ]] && git -C "$checkout" cat-file -e "$anchor^{commit}" 2>/dev/null; then
+    # The installed release itself is independent integration evidence.
+    ref="$anchor"
+  else
+    log "preserving (unverified managed repository): $checkout"
+    return 0
+  fi
+  git -C "$checkout" merge-base --is-ancestor HEAD "$ref" 2>/dev/null || {
+    log "preserving (unverified managed merge): $checkout"
+    return 0
+  }
+  if [[ -f "$checkout/.git" && ! -L "$checkout/.git" ]]; then
+    reap_worktree_repo "$checkout" "$checkout" "$ref"
+  elif [[ -d "$checkout/.git" && ! -L "$checkout/.git" ]]; then
+    # Keep the clone and its branch; only reproducible dependencies qualify.
+    reap_checkout_dependencies "$checkout" "$ref"
+  fi
 }
 
+if (( MANAGED_MODE )); then
+  reap_managed_checkout
+  exit "$(( FAILURES > 0 ? 1 : 0 ))"
+fi
 
 # Capacity is observed at the same chosen filesystem before and after cleanup.
 # Concurrent writers may change the counters; report observed free-space change,
@@ -482,7 +507,7 @@ done
 # that are not linked Git worktrees. All candidates receive the same checks.
 IFS=',' read -r -a DETACHED_CHECKOUTS <<< "${REAP_DETACHED_CHECKOUTS:-}"
 for checkout in "${DETACHED_CHECKOUTS[@]}"; do
-  [[ -n "$checkout" ]] && reap_detached_checkout_dependencies "$checkout"
+  [[ -n "$checkout" ]] && reap_checkout_dependencies "$checkout"
 done
 
 
