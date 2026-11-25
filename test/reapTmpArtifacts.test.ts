@@ -735,6 +735,50 @@ exec "$REAP_TEST_REAL_GIT" "$@"
       expect(existsSync(directory)).toBe(true);
     });
 
+    it("reclaims a squash-merged worktree only with exact trusted merged PR proof", () => {
+      const { root, env, source, addDependencies, addWorktree } = managedFixture();
+      const checkout = addWorktree("squashed");
+      writeFileSync(join(checkout, "change.txt"), "squash me");
+      execFileSync("git", ["-C", checkout, "add", "change.txt"]);
+      execFileSync("git", ["-C", checkout, "commit", "-q", "-m", "feature"]);
+      const tip = execFileSync("git", ["-C", checkout, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
+      execFileSync("git", ["-C", source, "merge", "--squash", "squashed"]);
+      execFileSync("git", ["-C", source, "commit", "-q", "-m", "squash merged"]);
+      const merged = execFileSync("git", ["-C", source, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
+      execFileSync("git", ["-C", source, "update-ref", "refs/remotes/origin/main", merged]);
+      execFileSync("git", ["-C", source, "remote", "set-url", "origin", "https://github.com/example/repo.git"]);
+      const deps = addDependencies(checkout);
+      const bin = join(root, "bin");
+      mkdirSync(bin);
+      const gh = join(bin, "gh");
+      writeFileSync(gh, "#!/usr/bin/env bash\nprintf '%s\\n' \"$REAP_TEST_PR_RECORD\"\n");
+      chmodSync(gh, 0o755);
+      const proofEnv = { ...env, GH_TOKEN: "fixture-token", PATH: bin + ":" + process.env.PATH };
+      const wrong = run({ ...proofEnv, REAP_TEST_PR_RECORD: merged + "\t" + merged + "\tmain\texample/repo" });
+      expect(wrong.status, wrong.stderr).toBe(0);
+      expect(existsSync(deps)).toBe(true);
+      const correct = run({ ...proofEnv, REAP_TEST_PR_RECORD: tip + "\t" + merged + "\tmain\texample/repo" });
+      expect(correct.status, correct.stderr).toBe(0);
+      expect(existsSync(checkout), correct.stdout).toBe(false);
+      expect(execFileSync("git", ["-C", source, "branch", "--list", "squashed"], { encoding: "utf8" })).toBe("");
+    });
+
+    it("does not defer safe cleanup because an unrelated conversation owns a lane", () => {
+      const { database, env, addWorktree } = managedFixture();
+      const checkout = addWorktree("idle-work");
+      const db = openDb(database, { databaseRole: "interactive" });
+      const lane = db.acquireLock("acp:outward", "acp:other", false)!;
+      try {
+        const result = run(env);
+        expect(result.status, result.stderr).toBe(0);
+        expect(existsSync(checkout), result.stdout).toBe(false);
+        expect(db.ownsLock(lane)).toBe(true);
+      } finally {
+        db.unlock(lane);
+        db.close();
+      }
+    });
+
     it("discovers a new persisted messaging conversation without scanning an unowned sibling", () => {
       const { database, env, source, origin, addDependencies } = managedFixture();
       const identity = { surfaceIdentity: "telegram:fixture", chatKey: "123" };
