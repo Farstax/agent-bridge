@@ -17,6 +17,7 @@ import { readFileSync, realpathSync } from "node:fs";
 import { readProcessStartTicks } from "./cliSupervisor.js";
 import { parseRunContinuation, OUTWARD_RUN_ACCEPTED_TURN_PREFIX } from "./runContinuation.js";
 import { ConversationRepository } from "./repositories/conversationRepository.js";
+import { conversationDirectorySettingKey } from "./conversationDirectory.js";
 
 export const IDLE_UPGRADE_FENCE_KEY = "agent-bridge:idle-maintenance:v1";
 export type IdleUpgradeState = "idle" | "deferred_busy" | "unknown";
@@ -204,6 +205,55 @@ function idleState(db: Database.Database, options: IdleUpgradeAdmissionOptions =
     } catch { return "unknown"; }
   }
   return "idle";
+}
+
+/**
+ * The janitor must preserve dormant work, unlike rollout. Use the same
+ * durable Run/queue/lane owners inside the existing IMMEDIATE transaction,
+ * scoped to the directory's persisted identity. An unrelated idle/active
+ * Workstream must not prevent reclaiming this one.
+ */
+export function canReapConversationArtifacts(db: Database.Database, directoryKey: string): boolean {
+  if (!db.inTransaction || storedFence(db).exists) return false;
+  // Reservations and receipts can precede a durable lane identity. Preserve
+  // all candidates during these short, ambiguous ingress transitions.
+  if (db.prepare("SELECT 1 FROM settings WHERE key LIKE 'outward-queue-reservation:%' AND value IS NOT NULL LIMIT 1").get()) return false;
+  // A linked receipt or capacity claim has a durable Run owner. Unlinked
+  // or malformed ownership remains ambiguous and defers all cleanup.
+  const ingress = db.prepare(`
+    SELECT r.surface_identity AS surfaceIdentity, r.chat_id AS chatKey
+      FROM event_receipts e LEFT JOIN bridge_runs r ON r.run_id = e.run_id
+      WHERE e.status IN ('dispatching', 'run_created')
+    UNION
+    SELECT r.surface_identity, r.chat_id
+      -- run_id identifies the capacity service incarnation, not the Bridge Run.
+      FROM execution_capacity_claims c LEFT JOIN bridge_runs r ON r.run_id = c.execution_id
+      WHERE c.lease_expires_at IS NULL OR c.lease_expires_at > strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+        OR strftime('%Y-%m-%dT%H:%M:%fZ', c.lease_expires_at) IS NULL
+        OR strftime('%Y-%m-%dT%H:%M:%fZ', c.lease_expires_at) != c.lease_expires_at
+  `).all() as Array<{ surfaceIdentity: string | null; chatKey: string | null }>;
+  for (const lane of ingress) {
+    if (!lane.surfaceIdentity || !lane.chatKey) return false;
+    if (conversationDirectorySettingKey({ surfaceIdentity: lane.surfaceIdentity, chatKey: lane.chatKey }) === directoryKey) return false;
+  }
+  const lanes = db.prepare(`
+    SELECT surface AS surfaceIdentity, chat_key AS chatKey FROM execution_locks
+    UNION SELECT surface_identity, chat_id FROM bridge_runs WHERE status = 'running'
+    UNION SELECT surface, chat_key FROM pending_messages
+  `).all() as Array<{ surfaceIdentity: string | null; chatKey: string | null }>;
+  for (const lane of lanes) {
+    if (!lane.surfaceIdentity || !lane.chatKey) return false;
+    if (conversationDirectorySettingKey({ surfaceIdentity: lane.surfaceIdentity, chatKey: lane.chatKey }) === directoryKey) return false;
+  }
+  const rows = db.prepare("SELECT value FROM settings WHERE key LIKE 'run-continuation:v1:%'")
+    .all() as Array<{ value: string | null }>;
+  for (const { value } of rows) {
+    if (!value) return false;
+    const record = parseRunContinuation(value);
+    if (!record) return false;
+    if (["pending", "claimed"].includes(record.state) && conversationDirectorySettingKey(record) === directoryKey) return false;
+  }
+  return true;
 }
 
 /** Read-only, non-sensitive explanation; never changes admission authority. */

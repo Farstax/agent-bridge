@@ -5,6 +5,8 @@ import { join } from "node:path";
 import Database from "better-sqlite3";
 import { afterEach, describe, expect, it } from "vitest";
 import { openDb } from "../src/db.js";
+import { conversationDirectorySettingKey, ensureConversationDirectory } from "../src/conversationDirectory.js";
+import { OutwardAcpSessionRepository } from "../src/repositories/outwardAcpSessionRepository.js";
 
 const scriptPath = new URL("../scripts/reap-tmp-artifacts.sh", import.meta.url).pathname;
 
@@ -615,6 +617,332 @@ exec "$REAP_TEST_REAL_GIT" "$@"
       const env = { REAP_TMP_ROOT: join(root, "tmp"), REAP_WORKTREE_REPOS: ",", BRIDGE_DB_PATH: database, BRIDGE_CURRENT_RELEASE_DIR: current, BRIDGE_ACP_WORKSPACE_ROOT: root, NODE_ENV: "test" };
       return { root, database, env };
     }
+
+    function managedFixture() {
+      const { root, database, env } = realFixture();
+      const source = join(root, "source");
+      initGitRepo(source);
+      writeFileSync(join(source, ".gitignore"), "node_modules/\nprivate.txt\n");
+      execFileSync("git", ["-C", source, "add", ".gitignore"]);
+      execFileSync("git", ["-C", source, "commit", "-q", "-m", "ignore reproducible dependencies"]);
+      // Real local upstream; no external network or mutable cached ref is proof.
+      const origin = source;
+      execFileSync("git", ["-C", source, "remote", "add", "origin", origin]);
+      execFileSync("git", ["-C", source, "update-ref", "refs/remotes/origin/main", "HEAD"]);
+      const identity = { surfaceIdentity: "acp:outward", chatKey: "acp:managed" };
+      const directory = ensureConversationDirectory(source, identity);
+      const db = openDb(database, { databaseRole: "interactive" });
+      new OutwardAcpSessionRepository(db.raw).create({
+        sessionId: "managed-session", conversationId: identity.chatKey, cwd: source, executionCwd: directory,
+      });
+      db.close();
+      const addDependencies = (checkout: string) => {
+        const dependencies = join(checkout, "node_modules");
+        mkdirSync(dependencies);
+        const file = join(dependencies, "cached");
+        writeFileSync(file, "reproducible");
+        ageEntry(file, 48);
+        ageEntry(dependencies, 48);
+        return dependencies;
+      };
+      const addWorktree = (branch: string) => {
+        const checkout = join(directory, branch);
+        execFileSync("git", ["-C", source, "worktree", "add", "-q", "-b", branch, checkout]);
+        return checkout;
+      };
+      return { root, database, env: { ...env, BRIDGE_PROJECT_DIR: source }, identity, directory, source, origin, addDependencies, addWorktree };
+    }
+
+    it("discovers and removes a merged linked worktree and branch, reclaims standalone dependencies, preserves unrelated data", () => {
+      const { root, env, directory, source, origin, addDependencies, addWorktree } = managedFixture();
+      const merged = addWorktree("completed");
+      addDependencies(merged);
+      const detached = join(directory, "detached");
+      execFileSync("git", ["clone", "-q", "--no-hardlinks", source, detached]);
+      execFileSync("git", ["-C", detached, "remote", "set-url", "origin", origin]);
+      execFileSync("git", ["-C", detached, "checkout", "-q", "--detach", "HEAD"]);
+      const dependencies = addDependencies(detached);
+      const ignored = addWorktree("private-data");
+      writeFileSync(join(ignored, "private.txt"), "keep");
+      const dirty = addWorktree("dirty");
+      writeFileSync(join(dirty, "uncommitted.txt"), "keep");
+      const unmerged = addWorktree("not-merged");
+      writeFileSync(join(unmerged, "new.txt"), "new");
+      execFileSync("git", ["-C", unmerged, "add", "new.txt"]);
+      execFileSync("git", ["-C", unmerged, "commit", "-q", "-m", "not integrated"]);
+      const outside = join(root, "outside");
+      execFileSync("git", ["clone", "-q", "--no-hardlinks", source, outside]);
+      const outsideDeps = addDependencies(outside);
+      symlinkSync(outside, join(directory, "outside-link"));
+      writeFileSync(join(directory, "conversation-note.txt"), "keep transcript-adjacent data");
+      const dry = run(env, ["--dry-run"]);
+      expect(dry.status, dry.stderr).toBe(0);
+      expect(dry.stdout).toContain("would remove (inactive clean managed dependencies)");
+      expect(dry.stdout).toContain("would remove worktree (merged+clean): " + merged);
+      expect(existsSync(merged)).toBe(true);
+      expect(existsSync(dependencies)).toBe(true);
+      const result = run(env);
+      expect(result.status, result.stderr).toBe(0);
+      expect(existsSync(merged), result.stdout).toBe(false);
+      expect(existsSync(dependencies), result.stdout).toBe(false);
+      expect(existsSync(join(detached, ".git"))).toBe(true);
+      expect(existsSync(join(ignored, "private.txt"))).toBe(true);
+      expect(existsSync(join(dirty, "uncommitted.txt"))).toBe(true);
+      expect(existsSync(join(unmerged, "new.txt"))).toBe(true);
+      expect(existsSync(outsideDeps)).toBe(true);
+      expect(readFileSync(join(directory, "conversation-note.txt"), "utf8")).toBe("keep transcript-adjacent data");
+      const branches = execFileSync("git", ["-C", source, "branch", "--list"], { encoding: "utf8" });
+      expect(branches).not.toContain("completed");
+      expect(branches).toContain("private-data");
+      expect(branches).toContain("not-merged");
+      const second = run(env);
+      expect(second.status, second.stderr).toBe(0);
+      expect(existsSync(directory)).toBe(true);
+    });
+
+    it("preserves tracked changes hidden by assume-unchanged or skip-worktree", () => {
+      const { env, source, addDependencies, addWorktree } = managedFixture();
+      for (const flag of ["assume-unchanged", "skip-worktree"]) {
+        const checkout = addWorktree(flag);
+        execFileSync("git", ["-C", checkout, "update-index", "--" + flag, "README.md"]);
+        writeFileSync(join(checkout, "README.md"), "uncommitted local change");
+        expect(execFileSync("git", ["-C", checkout, "status", "--porcelain"], { encoding: "utf8" })).toBe("");
+        addDependencies(checkout);
+      }
+      const result = run(env);
+      expect(result.status, result.stderr).toBe(0);
+      expect(result.stdout).toContain("hidden index entries");
+      const branches = execFileSync("git", ["-C", source, "branch", "--list"], { encoding: "utf8" });
+      for (const flag of ["assume-unchanged", "skip-worktree"]) {
+        const checkout = execFileSync("git", ["-C", source, "worktree", "list", "--porcelain"], { encoding: "utf8" })
+          .split("\n").find(line => line.startsWith("worktree ") && line.endsWith("/" + flag))!.slice(9);
+        expect(readFileSync(join(checkout, "README.md"), "utf8")).toBe("uncommitted local change");
+        expect(existsSync(join(checkout, "node_modules"))).toBe(true);
+        expect(branches).toContain(flag);
+      }
+    });
+
+    it("defers managed cleanup for a running lane, queued message or pending continuation even with explicit inventory", () => {
+      const { database, env, directory, source, identity, addDependencies, addWorktree } = managedFixture();
+      const checkout = addWorktree("pending-work");
+      const dependencies = addDependencies(checkout);
+      const db = openDb(database, { databaseRole: "interactive" });
+      try {
+        const explicit = { ...env, REAP_WORKTREE_REPOS: source, REAP_DETACHED_CHECKOUTS: checkout };
+        const lane = db.acquireLock(identity.surfaceIdentity, identity.chatKey, false)!;
+        expect(lane).toBeTruthy();
+        expect(run(explicit).stdout).toContain("managed conversation cleanup deferred");
+        expect(existsSync(dependencies)).toBe(true);
+        db.unlock(lane);
+        db.enqueueMsg(identity.surfaceIdentity, identity.chatKey, {
+          prompt: "queued", chatId: identity.chatKey, chatType: "acp",
+        });
+        expect(run(explicit).stdout).toContain("managed conversation cleanup deferred");
+        expect(existsSync(dependencies)).toBe(true);
+        db.discardPendingMsgs(identity.surfaceIdentity, identity.chatKey);
+        const key = "run-continuation:v1:future";
+        db.setSetting(key, JSON.stringify({
+          version: 1, id: "future", originRunId: "origin", surfaceIdentity: identity.surfaceIdentity,
+          chatKey: identity.chatKey, provider: "codex", reason: "resume work",
+          requestedAt: new Date().toISOString(), dueAt: new Date(Date.now() + 60_000).toISOString(),
+          expiresAt: new Date(Date.now() + 600_000).toISOString(), state: "pending", depth: 1,
+          outwardSessionId: "managed-session",
+        }));
+        expect(run(explicit).stdout).toContain("managed conversation cleanup deferred");
+        expect(existsSync(dependencies)).toBe(true);
+        db.setSetting(key, null);
+        db.raw.prepare("DELETE FROM settings WHERE key = ?").run(key);
+      } finally { db.close(); }
+      const result = run(env);
+      expect(result.status, result.stderr).toBe(0);
+      expect(existsSync(checkout), result.stdout).toBe(false);
+      expect(existsSync(directory)).toBe(true);
+    });
+
+    it("reclaims a squash-merged worktree only with exact trusted merged PR proof", () => {
+      const { root, env, source, addDependencies, addWorktree } = managedFixture();
+      const checkout = addWorktree("squashed");
+      writeFileSync(join(checkout, "change.txt"), "squash me");
+      execFileSync("git", ["-C", checkout, "add", "change.txt"]);
+      execFileSync("git", ["-C", checkout, "commit", "-q", "-m", "feature"]);
+      const tip = execFileSync("git", ["-C", checkout, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
+      execFileSync("git", ["-C", source, "merge", "--squash", "squashed"]);
+      execFileSync("git", ["-C", source, "commit", "-q", "-m", "squash merged"]);
+      const merged = execFileSync("git", ["-C", source, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
+      execFileSync("git", ["-C", source, "update-ref", "refs/remotes/origin/main", merged]);
+      execFileSync("git", ["-C", source, "remote", "set-url", "origin", "https://github.com/example/repo.git"]);
+      const deps = addDependencies(checkout);
+      const bin = join(root, "bin");
+      mkdirSync(bin);
+      const curl = join(bin, "curl");
+      writeFileSync(curl, [
+        "#!/usr/bin/env bash",
+        "config=$(cat)",
+        'if [[ "$REAP_TEST_REQUIRE_AUTH" == 1 && "$config" != *"Authorization: Bearer fixture-token"* ]]; then exit 22; fi',
+        'url="${@: -1}"',
+        'case "$url" in',
+        '  */repos/example/repo) printf \'%s\\n\' \'{"full_name":"example/repo","default_branch":"main"}\' ;;',
+        '  */branches/main) printf \'{"commit":{"sha":"%s"}}\\n\' "$REAP_TEST_MERGE" ;;',
+        '  */compare/*) printf \'{"status":"diverged"}\\n\' ;;',
+        '  */commits/*/pulls*) printf \'[{"head":{"sha":"%s"},"merged_at":"2026-11-24T12:00:00Z","merge_commit_sha":"%s","base":{"ref":"main","repo":{"full_name":"example/repo"}}}]\\n\' "$REAP_TEST_PR_HEAD" "$REAP_TEST_MERGE" ;;',
+        '  *) exit 1 ;;',
+        'esac',
+      ].join("\n") + "\n");
+      chmodSync(curl, 0o755);
+      const proofEnv = { ...env, GH_TOKEN: "", GITHUB_TOKEN: "", PATH: bin + ":" + process.env.PATH, REAP_TEST_MERGE: merged };
+      const wrong = run({ ...proofEnv, REAP_TEST_PR_HEAD: merged });
+      expect(wrong.status, wrong.stderr).toBe(0);
+      expect(existsSync(deps)).toBe(true);
+      const publicPlan = run({ ...proofEnv, REAP_TEST_PR_HEAD: tip }, ["--dry-run"]);
+      expect(publicPlan.status, publicPlan.stderr).toBe(0);
+      expect(publicPlan.stdout).toContain("would remove worktree (merged+clean): " + checkout);
+      const inaccessible = run({ ...proofEnv, REAP_TEST_PR_HEAD: tip, REAP_TEST_REQUIRE_AUTH: "1" });
+      expect(inaccessible.status, inaccessible.stderr).toBe(0);
+      expect(existsSync(deps)).toBe(true);
+      const helper = join(bin, "credential-helper");
+      writeFileSync(helper, "#!/usr/bin/env bash\ninput=$(cat)\n[[ \"$1\" == get && \"$input\" == *path=example/repo.git* ]] || exit 1\nprintf 'username=x-access-token\\npassword=fixture-token\\n'\n");
+      chmodSync(helper, 0o755);
+      execFileSync("git", ["-C", source, "config", "credential.helper", helper]);
+      const correct = run({ ...proofEnv, REAP_TEST_PR_HEAD: tip, REAP_TEST_REQUIRE_AUTH: "1" });
+      expect(correct.status, correct.stderr).toBe(0);
+      expect(existsSync(checkout), correct.stdout).toBe(false);
+      expect(execFileSync("git", ["-C", source, "branch", "--list", "squashed"], { encoding: "utf8" })).toBe("");
+    });
+
+    it("preserves a merged dependency target referenced by another conversation", () => {
+      const { env, database, source, addDependencies, addWorktree } = managedFixture();
+      const target = addWorktree("shared-target");
+      const dependencies = addDependencies(target);
+      const other = { surfaceIdentity: "acp:outward", chatKey: "acp:consumer" };
+      const directory = ensureConversationDirectory(source, other);
+      const db = openDb(database, { databaseRole: "interactive" });
+      new OutwardAcpSessionRepository(db.raw).create({
+        sessionId: "consumer-session", conversationId: other.chatKey, cwd: source, executionCwd: directory,
+      });
+      db.close();
+      const consumer = join(directory, "consumer");
+      execFileSync("git", ["-C", source, "worktree", "add", "-q", "-b", "consumer", consumer]);
+      symlinkSync(dependencies, join(consumer, "node_modules"));
+      writeFileSync(join(consumer, "keep.txt"), "dirty");
+      const dry = run(env, ["--dry-run"]);
+      expect(dry.status, dry.stderr).toBe(0);
+      expect(dry.stdout).toContain("shared dependency target");
+      expect(dry.stdout).not.toContain("would remove worktree (merged+clean): " + target);
+      const result = run(env);
+      expect(result.status, result.stderr).toBe(0);
+      expect(existsSync(dependencies)).toBe(true);
+      expect(readFileSync(join(consumer, "node_modules", "cached"), "utf8")).toBe("reproducible");
+      expect(existsSync(join(consumer, "keep.txt"))).toBe(true);
+    });
+
+    it("uses actual upstream HEAD instead of a stale local tracking ref", () => {
+      const { env, source, addWorktree } = managedFixture();
+      const checkout = addWorktree("not-yet-fetched");
+      writeFileSync(join(checkout, "integrated.txt"), "new upstream commit");
+      execFileSync("git", ["-C", checkout, "add", "integrated.txt"]);
+      execFileSync("git", ["-C", checkout, "commit", "-q", "-m", "feature"]);
+      execFileSync("git", ["-C", source, "merge", "--ff-only", "not-yet-fetched"]);
+      const before = execFileSync("git", ["-C", source, "rev-parse", "refs/remotes/origin/main"], { encoding: "utf8" });
+      const result = run(env);
+      expect(result.status, result.stderr).toBe(0);
+      expect(existsSync(checkout), result.stdout).toBe(false);
+      expect(execFileSync("git", ["-C", source, "rev-parse", "refs/remotes/origin/main"], { encoding: "utf8" })).toBe(before);
+    });
+
+    it("does not defer safe cleanup because an unrelated conversation owns a lane", () => {
+      const { database, env, addWorktree } = managedFixture();
+      const checkout = addWorktree("idle-work");
+      const db = openDb(database, { databaseRole: "interactive" });
+      const lane = db.acquireLock("acp:outward", "acp:other", false)!;
+      try {
+        const result = run(env);
+        expect(result.status, result.stderr).toBe(0);
+        expect(existsSync(checkout), result.stdout).toBe(false);
+        expect(db.ownsLock(lane)).toBe(true);
+      } finally {
+        db.unlock(lane);
+        db.close();
+      }
+    });
+
+    it("scopes a linked receipt to its Run and defers an ambiguous dispatch", () => {
+      const { database, env, addWorktree } = managedFixture();
+      const checkout = addWorktree("receipt-idle");
+      const db = openDb(database, { databaseRole: "interactive" });
+      try {
+        const receipt = db.createEventReceipt({
+          event_id: "receipt-test", source: "health", event_kind: "health",
+          idempotency_key: "receipt-test", received_at: new Date().toISOString(),
+          occurred_at: new Date().toISOString(), payload_json: "{}", authority_scope: "fixture",
+        });
+        expect(db.claimEventReceiptDispatch(receipt.id)).toBe(true);
+        const deferred = run(env);
+        expect(deferred.status, deferred.stderr).toBe(0);
+        expect(deferred.stdout).toContain("managed conversation cleanup deferred");
+        expect(existsSync(checkout)).toBe(true);
+        db.insertRun("unrelated-receipt-run", { surfaceIdentity: "acp:outward", chatKey: "acp:other" }, "codex");
+        db.linkEventReceiptRun(receipt.id, "unrelated-receipt-run");
+        const result = run(env);
+        expect(result.status, result.stderr).toBe(0);
+        expect(existsSync(checkout), result.stdout).toBe(false);
+      } finally { db.close(); }
+    });
+
+    it("uses the actual execution identity for capacity claims, preserving ambiguous and same-lane work", () => {
+      const { database, env, identity, addWorktree } = managedFixture();
+      const checkout = addWorktree("capacity-idle");
+      const db = openDb(database, { databaseRole: "interactive", serviceId: "telegram:interactive", runId: "service-incarnation" });
+      try {
+        const claim = db.acquireExecutionCapacity(2, "owner-execution", "acquisition-a")!;
+        expect(claim).toBeTruthy();
+        const ambiguous = run(env);
+        expect(ambiguous.status, ambiguous.stderr).toBe(0);
+        expect(ambiguous.stdout).toContain("managed conversation cleanup deferred");
+        expect(existsSync(checkout)).toBe(true);
+        db.insertRun("owner-execution", identity, "codex");
+        const owned = run(env);
+        expect(owned.status, owned.stderr).toBe(0);
+        expect(existsSync(checkout)).toBe(true);
+        expect(db.releaseExecutionCapacity(claim)).toBe(true);
+      } finally { db.close(); }
+      // Separate fixture: an unrelated service incarnation is not the Run
+      // that owns its capacity claim. Both IDs must differ in this regression.
+      const other = managedFixture();
+      const otherCheckout = other.addWorktree("other-capacity-idle");
+      const otherDb = openDb(other.database, { databaseRole: "interactive", serviceId: "telegram:interactive", runId: "other-service-incarnation" });
+      try {
+        otherDb.insertRun("other-execution", { surfaceIdentity: "telegram:interactive", chatKey: "other-chat" }, "codex");
+        const claim = otherDb.acquireExecutionCapacity(2, "other-execution", "acquisition-b")!;
+        expect(claim).toBeTruthy();
+        const result = run(other.env);
+        expect(result.status, result.stderr).toBe(0);
+        expect(existsSync(otherCheckout), result.stdout).toBe(false);
+        expect(otherDb.executionCapacityCount()).toBe(1);
+        expect(otherDb.releaseExecutionCapacity(claim)).toBe(true);
+      } finally { otherDb.close(); }
+    });
+
+    it("discovers a new persisted messaging conversation without scanning an unowned sibling", () => {
+      const { database, env, source, origin, addDependencies } = managedFixture();
+      const identity = { surfaceIdentity: "telegram:fixture", chatKey: "123" };
+      const directory = ensureConversationDirectory(source, identity);
+      const unowned = ensureConversationDirectory(source, { surfaceIdentity: "telegram:fixture", chatKey: "999" });
+      const db = openDb(database, { databaseRole: "interactive" });
+      db.setSetting(conversationDirectorySettingKey(identity), directory);
+      db.close();
+      const clone = (parent: string) => {
+        const checkout = join(parent, "clone");
+        execFileSync("git", ["clone", "-q", "--no-hardlinks", source, checkout]);
+        execFileSync("git", ["-C", checkout, "remote", "set-url", "origin", origin]);
+        return addDependencies(checkout);
+      };
+      const eligible = clone(directory);
+      const notOwned = clone(unowned);
+      const result = run(env);
+      expect(result.status, result.stderr).toBe(0);
+      expect(existsSync(eligible), result.stdout).toBe(false);
+      expect(existsSync(notOwned)).toBe(true);
+    });
 
     it("accepts a schema-current interactive database with outward_acp_sessions", () => {
       const { env } = realFixture();
