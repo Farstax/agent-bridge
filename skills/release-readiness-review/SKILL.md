@@ -65,7 +65,7 @@ A finding that requires mutation ends that review of the pinned head. The implem
 
 ## Qualification placement
 
-Run `review it` before the expensive final full-suite qualification where practical. After the review passes, the final merge-candidate head must satisfy the repository's required exact-head checks. A subsequent head change invalidates the review or check evidence whose conclusions depend on the previous head.
+Where practical, conduct an early read-only adversarial review before expensive final full-suite qualification to find defects cheaply. An early review does not establish final readiness when mandatory evidence is pending. For final readiness, the exact merge-candidate head must satisfy the required checks and the review contract above, including the same-agent final-review requirement to judge the candidate after required exact-head CI passes. Reuse still-valid head-pinned evidence rather than repeating checks or requiring another review solely because the workflow advanced; a subsequent head change or materially changed evidence invalidates the conclusions that depend on it.
 
 For release/deploy readiness, additionally inspect the merged delta, relevant migrations/rollback, release identity/artifact provenance, and post-release/deploy signals without reopening already-reviewed implementation work absent a concrete integration risk.
 
