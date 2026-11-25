@@ -184,7 +184,7 @@ managed_tree_safe() {
   [[ "$(stat -c %d -- "$path" 2>/dev/null)" == "$(stat -c %d -- "$root" 2>/dev/null)" ]] || return 1
   [[ -r /proc/self/mountinfo ]] || return 1
   while read -r mount_id parent dev fsroot mount rest; do
-    if [[ "$mount" == "$path" || "$mount" == "$path/"* || ( "$path" == "$mount/"* && "$mount" == "$root/"* ) ]]; then return 1; fi
+    if [[ "$mount" == "$root" || "$mount" == "$path" || "$mount" == "$path/"* || ( "$path" == "$mount/"* && "$mount" == "$root/"* ) ]]; then return 1; fi
   done < /proc/self/mountinfo
   return 0
 }
@@ -202,23 +202,23 @@ reap_checkout_dependencies() {
   git_dir="$(git -C "$checkout" rev-parse --absolute-git-dir 2>/dev/null)" || return 0
   [[ ! -e "$git_dir/locked" && ! -L "$git_dir/locked" ]] || return 0
   if [[ -z "$merge_ref" ]]; then
-  # The configured inventory provides the expected upstream identity.
-  # No hosted-product name or arbitrary remote is hardcoded into OSS cleanup.
-  origin="$(git -C "$checkout" remote get-url origin 2>/dev/null)" || return 0
-  local expected_origin="${REAP_OSS_ORIGIN:-}"
-  if [[ -z "$expected_origin" ]]; then
-    local inventory_repo="${REAP_WORKTREE_REPOS:-${HOME:-}/agent-bridge}"
-    inventory_repo="${inventory_repo%%,*}"
-    expected_origin="$(git -C "$inventory_repo" remote get-url origin 2>/dev/null)" || return 0
-  fi
-  [[ -n "$expected_origin" && "$origin" == "$expected_origin" ]] || {
-    log "preserving (unverified OSS origin): $checkout"
-    return 0
-  }
-  git -C "$checkout" symbolic-ref -q HEAD >/dev/null 2>&1
-  head_status=$?
-  (( head_status == 1 )) || return 0
-  merge_ref=refs/remotes/origin/main
+    # The configured inventory provides the expected upstream identity.
+    # No hosted-product name or arbitrary remote is hardcoded into OSS cleanup.
+    origin="$(git -C "$checkout" remote get-url origin 2>/dev/null)" || return 0
+    local expected_origin="${REAP_OSS_ORIGIN:-}"
+    if [[ -z "$expected_origin" ]]; then
+      local inventory_repo="${REAP_WORKTREE_REPOS:-${HOME:-}/agent-bridge}"
+      inventory_repo="${inventory_repo%%,*}"
+      expected_origin="$(git -C "$inventory_repo" remote get-url origin 2>/dev/null)" || return 0
+    fi
+    [[ -n "$expected_origin" && "$origin" == "$expected_origin" ]] || {
+      log "preserving (unverified OSS origin): $checkout"
+      return 0
+    }
+    git -C "$checkout" symbolic-ref -q HEAD >/dev/null 2>&1
+    head_status=$?
+    (( head_status == 1 )) || return 0
+    merge_ref=refs/remotes/origin/main
   fi
   status="$(git -C "$checkout" status --porcelain=v1 --untracked-files=all 2>/dev/null)" || return 0
   [[ -z "$status" ]] || { log "preserving (dirty checkout): $checkout"; return 0; }
@@ -259,7 +259,7 @@ reap_checkout_dependencies() {
   if (( MANAGED_MODE )); then
     managed_tree_safe "$checkout" "$REAP_MANAGED_ROOT" || return 0
     local foreign
-    foreign="$(find "$dependencies" -xdev ! -uid "$(id -u)" -print -quit 2>/dev/null)" || return 0
+    foreign="$(find "$dependencies" -xdev \( ! -uid "$(id -u)" -o -name .git \) -print -quit 2>/dev/null)" || return 0
     [[ -z "$foreign" ]] || return 0
     if (( DRY_RUN )); then
       log "would remove (inactive clean managed dependencies): $dependencies"
@@ -403,7 +403,7 @@ reap_worktree_repo() {
               log "preserving (active worktree): $wt"
             elif (( DRY_RUN )); then
               log "would remove worktree (merged+clean): $wt [$branch]"
-            elif git -C "$repo" worktree remove "$wt" 2>/dev/null; then
+            elif { (( ! MANAGED_MODE )) || managed_tree_safe "$wt" "$REAP_MANAGED_ROOT"; } && git -C "$repo" worktree remove "$wt" 2>/dev/null; then
               log "removed worktree (merged+clean): $wt [$branch]"
               if ! git -C "$repo" branch -d -- "$branch" 2>/dev/null; then
                 log "preserving local branch (safe deletion refused): $branch"
@@ -428,7 +428,7 @@ reap_worktree_repo() {
 # Invoked by the existing database-backed housekeeping owner.
 reap_managed_checkout() {
   local root="${REAP_MANAGED_ROOT:-}" checkout="${REAP_MANAGED_CHECKOUT:-}" source="${REAP_MANAGED_SOURCE:-}"
-  local origin source_origin="" ref anchor="${REAP_MANAGED_RELEASE_COMMIT:-}"
+  local origin source_origin="" ref anchor="${REAP_MANAGED_RELEASE_COMMIT:-}" primary source_root worktrees first
   [[ -n "$root" && -n "$checkout" && -n "$source" ]] || return 0
   [[ "$root/" == */.agent-bridge-conversations/* && "$(realpath -e -- "$root" 2>/dev/null)" == "$root" ]] || return 0
   managed_tree_safe "$checkout" "$root" || return 0
@@ -454,7 +454,24 @@ reap_managed_checkout() {
     return 0
   }
   if [[ -f "$checkout/.git" && ! -L "$checkout/.git" ]]; then
-    reap_worktree_repo "$checkout" "$checkout" "$ref"
+    worktrees="$(git -C "$checkout" worktree list --porcelain 2>/dev/null)" || return 0
+    IFS= read -r first <<< "$worktrees"
+    [[ "$first" == "worktree "* ]] || return 0
+    primary="${first#worktree }"
+    [[ "$primary" != "$checkout" && -d "$primary/.git" && ! -L "$primary/.git" ]] || return 0
+    [[ "$(realpath -e -- "$primary" 2>/dev/null)" == "$primary" ]] || return 0
+    [[ "$(stat -c %u -- "$primary" 2>/dev/null)" == "$(id -u)" ]] || return 0
+    source_root="$(git -C "$source" rev-parse --show-toplevel 2>/dev/null)" || source_root=""
+    # Never mutate an unrelated repository's Git metadata. The primary
+    # must be the admitted source or another checkout of this conversation.
+    if [[ "$primary" != "$source_root" ]]; then
+      managed_tree_safe "$primary" "$root" || return 0
+    fi
+    if has_ownership_signal "$primary" || checkout_has_active_process "$primary"; then
+      log "preserving (active primary checkout): $primary"
+      return 0
+    fi
+    reap_worktree_repo "$primary" "$checkout" "$ref"
   elif [[ -d "$checkout/.git" && ! -L "$checkout/.git" ]]; then
     # Keep the clone and its branch; only reproducible dependencies qualify.
     reap_checkout_dependencies "$checkout" "$ref"
