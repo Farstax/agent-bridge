@@ -1585,15 +1585,15 @@ prune_immutable_release_retention() {
 # installed provider version neither pins is obsolete. Every ambiguity skips
 # pruning: the rollout is already accepted and must not fail on hygiene.
 locked_host_component_version() {
-  local release_dir="$1" provider="$2" module="$1/dist/providers/acpRegistry.js" field="${3:-version}"
+  local release_dir="$1" provider="$2" module="$1/dist/providers/acpRegistry.js" field="${3:-version}" platform="${4:-linux-x86_64}"
   [[ -f "$module" && ! -L "$module" ]] || return 1
-  "$node_bin" --input-type=module - "$module" "$provider" "$field" <<'NODE'
+  "$node_bin" --input-type=module - "$module" "$provider" "$field" "$platform" <<'NODE'
 import { pathToFileURL } from "node:url";
-const [modulePath, provider, field] = process.argv.slice(2);
+const [modulePath, provider, field, platform] = process.argv.slice(2);
 const { getLockedAcpRegistryEntry } = await import(pathToFileURL(modulePath).href);
 const entry = getLockedAcpRegistryEntry(provider);
 if (field === "agy-command") {
-  const command = entry?.distribution?.binary?.["linux-x86_64"]?.cmd;
+  const command = entry?.distribution?.binary?.[platform]?.cmd;
   if (command !== "./agy" && command !== "./agy_acp_server.par") process.exit(2);
   process.stdout.write(command);
   process.exit(0);
@@ -1607,11 +1607,11 @@ NODE
 # A version directory is deletable only when it carries the identity record its
 # own installer writes: Agy's per-platform manifest naming this exact version,
 # Cursor's recorded payload digest beside its payload directory.
-agy_version_dir_is_managed() {
+agy_managed_manifest() {
   local entry="$1" name="$2" manifest
   while IFS= read -r manifest; do
     [[ -f "$manifest" && ! -L "$manifest" ]] || continue
-    /usr/bin/python3 - "$manifest" "$name" <<'PY' && return 0
+    if /usr/bin/python3 - "$manifest" "$name" <<'PY'
 import json, sys
 try:
     manifest = json.load(open(sys.argv[1], encoding="utf-8"))
@@ -1619,8 +1619,38 @@ except Exception:
     raise SystemExit(1)
 raise SystemExit(0 if manifest.get("version") == sys.argv[2] and (manifest.get("schemaVersion") == 2 or (manifest.get("schemaVersion") == 3 and manifest.get("binaryName") == "agy" and manifest.get("archiveSha256"))) else 1)
 PY
+    then
+      printf '%s\n' "$manifest"
+      return 0
+    fi
   done < <(/usr/bin/find "$entry" -mindepth 2 -maxdepth 2 -name manifest.json -print)
   return 1
+}
+
+agy_version_dir_is_managed() {
+  agy_managed_manifest "$@" >/dev/null
+}
+
+# Keep the ownership record until all payloads are removed. A retry after
+# interruption can still identify the version; only empty directories can
+# remain if interrupted after the final manifest unlink.
+remove_agy_version_directory() {
+  local root="$1" name="$2" entry manifest parent
+  entry="$root/$name"
+  manifest="$(agy_managed_manifest "$entry" "$name")" || return 1
+  parent="$(/usr/bin/dirname -- "$manifest")"
+  ( validate_secure_path "$root" directory && validate_secure_path "$entry" directory \
+    && validate_secure_path "$parent" directory && validate_secure_path "$manifest" file ) >/dev/null || return 1
+  /usr/bin/find "$entry" -depth -mindepth 1 ! -path "$manifest" ! -path "$parent" -delete || return 1
+  remove_named_child_directory "$root" "$name"
+}
+
+agy_registry_platform() {
+  case "$(/usr/bin/uname -m)" in
+    x86_64|amd64) printf linux-x86_64 ;;
+    aarch64|arm64) printf linux-aarch64 ;;
+    *) return 1 ;;
+  esac
 }
 
 cursor_version_dir_is_managed() {
@@ -1633,16 +1663,16 @@ cursor_version_dir_is_managed() {
 # commands, all present links and the accepted service configuration must
 # agree before either legacy link is changed.
 agy_legacy_links_allow_pruning() {
-  local versions_dir="$1" current_version="$2" previous_version="$3" official_link="$4"
+  local versions_dir="$1" current_version="$2" previous_version="$3" official_link="$4" platform="$5"
   local legacy_binary_link="${AGENT_BRIDGE_AGY_LEGACY_LINK:-/usr/local/bin/agy_acp_server.par}"
   local legacy_harness_link="${AGENT_BRIDGE_AGY_HARNESS_LINK:-/usr/local/bin/agy_localharness_external}"
   local current_command rollback_command module release unit unit_config unit_env
   local -a env_files=("$shared_env" "$release_env")
-  current_command="$(locked_host_component_version "$release_root/$expected_commit" agy agy-command)" || return 1
-  rollback_command="$(locked_host_component_version "$release_root/$previous_pointer_target" agy agy-command)" || return 1
-  [[ "$current_command" == "./agy" && "$(/usr/bin/readlink -f -- "$official_link")" == "$versions_dir/$current_version/linux-x86_64/agy" ]] || return 1
+  current_command="$(locked_host_component_version "$release_root/$expected_commit" agy agy-command "$platform")" || return 1
+  rollback_command="$(locked_host_component_version "$release_root/$previous_pointer_target" agy agy-command "$platform")" || return 1
+  [[ "$current_command" == "./agy" && "$(/usr/bin/readlink -f -- "$official_link")" == "$versions_dir/$current_version/$platform/agy" ]] || return 1
   if [[ "$rollback_command" == "./agy" ]]; then
-    [[ -f "$versions_dir/$previous_version/linux-x86_64/agy" && ! -L "$versions_dir/$previous_version/linux-x86_64/agy" ]] || return 1
+    [[ -f "$versions_dir/$previous_version/$platform/agy" && ! -L "$versions_dir/$previous_version/$platform/agy" ]] || return 1
     agy_version_dir_is_managed "$versions_dir/$previous_version" "$previous_version" || return 1
     # An official-version pin alone does not prove an older release knows how
     # to normalize stale service settings. Ask both immutable runtime owners.
@@ -1672,9 +1702,9 @@ NODE
     done
   fi
 
-  /usr/bin/python3 - "$versions_dir" "$current_version" "$previous_version" "$official_link" "$legacy_binary_link" "$legacy_harness_link" "$rollback_command" "$secure_owner_uid" "${env_files[@]}" <<'PY'
+  /usr/bin/python3 - "$versions_dir" "$current_version" "$previous_version" "$official_link" "$legacy_binary_link" "$legacy_harness_link" "$rollback_command" "$secure_owner_uid" "$platform" "${env_files[@]}" <<'PY'
 import hashlib, json, os, pathlib, re, stat, sys
-root, current, rollback, official, binary_link, harness_link, rollback_command, uid, *env_files = sys.argv[1:]
+root, current, rollback, official, binary_link, harness_link, rollback_command, uid, platform, *env_files = sys.argv[1:]
 uid = int(uid)
 links = {binary_link: "agy_acp_server.par", harness_link: "localharness_external"}
 
@@ -1691,6 +1721,7 @@ try:
     require(len({official, binary_link, harness_link}) == 3)
     secure(root, stat.S_ISDIR)
     present = {}
+    verified_versions = set()
     for link, artifact in links.items():
         require(os.path.isabs(link) and os.path.normpath(link) == link)
         if not os.path.lexists(link):
@@ -1701,29 +1732,31 @@ try:
         target = os.readlink(link)
         relative = os.path.relpath(target, root).split(os.sep)
         require(len(relative) == 3 and re.fullmatch(r"[0-9A-Za-z][0-9A-Za-z._+-]*", relative[0])
-                and relative[1:] == ["linux-x86_64", artifact])
+                and relative[1:] == [platform, artifact])
         version = relative[0]
-        directory = os.path.join(root, version, "linux-x86_64")
+        directory = os.path.join(root, version, platform)
         require(target == os.path.join(directory, artifact))
         secure(os.path.join(root, version), stat.S_ISDIR)
         secure(directory, stat.S_ISDIR)
         secure(target, stat.S_ISREG)
-        manifest_path = os.path.join(directory, "manifest.json")
-        secure(manifest_path, stat.S_ISREG)
-        manifest = json.loads(pathlib.Path(manifest_path).read_text())
-        require(manifest.get("schemaVersion") == 2 and manifest.get("version") == version
-                and manifest.get("platform") == "linux-x86_64"
-                and manifest.get("harnessName") == "localharness_external"
-                and manifest.get("harnessVersion") == version
-                and manifest.get("harnessPath") == os.path.join(directory, "localharness_external")
-                and re.fullmatch(r"[0-9a-f]{64}", manifest.get("archiveSha256", "")))
-        # The historical installer recorded both payload hashes. Validate both
-        # before unlinking even if an interrupted attempt left only one link.
-        for name, key in (("agy_acp_server.par", "binarySha256"), ("localharness_external", "harnessSha256")):
-            payload = os.path.join(directory, name)
-            secure(payload, stat.S_ISREG)
-            with open(payload, "rb") as stream:
-                require(hashlib.file_digest(stream, "sha256").hexdigest() == manifest.get(key))
+        if version not in verified_versions:
+            manifest_path = os.path.join(directory, "manifest.json")
+            secure(manifest_path, stat.S_ISREG)
+            manifest = json.loads(pathlib.Path(manifest_path).read_text())
+            require(manifest.get("schemaVersion") == 2 and manifest.get("version") == version
+                    and manifest.get("platform") == platform
+                    and manifest.get("harnessName") == "localharness_external"
+                    and manifest.get("harnessVersion") == version
+                    and manifest.get("harnessPath") == os.path.join(directory, "localharness_external")
+                    and re.fullmatch(r"[0-9a-f]{64}", manifest.get("archiveSha256", "")))
+            # The historical installer recorded both payload hashes. Validate both
+            # before unlinking even if an interrupted attempt left only one link.
+            for name, key in (("agy_acp_server.par", "binarySha256"), ("localharness_external", "harnessSha256")):
+                payload = os.path.join(directory, name)
+                secure(payload, stat.S_ISREG)
+                with open(payload, "rb") as stream:
+                    require(hashlib.file_digest(stream, "sha256").hexdigest() == manifest.get(key))
+            verified_versions.add(version)
         present[link] = (version, target, info.st_ino, info.st_dev)
 
     versions = {value[0] for value in present.values()}
@@ -1789,7 +1822,7 @@ PY
 }
 
 prune_host_component_versions() {
-  local provider="$1" versions_dir="$2" remover="$3" managed_check="$4" current_version previous_version link linked entry name pruned=0
+  local provider="$1" versions_dir="$2" remover="$3" managed_check="$4" current_version previous_version link linked entry name platform pruned=0
   shift 4
   if [[ ! -e "$versions_dir" && ! -L "$versions_dir" ]]; then
     echo "host component retention provider=$provider pruned=0 reason=not_installed"
@@ -1814,8 +1847,8 @@ prune_host_component_versions() {
     [[ "$linked" == "$versions_dir/$current_version/"* ]] \
       || { echo "host component retention skipped provider=$provider reason=link_not_current"; return 0; }
   done
-  if [[ "$provider" == agy && -f "$versions_dir/$current_version/linux-x86_64/agy" && ! -L "$versions_dir/$current_version/linux-x86_64/agy" ]]; then
-    if ! agy_legacy_links_allow_pruning "$versions_dir" "$current_version" "$previous_version" "$1"; then
+  if [[ "$provider" == agy ]] && platform="$(agy_registry_platform)" && [[ -f "$versions_dir/$current_version/$platform/agy" && ! -L "$versions_dir/$current_version/$platform/agy" ]]; then
+    if ! agy_legacy_links_allow_pruning "$versions_dir" "$current_version" "$previous_version" "$1" "$platform"; then
       echo "host component retention skipped provider=agy reason=legacy_link_ownership_or_consumer_ambiguous"
       return 0
     fi
@@ -1848,16 +1881,16 @@ prune_host_component_retention() {
     echo "host component retention skipped reason=release_pins_ambiguous"
     return 0
   fi
-  local agy_versions_dir agy_current_version
+  local agy_versions_dir agy_current_version platform
   agy_versions_dir="$(agy_component_root)/components"
   agy_current_version="$(locked_host_component_version "$release_root/$expected_commit" agy 2>/dev/null || true)"
-  if [[ -n "$agy_current_version" && -f "$agy_versions_dir/$agy_current_version/linux-x86_64/agy" \
-    && ! -L "$agy_versions_dir/$agy_current_version/linux-x86_64/agy" ]]; then
-    prune_host_component_versions agy "$agy_versions_dir" remove_named_child_directory agy_version_dir_is_managed \
+  if platform="$(agy_registry_platform)" && [[ -n "$agy_current_version" && -f "$agy_versions_dir/$agy_current_version/$platform/agy" \
+    && ! -L "$agy_versions_dir/$agy_current_version/$platform/agy" ]]; then
+    prune_host_component_versions agy "$agy_versions_dir" remove_agy_version_directory agy_version_dir_is_managed \
       "${AGENT_BRIDGE_AGY_ACP_LINK:-/usr/local/bin/agy}"
   else
     # Pre-migration installs publish the .par/harness pair together.
-    prune_host_component_versions agy "$agy_versions_dir" remove_named_child_directory agy_version_dir_is_managed \
+    prune_host_component_versions agy "$agy_versions_dir" remove_agy_version_directory agy_version_dir_is_managed \
       "${AGENT_BRIDGE_AGY_ACP_LINK:-/usr/local/bin/agy_acp_server.par}" \
       "${AGENT_BRIDGE_AGY_HARNESS_LINK:-/usr/local/bin/agy_localharness_external}"
   fi
