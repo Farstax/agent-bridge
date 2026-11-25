@@ -1641,7 +1641,7 @@ remove_agy_version_directory() {
   parent="$(/usr/bin/dirname -- "$manifest")"
   ( validate_secure_path "$root" directory && validate_secure_path "$entry" directory \
     && validate_secure_path "$parent" directory && validate_secure_path "$manifest" file ) >/dev/null || return 1
-  /usr/bin/find "$entry" -depth -mindepth 1 ! -path "$manifest" ! -path "$parent" -delete || return 1
+  /usr/bin/find "$entry" -depth -mindepth 1 ! -samefile "$manifest" ! -samefile "$parent" -delete || return 1
   remove_named_child_directory "$root" "$name"
 }
 
@@ -1666,11 +1666,10 @@ agy_legacy_links_allow_pruning() {
   local versions_dir="$1" current_version="$2" previous_version="$3" official_link="$4" platform="$5"
   local legacy_binary_link="${AGENT_BRIDGE_AGY_LEGACY_LINK:-/usr/local/bin/agy_acp_server.par}"
   local legacy_harness_link="${AGENT_BRIDGE_AGY_HARNESS_LINK:-/usr/local/bin/agy_localharness_external}"
-  local current_command rollback_command module release unit unit_config unit_env
+  local rollback_command module release unit unit_config unit_env
   local -a env_files=("$shared_env" "$release_env")
-  current_command="$(locked_host_component_version "$release_root/$expected_commit" agy agy-command "$platform")" || return 1
   rollback_command="$(locked_host_component_version "$release_root/$previous_pointer_target" agy agy-command "$platform")" || return 1
-  [[ "$current_command" == "./agy" && "$(/usr/bin/readlink -f -- "$official_link")" == "$versions_dir/$current_version/$platform/agy" ]] || return 1
+  [[ "$(/usr/bin/readlink -f -- "$official_link")" == "$versions_dir/$current_version/$platform/agy" ]] || return 1
   if [[ "$rollback_command" == "./agy" ]]; then
     [[ -f "$versions_dir/$previous_version/$platform/agy" && ! -L "$versions_dir/$previous_version/$platform/agy" ]] || return 1
     agy_version_dir_is_managed "$versions_dir/$previous_version" "$previous_version" || return 1
@@ -1822,7 +1821,7 @@ PY
 }
 
 prune_host_component_versions() {
-  local provider="$1" versions_dir="$2" remover="$3" managed_check="$4" current_version previous_version link linked entry name platform pruned=0
+  local provider="$1" versions_dir="$2" remover="$3" managed_check="$4" current_version previous_version link linked entry name platform agy_command pruned=0
   shift 4
   if [[ ! -e "$versions_dir" && ! -L "$versions_dir" ]]; then
     echo "host component retention provider=$provider pruned=0 reason=not_installed"
@@ -1839,6 +1838,18 @@ prune_host_component_versions() {
     echo "host component retention skipped provider=$provider reason=install_in_progress"
     return 0
   fi
+  if [[ "$provider" == agy ]]; then
+    platform="$(agy_registry_platform)" \
+      || { echo "host component retention skipped provider=agy reason=unsupported_platform"; return 0; }
+    agy_command="$(locked_host_component_version "$release_root/$expected_commit" agy agy-command "$platform")" \
+      || { echo "host component retention skipped provider=agy reason=current_command_unavailable"; return 0; }
+    if [[ "$agy_command" == "./agy" ]]; then
+      set -- "${AGENT_BRIDGE_AGY_ACP_LINK:-/usr/local/bin/agy}"
+    else
+      set -- "${AGENT_BRIDGE_AGY_ACP_LINK:-/usr/local/bin/agy_acp_server.par}" \
+        "${AGENT_BRIDGE_AGY_HARNESS_LINK:-/usr/local/bin/agy_localharness_external}"
+    fi
+  fi
   # Every managed link the installer publishes must already serve the current
   # version; a stale link means activation did not converge.
   for link in "$@"; do
@@ -1847,7 +1858,7 @@ prune_host_component_versions() {
     [[ "$linked" == "$versions_dir/$current_version/"* ]] \
       || { echo "host component retention skipped provider=$provider reason=link_not_current"; return 0; }
   done
-  if [[ "$provider" == agy ]] && platform="$(agy_registry_platform)" && [[ -f "$versions_dir/$current_version/$platform/agy" && ! -L "$versions_dir/$current_version/$platform/agy" ]]; then
+  if [[ "$provider" == agy && "$agy_command" == "./agy" ]]; then
     if ! agy_legacy_links_allow_pruning "$versions_dir" "$current_version" "$previous_version" "$1" "$platform"; then
       echo "host component retention skipped provider=agy reason=legacy_link_ownership_or_consumer_ambiguous"
       return 0
@@ -1881,19 +1892,7 @@ prune_host_component_retention() {
     echo "host component retention skipped reason=release_pins_ambiguous"
     return 0
   fi
-  local agy_versions_dir agy_current_version platform
-  agy_versions_dir="$(agy_component_root)/components"
-  agy_current_version="$(locked_host_component_version "$release_root/$expected_commit" agy 2>/dev/null || true)"
-  if platform="$(agy_registry_platform)" && [[ -n "$agy_current_version" && -f "$agy_versions_dir/$agy_current_version/$platform/agy" \
-    && ! -L "$agy_versions_dir/$agy_current_version/$platform/agy" ]]; then
-    prune_host_component_versions agy "$agy_versions_dir" remove_agy_version_directory agy_version_dir_is_managed \
-      "${AGENT_BRIDGE_AGY_ACP_LINK:-/usr/local/bin/agy}"
-  else
-    # Pre-migration installs publish the .par/harness pair together.
-    prune_host_component_versions agy "$agy_versions_dir" remove_agy_version_directory agy_version_dir_is_managed \
-      "${AGENT_BRIDGE_AGY_ACP_LINK:-/usr/local/bin/agy_acp_server.par}" \
-      "${AGENT_BRIDGE_AGY_HARNESS_LINK:-/usr/local/bin/agy_localharness_external}"
-  fi
+  prune_host_component_versions agy "$(agy_component_root)/components" remove_agy_version_directory agy_version_dir_is_managed
   local runtime_home
   runtime_home="$(resolve_runtime_home 2>/dev/null)" || { echo "host component retention skipped provider=cursor reason=runtime_home_unavailable"; return 0; }
   prune_host_component_versions cursor "$runtime_home/.local/share/agent-bridge/cursor-acp/versions" remove_runtime_child_directory cursor_version_dir_is_managed \
