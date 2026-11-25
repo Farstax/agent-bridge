@@ -191,6 +191,16 @@ managed_tree_safe() {
   return 0
 }
 
+# Recheck filesystem ownership and both activity scopes at the mutation boundary.
+managed_worktree_removable() {
+  local checkout="$1" primary="$2" foreign
+  managed_tree_safe "$checkout" "$REAP_MANAGED_ROOT" || return 1
+  foreign="$(find "$checkout" -xdev ! -uid "$(id -u)" -print -quit 2>/dev/null)" || return 1
+  [[ -z "$foreign" ]] || return 1
+  ! has_ownership_signal "$REAP_MANAGED_ROOT" && ! checkout_has_active_process "$REAP_MANAGED_ROOT" \
+    && ! has_ownership_signal "$primary" && ! checkout_has_active_process "$primary"
+}
+
 # Exact ancestry is normal proof; a squash requires exact PR head and
 # merge commit independently verified in the trusted base.
 commit_integrated() {
@@ -302,6 +312,10 @@ reap_checkout_dependencies() {
     local foreign
     foreign="$(find "$dependencies" -xdev \( ! -uid "$(id -u)" -o -name .git \) -print -quit 2>/dev/null)" || return 0
     [[ -z "$foreign" ]] || return 0
+    if has_ownership_signal "$REAP_MANAGED_ROOT" || checkout_has_active_process "$REAP_MANAGED_ROOT"; then
+      log "preserving (active conversation): $REAP_MANAGED_ROOT"
+      return 0
+    fi
     if (( DRY_RUN )); then
       log "would remove (inactive clean managed dependencies): $dependencies"
     elif rm -rf --one-file-system -- "$dependencies"; then
@@ -447,7 +461,7 @@ reap_worktree_repo() {
             elif branch_tip="$(git -C "$repo" rev-parse --verify "refs/heads/$branch^{commit}" 2>/dev/null)" \
               && commit_integrated "$repo" "$branch_tip" "$merge_ref" \
               && [[ "$(git -C "$wt" rev-parse --verify 'HEAD^{commit}' 2>/dev/null)" == "$branch_tip" ]] \
-              && { (( ! MANAGED_MODE )) || managed_tree_safe "$wt" "$REAP_MANAGED_ROOT"; } \
+              && { (( ! MANAGED_MODE )) || managed_worktree_removable "$wt" "$repo"; } \
               && git -C "$repo" worktree remove "$wt" 2>/dev/null; then
               log "removed worktree (merged+clean): $wt [$branch]"
               if (( MANAGED_MODE )); then
