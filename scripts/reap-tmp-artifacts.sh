@@ -191,6 +191,15 @@ reap_detached_checkout_dependencies() {
   dependencies="$checkout/node_modules"
   [[ -d "$dependencies" && ! -L "$dependencies" ]] || return 0
   [[ "$(stat -c %u -- "$dependencies" 2>/dev/null)" == "$(id -u)" ]] || return 0
+  # A directory named node_modules is not necessarily disposable: preserve
+  # tracked content and require explicit Git ignore evidence before removal.
+  local tracked_dependencies
+  tracked_dependencies="$(git -C "$checkout" ls-files -- node_modules 2>/dev/null)" || return 0
+  [[ -z "$tracked_dependencies" ]] || {
+    log "preserving (tracked dependencies): $checkout"
+    return 0
+  }
+  git -C "$checkout" check-ignore -q -- node_modules/ 2>/dev/null || return 0
   now="$(date +%s)"
   age="$(stat -c %Y -- "$dependencies" 2>/dev/null)" || return 0
   (( now - age > MAX_AGE_MIN * 60 )) || return 0
@@ -296,7 +305,7 @@ reap_worktree_repo() {
   default_branch="$(git -C "$repo" symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null | sed 's#^origin/##')"
   default_branch="${default_branch:-main}"
 
-  local wt="" branch=""
+  local wt="" branch="" status="" locked=0
   while IFS= read -r line; do
     case "$line" in
       "worktree "*) wt="${line#worktree }" ;;
@@ -311,24 +320,33 @@ reap_worktree_repo() {
         wt=""
         branch=""
         ;;
+      "locked"|"locked "*)
+        locked=1
+        ;;
       "")
-        if [[ -n "$wt" && -n "$branch" && "$wt" != "$repo" ]]; then
-          if [[ -z "$(git -C "$wt" status --porcelain 2>/dev/null)" ]]; then
-            if git -C "$repo" merge-base --is-ancestor "$branch" "$default_branch" 2>/dev/null; then
-          if has_ownership_signal "$wt"; then
-            :
-          elif (( DRY_RUN )); then
-            log "would remove worktree (merged+clean): $wt [$branch]"
-          else
-            log "removing worktree (merged+clean): $wt [$branch]"
-            git -C "$repo" worktree remove "$wt" 2>/dev/null \
-              && git -C "$repo" branch -d "$branch" 2>/dev/null
+        if [[ -n "$wt" && -n "$branch" && "$wt" != "$repo" && "$branch" != "$default_branch" ]] && (( ! locked )); then
+          # An error is not a clean status. Also preserve a live checkout even
+          # when its branch is already integrated and its index is clean.
+          if ! status="$(git -C "$wt" status --porcelain=v1 --untracked-files=all 2>/dev/null)"; then
+            log "preserving (unverified worktree status): $wt"
+          elif [[ -z "$status" ]] && git -C "$repo" merge-base --is-ancestor "refs/heads/$branch" "refs/heads/$default_branch" 2>/dev/null; then
+            if has_ownership_signal "$wt" || checkout_has_active_process "$wt"; then
+              log "preserving (active worktree): $wt"
+            elif (( DRY_RUN )); then
+              log "would remove worktree (merged+clean): $wt [$branch]"
+            elif git -C "$repo" worktree remove "$wt" 2>/dev/null; then
+              log "removed worktree (merged+clean): $wt [$branch]"
+              if ! git -C "$repo" branch -d -- "$branch" 2>/dev/null; then
+                log "preserving local branch (safe deletion refused): $branch"
               fi
+            else
+              log "preserving (safe worktree removal refused): $wt"
             fi
           fi
         fi
         wt=""
         branch=""
+        locked=0
         ;;
     esac
   done < <(git -C "$repo" worktree list --porcelain; echo)
