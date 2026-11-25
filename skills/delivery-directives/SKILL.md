@@ -13,12 +13,13 @@ Execute the already-agreed scope end to end without routine confirmation:
 
 `issue/requirements -> draft PR -> implementation + focused validation -> review it -> in-scope repairs/re-review -> final candidate -> required exact-head checks -> merge -> cleanup -> compact report`
 
-- Do not expand scope, bypass required checks, weaken invariants, or conceal blockers.
+- Do not expand scope, bypass required checks, weaken invariants, or conceal blockers. Continue in-scope work and repair failed checks or review findings without routine owner prompts until the agreed outcome is verified or no further authorized action can progress it.
+- A pending required check or other bounded external operation is not completion or a terminal blocker. If keeping the Run open is impractical, use the existing continuation mechanism when supported and within its limits. On resume or recovery, inspect the current issue, PR/head, required checks and relevant durable evidence; continue only outstanding authorized work without repeating completed side effects. If no safe supported path remains, including exhausted continuation limits, report the exact blocker and outstanding work.
 - Keep iterative work draft/local where practical so intermediate RED/GREEN and repair states do not trigger full qualification unnecessarily.
 - `review it` is the authoritative independent adversarial review contract; do not maintain a second review checklist here.
 - Once review passes, qualify the exact merge-candidate head. Any head change invalidates head-bound evidence that depends on it.
 - Merge requires a qualifying fresh, read-only review-phase PASS, resolved and re-reviewed blocking findings, passing required exact-head CI, and a candidate mergeable against current `main`. Same-agent phase review is permitted by the authoritative review Skill; do not invent reviewer identities, require a second contributor, or bypass required GitHub rules.
-- Routine completion reports answer: what changed, whether it worked, and whether the user must do anything next. Include residual risk only when material.
+- Verify the actual merged outcome and agreed acceptance evidence before reporting completion. A pending continuation is not completion. Routine completion reports answer: what changed, whether it worked, and whether the user must do anything next. Include residual risk only when material.
 
 ## `review it`
 
