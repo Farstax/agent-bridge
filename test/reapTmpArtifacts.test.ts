@@ -287,6 +287,48 @@ exec "$REAP_TEST_REAL_GIT" "$@"
     }
   });
 
+  it("preserves ignored files and branches not integrated into the remote default", () => {
+    const root = makeRoot();
+    const repo = join(root, "repo");
+    initGitRepo(repo);
+    execFileSync("git", ["-C", repo, "remote", "add", "origin", "https://example.invalid/repo.git"]);
+    execFileSync("git", ["-C", repo, "update-ref", "refs/remotes/origin/main", "HEAD"]);
+    const ignored = join(root, "ignored");
+    const localOnly = join(root, "local-only");
+    const safe = join(root, "safe");
+    for (const [name, path] of [["ignored", ignored], ["local-only", localOnly], ["safe", safe]]) {
+      execFileSync("git", ["-C", repo, "worktree", "add", "-q", "-b", name, path]);
+    }
+    writeFileSync(join(repo, ".git", "info", "exclude"), "private.txt\n");
+    writeFileSync(join(ignored, "private.txt"), "preserve ignored data");
+    writeFileSync(join(localOnly, "change.txt"), "not pushed");
+    execFileSync("git", ["-C", localOnly, "add", "change.txt"]);
+    execFileSync("git", ["-C", localOnly, "commit", "-q", "-m", "local only"]);
+    execFileSync("git", ["-C", repo, "merge", "-q", "--ff-only", "local-only"]);
+    const result = run({ REAP_TMP_ROOT: join(root, "tmp"), REAP_WORKTREE_REPOS: repo });
+    expect(result.status, result.stderr).toBe(0);
+    expect(existsSync(safe)).toBe(false);
+    expect(existsSync(localOnly)).toBe(true);
+    expect(readFileSync(join(ignored, "private.txt"), "utf8")).toBe("preserve ignored data");
+    const branches = execFileSync("git", ["-C", repo, "branch", "--list"], { encoding: "utf8" });
+    expect(branches).toContain("ignored");
+    expect(branches).toContain("local-only");
+    expect(branches).not.toContain("safe");
+  });
+
+  it("preserves the primary checkout when inventory names a linked worktree", () => {
+    const root = makeRoot();
+    const repo = join(root, "repo");
+    initGitRepo(repo);
+    execFileSync("git", ["-C", repo, "switch", "-q", "-c", "primary-feature"]);
+    const linked = join(root, "linked");
+    execFileSync("git", ["-C", repo, "worktree", "add", "-q", linked, "main"]);
+    const result = run({ REAP_TMP_ROOT: join(root, "tmp"), REAP_WORKTREE_REPOS: linked });
+    expect(result.status, result.stderr).toBe(0);
+    expect(existsSync(join(repo, "README.md"))).toBe(true);
+    expect(result.stdout).not.toContain("safe worktree removal refused");
+  });
+
   it("uses a bounded non-interactive admin fallback when ordinary removal is denied", () => {
     const tmpRoot = makeRoot();
     const staleScratch = join(tmpRoot, "agent-bridge-root-owned-rollout");
@@ -461,6 +503,14 @@ exec "$REAP_TEST_REAL_GIT" "$@"
       REAP_OSS_ORIGIN: "https://github.com/Farstax/agent-bridge.git",
     });
     expect(result.status, result.stderr).toBe(0);
+    expect(existsSync(module)).toBe(true);
+    const explicit = run({
+      REAP_TMP_ROOT: join(root, "tmp"),
+      REAP_WORKTREE_REPOS: ",",
+      REAP_DETACHED_CHECKOUTS: checkout,
+      REAP_OSS_ORIGIN: "https://github.com/Farstax/agent-bridge.git",
+    });
+    expect(explicit.status, explicit.stderr).toBe(0);
     expect(existsSync(module)).toBe(true);
   });
 
