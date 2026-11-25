@@ -27,11 +27,11 @@ function safeDirectory(path: string, device?: number): boolean {
   } catch { return false; }
 }
 
-function ownedDirectories(db: BridgeDb, workspaceRoot: string): OwnedDirectory[] {
+function ownedDirectories(db: BridgeDb, workspaceRoot: string, includeArchived = false): OwnedDirectory[] {
   const directories = new Map<string, OwnedDirectory>();
   const sessions = new OutwardAcpSessionRepository(db.raw);
   for (const source of sessions.listWorkspaces()) {
-    for (const session of sessions.list(source)) {
+    for (const session of sessions.list(source, { includeArchived })) {
       if (!session.executionCwd) continue;
       const identity = { surfaceIdentity: "acp:outward", chatKey: session.conversationId };
       let expected: string;
@@ -78,13 +78,19 @@ function mountpoints(): Set<string> {
     line.split(" ")[4].replace(/\\([0-7]{3})/g, (_, octal: string) => String.fromCharCode(parseInt(octal, 8)))));
 }
 
-function discoverCheckouts(root: string): string[] {
-  if (!safeDirectory(root)) return [];
+function discoverCheckouts(root: string, strict = false): string[] {
+  if (!safeDirectory(root)) {
+    if (strict) throw new Error("unsafe conversation inventory root: " + root);
+    return [];
+  }
   const mounts = mountpoints();
   const device = lstatSync(root).dev;
   // Reject a mounted conversation or partition, not just mounted children.
   for (let path = root; ; path = dirname(path)) {
-    if (mounts.has(path)) return [];
+    if (mounts.has(path)) {
+      if (strict) throw new Error("mounted conversation inventory root: " + root);
+      return [];
+    }
     if (basename(path) === ".agent-bridge-conversations" || dirname(path) === path) break;
   }
   const found: string[] = [];
@@ -103,6 +109,7 @@ function discoverCheckouts(root: string): string[] {
       if (!entry.isDirectory() || entry.name === "node_modules" || entry.name.startsWith(".")) continue;
       const child = join(directory, entry.name);
       if (!mounts.has(child) && safeDirectory(child, device)) pending.push(child);
+      else if (strict) throw new Error("unverified conversation inventory child: " + child);
     }
   }
   return found;
@@ -223,12 +230,13 @@ function sharedDependencyTarget(directories: OwnedDirectory[], candidate: string
   try {
     const checkouts = new Set<string>();
     for (const partition of new Set(directories.map(d => dirname(d.root)))) {
+      if (!existsSync(partition)) continue;
       if (!safeDirectory(partition)) return true;
       for (const entry of readdirSync(partition, { withFileTypes: true })) {
         if (!entry.isDirectory()) continue;
         const root = join(partition, entry.name);
         if (!safeDirectory(root)) return true;
-        for (const checkout of discoverCheckouts(root)) checkouts.add(checkout);
+        for (const checkout of discoverCheckouts(root, true)) checkouts.add(checkout);
         if (existsSync(join(root, ".git"))) checkouts.add(root);
       }
     }
@@ -237,10 +245,17 @@ function sharedDependencyTarget(directories: OwnedDirectory[], candidate: string
       if (root) checkouts.add(root);
     }
     for (const checkout of checkouts) {
-      const list = gitRead(checkout, ["worktree", "list", "--porcelain"]);
+      const list = gitRead(checkout, ["worktree", "list", "--porcelain", "-z"]);
       if (!list) return true;
-      for (const line of list.split("\n")) {
-        if (line.startsWith("worktree ") && existsSync(line.slice(9))) checkouts.add(line.slice(9));
+      for (const line of list.split("\0")) {
+        if (!line.startsWith("worktree ")) continue;
+        const registered = line.slice(9);
+        try {
+          if (!lstatSync(registered).isDirectory() || realpathSync(registered) !== registered) return true;
+          checkouts.add(registered);
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== "ENOENT") return true;
+        }
       }
       if (checkouts.size > 512) return true;
     }
@@ -292,15 +307,15 @@ export function reapManagedConversationArtifacts(db: BridgeDb, workspaceRoot: st
       // queue claim or continuation while we inspect and reclaim this exact
       // checkout. Revalidate persisted ownership under that same transaction.
       // One candidate per transaction; no persistent maintenance fence.
+      const started = Date.now();
       const admitted = db.runInImmediateTransaction(() => {
         if (!directory.stillOwned() || !safeDirectory(directory.root)
           || !checkout.startsWith(directory.root + sep) || !safeDirectory(checkout, lstatSync(directory.root).dev)
           || !canReapConversationArtifacts(db.raw, directory.key)) return false;
-        if (sharedDependencyTarget(ownedDirectories(db, workspaceRoot), checkout)) {
+        if (sharedDependencyTarget(ownedDirectories(db, workspaceRoot, true), checkout)) {
           console.log("[reap-tmp-artifacts] preserving (shared dependency target or unverified link inventory): " + checkout);
           return true;
         }
-        const started = Date.now();
         const result = spawnSync("bash", [script, "--conversation-checkout", ...(dryRun ? ["--dry-run"] : [])], {
           env: {
             ...process.env, GIT_OPTIONAL_LOCKS: "0", GIT_NO_REPLACE_OBJECTS: "1",
@@ -313,11 +328,11 @@ export function reapManagedConversationArtifacts(db: BridgeDb, workspaceRoot: st
           },
           stdio: "inherit",
         });
-        console.log("[reap-tmp-artifacts] managed cleanup operation ms=" + (Date.now() - started));
         if (result.error) throw result.error;
         if (result.status !== 0) throw new Error("managed checkout cleanup failed: " + checkout);
         return true;
       });
+      console.log("[reap-tmp-artifacts] managed cleanup transaction ms=" + (Date.now() - started));
       if (!admitted) console.log("[reap-tmp-artifacts] preserving (managed ownership or admission changed): " + checkout);
     }
   }
