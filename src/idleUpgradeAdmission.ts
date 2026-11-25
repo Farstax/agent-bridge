@@ -226,7 +226,8 @@ export function canReapConversationArtifacts(db: Database.Database, directoryKey
       WHERE e.status IN ('dispatching', 'run_created')
     UNION
     SELECT r.surface_identity, r.chat_id
-      FROM execution_capacity_claims c LEFT JOIN bridge_runs r ON r.run_id = c.run_id
+      -- run_id identifies the capacity service incarnation, not the Bridge Run.
+      FROM execution_capacity_claims c LEFT JOIN bridge_runs r ON r.run_id = c.execution_id
       WHERE c.lease_expires_at IS NULL OR c.lease_expires_at > strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
         OR strftime('%Y-%m-%dT%H:%M:%fZ', c.lease_expires_at) IS NULL
         OR strftime('%Y-%m-%dT%H:%M:%fZ', c.lease_expires_at) != c.lease_expires_at
