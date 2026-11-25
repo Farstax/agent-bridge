@@ -5,6 +5,8 @@ import { join } from "node:path";
 import Database from "better-sqlite3";
 import { afterEach, describe, expect, it } from "vitest";
 import { openDb } from "../src/db.js";
+import { conversationDirectorySettingKey, ensureConversationDirectory } from "../src/conversationDirectory.js";
+import { OutwardAcpSessionRepository } from "../src/repositories/outwardAcpSessionRepository.js";
 
 const scriptPath = new URL("../scripts/reap-tmp-artifacts.sh", import.meta.url).pathname;
 
@@ -615,6 +617,145 @@ exec "$REAP_TEST_REAL_GIT" "$@"
       const env = { REAP_TMP_ROOT: join(root, "tmp"), REAP_WORKTREE_REPOS: ",", BRIDGE_DB_PATH: database, BRIDGE_CURRENT_RELEASE_DIR: current, BRIDGE_ACP_WORKSPACE_ROOT: root, NODE_ENV: "test" };
       return { root, database, env };
     }
+
+    function managedFixture() {
+      const { root, database, env } = realFixture();
+      const source = join(root, "source");
+      initGitRepo(source);
+      writeFileSync(join(source, ".gitignore"), "node_modules/\nprivate.txt\n");
+      execFileSync("git", ["-C", source, "add", ".gitignore"]);
+      execFileSync("git", ["-C", source, "commit", "-q", "-m", "ignore reproducible dependencies"]);
+      const origin = "https://example.invalid/repo.git";
+      execFileSync("git", ["-C", source, "remote", "add", "origin", origin]);
+      execFileSync("git", ["-C", source, "update-ref", "refs/remotes/origin/main", "HEAD"]);
+      const identity = { surfaceIdentity: "acp:outward", chatKey: "acp:managed" };
+      const directory = ensureConversationDirectory(source, identity);
+      const db = openDb(database, { databaseRole: "interactive" });
+      new OutwardAcpSessionRepository(db.raw).create({
+        sessionId: "managed-session", conversationId: identity.chatKey, cwd: source, executionCwd: directory,
+      });
+      db.close();
+      const addDependencies = (checkout: string) => {
+        const dependencies = join(checkout, "node_modules");
+        mkdirSync(dependencies);
+        const file = join(dependencies, "cached");
+        writeFileSync(file, "reproducible");
+        ageEntry(file, 48);
+        ageEntry(dependencies, 48);
+        return dependencies;
+      };
+      const addWorktree = (branch: string) => {
+        const checkout = join(directory, branch);
+        execFileSync("git", ["-C", source, "worktree", "add", "-q", "-b", branch, checkout]);
+        return checkout;
+      };
+      return { root, database, env: { ...env, BRIDGE_PROJECT_DIR: source }, identity, directory, source, origin, addDependencies, addWorktree };
+    }
+
+    it("discovers and removes a merged linked worktree and branch, reclaims standalone dependencies, preserves unrelated data", () => {
+      const { root, env, directory, source, origin, addDependencies, addWorktree } = managedFixture();
+      const merged = addWorktree("completed");
+      addDependencies(merged);
+      const detached = join(directory, "detached");
+      execFileSync("git", ["clone", "-q", "--no-hardlinks", source, detached]);
+      execFileSync("git", ["-C", detached, "remote", "set-url", "origin", origin]);
+      execFileSync("git", ["-C", detached, "checkout", "-q", "--detach", "HEAD"]);
+      const dependencies = addDependencies(detached);
+      const ignored = addWorktree("private-data");
+      writeFileSync(join(ignored, "private.txt"), "keep");
+      const dirty = addWorktree("dirty");
+      writeFileSync(join(dirty, "uncommitted.txt"), "keep");
+      const unmerged = addWorktree("not-merged");
+      writeFileSync(join(unmerged, "new.txt"), "new");
+      execFileSync("git", ["-C", unmerged, "add", "new.txt"]);
+      execFileSync("git", ["-C", unmerged, "commit", "-q", "-m", "not integrated"]);
+      const outside = join(root, "outside");
+      execFileSync("git", ["clone", "-q", "--no-hardlinks", source, outside]);
+      const outsideDeps = addDependencies(outside);
+      symlinkSync(outside, join(directory, "outside-link"));
+      writeFileSync(join(directory, "conversation-note.txt"), "keep transcript-adjacent data");
+      const dry = run(env, ["--dry-run"]);
+      expect(dry.status, dry.stderr).toBe(0);
+      expect(dry.stdout).toContain("would remove (inactive clean managed dependencies)");
+      expect(existsSync(merged)).toBe(true);
+      expect(existsSync(dependencies)).toBe(true);
+      const result = run(env);
+      expect(result.status, result.stderr).toBe(0);
+      expect(existsSync(merged), result.stdout).toBe(false);
+      expect(existsSync(dependencies), result.stdout).toBe(false);
+      expect(existsSync(join(detached, ".git"))).toBe(true);
+      expect(existsSync(join(ignored, "private.txt"))).toBe(true);
+      expect(existsSync(join(dirty, "uncommitted.txt"))).toBe(true);
+      expect(existsSync(join(unmerged, "new.txt"))).toBe(true);
+      expect(existsSync(outsideDeps)).toBe(true);
+      expect(readFileSync(join(directory, "conversation-note.txt"), "utf8")).toBe("keep transcript-adjacent data");
+      const branches = execFileSync("git", ["-C", source, "branch", "--list"], { encoding: "utf8" });
+      expect(branches).not.toContain("completed");
+      expect(branches).toContain("private-data");
+      expect(branches).toContain("not-merged");
+      const second = run(env);
+      expect(second.status, second.stderr).toBe(0);
+      expect(existsSync(directory)).toBe(true);
+    });
+
+    it("defers managed cleanup for a running lane, queued message or pending continuation even with explicit inventory", () => {
+      const { database, env, directory, source, identity, addDependencies, addWorktree } = managedFixture();
+      const checkout = addWorktree("pending-work");
+      const dependencies = addDependencies(checkout);
+      const db = openDb(database, { databaseRole: "interactive" });
+      try {
+        const explicit = { ...env, REAP_WORKTREE_REPOS: source, REAP_DETACHED_CHECKOUTS: checkout };
+        const lane = db.acquireLock(identity.surfaceIdentity, identity.chatKey, false)!;
+        expect(lane).toBeTruthy();
+        expect(run(explicit).stdout).toContain("managed conversation cleanup deferred");
+        expect(existsSync(dependencies)).toBe(true);
+        db.unlock(lane);
+        db.enqueueMsg(identity.surfaceIdentity, identity.chatKey, {
+          prompt: "queued", chatId: identity.chatKey, chatType: "acp",
+        });
+        expect(run(explicit).stdout).toContain("managed conversation cleanup deferred");
+        expect(existsSync(dependencies)).toBe(true);
+        db.discardPendingMsgs(identity.surfaceIdentity, identity.chatKey);
+        const key = "run-continuation:v1:future";
+        db.setSetting(key, JSON.stringify({
+          version: 1, id: "future", originRunId: "origin", surfaceIdentity: identity.surfaceIdentity,
+          chatKey: identity.chatKey, provider: "codex", reason: "resume work",
+          requestedAt: new Date().toISOString(), dueAt: new Date(Date.now() + 60_000).toISOString(),
+          expiresAt: new Date(Date.now() + 600_000).toISOString(), state: "pending", depth: 1,
+          outwardSessionId: "managed-session",
+        }));
+        expect(run(explicit).stdout).toContain("managed conversation cleanup deferred");
+        expect(existsSync(dependencies)).toBe(true);
+        db.setSetting(key, null);
+        db.raw.prepare("DELETE FROM settings WHERE key = ?").run(key);
+      } finally { db.close(); }
+      const result = run(env);
+      expect(result.status, result.stderr).toBe(0);
+      expect(existsSync(checkout), result.stdout).toBe(false);
+      expect(existsSync(directory)).toBe(true);
+    });
+
+    it("discovers a new persisted messaging conversation without scanning an unowned sibling", () => {
+      const { database, env, source, origin, addDependencies } = managedFixture();
+      const identity = { surfaceIdentity: "telegram:fixture", chatKey: "123" };
+      const directory = ensureConversationDirectory(source, identity);
+      const unowned = ensureConversationDirectory(source, { surfaceIdentity: "telegram:fixture", chatKey: "999" });
+      const db = openDb(database, { databaseRole: "interactive" });
+      db.setSetting(conversationDirectorySettingKey(identity), directory);
+      db.close();
+      const clone = (parent: string) => {
+        const checkout = join(parent, "clone");
+        execFileSync("git", ["clone", "-q", "--no-hardlinks", source, checkout]);
+        execFileSync("git", ["-C", checkout, "remote", "set-url", "origin", origin]);
+        return addDependencies(checkout);
+      };
+      const eligible = clone(directory);
+      const notOwned = clone(unowned);
+      const result = run(env);
+      expect(result.status, result.stderr).toBe(0);
+      expect(existsSync(eligible), result.stdout).toBe(false);
+      expect(existsSync(notOwned)).toBe(true);
+    });
 
     it("accepts a schema-current interactive database with outward_acp_sessions", () => {
       const { env } = realFixture();
