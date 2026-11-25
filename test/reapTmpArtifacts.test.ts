@@ -888,6 +888,40 @@ exec "$REAP_TEST_REAL_GIT" "$@"
       } finally { db.close(); }
     });
 
+    it("uses the actual execution identity for capacity claims, preserving ambiguous and same-lane work", () => {
+      const { database, env, identity, addWorktree } = managedFixture();
+      const checkout = addWorktree("capacity-idle");
+      const db = openDb(database, { databaseRole: "interactive", serviceId: "telegram:interactive", runId: "service-incarnation" });
+      try {
+        const claim = db.acquireExecutionCapacity(2, "owner-execution", "acquisition-a")!;
+        expect(claim).toBeTruthy();
+        const ambiguous = run(env);
+        expect(ambiguous.status, ambiguous.stderr).toBe(0);
+        expect(ambiguous.stdout).toContain("managed conversation cleanup deferred");
+        expect(existsSync(checkout)).toBe(true);
+        db.insertRun("owner-execution", identity, "codex");
+        const owned = run(env);
+        expect(owned.status, owned.stderr).toBe(0);
+        expect(existsSync(checkout)).toBe(true);
+        expect(db.releaseExecutionCapacity(claim)).toBe(true);
+      } finally { db.close(); }
+      // Separate fixture: an unrelated service incarnation is not the Run
+      // that owns its capacity claim. Both IDs must differ in this regression.
+      const other = managedFixture();
+      const otherCheckout = other.addWorktree("other-capacity-idle");
+      const otherDb = openDb(other.database, { databaseRole: "interactive", serviceId: "telegram:interactive", runId: "other-service-incarnation" });
+      try {
+        otherDb.insertRun("other-execution", { surfaceIdentity: "telegram:interactive", chatKey: "other-chat" }, "codex");
+        const claim = otherDb.acquireExecutionCapacity(2, "other-execution", "acquisition-b")!;
+        expect(claim).toBeTruthy();
+        const result = run(other.env);
+        expect(result.status, result.stderr).toBe(0);
+        expect(existsSync(otherCheckout), result.stdout).toBe(false);
+        expect(otherDb.executionCapacityCount()).toBe(1);
+        expect(otherDb.releaseExecutionCapacity(claim)).toBe(true);
+      } finally { otherDb.close(); }
+    });
+
     it("discovers a new persisted messaging conversation without scanning an unowned sibling", () => {
       const { database, env, source, origin, addDependencies } = managedFixture();
       const identity = { surfaceIdentity: "telegram:fixture", chatKey: "123" };
