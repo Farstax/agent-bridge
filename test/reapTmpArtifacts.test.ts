@@ -698,6 +698,28 @@ exec "$REAP_TEST_REAL_GIT" "$@"
       expect(existsSync(directory)).toBe(true);
     });
 
+    it("preserves tracked changes hidden by assume-unchanged or skip-worktree", () => {
+      const { env, source, addDependencies, addWorktree } = managedFixture();
+      for (const flag of ["assume-unchanged", "skip-worktree"]) {
+        const checkout = addWorktree(flag);
+        execFileSync("git", ["-C", checkout, "update-index", "--" + flag, "README.md"]);
+        writeFileSync(join(checkout, "README.md"), "uncommitted local change");
+        expect(execFileSync("git", ["-C", checkout, "status", "--porcelain"], { encoding: "utf8" })).toBe("");
+        addDependencies(checkout);
+      }
+      const result = run(env);
+      expect(result.status, result.stderr).toBe(0);
+      expect(result.stdout).toContain("hidden index entries");
+      const branches = execFileSync("git", ["-C", source, "branch", "--list"], { encoding: "utf8" });
+      for (const flag of ["assume-unchanged", "skip-worktree"]) {
+        const checkout = execFileSync("git", ["-C", source, "worktree", "list", "--porcelain"], { encoding: "utf8" })
+          .split("\n").find(line => line.startsWith("worktree ") && line.endsWith("/" + flag))!.slice(9);
+        expect(readFileSync(join(checkout, "README.md"), "utf8")).toBe("uncommitted local change");
+        expect(existsSync(join(checkout, "node_modules"))).toBe(true);
+        expect(branches).toContain(flag);
+      }
+    });
+
     it("defers managed cleanup for a running lane, queued message or pending continuation even with explicit inventory", () => {
       const { database, env, directory, source, identity, addDependencies, addWorktree } = managedFixture();
       const checkout = addWorktree("pending-work");
