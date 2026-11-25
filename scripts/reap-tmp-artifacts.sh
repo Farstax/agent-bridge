@@ -161,13 +161,15 @@ checkout_has_active_process() {
 }
 
 reap_detached_checkout_dependencies() {
-  local checkout="$1" root origin status dependencies age now
+  local checkout="$1" root origin status dependencies age now git_dir head_status
   [[ "$checkout" == /* && -d "$checkout" && ! -L "$checkout" ]] || return 0
   [[ "$(realpath -e -- "$checkout" 2>/dev/null)" == "$checkout" ]] || return 0
   [[ "$(stat -c %u -- "$checkout" 2>/dev/null)" == "$(id -u)" ]] || return 0
   [[ -e "$checkout/.git" ]] || return 0
   root="$(git -C "$checkout" rev-parse --show-toplevel 2>/dev/null)" || return 0
   [[ "$root" == "$checkout" ]] || return 0
+  git_dir="$(git -C "$checkout" rev-parse --absolute-git-dir 2>/dev/null)" || return 0
+  [[ ! -e "$git_dir/locked" && ! -L "$git_dir/locked" ]] || return 0
   # The configured inventory provides the expected upstream identity.
   # No hosted-product name or arbitrary remote is hardcoded into OSS cleanup.
   origin="$(git -C "$checkout" remote get-url origin 2>/dev/null)" || return 0
@@ -181,7 +183,9 @@ reap_detached_checkout_dependencies() {
     log "preserving (unverified OSS origin): $checkout"
     return 0
   }
-  [[ -z "$(git -C "$checkout" symbolic-ref -q HEAD 2>/dev/null)" ]] || return 0
+  git -C "$checkout" symbolic-ref -q HEAD >/dev/null 2>&1
+  head_status=$?
+  (( head_status == 1 )) || return 0
   status="$(git -C "$checkout" status --porcelain=v1 --untracked-files=all 2>/dev/null)" || return 0
   [[ -z "$status" ]] || { log "preserving (dirty checkout): $checkout"; return 0; }
   git -C "$checkout" merge-base --is-ancestor HEAD refs/remotes/origin/main 2>/dev/null || {
@@ -191,6 +195,15 @@ reap_detached_checkout_dependencies() {
   dependencies="$checkout/node_modules"
   [[ -d "$dependencies" && ! -L "$dependencies" ]] || return 0
   [[ "$(stat -c %u -- "$dependencies" 2>/dev/null)" == "$(id -u)" ]] || return 0
+  # A directory named node_modules is not necessarily disposable: preserve
+  # tracked content and require explicit Git ignore evidence before removal.
+  local tracked_dependencies
+  tracked_dependencies="$(git -C "$checkout" ls-files -- node_modules 2>/dev/null)" || return 0
+  [[ -z "$tracked_dependencies" ]] || {
+    log "preserving (tracked dependencies): $checkout"
+    return 0
+  }
+  git -C "$checkout" check-ignore -q -- node_modules/ 2>/dev/null || return 0
   now="$(date +%s)"
   age="$(stat -c %Y -- "$dependencies" 2>/dev/null)" || return 0
   (( now - age > MAX_AGE_MIN * 60 )) || return 0
@@ -285,53 +298,146 @@ sweep_agent_bridge_scratch() {
 
 # Remove worktrees of $repo whose branch is already merged into the repo's
 # default branch AND have no uncommitted changes (staged or unstaged).
-# Anything dirty, unmerged, or detached HEAD is left untouched — those may
-# be in-progress work and only a human (or the finishing-a-development-branch
-# skill) should remove them.
+# Preserve dirty, unmerged, locked and active worktrees. Verified inactive
+# detached checkouts are eligible only for the separate dependency cleanup.
 reap_worktree_repo() {
   local repo="$1"
   [[ -e "$repo/.git" ]] || return 0
 
-  local default_branch
-  default_branch="$(git -C "$repo" symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null | sed 's#^origin/##')"
-  default_branch="${default_branch:-main}"
+  local default_branch merge_ref remotes worktrees primary=""
+  default_branch="$(git -C "$repo" symbolic-ref -q refs/remotes/origin/HEAD 2>/dev/null)" || default_branch="refs/remotes/origin/main"
+  [[ "$default_branch" == refs/remotes/origin/* ]] || return 0
+  merge_ref="$default_branch"
+  default_branch="${default_branch#refs/remotes/origin/}"
+  remotes="$(git -C "$repo" remote 2>/dev/null)" || return 0
+  # A repository with no remote has only its own default branch as authority.
+  # For a remote-backed repository, never substitute potentially unpushed main.
+  [[ -n "$remotes" ]] || merge_ref="refs/heads/$default_branch"
+  worktrees="$(git -C "$repo" worktree list --porcelain 2>/dev/null)" || return 0
 
-  local wt="" branch=""
+  local wt="" branch="" status="" locked=0 detached=0
   while IFS= read -r line; do
     case "$line" in
-      "worktree "*) wt="${line#worktree }" ;;
+      "worktree "*)
+        wt="${line#worktree }"
+        [[ -n "$primary" ]] || primary="$wt"
+        ;;
       "branch "*)
         branch="${line#branch }"
         branch="${branch#refs/heads/}"
         ;;
       "detached")
-        if [[ -n "$wt" && "$wt" != "$repo" ]]; then
-          reap_detached_checkout_dependencies "$wt"
-        fi
-        wt=""
-        branch=""
+        detached=1
+        ;;
+      "locked"|"locked "*)
+        locked=1
         ;;
       "")
-        if [[ -n "$wt" && -n "$branch" && "$wt" != "$repo" ]]; then
-          if [[ -z "$(git -C "$wt" status --porcelain 2>/dev/null)" ]]; then
-            if git -C "$repo" merge-base --is-ancestor "$branch" "$default_branch" 2>/dev/null; then
-          if has_ownership_signal "$wt"; then
-            :
-          elif (( DRY_RUN )); then
-            log "would remove worktree (merged+clean): $wt [$branch]"
-          else
-            log "removing worktree (merged+clean): $wt [$branch]"
-            git -C "$repo" worktree remove "$wt" 2>/dev/null \
-              && git -C "$repo" branch -d "$branch" 2>/dev/null
+        if [[ -n "$wt" && "$wt" != "$repo" && "$wt" != "$primary" ]] && (( detached && ! locked )); then
+          reap_detached_checkout_dependencies "$wt"
+        elif [[ -n "$wt" && -n "$branch" && "$wt" != "$repo" && "$wt" != "$primary" && "$branch" != "$default_branch" ]] && (( ! locked )); then
+          # An error is not a clean status. Also preserve a live checkout even
+          # when its branch is already integrated and its index is clean.
+          # Ordinary git worktree remove can delete ignored files too.
+          # Leave such worktrees intact until their disposable content is
+          # separately verified and reclaimed by its owner.
+          if ! status="$(git -C "$wt" status --porcelain=v1 --untracked-files=all --ignored=matching 2>/dev/null)"; then
+            log "preserving (unverified worktree status): $wt"
+          elif [[ -z "$status" ]] && git -C "$repo" merge-base --is-ancestor "refs/heads/$branch" "$merge_ref" 2>/dev/null; then
+            if has_ownership_signal "$wt" || checkout_has_active_process "$wt"; then
+              log "preserving (active worktree): $wt"
+            elif (( DRY_RUN )); then
+              log "would remove worktree (merged+clean): $wt [$branch]"
+            elif git -C "$repo" worktree remove "$wt" 2>/dev/null; then
+              log "removed worktree (merged+clean): $wt [$branch]"
+              if ! git -C "$repo" branch -d -- "$branch" 2>/dev/null; then
+                log "preserving local branch (safe deletion refused): $branch"
               fi
+            else
+              log "preserving (safe worktree removal refused): $wt"
             fi
           fi
         fi
         wt=""
         branch=""
+        locked=0
+        detached=0
         ;;
     esac
-  done < <(git -C "$repo" worktree list --porcelain; echo)
+  # Command substitution strips trailing newlines. Supply the final blank
+  # record separator explicitly so the last listed worktree is processed.
+  done < <(printf '%s\n\n' "$worktrees")
+}
+
+
+# Capacity is observed at the same chosen filesystem before and after cleanup.
+# Concurrent writers may change the counters; report observed free-space change,
+# not a claim that every extra free byte came from this janitor.
+REPORT_ROOT="${REAP_REPORT_ROOT:-${TMP_ROOT}}"
+[[ -d "$REPORT_ROOT" && ! -L "$REPORT_ROOT" ]] || REPORT_ROOT="/"
+read_capacity() {
+  df -P -B1 -- "$REPORT_ROOT" 2>/dev/null | awk 'NR == 2 { print $4 }'
+}
+read_inodes() {
+  df -P -i -- "$REPORT_ROOT" 2>/dev/null | awk 'NR == 2 { print $4 }'
+}
+capacity_before="$(read_capacity)"
+inodes_before="$(read_inodes)"
+
+sweep_by_age "${TMP_ROOT}/bridge-out"
+sweep_by_age "${TMP_ROOT}" "bridge-uploads-*"
+sweep_by_age "${TMP_ROOT}" "antigravity-*.log"
+sweep_by_age "${TMP_ROOT}" "agent-bridge-advisor-*.sock"
+sweep_by_age "${TMP_ROOT}/agent-bridge-voice" "voice-*"
+sweep_agent_bridge_scratch "${TMP_ROOT}"
+
+prune_acp_telemetry
+run_acp_maintenance
+
+# Named producer caches, never a blanket ~/.cache or ~/.npm sweep.
+cache_home="${HOME:-}"
+if [[ "$cache_home" == /* && -d "$cache_home" && ! -L "$cache_home" ]]; then
+  sweep_owned_build_cache "$cache_home/.npm/_cacache" "$cache_home/.npm" "tmp"
+  sweep_owned_build_cache "$cache_home/.cache/ms-playwright" "$cache_home/.cache" \
+    "chromium-[0-9]*" "chromium_headless_shell-[0-9]*" "firefox-[0-9]*" "webkit-[0-9]*"
+fi
+
+IFS=',' read -r -a REPOS <<< "${REAP_WORKTREE_REPOS:-${HOME:-}/agent-bridge}"
+for repo in "${REPOS[@]}"; do
+  [[ -n "$repo" ]] && reap_worktree_repo "$repo"
+done
+
+# Optional exact detached-checkout inventory, for standalone detached clones
+# that are not linked Git worktrees. All candidates receive the same checks.
+IFS=',' read -r -a DETACHED_CHECKOUTS <<< "${REAP_DETACHED_CHECKOUTS:-}"
+for checkout in "${DETACHED_CHECKOUTS[@]}"; do
+  [[ -n "$checkout" ]] && reap_detached_checkout_dependencies "$checkout"
+done
+
+
+capacity_after="$(read_capacity)"
+inodes_after="$(read_inodes)"
+if [[ "$capacity_before" =~ ^[0-9]+$ && "$capacity_after" =~ ^[0-9]+$ && "$inodes_after" =~ ^[0-9]+$ ]]; then
+  gain=$(( capacity_after > capacity_before ? capacity_after - capacity_before : 0 ))
+  log "disk_headroom root=$REPORT_ROOT free_bytes=$capacity_after observed_recovered_bytes=$gain free_inodes=$inodes_after before_free_inodes=$inodes_before"
+  required="${REAP_REQUIRED_HEADROOM_BYTES:-0}"
+  if [[ "$required" =~ ^[0-9]+$ && ${#required} -le 18 ]]; then
+    shortfall=$(( required > capacity_after ? required - capacity_after : 0 ))
+    log "disk_admission required_bytes=$required shortfall_bytes=$shortfall"
+  else
+    log "disk_admission=unknown reason=invalid_required_bytes"
+  fi
+else
+  log "disk_headroom=unknown root=$REPORT_ROOT"
+fi
+
+if (( FAILURES > 0 )); then
+  log "cleanup incomplete: ${FAILURES} eligible artifact(s) could not be removed" >&2
+  exit 1
+fi
+
+exit 0
+\n'
 }
 
 
