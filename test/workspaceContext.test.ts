@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { contextSourcesSignpost, loadWorkspaceContext, prependWorkspaceContext } from "../src/workspaceContext.js";
@@ -149,6 +149,22 @@ describe("persistent workspace and Workstream context sources (#1264)", () => {
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
 
+  it("advertises a safe new Workstream directory without creating files or requiring onboarding", () => {
+    const root = mkdtempSync(join(tmpdir(), "context-optional-"));
+    try {
+      const env = { BRIDGE_PROJECT_DIR: root };
+      const directory = join(root, ".agent-bridge/context/workstreams/new-1");
+      const signpost = contextSourcesSignpost(env, "new-1", "Customer Portal");
+      expect(signpost).toContain(directory);
+      expect(signpost).toContain('Workstream title (reference only): "Customer Portal"');
+      expect(signpost).toContain("README.md");
+      expect(signpost).toContain("not require setup for one-off tasks");
+      expect(existsSync(join(root, ".agent-bridge"))).toBe(false);
+      expect(contextSourcesSignpost(env, "new-1", "Customer Self-Service")).toContain("Customer Self-Service");
+      expect(contextSourcesSignpost(env)).toBe("");
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
   it("fails closed for missing roots, invalid IDs, and context symlinks leaving the workspace", () => {
     const root = mkdtempSync(join(tmpdir(), "context-root-"));
     const outside = mkdtempSync(join(tmpdir(), "context-outside-"));
@@ -164,6 +180,15 @@ describe("persistent workspace and Workstream context sources (#1264)", () => {
       expect(contextSourcesSignpost({ BRIDGE_PROJECT_DIR: root }, "bad")).toBe("");
       // A symlink to a *different Workstream inside the same workspace* must not be advertised.
       expect(contextSourcesSignpost({ BRIDGE_PROJECT_DIR: root }, "alias")).toBe("");
+      const workstreams = join(context, "workstreams");
+      writeFileSync(join(workstreams, "file"), "not a directory");
+      expect(contextSourcesSignpost({ BRIDGE_PROJECT_DIR: root }, "file")).toBe("");
+      rmSync(workstreams, { recursive: true, force: true });
+      symlinkSync(outside, workstreams, "dir");
+      expect(contextSourcesSignpost({ BRIDGE_PROJECT_DIR: root }, "missing")).toBe("");
+      rmSync(workstreams);
+      writeFileSync(workstreams, "not a directory");
+      expect(contextSourcesSignpost({ BRIDGE_PROJECT_DIR: root }, "missing")).toBe("");
       expect(contextSourcesSignpost({ BRIDGE_PROJECT_DIR: root }, "../escape")).toBe("");
       expect(contextSourcesSignpost({ BRIDGE_PROJECT_DIR: "../relative" })).toBe("");
       expect(contextSourcesSignpost({})).toBe("");

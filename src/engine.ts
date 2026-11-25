@@ -59,6 +59,7 @@ import { getCodexUsageText } from "./codexUsage.js";
 import { clearHandoffRequired, isProviderFallbackHandoffRequired, markHandoffRequired } from "./handoffState.js";
 import { deriveConversationOwnerKey } from "./conversationOwnerKey.js";
 import { contextSourcesSignpost, prependWorkspaceContext } from "./workspaceContext.js";
+import { OutwardAcpSessionRepository } from "./repositories/outwardAcpSessionRepository.js";
 import { conversationDirectoryPath, conversationDirectorySettingKey, ensureConversationDirectory } from "./conversationDirectory.js";
 import type { BridgeEvent } from "./events/types.js";
 import { type as eventType } from "./events/types.js";
@@ -2065,7 +2066,9 @@ export class BridgeEngine {
       ? prependProviderFallbackContinuation(workspacePrompt)
       : workspacePrompt;
     const handoffPrompt = includeFreshContext ? prependHandoffModel(fallbackPrompt, model) : fallbackPrompt;
-    const sourceSignpost = contextSourcesSignpost(process.env, contextWorkstreamId);
+    const workstream = contextWorkstreamId ? new OutwardAcpSessionRepository(this.db.raw).get(contextWorkstreamId) : null;
+    const sourceSignpost = contextSourcesSignpost(process.env, contextWorkstreamId,
+      workstream?.conversationId === chatKey ? workstream.title : undefined);
     const promptWithSources = sourceSignpost ? `${sourceSignpost}\n\n${handoffPrompt}` : handoffPrompt;
     const soulContext = includeFreshContext ? this.opts.soulContext ?? null : null;
     if (!access) return { prompt: promptWithSources, soulContext, includeResponseContract: includeFreshContext };
