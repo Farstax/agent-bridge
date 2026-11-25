@@ -9,6 +9,7 @@ import { cleanupRoots, createFixture, prepareImmutableRelease, runRollout, type 
 afterEach(cleanupRoots);
 
 type Pins = { agy?: string; cursor?: string };
+const registryPlatform = process.arch === "arm64" ? "linux-aarch64" : "linux-x86_64";
 
 function pinRelease(fixture: Fixture, commit: string, pins: Pins | null, agyCommand = "./agy_acp_server.par") {
   const directory = join(fixture.root, "releases", commit);
@@ -16,7 +17,7 @@ function pinRelease(fixture: Fixture, commit: string, pins: Pins | null, agyComm
   if (pins) {
     mkdirSync(join(directory, "dist", "providers"), { recursive: true });
     writeFileSync(join(directory, "dist", "providers", "acpRegistry.js"),
-      `const pins = ${JSON.stringify(pins)};\nexport function getLockedAcpRegistryEntry(id) { return pins[id] ? { version: pins[id], distribution: { binary: { "linux-x86_64": { cmd: ${JSON.stringify(agyCommand)} } } } } : null; }\n`);
+      `const pins = ${JSON.stringify(pins)};\nexport function getLockedAcpRegistryEntry(id) { return pins[id] ? { version: pins[id], distribution: { binary: { ${JSON.stringify(registryPlatform)}: { cmd: ${JSON.stringify(agyCommand)} } } } } : null; }\n`);
     writeFileSync(join(directory, "dist", "providers", "agyAcpConfig.js"),
       `export function resolveAgyAcpCommand(env) { const cmd = env.AGY_ACP_COMMAND; return !cmd || cmd === "agy" || cmd.endsWith("/agy_acp_server.par") ? env.AGENT_BRIDGE_AGY_ACP_LINK : cmd; }\n`);
   }
@@ -28,14 +29,14 @@ function installVersions(fixture: Fixture, versions: string[]) {
   const cursorHome = join(fixture.root, "cursor-home");
   const cursorRoot = join(cursorHome, ".local", "share", "agent-bridge", "cursor-acp", "versions");
   for (const version of versions) {
-    mkdirSync(join(agyRoot, version, "linux-x86_64"), { recursive: true });
-    writeFileSync(join(agyRoot, version, "linux-x86_64", "agy_acp_server.par"), version);
-    writeFileSync(join(agyRoot, version, "linux-x86_64", "localharness_external"), version);
+    mkdirSync(join(agyRoot, version, registryPlatform), { recursive: true });
+    writeFileSync(join(agyRoot, version, registryPlatform, "agy_acp_server.par"), version);
+    writeFileSync(join(agyRoot, version, registryPlatform, "localharness_external"), version);
     const payloadHash = createHash("sha256").update(version).digest("hex");
-    writeFileSync(join(agyRoot, version, "linux-x86_64", "manifest.json"), JSON.stringify({
-      schemaVersion: 2, version, platform: "linux-x86_64", archiveSha256: "a".repeat(64),
+    writeFileSync(join(agyRoot, version, registryPlatform, "manifest.json"), JSON.stringify({
+      schemaVersion: 2, version, platform: registryPlatform, archiveSha256: "a".repeat(64),
       binarySha256: payloadHash, harnessSha256: payloadHash, harnessName: "localharness_external",
-      harnessVersion: version, harnessPath: join(agyRoot, version, "linux-x86_64", "localharness_external"),
+      harnessVersion: version, harnessPath: join(agyRoot, version, registryPlatform, "localharness_external"),
     }));
     mkdirSync(join(cursorRoot, version, "dist-package"), { recursive: true });
     writeFileSync(join(cursorRoot, version, "dist-package", "cursor-agent"), version);
@@ -59,8 +60,8 @@ function installVersions(fixture: Fixture, versions: string[]) {
 }
 
 function linkCurrent(paths: ReturnType<typeof installVersions>, version: string) {
-  symlinkSync(join(paths.agyRoot, version, "linux-x86_64", "agy_acp_server.par"), paths.agyLink);
-  symlinkSync(join(paths.agyRoot, version, "linux-x86_64", "localharness_external"), paths.harnessLink);
+  symlinkSync(join(paths.agyRoot, version, registryPlatform, "agy_acp_server.par"), paths.agyLink);
+  symlinkSync(join(paths.agyRoot, version, registryPlatform, "localharness_external"), paths.harnessLink);
   mkdirSync(join(paths.cursorHome, ".local", "bin"), { recursive: true });
   symlinkSync(join(paths.cursorRoot, version, "dist-package", "cursor-agent"), join(paths.cursorHome, ".local", "bin", "cursor-agent"));
 }
@@ -76,7 +77,7 @@ describe("provider binary retention after accepted rollout", () => {
     const paths = installVersions(fixture, ["1.0.0", "2.0.0", "3.0.0"]);
     linkCurrent(paths, "3.0.0");
     for (const version of new Set(["3.0.0", ...(legacyRollback ? [] : [rollbackVersion])])) {
-      const directory = join(paths.agyRoot, version, "linux-x86_64");
+      const directory = join(paths.agyRoot, version, registryPlatform);
       writeFileSync(join(directory, "agy"), "official");
       writeFileSync(join(directory, "manifest.json"), JSON.stringify({
         schemaVersion: 3, version, binaryName: "agy", archiveSha256: "a".repeat(64),
@@ -86,9 +87,9 @@ describe("provider binary retention after accepted rollout", () => {
     rmSync(paths.harnessLink);
     const officialLink = join(fixture.root, "agy");
     const legacyVersion = legacyRollback ? rollbackVersion : "1.0.0";
-    symlinkSync(join(paths.agyRoot, "3.0.0", "linux-x86_64", "agy"), officialLink);
-    symlinkSync(join(paths.agyRoot, legacyVersion, "linux-x86_64", "agy_acp_server.par"), paths.agyLink);
-    symlinkSync(join(paths.agyRoot, legacyVersion, "linux-x86_64", "localharness_external"), paths.harnessLink);
+    symlinkSync(join(paths.agyRoot, "3.0.0", registryPlatform, "agy"), officialLink);
+    symlinkSync(join(paths.agyRoot, legacyVersion, registryPlatform, "agy_acp_server.par"), paths.agyLink);
+    symlinkSync(join(paths.agyRoot, legacyVersion, registryPlatform, "localharness_external"), paths.harnessLink);
     const externalBinary = join(fixture.root, "external-agy");
     writeFileSync(externalBinary, "independently managed executable");
     return { fixture, paths, officialLink, externalBinary, env: {
@@ -144,7 +145,7 @@ describe("provider binary retention after accepted rollout", () => {
   it("preserves the manifest if payload deletion fails, then finishes on the next accepted rollout", () => {
     const { fixture, paths, env } = officialFixture();
     const version = join(paths.agyRoot, "1.0.0");
-    const component = join(version, "linux-x86_64");
+    const component = join(version, registryPlatform);
     const manifest = join(component, "manifest.json");
     const protectedPayload = join(component, "protected-payload");
     mkdirSync(protectedPayload);
@@ -186,7 +187,7 @@ describe("provider binary retention after accepted rollout", () => {
 
   it("preserves obsolete components while a live process holds a retired payload", async () => {
     const { fixture, paths, env } = officialFixture();
-    const payload = join(paths.agyRoot, "1.0.0", "linux-x86_64", "agy_acp_server.par");
+    const payload = join(paths.agyRoot, "1.0.0", registryPlatform, "agy_acp_server.par");
     const child = spawn(process.execPath, ["-e",
       'const fs = require("node:fs"); fs.openSync(process.argv[1], "r"); console.log("ready"); setInterval(() => {}, 1000);',
       payload], { stdio: ["ignore", "pipe", "ignore"] });
@@ -210,12 +211,12 @@ describe("provider binary retention after accepted rollout", () => {
       const { fixture, paths, env } = officialFixture();
       if (ambiguous === "mixed targets") {
         rmSync(paths.harnessLink);
-        symlinkSync(join(paths.agyRoot, "2.0.0", "linux-x86_64", "localharness_external"), paths.harnessLink);
+        symlinkSync(join(paths.agyRoot, "2.0.0", registryPlatform, "localharness_external"), paths.harnessLink);
       } else if (ambiguous === "unmanaged link") {
         rmSync(paths.harnessLink);
         writeFileSync(paths.harnessLink, "unmanaged");
       } else if (ambiguous === "changed payload") {
-        writeFileSync(join(paths.agyRoot, "1.0.0", "linux-x86_64", "agy_acp_server.par"), "unexpected content");
+        writeFileSync(join(paths.agyRoot, "1.0.0", registryPlatform, "agy_acp_server.par"), "unexpected content");
       } else {
         const sharedEnv = join(fixture.envDir, "agent-bridge-shared");
         writeFileSync(sharedEnv, readFileSync(sharedEnv, "utf8") + `AGY_ACP_COMMAND=${join(paths.agyRoot, "1.0.0", "custom-command")}\n`);
@@ -317,6 +318,18 @@ describe("provider binary retention after accepted rollout", () => {
     expect(existsSync(join(paths.agyRoot, "1.0.0"))).toBe(true);
   }, 20_000);
 
+  it("does not mistake an official lock with a missing official executable for a legacy install", () => {
+    const { fixture, paths, officialLink, env } = officialFixture();
+    rmSync(officialLink);
+    rmSync(join(paths.agyRoot, "3.0.0", registryPlatform, "agy"));
+    const result = runRollout(fixture, undefined, undefined, env);
+    expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
+    expect(result.stdout).toContain("host component retention skipped provider=agy reason=link_not_managed");
+    expect(existsSync(paths.agyLink)).toBe(true);
+    expect(existsSync(paths.harnessLink)).toBe(true);
+    expect(existsSync(join(paths.agyRoot, "1.0.0"))).toBe(true);
+  }, 20_000);
+
   it("fails closed when the current pinned version is not installed", () => {
     const fixture = createFixture();
     prepareImmutableRelease(fixture, fixture.previousCommit);
@@ -353,8 +366,8 @@ describe("provider binary retention after accepted rollout", () => {
     pinRelease(fixture, fixture.expectedCommit, { agy: "3.0.0", cursor: "3.0.0" });
     pinRelease(fixture, fixture.previousCommit, { agy: "2.0.0", cursor: "2.0.0" });
     const paths = installVersions(fixture, ["1.0.0", "2.0.0", "3.0.0"]);
-    symlinkSync(join(paths.agyRoot, "3.0.0", "linux-x86_64", "agy_acp_server.par"), paths.agyLink);
-    symlinkSync(join(paths.agyRoot, "1.0.0", "linux-x86_64", "localharness_external"), paths.harnessLink);
+    symlinkSync(join(paths.agyRoot, "3.0.0", registryPlatform, "agy_acp_server.par"), paths.agyLink);
+    symlinkSync(join(paths.agyRoot, "1.0.0", registryPlatform, "localharness_external"), paths.harnessLink);
 
     const result = runRollout(fixture, undefined, undefined, paths.env);
     const output = `${result.stdout}\n${result.stderr}`;
@@ -429,8 +442,8 @@ describe("provider binary retention after accepted rollout", () => {
     mkdirSync(join(paths.agyRoot, "customer-data"));
     writeFileSync(join(paths.agyRoot, "customer-data", "notes.txt"), "keep");
     mkdirSync(join(paths.cursorRoot, "customer-data"));
-    mkdirSync(join(paths.agyRoot, "9.9.9", "linux-x86_64"), { recursive: true });
-    writeFileSync(join(paths.agyRoot, "9.9.9", "linux-x86_64", "manifest.json"), JSON.stringify({ schemaVersion: 2, version: "0.0.1" }));
+    mkdirSync(join(paths.agyRoot, "9.9.9", registryPlatform), { recursive: true });
+    writeFileSync(join(paths.agyRoot, "9.9.9", registryPlatform, "manifest.json"), JSON.stringify({ schemaVersion: 2, version: "0.0.1" }));
 
     const result = runRollout(fixture, undefined, undefined, paths.env);
 
@@ -448,7 +461,7 @@ describe("provider binary retention after accepted rollout", () => {
     pinRelease(fixture, fixture.expectedCommit, { agy: "3.0.0", cursor: "3.0.0" });
     pinRelease(fixture, fixture.previousCommit, { agy: "2.0.0", cursor: "2.0.0" });
     const paths = installVersions(fixture, ["1.0.0", "2.0.0", "3.0.0"]);
-    symlinkSync(join(paths.agyRoot, "3.0.0", "linux-x86_64", "agy_acp_server.par"), paths.agyLink);
+    symlinkSync(join(paths.agyRoot, "3.0.0", registryPlatform, "agy_acp_server.par"), paths.agyLink);
     writeFileSync(paths.harnessLink, "regular file, not a symlink");
 
     const result = runRollout(fixture, undefined, undefined, paths.env);
@@ -472,8 +485,8 @@ describe("provider binary retention after accepted rollout", () => {
     execFileSync("mv", [join(paths.agyRoot, ".."), overrideRoot]);
     mkdirSync(join(paths.agyRoot, "1.0.0"), { recursive: true });
     const overrideComponents = join(overrideRoot, "components");
-    symlinkSync(join(overrideComponents, "3.0.0", "linux-x86_64", "agy_acp_server.par"), paths.agyLink);
-    symlinkSync(join(overrideComponents, "3.0.0", "linux-x86_64", "localharness_external"), paths.harnessLink);
+    symlinkSync(join(overrideComponents, "3.0.0", registryPlatform, "agy_acp_server.par"), paths.agyLink);
+    symlinkSync(join(overrideComponents, "3.0.0", registryPlatform, "localharness_external"), paths.harnessLink);
     mkdirSync(join(paths.cursorHome, ".local", "bin"), { recursive: true });
     symlinkSync(join(paths.cursorRoot, "3.0.0", "dist-package", "cursor-agent"), join(paths.cursorHome, ".local", "bin", "cursor-agent"));
 
@@ -493,7 +506,7 @@ describe("provider binary retention after accepted rollout", () => {
     pinRelease(fixture, fixture.previousCommit, { agy: "2.0.0", cursor: "2.0.0" });
     const paths = installVersions(fixture, ["1.0.0", "2.0.0", "3.0.0"]);
     linkCurrent(paths, "3.0.0");
-    rmSync(join(paths.agyRoot, "3.0.0", "linux-x86_64", "agy_acp_server.par"));
+    rmSync(join(paths.agyRoot, "3.0.0", registryPlatform, "agy_acp_server.par"));
 
     const result = runRollout(fixture, undefined, undefined, paths.env);
     const output = `${result.stdout}\n${result.stderr}`;
