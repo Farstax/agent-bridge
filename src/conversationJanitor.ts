@@ -202,8 +202,9 @@ function proveIntegration(source: string, checkout: string, releaseCommit: strin
   const branch = repo.default_branch;
   if (typeof repo.full_name !== "string" || repo.full_name.toLowerCase() !== slug
     || typeof branch !== "string" || !branch || branch.length > 255) return undefined;
-  const base = record(record(get("/branches/" + encodeURIComponent(branch))).commit).sha;
-  if (typeof base !== "string" || !fullSha.test(base)) return undefined;
+  const observedBase = record(record(get("/branches/" + encodeURIComponent(branch))).commit).sha;
+  if (typeof observedBase !== "string" || !fullSha.test(observedBase)) return undefined;
+  const base: string = observedBase;
   function integrated(sha: string): boolean {
     if (sha === base || gitRead(checkout, ["merge-base", "--is-ancestor", sha, base]) !== undefined) return true;
     const comparison = record(get("/compare/" + sha + "..." + base));
