@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { openDb } from "../src/db.js";
 import { OutwardAcpSessionRepository } from "../src/repositories/outwardAcpSessionRepository.js";
-import { claimDueRunContinuation, listRunContinuations, linkCapacityContinuationRun, linkRunContinuationRun, requestRunContinuation, settleRunContinuation } from "../src/runContinuation.js";
+import { claimDueRunContinuation, listRunContinuations, linkCapacityContinuationRun, linkRunContinuationRun, requestRunContinuation, scanRunContinuations, settleRunContinuation } from "../src/runContinuation.js";
 import { lookupProviderSession, persistProviderSession } from "../src/providers/sessionRuntime.js";
 import { attachProviderFailureEvidence } from "../src/providers/failureEvidence.js";
 import { recordRunOutcome } from "../src/runOutcome.js";
@@ -68,6 +68,93 @@ describe("outward ACP durable capacity worker (#1114)", () => {
   });
 
 
+
+  for (const staleWorker of [true, false]) {
+    it(`unchanged Antigravity selection with restarted worker (stale=${staleWorker})`, async () => {
+      const root = mkdtempSync(join(tmpdir(), "bridge-ordinary-agy-"));
+      roots.push(root);
+      const path = join(root, "state.sqlite");
+      const first = openDb(path, { databaseRole: "interactive" });
+      const identity = { surfaceIdentity: OUTWARD_ACP_SURFACE, chatKey: "acp:unchanged-agy" };
+      const session = new OutwardAcpSessionRepository(first.raw).create({
+        sessionId: "agy-workstream", conversationId: identity.chatKey, cwd: root,
+      });
+      const desk = new BridgeOutwardAcpPromptExecutor({
+        db: first, providerChain: ["codex", "claude", "grok", "antigravity"],
+        createEngine: () => { throw new Error("selection must not invoke a provider"); },
+        lookupSession: (id) => new OutwardAcpSessionRepository(first.raw).get(id),
+      });
+      const now = Date.now();
+      let wakeId: string;
+      try {
+        expect(desk.selectProvider(session, "antigravity").selectedProvider).toBe("antigravity");
+        first.addConvTurn(identity.chatKey, "user", "Verify the outstanding build", "antigravity",
+          { surfaceIdentity: OUTWARD_ACP_SURFACE });
+        first.insertRun("agy-previous", identity, "antigravity");
+        persistProviderSession(first, identity, "antigravity", "agy-native-session", "agy-previous");
+        expect(first.updateRunCompleted("agy-previous", "previous result", "agy-native-session")).toBe(true);
+        first.insertRun("agy-origin", identity, "antigravity");
+        persistProviderSession(first, identity, "antigravity", "agy-native-session", "agy-origin");
+        wakeId = requestRunContinuation(first, {
+          originRunId: "agy-origin", ...identity, provider: "antigravity",
+          afterSeconds: 5, reason: "Verify the outstanding build", outwardSessionId: session.sessionId,
+        }, now).id;
+        expect(first.updateRunCompleted("agy-origin", "partial", "agy-native-session")).toBe(true);
+      } finally { await desk.shutdown(); first.close(); }
+
+      // Independent fresh wakes: never resurrect a terminal failed incident.
+      const db = openDb(path, { databaseRole: "interactive" });
+      const lookup = (id: string) => new OutwardAcpSessionRepository(db.raw).get(id);
+      const calls: Array<{ provider: string; nativeSession: string | null }> = [];
+      const worker = new BridgeOutwardAcpPromptExecutor({
+        db, providerChain: staleWorker ? ["codex", "claude", "grok"] : ["codex", "claude", "grok", "antigravity"],
+        isProviderAvailable: () => true, enableDeferredCapacity: true, lookupSession: lookup,
+        runId: () => "agy-successor",
+        createEngine: (_session, provider) => ({
+          executeSurfaceNeutralTurn: async (turn) => {
+            const nativeSession = turn.freshProviderSession ? null : lookupProviderSession(db, identity, provider);
+            calls.push({ provider, nativeSession });
+            expect(turn.requireBoundProviderSession).toBe(true);
+            turn.collect(eventType.runStarted({
+              runId: turn.runId, bot: provider, chatId: String(turn.chatId),
+              chatKey: turn.chatKey, command: "fake", cwd: root, model: null,
+            }));
+            recordRunOutcome(db, {
+              runId: turn.runId, ...identity, provider, status: "complete", detail: "verified",
+              lock: { serviceId: turn.laneHandle.serviceId, runId: turn.laneHandle.runId,
+                acquisitionId: turn.laneHandle.acquisitionId },
+            });
+            return { text: "Verified result.", sessionId: "agy-native-session", stopReason: "end_turn" as const };
+          },
+        }),
+      });
+      try {
+        await scanRunContinuations(db, OUTWARD_ACP_SURFACE,
+          (claimed) => resumeOutwardOrdinaryContinuation(db, lookup, worker, claimed), now + 5_001,
+          { runId: "agy-worker", claimToken: "agy-exact-claim" });
+        const wake = listRunContinuations(db, OUTWARD_ACP_SURFACE).find((item) => item.id === wakeId)!;
+        expect(wake.provider).toBe("antigravity");
+        expect(lookupProviderSession(db, identity, "antigravity")).toBe("agy-native-session");
+        expect(db.getConvHistoryPage(identity.chatKey, 10, undefined, OUTWARD_ACP_SURFACE).turnCount).toBe(1);
+        if (staleWorker) {
+          expect(calls).toEqual([]);
+          expect(wake.state).toBe("failed");
+          expect(wake.successorRunId).toBeUndefined();
+          expect(wake.error).toMatch(/configur/i);
+          expect(wake.error).not.toContain("authority changed");
+        } else {
+          expect(calls).toEqual([{ provider: "antigravity", nativeSession: "agy-native-session" }]);
+          expect(wake).toMatchObject({ state: "completed", successorRunId: "agy-successor" });
+          expect(db.getRun("agy-successor")).toMatchObject({
+            status: "done", bot: "antigravity", session_id: "agy-native-session", outcome_status: "complete",
+          });
+          expect(worker.status(session).selectedProvider).toBe("antigravity");
+        }
+        expect((db.raw.prepare("SELECT count(*) AS n FROM bridge_runs WHERE chat_id = ?")
+          .get(identity.chatKey) as { n: number }).n).toBe(staleWorker ? 2 : 3);
+      } finally { await worker.shutdown(); db.close(); }
+    });
+  }
 
   for (const failureMode of ["systemError", "quota"] as const) {
   it(`a claimed Codex continuation reaches Claude in its original fenced successor Run (${failureMode})`, async () => {
