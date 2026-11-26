@@ -286,6 +286,32 @@ describe("provider binary retention after accepted rollout", () => {
     }, 20_000);
   }
 
+  it("preserves an obsolete legacy payload held by a live consumer with a legacy current pin", async () => {
+    const fixture = createFixture();
+    prepareImmutableRelease(fixture, fixture.previousCommit);
+    pinRelease(fixture, fixture.expectedCommit, { agy: "3.0.0", cursor: "3.0.0" });
+    pinRelease(fixture, fixture.previousCommit, { agy: "2.0.0", cursor: "2.0.0" });
+    const paths = installVersions(fixture, ["1.0.0", "2.0.0", "3.0.0"]);
+    linkCurrent(paths, "3.0.0");
+    const retired = join(paths.agyRoot, "1.0.0", registryPlatform, "agy_acp_server.par");
+    const child = spawn(process.execPath, ["-e",
+      'const fs = require("node:fs"); fs.openSync(process.argv[1], "r"); console.log("ready"); setInterval(() => {}, 1000);',
+      retired], { stdio: ["ignore", "pipe", "ignore"] });
+    const exited = once(child, "exit");
+    try {
+      await once(child.stdout!, "data");
+      const result = runRollout(fixture, undefined, undefined, paths.env);
+      expect(result.status, result.stderr).toBe(0);
+      expect(result.stdout).toContain("legacy_link_ownership_or_consumer_ambiguous");
+      expect(existsSync(retired)).toBe(true);
+      expect(existsSync(paths.agyLink)).toBe(true);
+      expect(existsSync(paths.harnessLink)).toBe(true);
+    } finally {
+      child.kill();
+      await exited;
+    }
+  }, 25_000);
+
   it("keeps only the current and rollback pinned versions", () => {
     const fixture = createFixture();
     prepareImmutableRelease(fixture, fixture.previousCommit);

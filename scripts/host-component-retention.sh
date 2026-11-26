@@ -103,13 +103,20 @@ cursor_version_dir_is_managed() {
 # commands, all present links and the accepted service configuration must
 # agree before either legacy link is changed.
 agy_legacy_links_allow_pruning() {
-  local versions_dir="$1" current_version="$2" previous_version="$3" official_link="$4" platform="$5" rollback_command="$6"
+  local versions_dir="$1" current_version="$2" previous_version="$3" official_link="$4" platform="$5" rollback_command="$6" current_command="$7"
   local legacy_binary_link="${AGENT_BRIDGE_AGY_LEGACY_LINK:-/usr/local/bin/agy_acp_server.par}"
   local legacy_harness_link="${AGENT_BRIDGE_AGY_HARNESS_LINK:-/usr/local/bin/agy_localharness_external}"
   local module release unit unit_config unit_env
   local -a env_files=("${retention_env_files[@]}")
-  [[ "$(/usr/bin/readlink -f -- "$official_link")" == "$versions_dir/$current_version/$platform/agy" ]] || return 1
-  if [[ "$rollback_command" == "./agy" ]]; then
+  if [[ "$current_command" == "./agy" ]]; then
+    [[ "$(/usr/bin/readlink -f -- "$official_link")" == "$versions_dir/$current_version/$platform/agy" ]] || return 1
+  else
+    # With a legacy current pin, the selected link is the legacy executable.
+    # A separate official link may still be present, but must not be retired.
+    legacy_binary_link="$official_link"
+    official_link=/usr/local/bin/agy
+  fi
+  if [[ "$current_command" == "./agy" && "$rollback_command" == "./agy" ]]; then
     [[ -f "$versions_dir/$previous_version/$platform/agy" && ! -L "$versions_dir/$previous_version/$platform/agy" ]] || return 1
     agy_version_dir_is_managed "$versions_dir/$previous_version" "$previous_version" || return 1
     # An official-version pin alone does not prove an older release knows how
@@ -126,22 +133,23 @@ for (const command of [undefined, "agy", legacy]) {
 }
 NODE
     done
-    for unit in "${units[@]}"; do
-      unit_config="$("$systemctl_cmd" cat "$unit")" || return 1
-      unit_env="$("$systemctl_cmd" show "$unit" --property=Environment --value)" || return 1
-      # Direct service commands and inline overrides have no guaranteed
-      # normalization contract. Inspect the already validated env files below.
-      for unit_config in "$unit_config" "$unit_env"; do
-        [[ "$unit_config" != *"$legacy_binary_link"* && "$unit_config" != *"$legacy_harness_link"* \
-          && "$unit_config" != *"$versions_dir/"* && "$unit_config" != *AGY_ACP_COMMAND* \
-          && "$unit_config" != *AGENT_BRIDGE_AGY_ACP_LINK* ]] || return 1
-      done
-    done
   fi
+  for unit in "${units[@]}"; do
+    unit_config="$("$systemctl_cmd" cat "$unit")" || return 1
+    unit_env="$("$systemctl_cmd" show "$unit" --property=Environment --value)" || return 1
+    # An explicit version or inline override can select a retired payload.
+    for unit_config in "$unit_config" "$unit_env"; do
+      [[ "$unit_config" != *"$versions_dir/"* && "$unit_config" != *AGY_ACP_COMMAND* \
+        && "$unit_config" != *AGENT_BRIDGE_AGY_ACP_LINK* ]] || return 1
+      if [[ "$current_command" == "./agy" && "$rollback_command" == "./agy" ]]; then
+        [[ "$unit_config" != *"$legacy_binary_link"* && "$unit_config" != *"$legacy_harness_link"* ]] || return 1
+      fi
+    done
+  done
 
-  /usr/bin/python3 - "$versions_dir" "$current_version" "$previous_version" "$official_link" "$legacy_binary_link" "$legacy_harness_link" "$rollback_command" "$secure_owner_uid" "$platform" "${env_files[@]}" <<'PY'
+  /usr/bin/python3 - "$versions_dir" "$current_version" "$previous_version" "$official_link" "$legacy_binary_link" "$legacy_harness_link" "$rollback_command" "$current_command" "$secure_owner_uid" "$platform" "${env_files[@]}" <<'PY'
 import hashlib, json, os, pathlib, re, stat, sys
-root, current, rollback, official, binary_link, harness_link, rollback_command, uid, platform, *env_files = sys.argv[1:]
+root, current, rollback, official, binary_link, harness_link, rollback_command, current_command, uid, platform, *env_files = sys.argv[1:]
 uid = int(uid)
 links = {binary_link: "agy_acp_server.par", harness_link: "localharness_external"}
 
@@ -199,9 +207,10 @@ try:
                     digest.update(chunk)
             require(digest.hexdigest() == manifest.get(key))
 
-    retire_legacy = rollback_command == "./agy"
+    retire_legacy = current_command == "./agy" and rollback_command == "./agy"
     if not retire_legacy:
-        require(len(present) == 2 and version == rollback)
+        legacy_pin = current if current_command == "./agy_acp_server.par" else rollback
+        require(len(present) == 2 and version == legacy_pin)
     else:
         require(version not in (current, rollback))
     # Check actual path references, not arbitrary substrings in process text.
@@ -213,6 +222,9 @@ try:
     def retired_path(path):
         path = path.removesuffix(" (deleted)")
         return (retire_legacy and path in links) or any(path == old or path.startswith(old + "/") for old in old_paths)
+
+    if os.path.lexists(official):
+        require(not retired_path(os.path.realpath(official)))
 
     for filename in env_files:
         if not os.path.lexists(filename):
@@ -311,8 +323,8 @@ prune_host_component_versions() {
     [[ "$linked" == "$versions_dir/$current_version/"* ]] \
       || { echo "host component retention skipped provider=$provider reason=link_not_current"; return 0; }
   done
-  if [[ "$provider" == agy && "$agy_command" == "./agy" ]]; then
-    if ! agy_legacy_links_allow_pruning "$versions_dir" "$current_version" "$previous_version" "$1" "$platform" "$rollback_command"; then
+  if [[ "$provider" == agy ]]; then
+    if ! agy_legacy_links_allow_pruning "$versions_dir" "$current_version" "$previous_version" "$1" "$platform" "$rollback_command" "$agy_command"; then
       echo "host component retention skipped provider=agy reason=legacy_link_ownership_or_consumer_ambiguous"
       return 0
     fi
