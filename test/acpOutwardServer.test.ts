@@ -568,6 +568,10 @@ describe("outward ACP stdio boundary", { timeout: 30_000 }, () => {
       const created = await newSession(first, 2, root);
       const outwardSessionId = created.result?.sessionId;
       expect(outwardSessionId).toEqual(expect.any(String));
+      const namingDb = openDb(dbPath, { databaseRole: "interactive" });
+      try {
+        new OutwardAcpSessionRepository(namingDb.raw).update(outwardSessionId!, { title: "Customer Portal" });
+      } finally { namingDb.close(); }
 
       const firstTurn = await promptSession(first, 3, outwardSessionId!, "PHASED first wire prompt CTX_FACT_V1=ORCHID47");
       expect(firstTurn.response).toMatchObject({
@@ -588,6 +592,10 @@ describe("outward ACP stdio boundary", { timeout: 30_000 }, () => {
         content: { type: "text", text: expect.stringContaining("PHASED first wire prompt") },
       });
 
+      expect(JSON.stringify(firstAnswers)).toContain(join(root, ".agent-bridge/context/workstreams", outwardSessionId!));
+      expect(JSON.stringify(firstAnswers)).toContain("Customer Portal");
+      expect(existsSync(join(root, ".agent-bridge/context"))).toBe(false);
+
       await stopProcess(first);
       first = null;
 
@@ -595,6 +603,7 @@ describe("outward ACP stdio boundary", { timeout: 30_000 }, () => {
       const afterFirst = openDb(dbPath, { databaseRole: "interactive" });
       const firstProviderSessionId = afterFirst.getAcpSessionBinding( { surfaceIdentity: OUTWARD_ACP_SURFACE, chatKey: conversationId }, "codex")?.acpSessionId;
       expect(firstProviderSessionId).toEqual(expect.any(String));
+      new OutwardAcpSessionRepository(afterFirst.raw).update(outwardSessionId!, { title: "Customer Self-Service" });
       afterFirst.close();
 
       second = startOutwardAcpProcess(dbPath, env);
@@ -630,6 +639,9 @@ describe("outward ACP stdio boundary", { timeout: 30_000 }, () => {
       // Only native provider-session resume can supply the earlier-turn fact:
       // no second prompt or outward replay contains ORCHID47.
       expect(JSON.stringify(secondAnswers[0]?.params?.update)).toContain("recalled:ORCHID47");
+      expect(JSON.stringify(secondAnswers)).toContain(join(root, ".agent-bridge/context/workstreams", outwardSessionId!));
+      expect(JSON.stringify(secondAnswers)).toContain("Customer Self-Service");
+      expect(JSON.stringify(secondAnswers)).not.toContain("Customer Portal");
 
       await stopProcess(second);
       second = null;
@@ -638,6 +650,9 @@ describe("outward ACP stdio boundary", { timeout: 30_000 }, () => {
       const finalProviderSessionId = persisted.getAcpSessionBinding( { surfaceIdentity: OUTWARD_ACP_SURFACE, chatKey: conversationId }, "codex")?.acpSessionId;
       expect(finalProviderSessionId).toBe(firstProviderSessionId);
       expect(finalProviderSessionId).not.toBe(outwardSessionId);
+      expect(persisted.getRecentConvTurns(conversationId, 20, undefined, OUTWARD_ACP_SURFACE)
+        .filter((turn) => turn.role === "user").map((turn) => turn.text))
+        .toEqual(["PHASED first wire prompt CTX_FACT_V1=ORCHID47", "PHASED second wire prompt CTX_RECALL_V1"]);
       expect(persisted.raw.prepare(`
         SELECT COUNT(*) AS count
         FROM bridge_runs

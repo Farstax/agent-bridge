@@ -241,6 +241,18 @@ describe("interrupted-rollout sentinel (Phase 4C.4, issue #135)", { timeout: 30_
   });
 
   describe("rollout-sentinel-clear.sh", () => {
+    async function waitForLockReady(child: ChildProcess): Promise<void> {
+      let output = "";
+      child.stdout!.on("data", (chunk: Buffer) => { output += chunk.toString(); });
+      const deadline = Date.now() + 10_000;
+      while (!output.includes("TEST_LOCK_ACQUIRED\n")) {
+        if (child.exitCode !== null || child.signalCode !== null || Date.now() >= deadline) {
+          throw new Error("lock holder did not acknowledge acquisition: " + output);
+        }
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+    }
+
     it("is executable", () => {
       execFileSync("test", ["-x", sentinelClearPath]);
     });
@@ -302,44 +314,31 @@ describe("interrupted-rollout sentinel (Phase 4C.4, issue #135)", { timeout: 30_
     });
 
     it("refuses a second, genuinely concurrent clear attempt while another clear attempt holds the same lock (Phase 4C.5, issue #135)", async () => {
-      // Distinct from the "while a rollout is actively running" test below:
-      // this proves clear-vs-clear contention specifically, not just
-      // clear-vs-generic-lock-holder. AGENT_BRIDGE_ROLLOUT_TEST_HOLD_LOCK_MS
-      // makes the race deterministic — real, unmocked flock, two real
-      // rollout-sentinel-clear.sh processes, one genuinely blocking the other.
+      // Two actual clear processes, using the real kernel lock. The winner
+      // acknowledges acquisition and waits for EOF instead of racing a probe.
       const fixture = useMinimalInventory(createFixture());
       const failed = runRollout(fixture, "backup");
       expect(failed.status).not.toBe(0);
       const sentinelContent = readFileSync(sentinelPath(fixture), "utf8");
       const recordedArtifactDir = /^artifact_dir=(.*)$/m.exec(sentinelContent)?.[1]!;
 
-      const first: ChildProcess = spawn("bash", [sentinelClearPath, "--expected-commit", fixture.expectedCommit, "--artifact-dir", recordedArtifactDir], {
-        env: { ...process.env, AGENT_BRIDGE_ROLLOUT_TEST_ROOT: fixture.root, AGENT_BRIDGE_ROLLOUT_TEST_HOLD_LOCK_MS: "1000" },
-        stdio: "ignore",
+      const first = spawn("bash", [sentinelClearPath, "--expected-commit", fixture.expectedCommit, "--artifact-dir", recordedArtifactDir], {
+        env: { ...process.env, AGENT_BRIDGE_ROLLOUT_TEST_ROOT: fixture.root, AGENT_BRIDGE_ROLLOUT_TEST_HOLD_LOCK: "1" },
+        stdio: ["pipe", "pipe", "ignore"],
       });
+      const closed = new Promise<number | null>((resolve) => first.once("close", resolve));
       try {
-        const deadline = Date.now() + 2_000;
-        let locked = false;
-        while (Date.now() < deadline) {
-          const probe = spawnSync("bash", ["-c", `exec 9>"${fixture.lockFile}"; flock --exclusive --nonblock 9 && flock --unlock 9`]);
-          if (probe.status !== 0) { locked = true; break; }
-          await new Promise((resolve) => setTimeout(resolve, 10));
-        }
-        expect(locked, "first clear attempt never acquired the lock").toBe(true);
-
+        await waitForLockReady(first);
         const second = runSentinelClear(fixture, fixture.expectedCommit, recordedArtifactDir);
         expect(second.status).not.toBe(0);
         expect(second.stderr).toMatch(/a rollout is currently active/i);
+        expect(readFileSync(sentinelPath(fixture), "utf8")).toBe(sentinelContent);
       } finally {
-        // spawnSync for the contending process may outlast the first clear:
-        // if close already fired, registering a new listener hangs forever.
-        await new Promise<void>((resolve) => {
-          if (first.exitCode !== null || first.signalCode !== null) { resolve(); return; }
-          first.once("close", () => resolve());
-        });
+        first.stdin.end();
+        await closed;
       }
 
-      // The winner (first) must have actually cleared it.
+      expect(await closed).toBe(0);
       expect(existsSync(sentinelPath(fixture))).toBe(false);
     }, 30_000);
 
@@ -349,29 +348,18 @@ describe("interrupted-rollout sentinel (Phase 4C.4, issue #135)", { timeout: 30_
       expect(failed.status).not.toBe(0);
       const before = readFileSync(sentinelPath(fixture), "utf8");
 
-      // Restore the active-unit baseline so a second rollout can pass its
-      // own preconditions far enough to hold the lock for a while — but it
-      // will immediately hit the pre-existing sentinel and hang there only
-      // as long as it takes to fail; to hold the lock deliberately, acquire
-      // it directly instead of racing a real rollout invocation.
-      const holder: ChildProcess = spawn("bash", ["-c", `exec 9>"${fixture.lockFile}"; flock --exclusive 9; sleep 5`]);
+      const holder = spawn("bash", ["-c", 'exec 9>"$1"; flock --exclusive 9 || exit; echo TEST_LOCK_ACQUIRED; read -r || :', "--", fixture.lockFile],
+        { stdio: ["pipe", "pipe", "ignore"] });
+      const closed = new Promise<number | null>((resolve) => holder.once("close", resolve));
       try {
-        const deadline = Date.now() + 2_000;
-        let locked = false;
-        while (Date.now() < deadline) {
-          const probe = spawnSync("bash", ["-c", `exec 9>"${fixture.lockFile}"; flock --exclusive --nonblock 9 && flock --unlock 9`]);
-          if (probe.status !== 0) { locked = true; break; }
-          await new Promise((resolve) => setTimeout(resolve, 25));
-        }
-        expect(locked, "lock holder never acquired the lock").toBe(true);
-
-        const sentinelContent = readFileSync(sentinelPath(fixture), "utf8");
-        const recordedArtifactDir = /^artifact_dir=(.*)$/m.exec(sentinelContent)?.[1]!;
+        await waitForLockReady(holder);
+        const recordedArtifactDir = /^artifact_dir=(.*)$/m.exec(before)?.[1]!;
         const clear = runSentinelClear(fixture, fixture.expectedCommit, recordedArtifactDir);
         expect(clear.status).not.toBe(0);
         expect(clear.stderr).toMatch(/a rollout is currently active/i);
       } finally {
-        holder.kill();
+        holder.stdin.end();
+        await closed;
       }
       expect(readFileSync(sentinelPath(fixture), "utf8")).toBe(before);
     });
