@@ -28,7 +28,7 @@ describe("outward ACP worker host component (#1181)", () => {
     expect(source.match(/printf 'host_component_health=healthy/g)).toHaveLength(1);
   });
 
-  it("copies Desk execution modes with correct host precedence and no secrets (#1212)", () => {
+  it("copies Desk provider lock and execution modes with correct host precedence and no secrets", () => {
     const source = readFileSync(installer, "utf8");
     expect(source).toContain('if [[ -e "$interactive_env" || -L "$interactive_env" ]]; then secure_file "$interactive_env"; fi');
     const start = source.indexOf("\nallowed=(\n");
@@ -65,9 +65,20 @@ describe("outward ACP worker host component (#1181)", () => {
       expect(result).not.toContain("TELEGRAM_BOT_TOKEN");
       expect(result).not.toContain("PROVIDER_API_KEY");
       expect(result).not.toContain("INTERACTIVE_DEFAULT_CLI=claude");
-      writeFileSync(shared, "");
-      writeFileSync(interactive, "");
+      // A worker must not lose the explicit provider restriction when it
+      // projects the same trusted sources used by Desk.
+      writeFileSync(shared, "BRIDGE_PROVIDER_LOCK=codex\nTELEGRAM_BOT_TOKEN=do-not-copy\n");
+      writeFileSync(interactive, "BRIDGE_PROVIDER_LOCK=claude\n");
+      writeFileSync(bot, "BRIDGE_PROVIDER_LOCK=antigravity\nPROVIDER_API_KEY=do-not-copy\n");
+      const locks = () => render().split("\n").filter((line) => line.startsWith("BRIDGE_PROVIDER_LOCK="));
+      expect(locks()).toEqual(["BRIDGE_PROVIDER_LOCK=antigravity"]);
+      expect(render()).not.toContain("do-not-copy");
       writeFileSync(bot, "");
+      expect(locks()).toEqual(["BRIDGE_PROVIDER_LOCK=claude"]);
+      writeFileSync(interactive, "");
+      expect(locks()).toEqual(["BRIDGE_PROVIDER_LOCK=codex"]);
+      writeFileSync(shared, "");
+      expect(locks()).toEqual([]);
       expect(render()).not.toContain("EXECUTION_MODE");
     } finally {
       rmSync(root, { recursive: true, force: true });
