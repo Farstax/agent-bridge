@@ -10,7 +10,7 @@ Use isolated worktrees for substantial changes when useful. Keep the primary che
 ## Workflow
 
 1. Record the owning task, primary checkout, feature branch and worktree path. Create an isolated feature branch (for example, `git worktree add ../worktree-name -b feature/name`). Prefer a local dependency installation when versions differ. If sharing dependencies, link directly to a stable primary checkout only when manifests, lockfiles and runtime are compatible and the work will not mutate that installation or compromise qualification. Do not link temporary worktrees to each other or install through a shared link.
-2. Follow the existing TDD and delivery Skills. Push the feature branch and open a draft PR using the available authorized repository integration (CLI, MCP or API). Do not require `gh`, another login or a new credential.
+2. Follow the existing TDD and delivery Skills. Push the feature branch and open a draft PR using the authorized repository integration. For ordinary repository operations, prefer native `git` and the official GitHub CLI (`gh`) when available and authenticated for the intended target. Otherwise use the existing authorized integration (including MCP or API). Do not require `gh`, another login or a new credential.
 3. Complete the agreed review and exact-head checks, then merge through the same authorized integration (squash preferred). Verify the actual merge before cleanup. The merging agent owns cleanup; do not report delivery complete merely because the PR merged.
 
 ## Cleanup
