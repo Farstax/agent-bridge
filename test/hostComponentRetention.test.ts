@@ -1,6 +1,6 @@
 import { execFileSync, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { once } from "node:events";
 import { afterEach, describe, expect, it } from "vitest";
@@ -21,6 +21,12 @@ function pinRelease(fixture: Fixture, commit: string, pins: Pins | null, agyComm
     writeFileSync(join(directory, "dist", "providers", "agyAcpConfig.js"),
       `export function resolveAgyAcpCommand(env) { const cmd = env.AGY_ACP_COMMAND; return !cmd || cmd === "agy" || cmd.endsWith("/agy_acp_server.par") ? env.AGENT_BRIDGE_AGY_ACP_LINK : cmd; }\n`);
   }
+  const helper = "scripts/host-component-retention.sh";
+  copyFileSync(new URL("../" + helper, import.meta.url), join(directory, helper));
+  const manifestPath = join(directory, "manifest.json");
+  const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+  manifest.files.push({ path: helper, sha256: createHash("sha256").update(readFileSync(join(directory, helper))).digest("hex") });
+  writeFileSync(manifestPath, JSON.stringify(manifest));
   execFileSync("chmod", ["-R", "a-w", directory]);
 }
 
