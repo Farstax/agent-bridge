@@ -565,6 +565,15 @@ describe("provider binary retention after accepted rollout", () => {
     execFileSync("mv", [join(paths.agyRoot, ".."), overrideRoot]);
     mkdirSync(join(paths.agyRoot, "1.0.0"), { recursive: true });
     const overrideComponents = join(overrideRoot, "components");
+    // Model installation at the override path: its manifest records the real
+    // harness path, not a stale path left by moving an existing installation.
+    for (const version of ["1.0.0", "2.0.0", "3.0.0"]) {
+      const directory = join(overrideComponents, version, registryPlatform);
+      const manifestPath = join(directory, "manifest.json");
+      const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+      manifest.harnessPath = join(directory, "localharness_external");
+      writeFileSync(manifestPath, JSON.stringify(manifest));
+    }
     symlinkSync(join(overrideComponents, "3.0.0", registryPlatform, "agy_acp_server.par"), paths.agyLink);
     symlinkSync(join(overrideComponents, "3.0.0", registryPlatform, "localharness_external"), paths.harnessLink);
     mkdirSync(join(paths.cursorHome, ".local", "bin"), { recursive: true });

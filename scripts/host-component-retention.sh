@@ -237,6 +237,8 @@ try:
                 if line in ("AGY_ACP_COMMAND=" + binary_link, "AGY_ACP_COMMAND=agy",
                             "AGY_ACP_COMMAND=" + official, "AGENT_BRIDGE_AGY_ACP_LINK=" + official):
                     continue
+                if current_command == "./agy_acp_server.par" and line == "AGENT_BRIDGE_AGY_ACP_LINK=" + binary_link:
+                    continue
                 require("AGY_ACP_COMMAND" not in line and "AGENT_BRIDGE_AGY_ACP_LINK" not in line
                         and not any(path in line for path in (binary_link, harness_link, *old_paths)))
     for pid in os.listdir("/proc"):
