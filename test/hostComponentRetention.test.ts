@@ -103,6 +103,47 @@ describe("provider binary retention after accepted rollout", () => {
     } };
   }
 
+  it("reclaims only unretained managed components after acceptance without a rollback release", async () => {
+    const { fixture, paths, officialLink, externalBinary, env } = officialFixture();
+    const unknown = join(paths.agyRoot, "9.9.9");
+    mkdirSync(unknown);
+    writeFileSync(join(unknown, "notes"), "user data");
+    const release = join(fixture.root, "releases", fixture.expectedCommit);
+    const run = () => execFileSync("bash", ["-c", [
+      'set -Eeuo pipefail',
+      'source "$1"',
+      'node_bin="$2"; secure_owner_uid="$EUID"; systemctl_cmd="$3"',
+      'units=(agent-bridge-bot.service); retention_env_files=("$4")',
+      'prune_host_component_versions agy "$5" remove_agy_version_directory agy_version_dir_is_managed "$6" ""',
+    ].join("\n"), "retention", join(release, "scripts/host-component-retention.sh"), process.execPath,
+      join(fixture.root, "bin/systemctl"), join(fixture.envDir, "agent-bridge-shared"), paths.agyRoot, release],
+      { encoding: "utf8", env: { ...process.env, ...env } });
+    const retired = join(paths.agyRoot, "1.0.0", registryPlatform, "agy_acp_server.par");
+    const child = spawn(process.execPath, ["-e",
+      'const fs = require("node:fs"); fs.openSync(process.argv[1], "r"); console.log("ready"); setInterval(() => {}, 1000);',
+      retired], { stdio: ["ignore", "pipe", "ignore"] });
+    const exited = once(child, "exit");
+    try {
+      await once(child.stdout!, "data");
+      expect(run()).toContain("legacy_link_ownership_or_consumer_ambiguous");
+      expect(existsSync(retired)).toBe(true);
+      expect(existsSync(paths.agyLink)).toBe(true);
+    } finally {
+      child.kill();
+      await exited;
+    }
+    // Interrupted link retirement must be retryable.
+    rmSync(paths.harnessLink);
+    expect(run()).toContain("pruned=2 retained_current=3.0.0 retained_rollback=none");
+    expect(existsSync(paths.agyLink)).toBe(false);
+    expect(existsSync(join(paths.agyRoot, "1.0.0"))).toBe(false);
+    expect(existsSync(join(paths.agyRoot, "2.0.0"))).toBe(false);
+    expect(existsSync(officialLink)).toBe(true);
+    expect(readFileSync(join(unknown, "notes"), "utf8")).toBe("user data");
+    expect(readFileSync(externalBinary, "utf8")).toBe("independently managed executable");
+    expect(run()).toContain("pruned=0 retained_current=3.0.0 retained_rollback=none");
+  }, 20_000);
+
   it("preserves the managed legacy pair when rollback still requires it", () => {
     const { fixture, paths, officialLink, env } = officialFixture("2.0.0", true);
     const result = runRollout(fixture, undefined, undefined, env);
