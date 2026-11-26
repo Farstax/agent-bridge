@@ -71,6 +71,43 @@ def fail(message: str) -> None:
     raise RuntimeError(message)
 
 
+class DeploymentDeferred(RuntimeError):
+    """A proven pre-effect refusal, safe to retry with the same authority."""
+
+    def __init__(self, reason: str, detail: str = ""):
+        self.reason = reason
+        super().__init__(f"{reason}: {detail}" if detail else reason)
+
+
+def raise_rollout_failure(return_code: int, diagnostics) -> None:
+    # New helpers emit a final reason only after successful pre-stop cleanup.
+    # For old helpers accept only the known terminal precondition sequence;
+    # incidental mentions of a resource or a failure after stop are not proof.
+    lines = [line.rstrip("\r\n") for line in diagnostics]
+    signal = ""
+    if return_code == 75 and lines:
+        signal = lines[-1]
+    elif (return_code == 1 and len(lines) >= 3
+          and lines[-1].startswith("rollout sentinel removed: ")
+          and lines[-2] == "rollout failed status=1 start_attempted=0 services_started=0; containing services"):
+        signal = lines[-3]
+    match = re.fullmatch(
+        r"rollout-agent-bridge: (rollout_admission_deferred_(?:capacity_claim|outward_reservation|event_dispatch|existing_fence|claimed_continuation|unknown)) (?:legacy_retryable_)?provider_sessions_active",
+        signal,
+    )
+    if match:
+        raise DeploymentDeferred(match.group(1))
+    match = re.fullmatch(
+        r"rollout-agent-bridge: (release_disk_space_insufficient|disk_headroom_insufficient|memory_pressure_high|provider_sessions_active)",
+        signal,
+    )
+    if match:
+        raise DeploymentDeferred(match.group(1))
+    if signal == "rollout-agent-bridge: insufficient disk for rollout and rollback; no safe, useful offline compaction available":
+        raise DeploymentDeferred("disk_headroom_insufficient")
+    fail("rollout_hard_or_ambiguous_failure")
+
+
 def parse_utc_timestamp(value: object, field: str) -> datetime:
     if not isinstance(value, str) or not value.endswith("Z"):
         fail(f"owner deployment request {field} must be an ISO-8601 UTC timestamp")
@@ -466,12 +503,14 @@ def admit_staging(archive: Path, commit: str, archive_sha256: str, release_root:
         available = int(simulated_bytes) if simulated_bytes is not None else usage.f_bavail * usage.f_frsize
         free_inodes = int(simulated_inodes) if simulated_inodes is not None else usage.f_favail
         if available < size + reserve:
-            fail(f"staging disk admission refused: {probe} needs {size + reserve} bytes "
-                 f"({size} staging + {reserve} reserve) but {available} are available")
+            raise DeploymentDeferred("release_disk_space_insufficient",
+                                     f"staging disk admission refused: {probe} needs {size + reserve} bytes "
+                                     f"({size} staging + {reserve} reserve) but {available} are available")
         # Filesystems without a fixed inode table report zero total inodes.
         if (usage.f_files or simulated_inodes is not None) and free_inodes < inodes + STAGING_INODE_RESERVE:
-            fail(f"staging disk admission refused: {probe} needs {inodes + STAGING_INODE_RESERVE} inodes "
-                 f"but {free_inodes} are available")
+            raise DeploymentDeferred("release_disk_space_insufficient",
+                                     f"staging disk admission refused: {probe} needs {inodes + STAGING_INODE_RESERVE} inodes "
+                                     f"but {free_inodes} are available")
 
 
 def validate_archive(archive: Path, approval: Path | None, now: datetime, production: bool, fixed_environment: str | None = None, stage_helper: Path | None = None) -> tuple[str, str, dict | None]:
@@ -1355,16 +1394,12 @@ def finish_handoff_worker(identity: str, archive: Path, approval: Path | None, o
         # duplicate archive on this capacity-constrained host.
         clean_verified_archive(archive)
         return outcome
-    except Exception as error:
-        # Only known resource/session refusals can retry automatically.
+    except DeploymentDeferred as error:
+        update_handoff_result(directory, "deferred", commit, sha256, error.reason)
+        raise
+    except Exception:
         # Provenance, approval, rollback and ambiguous failures require action.
-        retryable = {"release_disk_space_insufficient", "disk_headroom_insufficient",
-                     "memory_pressure_high", "provider_sessions_active"}
-        code = str(error)
-        if code in retryable:
-            update_handoff_result(directory, "deferred", commit, sha256, code)
-        else:
-            update_handoff_result(directory, "failed", commit, sha256, "action_required")
+        update_handoff_result(directory, "failed", commit, sha256, "action_required")
         raise
 
 
@@ -1474,16 +1509,7 @@ def _run_deployment(archive: Path, approval: Path | None, owner_request: Path | 
             diagnostics.append(line[-512:])
         return_code = process.wait()
     if return_code:
-        combined = "\n".join(diagnostics)
-        for code, signal in (
-            ("release_disk_space_insufficient", r"release_disk_space_insufficient"),
-            ("disk_headroom_insufficient", r"disk_headroom_insufficient|insufficient disk for rollout and rollback"),
-            ("memory_pressure_high", r"\bmemory_pressure_high\b"),
-            ("provider_sessions_active", r"\bprovider_sessions_active\b"),
-        ):
-            if re.search(signal, combined, re.IGNORECASE):
-                fail(code)
-        fail("rollout_hard_or_ambiguous_failure")
+        raise_rollout_failure(return_code, diagnostics)
     return f"deployed {commit} {archive_sha256}"
 
 

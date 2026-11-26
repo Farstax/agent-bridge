@@ -148,7 +148,7 @@ describe("guarded rollout helper", { timeout: 30_000 }, () => {
     it.each(["deferred_busy", "unknown"] as const)("never stops services when all-role admission is %s", (state) => {
       const fixture = createFixture();
       const result = runRollout(fixture, undefined, undefined, { FAKE_IDLE_UPGRADE_STATE: state });
-      expect(result.status).not.toBe(0);
+      expect(result.status).toBe(state === "deferred_busy" ? 75 : 1);
       expect(`${result.stdout}\n${result.stderr}`).toContain(
         state === "deferred_busy" ? "provider_sessions_active" : "protected_idle_upgrade_admission_unknown",
       );
@@ -163,12 +163,39 @@ describe("guarded rollout helper", { timeout: 30_000 }, () => {
         const result = runRollout(fixture, undefined, undefined, {
           FAKE_IDLE_UPGRADE_STATE: "deferred_busy", FAKE_IDLE_UPGRADE_REASON: reason,
         });
-        expect(result.status).not.toBe(0);
-        expect(`${result.stdout}\\n${result.stderr}`).toContain(`rollout_admission_deferred_${reason}`);
-        expect(`${result.stdout}\\n${result.stderr}`).toContain("legacy_retryable_provider_sessions_active");
+        expect(result.status).toBe(75);
+        expect(`${result.stdout}\n${result.stderr}`.trim().split("\n").at(-1)).toBe(`rollout-agent-bridge: rollout_admission_deferred_${reason} provider_sessions_active`);
         expect(actions(fixture)).not.toContain("systemctl:stop");
       },
     );
+
+    it("fails closed if the admission receipt and helper exit disagree", () => {
+      const fixture = createFixture();
+      const result = runRollout(fixture, undefined, undefined, {
+        FAKE_IDLE_UPGRADE_STATE: "deferred_busy",
+        FAKE_IDLE_UPGRADE_REASON: "capacity_claim",
+        FAKE_IDLE_UPGRADE_EXIT: "2",
+      });
+      expect(result.status).toBe(1);
+      const output = `${result.stdout}\n${result.stderr}`;
+      expect(output).toContain("protected_idle_upgrade_admission_unknown");
+      expect(output).not.toContain("provider_sessions_active");
+      expect(actions(fixture)).not.toContain("systemctl:stop");
+    });
+
+    it("does not advertise retryability if pre-stop sentinel cleanup fails", () => {
+      const fixture = createFixture();
+      const result = runRollout(fixture, undefined, undefined, {
+        FAKE_IDLE_UPGRADE_STATE: "deferred_busy",
+        FAKE_IDLE_UPGRADE_REASON: "capacity_claim",
+        FAKE_TAMPER_SENTINEL_DELETE: join(fixture.logDir, ".rollout-in-progress"),
+      });
+      expect(result.status).toBe(1);
+      const output = `${result.stdout}\n${result.stderr}`;
+      expect(output).toContain("SENTINEL CLEANUP FAILED");
+      expect(output).not.toContain("provider_sessions_active");
+      expect(actions(fixture)).not.toContain("systemctl:stop");
+    });
 
     it("retries a transient reservation before fencing and installs once", () => {
       const fixture = createFixture();
