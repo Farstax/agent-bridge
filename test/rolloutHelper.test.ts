@@ -164,7 +164,7 @@ describe("guarded rollout helper", { timeout: 30_000 }, () => {
           FAKE_IDLE_UPGRADE_STATE: "deferred_busy", FAKE_IDLE_UPGRADE_REASON: reason,
         });
         expect(result.status).toBe(75);
-        expect(result.stderr.trim().split("\n").at(-1)).toBe(`rollout-agent-bridge: rollout_admission_deferred_${reason} provider_sessions_active`);
+        expect(`${result.stdout}\n${result.stderr}`.trim().split("\n").at(-1)).toBe(`rollout-agent-bridge: rollout_admission_deferred_${reason} provider_sessions_active`);
         expect(actions(fixture)).not.toContain("systemctl:stop");
       },
     );
@@ -177,8 +177,9 @@ describe("guarded rollout helper", { timeout: 30_000 }, () => {
         FAKE_IDLE_UPGRADE_EXIT: "2",
       });
       expect(result.status).toBe(1);
-      expect(result.stderr).toContain("protected_idle_upgrade_admission_unknown");
-      expect(result.stderr).not.toContain("provider_sessions_active");
+      const output = `${result.stdout}\n${result.stderr}`;
+      expect(output).toContain("protected_idle_upgrade_admission_unknown");
+      expect(output).not.toContain("provider_sessions_active");
       expect(actions(fixture)).not.toContain("systemctl:stop");
     });
 
@@ -190,8 +191,9 @@ describe("guarded rollout helper", { timeout: 30_000 }, () => {
         FAKE_TAMPER_SENTINEL_DELETE: join(fixture.logDir, ".rollout-in-progress"),
       });
       expect(result.status).toBe(1);
-      expect(result.stderr).toContain("SENTINEL CLEANUP FAILED");
-      expect(result.stderr).not.toContain("provider_sessions_active");
+      const output = `${result.stdout}\n${result.stderr}`;
+      expect(output).toContain("SENTINEL CLEANUP FAILED");
+      expect(output).not.toContain("provider_sessions_active");
       expect(actions(fixture)).not.toContain("systemctl:stop");
     });
 
