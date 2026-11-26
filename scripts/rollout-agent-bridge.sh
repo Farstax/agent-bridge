@@ -2236,7 +2236,8 @@ admit_rollout_disk() {
   local device available required
   for device in "${!device_required[@]}"; do
     required=$(( device_required[$device] + reserve_bytes ))
-    available="$(measure_available_bytes "${device_path[$device]}")"
+    available="$(measure_available_bytes "${device_path[$device]}")" || die "unable to measure available disk"
+    [[ "$available" =~ ^[0-9]+$ ]] || die "unable to measure available disk"
     device_available[$device]="$available"
     echo "disk admission device=$device path=${device_path[$device]} available=$available required=$required reserve=$reserve_bytes categories=${device_categories[$device]}"
     if (( available < required )); then
@@ -2251,7 +2252,7 @@ admit_rollout_disk() {
     (( insufficient_devices == 1 )) || disk_shortfall_device=""
     return 1
   fi
-  record_phase DISK_ADMITTED
+  record_phase DISK_ADMITTED || die "disk admission evidence could not be recorded"
 }
 
 admit_host_preparation() {
@@ -3109,6 +3110,7 @@ if ! admit_rollout_disk; then
   if select_disk_rescue_compaction; then
     compaction_needed=1
   else
+    (( disk_shortfall_bytes > 0 )) || die "disk admission refusal is unverified"
     rollout_deferral="disk_headroom_insufficient"
     exit 75
   fi
@@ -3127,24 +3129,18 @@ for database in "${databases[@]}"; do idle_db_args+=(--db "$database"); done
 # services are still running. Retry admission briefly BEFORE taking any fence;
 # unknown results and partial-fence failures are never retried automatically.
 idle_admitted=0
+idle_refusal=""
 for admission_attempt in 1 2 3; do
+  idle_refusal=""
   if run_as_runtime "$node_bin" "$project_dir/node_modules/tsx/dist/cli.mjs" "$project_dir/scripts/idle-maintenance.ts" acquire --owner-pid "$$" "${idle_db_args[@]}" --interrupt-active > "$artifact_dir/idle-upgrade-admission.json"; then
     idle_admitted=1
     break
+  else
+    admission_status=$?
   fi
-  admission_state="$(/usr/bin/python3 - "$artifact_dir/idle-upgrade-admission.json" <<'PY'
-import json, sys
-try:
-    record = json.load(open(sys.argv[1], encoding="utf-8"))
-    print(record.get("state", "unknown"))
-except (OSError, ValueError, TypeError, AttributeError):
-    print("unknown")
-PY
-)"
-  if [[ "$admission_state" != deferred_busy ]] || (( admission_attempt == 3 )); then break; fi
-  /usr/bin/sleep 1
-done
-if (( idle_admitted != 1 )); then
+  # Both the existing temporary-failure exit and the structured receipt must
+  # agree. Unknown or partial-fence failures cannot become retryable.
+  (( admission_status == 75 )) || break
   idle_refusal="$(/usr/bin/python3 - "$artifact_dir/idle-upgrade-admission.json" <<'PY'
 import json, sys
 try:
@@ -3164,6 +3160,10 @@ except (OSError, ValueError, TypeError, AttributeError):
     print("protected_idle_upgrade_admission_unknown")
 PY
 )"
+  if [[ "$idle_refusal" != rollout_admission_deferred_* ]] || (( admission_attempt == 3 )); then break; fi
+  /usr/bin/sleep 1
+done
+if (( idle_admitted != 1 )); then
   if [[ "$idle_refusal" == rollout_admission_deferred_* ]]; then
     rollout_deferral="$idle_refusal"
     exit 75

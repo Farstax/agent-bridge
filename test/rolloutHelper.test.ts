@@ -169,6 +169,19 @@ describe("guarded rollout helper", { timeout: 30_000 }, () => {
       },
     );
 
+    it("fails closed if the admission receipt and helper exit disagree", () => {
+      const fixture = createFixture();
+      const result = runRollout(fixture, undefined, undefined, {
+        FAKE_IDLE_UPGRADE_STATE: "deferred_busy",
+        FAKE_IDLE_UPGRADE_REASON: "capacity_claim",
+        FAKE_IDLE_UPGRADE_EXIT: "2",
+      });
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain("protected_idle_upgrade_admission_unknown");
+      expect(result.stderr).not.toContain("provider_sessions_active");
+      expect(actions(fixture)).not.toContain("systemctl:stop");
+    });
+
     it("does not advertise retryability if pre-stop sentinel cleanup fails", () => {
       const fixture = createFixture();
       const result = runRollout(fixture, undefined, undefined, {

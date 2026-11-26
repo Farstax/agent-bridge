@@ -471,7 +471,7 @@ if [[ "\${cmd[1]:-}" == */tsx/dist/cli.mjs && "\${cmd[2]:-}" == */scripts/idle-m
     if [[ -n "\${FAKE_TAMPER_SENTINEL_DELETE:-}" ]]; then
       rm -f -- "\${FAKE_TAMPER_SENTINEL_DELETE}"
     fi
-    exit 75
+    exit "\${FAKE_IDLE_UPGRADE_EXIT:-75}"
   fi
   if [[ "$action" == acquire && "\${FAKE_IDLE_UPGRADE_STATE:-}" == unknown ]]; then
     echo '{"state":"unknown"}'
