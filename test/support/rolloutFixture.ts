@@ -468,6 +468,9 @@ if [[ "\${cmd[1]:-}" == */tsx/dist/cli.mjs && "\${cmd[2]:-}" == */scripts/idle-m
     else
       echo '{"state":"deferred_busy"}'
     fi
+    if [[ -n "\${FAKE_TAMPER_SENTINEL_DELETE:-}" ]]; then
+      rm -f -- "\${FAKE_TAMPER_SENTINEL_DELETE}"
+    fi
     exit 75
   fi
   if [[ "$action" == acquire && "\${FAKE_IDLE_UPGRADE_STATE:-}" == unknown ]]; then

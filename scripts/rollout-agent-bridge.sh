@@ -2240,7 +2240,7 @@ admit_rollout_disk() {
     device_available[$device]="$available"
     echo "disk admission device=$device path=${device_path[$device]} available=$available required=$required reserve=$reserve_bytes categories=${device_categories[$device]}"
     if (( available < required )); then
-      echo "insufficient disk for rollout and rollback on device=$device: available=$available required=$required" >&2
+      echo "disk admission shortfall on device=$device: available=$available required=$required" >&2
       insufficient_devices=$((insufficient_devices + 1))
       disk_shortfall_device="$device"
       disk_shortfall_bytes=$((required - available))
@@ -2789,6 +2789,7 @@ on_exit() {
       status=1
     fi
     if (( phase_ledger_created == 1 )) && ! record_phase PRECONDITION_FAILED; then
+      status=1
       echo "refused rollout evidence could not be marked terminal: $phase_ledger" >&2
     fi
   else
@@ -2877,6 +2878,11 @@ on_exit() {
     echo "automatic sentinel cleanup also failed; manual review required in addition to the failure above" >&2
     status=1
   fi
+  # Only a proven pre-stop refusal with completed cleanup is retryable.
+  # Emit the legacy-readable marker last, never on a cleanup/rollback failure.
+  if (( status == 75 && stop_attempted == 0 && sentinel_removable == 1 )) && [[ -n "$rollout_deferral" ]]; then
+    echo "rollout-agent-bridge: $rollout_deferral" >&2
+  fi
   exit "${status:-1}"
 }
 
@@ -2914,6 +2920,7 @@ sentinel_removable=0
 sentinel_identity=""
 previous_pointer_target=""
 idle_fence_acquired=0
+rollout_deferral=""
 declare -a idle_release_args=()
 declare -a expected_backups=()
 
@@ -3102,7 +3109,8 @@ if ! admit_rollout_disk; then
   if select_disk_rescue_compaction; then
     compaction_needed=1
   else
-    die "insufficient disk for rollout and rollback; no safe, useful offline compaction available"
+    rollout_deferral="disk_headroom_insufficient"
+    exit 75
   fi
 fi
 
@@ -3144,19 +3152,22 @@ try:
     if result.get("state") != "deferred_busy":
         print("protected_idle_upgrade_admission_unknown")
     else:
-        # This marker keeps older Platform retry owners compatible. It does
-        # NOT assert that a provider session caused the deferral.
+        # The final shell outcome keeps older installed deployers compatible.
+        # The category, not the legacy marker, identifies the actual refusal.
         reasons = {"existing_fence", "capacity_claim", "outward_reservation",
                    "event_dispatch", "claimed_continuation"}
         category = result.get("reason")
         if category not in reasons:
             category = "unknown"
-        print(f"rollout_admission_deferred_{category} legacy_retryable_provider_sessions_active")
+        print(f"rollout_admission_deferred_{category} provider_sessions_active")
 except (OSError, ValueError, TypeError, AttributeError):
     print("protected_idle_upgrade_admission_unknown")
 PY
 )"
-  if [[ "$idle_refusal" == rollout_admission_deferred_* ]]; then die "$idle_refusal"; fi
+  if [[ "$idle_refusal" == rollout_admission_deferred_* ]]; then
+    rollout_deferral="$idle_refusal"
+    exit 75
+  fi
   # A partial fence could remain if the helper failed while releasing roles.
   # Keep the sentinel until trusted recovery establishes what was acquired.
   idle_fence_acquired=1
@@ -3220,7 +3231,7 @@ if (( compaction_needed == 1 )); then
   validate_sqlite_sidecars
   clear_stale_sqlite_sidecars
   record_phase DISK_COMPACTED
-  admit_rollout_disk || die "insufficient disk for rollout and rollback after verified offline compaction"
+  admit_rollout_disk || die "disk admission refused after verified offline compaction"
 fi
 
 echo "backing up all databases"

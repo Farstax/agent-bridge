@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -94,10 +94,41 @@ describe("durable independent OSS deployer handoff (#1347)", () => {
     expect(result.stdout).toContain("refused");
   });
 
-  it("does not classify loose session wording as a retryable refusal", () => {
-    const source = readFileSync(resolve("scripts/agent-bridge-deploy.py"), "utf8");
-    expect(source).not.toContain("provider.*active");
-    expect(source).toContain("\\bprovider_sessions_active\\b");
+  it("defers only proven rollout refusals, including older installed helpers, and resumes the same request", () => {
+    const result = probe([
+      "module.accept_handoff(archive, None, None)",
+      "identity = commit + '-' + sha256",
+      "directory = root / 'handoffs' / identity",
+      "durable = directory / 'release.tar.gz'",
+      "legacy = ['rollout-agent-bridge: rollout_admission_deferred_capacity_claim legacy_retryable_provider_sessions_active', 'rollout failed status=1 start_attempted=0 services_started=0; containing services', 'rollout sentinel removed: /fixture/sentinel']",
+      "for status, lines, reason in [(1, legacy, 'rollout_admission_deferred_capacity_claim'), (75, ['rollout-agent-bridge: rollout_admission_deferred_capacity_claim provider_sessions_active'], 'rollout_admission_deferred_capacity_claim'), (1, ['rollout-agent-bridge: provider_sessions_active'] + legacy[1:], 'provider_sessions_active'), (1, ['rollout-agent-bridge: insufficient disk for rollout and rollback; no safe, useful offline compaction available'] + legacy[1:], 'disk_headroom_insufficient')]:",
+      "    module.run_deployment = lambda *args: module.raise_rollout_failure(status, lines)",
+      "    try:",
+      "        module.finish_handoff_worker(identity, durable, None, None)",
+      "        raise AssertionError('refusal returned success')",
+      "    except module.DeploymentDeferred:",
+      "        pass",
+      "    receipt = json.loads((directory / 'result.json').read_text())",
+      "    assert receipt['status'] == 'deferred' and receipt['detail'] == reason",
+      "    assert receipt['targetCommit'] == commit and receipt['archiveSha256'] == sha256",
+      "    assert module.resume_pending_handoff().startswith('accepted ' + commit + ' ' + sha256)",
+      "for status, lines in [(1, legacy[:2] + ['automatic sentinel cleanup also failed; manual review required']), (1, legacy[:2] + ['refused rollout evidence could not be marked terminal: fixture', legacy[-1]]), (1, ['rollout-agent-bridge: insufficient disk for rollout and rollback after verified offline compaction'] + legacy[1:]), (75, ['provider sessions active']), (75, ['rollout-agent-bridge: protected_idle_upgrade_admission_unknown']), (1, ['rollout-agent-bridge: rollout_admission_deferred_capacity_claim provider_sessions_active'])]:",
+      "    module.update_handoff_result(directory, 'accepted', commit, sha256)",
+      "    module.run_deployment = lambda *args: module.raise_rollout_failure(status, lines)",
+      "    try:",
+      "        module.finish_handoff_worker(identity, durable, None, None)",
+      "        raise AssertionError('hard failure returned success')",
+      "    except RuntimeError as error:",
+      "        assert not isinstance(error, module.DeploymentDeferred)",
+      "    assert json.loads((directory / 'result.json').read_text())['status'] == 'failed'",
+      "    try:",
+      "        module.resume_pending_handoff()",
+      "        raise AssertionError('hard failure resumed')",
+      "    except RuntimeError:",
+      "        pass",
+      "print('checked')",
+    ].join("\n"));
+    expect(result.status, result.stderr).toBe(0);
   });
 
   it("rejects changed durable bytes", () => {
@@ -137,7 +168,7 @@ describe("durable independent OSS deployer handoff (#1347)", () => {
       "durable.chmod(0o600)",
       "module.update_handoff_result(directory, 'accepted', commit, sha256)",
       "def fail_worker(*args):",
-      "    raise RuntimeError('disk_headroom_insufficient')",
+      "    raise module.DeploymentDeferred('disk_headroom_insufficient')",
       "module.run_deployment = fail_worker",
       "try:",
       "    module.finish_handoff_worker(identity, durable, None, None)",

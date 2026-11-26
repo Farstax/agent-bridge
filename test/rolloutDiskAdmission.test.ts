@@ -131,8 +131,8 @@ describe("rollout disk admission", { timeout: 30_000 }, () => {
     });
 
     const output = `${result.stdout}\n${result.stderr}`;
-    expect(result.status).not.toBe(0);
-    expect(output).toMatch(/insufficient disk for rollout and rollback/);
+    expect(result.status).toBe(75);
+    expect(output).toContain("rollout-agent-bridge: disk_headroom_insufficient");
     expect(output).toMatch(/disk admission device=.* available=1 required=/);
     expect(output).not.toMatch(/stopping all services/);
     expect(actions(fixture)).not.toContain("systemctl:stop");
