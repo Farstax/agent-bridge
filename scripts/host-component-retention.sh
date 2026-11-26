@@ -80,6 +80,8 @@ remove_agy_version_directory() {
   ( agy_retention_secure_path "$root" directory && agy_retention_secure_path "$entry" directory \
     && agy_retention_secure_path "$parent" directory && agy_retention_secure_path "$manifest" file ) >/dev/null || return 1
   /usr/bin/find "$entry" -depth -mindepth 1 ! -samefile "$manifest" ! -samefile "$parent" -delete || return 1
+  # Recheck the exact root and child immediately before the final removal.
+  agy_retention_secure_path "$root" directory && agy_retention_secure_path "$entry" directory || return 1
   /usr/bin/rm -rf -- "$entry"
 }
 
