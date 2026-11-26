@@ -47,15 +47,23 @@ This inventory is a starting point, not a claim of exhaustive repository coverag
 
 ## Bounded ordinary continuation model
 
-`OrdinaryContinuation.tla` is an intentionally small *specification*, not a refinement proof of the implementation. It models one ordinary outward continuation, an abstract fence, one successor and two possible claim tokens. It assumes the origin and authority checks are already satisfied, a reclaim only occurs after proof that no successor was admitted, and each claim token is fresh. The model now enforces freshness using a finite used-token set. Fence actions abstract a much larger all-role SQLite protocol. Stop is modelled as cancellation, not proof that a running successor has terminated. `completed` means continuation settlement; `blocked` is not objective success.
+The model is a bounded specification of one ordinary outward continuation, an abstract fence, a single successor and two fresh claim tokens. Two abstract providers distinguish the originating provider from the stored preference (which may differ after fallback). A deliberate selection is separate evidence; switching back does not clear it. The execution provider must be the origin absent a deliberate switch, otherwise the selected provider, and must belong to the configured set and satisfy an explicit lock. Configuration can change before admission; the model freezes that decision after admission. A disallowed provider can settle as unresolved, never complete. A `continue` disposition settles the wake, not the objective.
+
+The existing token, Stop, fence and no-false-completion invariants remain. `NoUnauthorisedAdmission` and `ProviderSelectionRespected` check the admission-time provider. `ValidAdmissionEnabled` requires a legal admission transition for an otherwise eligible authorised claim, including after a provider switch. This is enabledness, not unconditional eventual execution.
 
 Run with a trusted TLA+ tools distribution:
 
 ```sh
-java -XX:+UseParallelGC -cp tla2tools.jar tlc2.TLC -workers 1 -config OrdinaryContinuation.cfg OrdinaryContinuation.tla
+java -XX:+UseParallelGC -cp "$TLA2TOOLS_JAR" tlc2.TLC -workers 1 -config OrdinaryContinuation.cfg OrdinaryContinuation.tla
 ```
 
-TLC 2.19 explored 80 distinct states (121 generated, depth 7) with the supplied configuration and reported no invariant violations. Removing the freshness guard produced a four-state counterexample to `NoRetiredClaim`. This establishes only the listed invariants of this finite abstraction. It does not establish implementation conformance, fairness, eventual progress, effect deduplication, or exhaustive state coverage. The token set is finite, so exhaustion prevents further claims; it does not model the probability of UUID collision or establish liveness. Test and refinement evidence are still required.
+For #1308, run the restored baseline and two separate temporary mutations (restore the model between runs):
+- Add `/\\ p = origin` to `Admit(t, p)`: expect a `ValidAdmissionEnabled` violation after an authorised deliberate switch to a different provider.
+- Remove only `/\\ Allowed(p)` from `Admit(t, p)`: expect a `NoUnauthorisedAdmission` violation for a removed or locked-out provider.
+
+Record actual TLC checker identity, generated/distinct state counts, invariants and counterexamples on the qualifying PR head. The expanded model has not yet been checked by TLC. The **previous** provider-independent configuration passed TLC 2.19 (80 distinct, 121 generated, depth 7); a removed freshness guard violated `NoRetiredClaim`. These historical results do not qualify the expanded model.
+
+The model assumes Workstream/root/native-session provenance and exact claim/lease authority are proven at their implementation boundaries. Reclaim presupposes no admitted successor; Stop is cancellation, not proof of process termination. It abstracts the durable selection evidence to a Boolean, not a generation counter or session history, and does not represent platform configuration files, OS processes, queue correlation, provider attempts after admission, continuous authorisation changes, or exactly-once external effects. The finite token set prevents further claims at exhaustion. See the transition map and owning executable tests.
 
 ## Bounded rollout-fence model
 
