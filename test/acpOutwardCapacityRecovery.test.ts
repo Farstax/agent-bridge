@@ -246,6 +246,7 @@ describe("outward ACP durable capacity worker (#1114)", () => {
           expect(calls).toEqual([]);
           expect(wake.state).toBe("cancelled");
           expect(wake.successorRunId).toBeUndefined();
+          expect(db.getSetting("outward-run-accepted-turn:v1:agy-origin")).toBeNull();
         } else if (staleWorker) {
           expect(calls).toEqual([]);
           expect(wake.state).toBe("failed");

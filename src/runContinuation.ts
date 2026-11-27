@@ -580,6 +580,7 @@ export function claimDueRunContinuation(
     if (Date.parse(current.expiresAt) <= nowMs) {
       if (current.capacityWait) return null;
       const expired = { ...current, state: "expired" as const };
+      if (current.outwardSessionId) retireAcceptedObjectiveLink(db, current);
       db.raw.prepare("UPDATE settings SET value = ? WHERE key = ?").run(JSON.stringify(expired), key(id));
       return null;
     }
@@ -590,6 +591,7 @@ export function claimDueRunContinuation(
         completedAt: new Date(nowMs).toISOString(),
         error,
       };
+      if (current.outwardSessionId && !current.capacityWait) retireAcceptedObjectiveLink(db, current);
       db.raw.prepare("UPDATE settings SET value = ? WHERE key = ?").run(JSON.stringify(cancelled), key(id));
       return null;
     };
@@ -867,6 +869,7 @@ export function cancelPendingRunContinuation(
       completedAt: new Date(nowMs).toISOString(),
       error: reason.slice(0, 500),
     };
+    if (current.outwardSessionId && !current.capacityWait) retireAcceptedObjectiveLink(db, current);
     db.raw.prepare("UPDATE settings SET value = ? WHERE key = ?").run(JSON.stringify(cancelled), key(id));
     return true;
   });
