@@ -515,10 +515,8 @@ export function acceptedContinuationObjective(db: BridgeDb, wake: RunContinuatio
   const runId = acceptedObjectiveRunId(db, wake);
   const link = runId ? db.getSetting(OUTWARD_RUN_ACCEPTED_TURN_PREFIX + runId) : null;
   if (!link || !/^[1-9][0-9]*$/.test(link)) return null;
-  const turn = db.raw.prepare("SELECT id, text FROM conversation_turns WHERE id = ? AND chat_key = ? AND surface_identity = ? AND role = 'user'")
-    .get(Number(link), wake.chatKey, wake.surfaceIdentity) as { id: number; text: string } | undefined;
-  if (!turn?.text?.trim() || turn.text.length > 160_000 || /^\/(?:stop|cancel|reset)(?:\s|$)/i.test(turn.text)) return null;
-  return turn;
+  const turn = db.getLinkedOutwardUserTurn(wake.chatKey, Number(link));
+  return turn && !/^\/(?:stop|cancel|reset)(?:\s|$)/i.test(turn.text) ? turn : null;
 }
 
 /** Retire accepted-turn provenance once no live ordinary wake still traces to it. */

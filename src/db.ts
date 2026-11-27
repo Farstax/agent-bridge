@@ -830,6 +830,10 @@ export class BridgeDb {
 
   // ── Conversation turns ──────────────────────────────────────────────────
 
+  getLinkedOutwardUserTurn(chatKey: string, turnId: number): { id: number; text: string } | null {
+    return this.conversations.getLinkedOutwardUserTurn(chatKey, turnId);
+  }
+
   getAcceptedOutwardTurn(chatKey: string, provider: string, turnId: number): { id: number; text: string } | null {
     return this.conversations.getAcceptedOutwardTurn(chatKey, provider, turnId);
   }

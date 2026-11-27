@@ -1152,7 +1152,9 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
             text: result.text, sessionId: result.sessionId, ...(result.telemetry ? { telemetry: result.telemetry } : {}),
           }));
         }
-        if (!cancelled) {
+        // A provider-reported cancellation keeps its native session; only a
+        // Stop that won settlement must not leave a late binding behind.
+        if (!active!.cancelRequested && !db.getSetting(stopFenceKey(input.session.conversationId))) {
           persistProviderSession(db, { surfaceIdentity: OUTWARD_ACP_SURFACE, chatKey: input.session.conversationId }, actualProvider, result.sessionId, runId);
         }
         if (!cancelled && result.text) {
