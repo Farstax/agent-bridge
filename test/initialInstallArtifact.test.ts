@@ -19,7 +19,8 @@ describe("initial installation release contract", () => {
       expect(restart).not.toContain(`agent-bridge-${retired}.service`);
     }
     expect(installer).not.toContain("BRIDGE_PROVIDER_LOCK");
-    expect(capacityInstaller).not.toContain("BRIDGE_PROVIDER_LOCK");
+    // The outward worker must enforce the same explicit lock as Desk (#1308).
+    expect(capacityInstaller).toContain("BRIDGE_PROVIDER_LOCK");
     expect(packageManifest).not.toContain("scan-token-savings");
   });
 

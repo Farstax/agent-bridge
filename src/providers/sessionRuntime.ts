@@ -18,6 +18,13 @@ function acpSessionBindingKey(
   return runtime.providerId === "custom-acp" ? runtime.runtimeIdentity : runtime.providerId;
 }
 
+/** Exact Run recorded with an ACP binding; legacy session stores have no Run provenance. */
+export function lookupProviderSessionRunId(db: BridgeDb, identity: ConversationIdentity,
+  kind: BotKind | "custom-acp"): string | null {
+  const bindingKey = acpSessionBindingKey(kind, resolveRuntimeForBotName);
+  return bindingKey ? db.getAcpSessionBinding(identity, bindingKey)?.runId ?? null : null;
+}
+
 /** Route provider session state through the store owned by the resolved runtime transport. */
 export function lookupProviderSession(
   db: BridgeDb,

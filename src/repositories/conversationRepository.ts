@@ -177,6 +177,16 @@ export class ConversationRepository {
     return superseded ? null : turn;
   }
 
+  /** Exact outward user turn named by a durable Run link, regardless of later input. */
+  getLinkedOutwardUserTurn(chatKey: string, turnId: number): { id: number; text: string } | null {
+    if (!Number.isSafeInteger(turnId) || turnId < 1) return null;
+    const turn = this.db.prepare(`
+      SELECT id, text FROM conversation_turns
+      WHERE id = ? AND chat_key = ? AND surface_identity = 'acp:outward' AND role = 'user'
+    `).get(turnId, chatKey) as { id: number; text: string } | undefined;
+    return turn?.text?.trim() && turn.text.length <= 160_000 ? turn : null;
+  }
+
   addConvTurn(
     chatKey: string,
     role: "user" | "assistant",

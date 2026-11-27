@@ -82,7 +82,7 @@ is_authorised_protected_host() {
 allowed=(
   DB_PATH NODE_BIN INTERACTIVE_CLI_CHAIN INTERACTIVE_DEFAULT_CLI
   AGENT_BRIDGE_INSTALLATION_ID AGENT_BRIDGE_EXECUTION_COORDINATION_DB_PATH
-  BRIDGE_EXECUTION_MODE CODEX_EXECUTION_MODE CLAUDE_EXECUTION_MODE
+  BRIDGE_PROVIDER_LOCK BRIDGE_EXECUTION_MODE CODEX_EXECUTION_MODE CLAUDE_EXECUTION_MODE
   GROK_EXECUTION_MODE ANTIGRAVITY_EXECUTION_MODE CURSOR_EXECUTION_MODE
   CODEX_ACP_COMMAND CODEX_ACP_ARGS CLAUDE_ACP_COMMAND CLAUDE_ACP_ARGS
   GROK_ACP_COMMAND GROK_ACP_ARGS AGY_ACP_COMMAND AGY_ACP_ARGS
@@ -97,8 +97,8 @@ for env_file in "$shared_env" "$interactive_env" "$bot_env"; do
     for allowed_key in "${allowed[@]}"; do
       if [[ "$key" == "$allowed_key" ]]; then
         [[ "$line" != *$'\r'* ]] || fail "invalid environment value"
-        # Desk reads the interactive env; use only its execution-mode policy here.
-        [[ "$env_file" != "$interactive_env" || "$key" == *_EXECUTION_MODE ]] || break
+        # Desk reads the interactive env; preserve its lock and execution-mode policy.
+        [[ "$env_file" != "$interactive_env" || "$key" == *_EXECUTION_MODE || "$key" == BRIDGE_PROVIDER_LOCK ]] || break
         settings["$key"]="$line"
         break
       fi

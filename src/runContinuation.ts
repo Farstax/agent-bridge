@@ -4,11 +4,11 @@
  * will admit one later ordinary Run against the same conversation/provider session.
  * This is intentionally not a scheduler or workflow engine.
  */
-import type { BridgeDb } from "./db.js";
+import type { BridgeDb, ExecutionLaneHandle } from "./db.js";
 import { randomUUID } from "node:crypto";
 import type { InteractiveTurnInput } from "./interactiveIngress.js";
 import type { RouteableBotKind } from "./types.js";
-import { lookupProviderSession } from "./providers/sessionRuntime.js";
+import { lookupProviderSession, lookupProviderSessionRunId } from "./providers/sessionRuntime.js";
 import { getRunOwnedProcessState } from "./runOwnedProcesses.js";
 
 export const RUN_CONTINUATION_PREFIX = "run-continuation:v1:";
@@ -90,6 +90,8 @@ export interface RunContinuation {
   outward?: { sessionId: string; prompt: string; attachmentCount: number; receiptKey?: string; ordinaryContinuations?: true };
   /** Authorised ordinary Desk wake binds this persisted Workstream, never chatKey guessing. */
   outwardSessionId?: string;
+  /** Selection generation captured when this outward wake was requested. */
+  selectionRevision?: number;
   /** The task was retired due to capacity expiry and awaits final notification. */
   expiryDeliveryPending?: true;
 }
@@ -113,6 +115,18 @@ export interface RequestRunContinuationInput {
   outward?: { sessionId: string; prompt: string; attachmentCount: number; receiptKey?: string; ordinaryContinuations?: true };
   /** Authoritative Workstream binding for ordinary outward ACP continuations. */
   outwardSessionId?: string;
+}
+
+export function outwardSelectionRevisionKey(chatKey: string): string {
+  return `outward-selection-revision:v1:${JSON.stringify(chatKey)}`;
+}
+
+export function outwardSelectionRevision(db: BridgeDb, chatKey: string): number {
+  const raw = db.getSetting(outwardSelectionRevisionKey(chatKey));
+  if (raw === null || raw === undefined) return 0;
+  const revision = Number(raw);
+  if (!/^(0|[1-9][0-9]*)$/.test(raw) || !Number.isSafeInteger(revision) || revision < 0) throw new Error("invalid outward selection revision");
+  return revision;
 }
 
 function key(id: string): string {
@@ -155,6 +169,7 @@ function parse(value: string): RunContinuation | null {
       || !candidate.reason
       || !["pending", "claimed", "completed", "failed", "expired", "cancelled"].includes(candidate.state)
     ) return null;
+    if (candidate.selectionRevision !== undefined && (!Number.isSafeInteger(candidate.selectionRevision) || candidate.selectionRevision < 0)) return null;
     if (candidate.depth !== undefined && (!Number.isSafeInteger(candidate.depth) || candidate.depth < 0)) return null;
     if (candidate.capacityWait !== undefined && candidate.capacityWait !== true) return null;
     if (candidate.rolloutRecoveryOnly !== undefined && candidate.rolloutRecoveryOnly !== true) return null;
@@ -302,7 +317,9 @@ export function requestRunContinuation(
       ...(input.delivery ? { delivery: input.delivery } : {}),
       ...(input.capacityWait ? { capacityWait: true as const } : {}),
       ...(input.outward ? { outward: input.outward } : existing?.outward ? { outward: existing.outward } : {}),
-      ...(input.outwardSessionId ? { outwardSessionId: input.outwardSessionId } : {}),
+      ...(input.outwardSessionId ? { outwardSessionId: input.outwardSessionId,
+        ...(!existing ? { selectionRevision: outwardSelectionRevision(db, chatKey) }
+          : existing.selectionRevision !== undefined ? { selectionRevision: existing.selectionRevision } : {}) } : {}),
       ...(existing?.capacityNoticeSent ? { capacityNoticeSent: true as const } : {}),
       ...(input.capacityWait && (input.retainedPendingMessageIds?.length || existing?.retainedPendingMessageIds?.length)
         ? { retainedPendingMessageIds: input.retainedPendingMessageIds ?? existing!.retainedPendingMessageIds! }
@@ -445,6 +462,73 @@ export function rolloutRecoveryProviderAuthority(
   return previouslySettled ? { providerSessionId: bound, rolloutRecovery: true } : null;
 }
 
+/** A manually reselected origin may have a new binding proven by a completed Run. */
+export function provenReselectedOriginBinding(db: BridgeDb, wake: RunContinuation, sessionId: string | null): boolean {
+  if (!sessionId || !wake.outwardSessionId || wake.selectionRevision === undefined ||
+      outwardSelectionRevision(db, wake.chatKey) <= wake.selectionRevision || !acceptedContinuationObjective(db, wake)) return false;
+  const preference = db.raw.prepare("SELECT interactive_cli_preference AS pref FROM bridge_state WHERE surface_identity = ? AND chat_id = ?")
+    .get(wake.surfaceIdentity, wake.chatKey) as { pref: string | null } | undefined;
+  if (preference?.pref !== wake.provider) return false;
+  if (wake.provider === "custom-acp") return false;
+  const bindingRunId = lookupProviderSessionRunId(db, { surfaceIdentity: wake.surfaceIdentity, chatKey: wake.chatKey }, wake.provider);
+  if (!bindingRunId || bindingRunId === wake.originRunId) return false;
+  const run = db.getRun(bindingRunId);
+  return Boolean(run && run.surface_identity === wake.surfaceIdentity && run.chat_id === wake.chatKey &&
+    run.bot === wake.provider && run.session_id === sessionId && run.status === "done");
+}
+
+/**
+ * The wake's native binding is still authorised: the origin session, a binding
+ * re-established by a completed Run after deliberate reselection, or no binding
+ * after a deliberate switch whose accepted objective is durably linked.
+ */
+export function ordinaryWakeBindingAuthorised(db: BridgeDb, wake: RunContinuation,
+  originSessionId: string | null | undefined, boundSessionId: string | null): boolean {
+  if (!originSessionId) return false;
+  if (boundSessionId === originSessionId) return true;
+  const switched = Boolean(wake.outwardSessionId) && wake.selectionRevision !== undefined &&
+    outwardSelectionRevision(db, wake.chatKey) > wake.selectionRevision;
+  if (switched && !boundSessionId) return Boolean(acceptedContinuationObjective(db, wake));
+  return provenReselectedOriginBinding(db, wake, boundSessionId);
+}
+
+/** Follow durable successor links to the Run holding the accepted-turn link, never timestamps. */
+function acceptedObjectiveRunId(db: BridgeDb, wake: RunContinuation): string | null {
+  if (wake.surfaceIdentity !== "acp:outward" || !wake.outwardSessionId) return null;
+  let runId = wake.originRunId;
+  const seen = new Set<string>();
+  while (!seen.has(runId) && seen.size <= MAX_CONSECUTIVE_AGENT_CONTINUATIONS) {
+    seen.add(runId);
+    const run = db.getRun(runId);
+    if (!run || run.surface_identity !== wake.surfaceIdentity || run.chat_id !== wake.chatKey) return null;
+    if (db.getSetting(OUTWARD_RUN_ACCEPTED_TURN_PREFIX + runId)) return runId;
+    const parents = listRunContinuations(db, wake.surfaceIdentity).filter((parent) =>
+      !parent.capacityWait && parent.successorRunId === runId && parent.chatKey === wake.chatKey &&
+      parent.outwardSessionId === wake.outwardSessionId);
+    if (parents.length !== 1) return null;
+    runId = parents[0].originRunId;
+  }
+  return null;
+}
+
+export function acceptedContinuationObjective(db: BridgeDb, wake: RunContinuation): { id: number; text: string } | null {
+  const runId = acceptedObjectiveRunId(db, wake);
+  const link = runId ? db.getSetting(OUTWARD_RUN_ACCEPTED_TURN_PREFIX + runId) : null;
+  if (!link || !/^[1-9][0-9]*$/.test(link)) return null;
+  const turn = db.getLinkedOutwardUserTurn(wake.chatKey, Number(link));
+  return turn && !/^\/(?:stop|cancel|reset)(?:\s|$)/i.test(turn.text) ? turn : null;
+}
+
+/** Retire accepted-turn provenance once no live ordinary wake still traces to it. */
+function retireAcceptedObjectiveLink(db: BridgeDb, settled: RunContinuation): void {
+  const rootRunId = acceptedObjectiveRunId(db, settled);
+  if (!rootRunId || db.getRun(rootRunId)?.status === "running") return;
+  const live = listRunContinuations(db, settled.surfaceIdentity).some((wake) => wake.id !== settled.id &&
+    !wake.capacityWait && wake.chatKey === settled.chatKey && (wake.state === "pending" || wake.state === "claimed") &&
+    acceptedObjectiveRunId(db, wake) === rootRunId);
+  if (!live) db.raw.prepare("DELETE FROM settings WHERE key = ?").run(OUTWARD_RUN_ACCEPTED_TURN_PREFIX + rootRunId);
+}
+
 /** Strictly attribute an interrupted Run to exactly one accepted user turn. */
 function originalAcceptedTurnId(db: BridgeDb, origin: { run_id: string },
   wake: Pick<RunContinuation, "chatKey" | "provider">): number | null {
@@ -494,6 +578,7 @@ export function claimDueRunContinuation(
     if (Date.parse(current.expiresAt) <= nowMs) {
       if (current.capacityWait) return null;
       const expired = { ...current, state: "expired" as const };
+      if (current.outwardSessionId) retireAcceptedObjectiveLink(db, current);
       db.raw.prepare("UPDATE settings SET value = ? WHERE key = ?").run(JSON.stringify(expired), key(id));
       return null;
     }
@@ -504,6 +589,7 @@ export function claimDueRunContinuation(
         completedAt: new Date(nowMs).toISOString(),
         error,
       };
+      if (current.outwardSessionId && !current.capacityWait) retireAcceptedObjectiveLink(db, current);
       db.raw.prepare("UPDATE settings SET value = ? WHERE key = ?").run(JSON.stringify(cancelled), key(id));
       return null;
     };
@@ -734,7 +820,7 @@ export function claimDueRunContinuation(
       || originRun.chat_id !== current.chatKey
       || originRun.bot !== current.provider
       || !originRun.session_id
-      || boundSessionId !== originRun.session_id
+      || !ordinaryWakeBindingAuthorised(db, current, originRun.session_id, boundSessionId)
     ) {
       return cancel(
         originRun.status !== "done"
@@ -781,6 +867,7 @@ export function cancelPendingRunContinuation(
       completedAt: new Date(nowMs).toISOString(),
       error: reason.slice(0, 500),
     };
+    if (current.outwardSessionId && !current.capacityWait) retireAcceptedObjectiveLink(db, current);
     db.raw.prepare("UPDATE settings SET value = ? WHERE key = ?").run(JSON.stringify(cancelled), key(id));
     return true;
   });
@@ -825,7 +912,7 @@ export function settleRunContinuation(
       && !(current.capacityWait && outcome === "completed" && current.state === "pending")) return;
     // Capacity callbacks must prove the exact acquisition, rather than the
     // long-lived service process that happened to perform it.
-    if (current.capacityWait && current.state === "claimed") {
+    if ((current.capacityWait || current.outwardSessionId) && current.state === "claimed") {
       if (!claimantToken || current.claimToken !== claimantToken) return;
     } else if (claimantToken && current.claimToken && current.claimToken !== claimantToken) return;
     const settled: RunContinuation = {
@@ -834,21 +921,30 @@ export function settleRunContinuation(
       completedAt: new Date(nowMs).toISOString(),
       ...(outcome === "failed" && error ? { error: error.slice(0, 500) } : {}),
     };
+    if (current.outwardSessionId && !current.capacityWait) retireAcceptedObjectiveLink(db, current);
     db.raw.prepare("UPDATE settings SET value = ? WHERE key = ?").run(JSON.stringify(settled), key(id));
   });
 }
 
-export function linkRunContinuationRun(db: BridgeDb, id: string, runId: string, claimantToken?: string): boolean {
+export function linkRunContinuationRun(db: BridgeDb, id: string, runId: string, claimantToken?: string, authorisedProvider?: RouteableBotKind, lane?: ExecutionLaneHandle): boolean {
   return db.runInTransaction(() => {
     const row = db.raw.prepare("SELECT value FROM settings WHERE key = ?").get(key(id)) as { value: string } | undefined;
     const current = row ? parse(row.value) : null;
     if (!current || current.capacityWait) return false;
     if (current.outwardSessionId) {
+      if (!lane || lane.surface !== current.surfaceIdentity || lane.chatKey !== current.chatKey || !db.ownsLock(lane)) return false;
       const successor = db.getRun(runId);
+      if (authorisedProvider && authorisedProvider !== current.provider) {
+        const preference = db.raw.prepare("SELECT interactive_cli_preference AS pref FROM bridge_state WHERE surface_identity = ? AND chat_id = ?")
+          .get(current.surfaceIdentity, current.chatKey) as { pref: string | null } | undefined;
+        if (current.rolloutRecoveryOnly || current.selectionRevision === undefined ||
+            outwardSelectionRevision(db, current.chatKey) <= current.selectionRevision ||
+            preference?.pref !== authorisedProvider || !acceptedContinuationObjective(db, current)) return false;
+      }
       if (current.state !== "claimed" || !claimantToken || current.claimToken !== claimantToken ||
           (current.successorRunId && current.successorRunId !== runId) ||
           !successor || successor.surface_identity !== current.surfaceIdentity ||
-          successor.chat_id !== current.chatKey || successor.bot !== current.provider) return false;
+          successor.chat_id !== current.chatKey || successor.bot !== (authorisedProvider ?? current.provider)) return false;
     }
     if (current.successorRunId === runId) return true;
     db.raw.prepare("UPDATE settings SET value = ? WHERE key = ?")
@@ -891,11 +987,11 @@ export function reconcileRunContinuations(db: BridgeDb, surfaceIdentity: string,
           if (continuation.outwardSessionId && !run.outcome_status) {
             // ACP end_turn proves only the technical exchange ended. A
             // missing objective disposition must never be reported as done.
-            settleRunContinuation(db, continuation.id, "failed", "successor objective outcome unresolved", nowMs);
-          } else settleRunContinuation(db, continuation.id, "completed", undefined, nowMs);
+            settleRunContinuation(db, continuation.id, "failed", "successor objective outcome unresolved", nowMs, continuation.claimToken);
+          } else settleRunContinuation(db, continuation.id, "completed", undefined, nowMs, continuation.claimToken);
         }
         else if (run.status === "failed" || run.status === "cancelled") {
-          settleRunContinuation(db, continuation.id, run.status === "cancelled" ? "cancelled" : "failed", run.error ?? `run ${run.status}`, nowMs);
+          settleRunContinuation(db, continuation.id, run.status === "cancelled" ? "cancelled" : "failed", run.error ?? `run ${run.status}`, nowMs, continuation.claimToken);
         }
         continue;
       }
@@ -920,7 +1016,7 @@ export function reconcileRunContinuations(db: BridgeDb, surfaceIdentity: string,
       });
       continue;
     }
-    settleRunContinuation(db, continuation.id, "failed", "interrupted_by_restart", nowMs);
+    settleRunContinuation(db, continuation.id, "failed", "interrupted_by_restart", nowMs, continuation.claimToken);
   }
 }
 

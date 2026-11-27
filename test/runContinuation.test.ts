@@ -6,6 +6,8 @@ import { tmpdir } from "node:os";
 import { openDb } from "../src/db.js";
 import { persistProviderSession } from "../src/providers/sessionRuntime.js";
 import {
+  acceptedContinuationObjective,
+  outwardSelectionRevision, outwardSelectionRevisionKey,
   buildDiscordRunContinuationTurn,
   buildTelegramRunContinuationTurn,
   cancelPendingRunContinuation,
@@ -121,6 +123,38 @@ describe("ordinary Run continuation", () => {
     db.close();
   });
 
+  it.each(["", " ", "01", "-1", "1.5", "NaN"])("rejects malformed selection revision %j", (value) => {
+    const { db } = setup();
+    db.setSetting(outwardSelectionRevisionKey("identity"), value);
+    expect(() => outwardSelectionRevision(db, "identity")).toThrow();
+    db.close();
+  });
+
+  it("traces a continuation objective through its exact predecessor despite later ordinary input", () => {
+    const { db } = setup();
+    const identity = { surfaceIdentity: "acp:outward", chatKey: "objective-chain" };
+    const turn = db.addConvTurn(identity.chatKey, "user", "Inspect the result", "claude", identity);
+    db.insertRun("chain-origin", identity, "claude");
+    db.setSetting("outward-run-accepted-turn:v1:chain-origin", String(turn));
+    persistProviderSession(db, identity, "claude", "chain-session", "chain-origin");
+    const now = Date.now();
+    const first = requestRunContinuation(db, { originRunId: "chain-origin", ...identity,
+      provider: "claude", reason: "inspect", afterSeconds: 5, outwardSessionId: "ws-chain" }, now);
+    db.updateRunCompleted("chain-origin", "partial", "chain-session");
+    const claim = claimDueRunContinuation(db, first.id, now + 5001, { runId: "worker", claimToken: "token" })!;
+    db.insertRun("chain-successor", identity, "claude");
+    const lane = db.acquireLock(identity.surfaceIdentity, identity.chatKey)!;
+    expect(linkRunContinuationRun(db, first.id, "chain-successor", claim.claimToken, "claude", lane)).toBe(true);
+    db.unlock(lane);
+    const second = requestRunContinuation(db, { originRunId: "chain-successor", ...identity,
+      provider: "claude", reason: "inspect again", afterSeconds: 5, outwardSessionId: "ws-chain" }, now);
+    expect(acceptedContinuationObjective(db, second)).toEqual({ id: turn, text: "Inspect the result" });
+    expect(acceptedContinuationObjective(db, { ...second, outwardSessionId: "other-ws" })).toBeNull();
+    db.addConvTurn(identity.chatKey, "user", "A different objective", "claude", identity);
+    expect(acceptedContinuationObjective(db, second)).toEqual({ id: turn, text: "Inspect the result" });
+    db.close();
+  });
+
   it("fences ordinary outward successor linkage to its exact claimed wake", () => {
     const { db } = setup();
     const identity = { surfaceIdentity: "acp:outward", chatKey: "conversation" };
@@ -136,10 +170,24 @@ describe("ordinary Run continuation", () => {
       runId: "worker", claimToken: "fenced-claim",
     });
     expect(claimed?.claimToken).toBe("fenced-claim");
+    settleRunContinuation(db, wait.id, "failed", "not owner");
+    settleRunContinuation(db, wait.id, "failed", "stale owner", Date.now(), "stale-claim");
+    expect(listRunContinuations(db, identity.surfaceIdentity)[0].state).toBe("claimed");
+    db.insertRun("unselected-successor", identity, "codex");
+    expect(linkRunContinuationRun(db, wait.id, "unselected-successor", "fenced-claim", "codex")).toBe(false);
+    const turn = db.addConvTurn(identity.chatKey, "user", "original objective", "claude", identity);
+    db.setSetting("outward-run-accepted-turn:v1:origin", String(turn));
+    db.raw.prepare("UPDATE bridge_state SET interactive_cli_preference = ? WHERE surface_identity = ? AND chat_id = ?")
+      .run("codex", identity.surfaceIdentity, identity.chatKey);
+    db.setSetting(outwardSelectionRevisionKey(identity.chatKey), "1");
+    expect(linkRunContinuationRun(db, wait.id, "unselected-successor", "fenced-claim", "codex")).toBe(false);
     db.insertRun("successor", identity, "claude");
     expect(linkRunContinuationRun(db, wait.id, "successor", "stale-claim")).toBe(false);
     expect(linkRunContinuationRun(db, wait.id, "successor")).toBe(false);
-    expect(linkRunContinuationRun(db, wait.id, "successor", "fenced-claim")).toBe(true);
+    expect(linkRunContinuationRun(db, wait.id, "successor", "fenced-claim")).toBe(false);
+    const lane = db.acquireLock(identity.surfaceIdentity, identity.chatKey)!;
+    expect(linkRunContinuationRun(db, wait.id, "successor", "fenced-claim", "claude", lane)).toBe(true);
+    db.unlock(lane);
     expect(listRunContinuations(db, "acp:outward")[0].successorRunId).toBe("successor");
     db.close();
   });
@@ -172,8 +220,39 @@ describe("ordinary Run continuation", () => {
     expect(second?.claimToken).toBe("claim-two");
     db.insertRun("successor-after-restart", identity, "claude");
     expect(linkRunContinuationRun(db, wake.id, "successor-after-restart", "claim-one")).toBe(false);
-    expect(linkRunContinuationRun(db, wake.id, "successor-after-restart", "claim-two")).toBe(true);
+    const lane = db.acquireLock(identity.surfaceIdentity, identity.chatKey)!;
+    expect(linkRunContinuationRun(db, wake.id, "successor-after-restart", "claim-two", "claude", lane)).toBe(true);
+    db.unlock(lane);
     db.close();
+  });
+
+  it("does not replay an outward wake after successor admission survives restart", async () => {
+    const { db, path } = setup();
+    const identity = { surfaceIdentity: "acp:outward", chatKey: "crash-after-link" };
+    const now = Date.now();
+    db.insertRun("crash-origin", identity, "claude");
+    persistProviderSession(db, identity, "claude", "native", "crash-origin");
+    const wake = requestRunContinuation(db, { originRunId: "crash-origin", ...identity, provider: "claude",
+      reason: "inspect", afterSeconds: 5, outwardSessionId: "crash-ws" }, now);
+    db.updateRunCompleted("crash-origin", "pending", "native");
+    const claim = claimDueRunContinuation(db, wake.id, now + 5001, { runId: "worker", claimToken: "claim", leaseMs: 20 })!;
+    const lane = db.acquireLock(identity.surfaceIdentity, identity.chatKey)!;
+    db.insertRun("ambiguous-successor", identity, "claude");
+    expect(linkRunContinuationRun(db, wake.id, "ambiguous-successor", claim.claimToken, "claude", lane)).toBe(true);
+    db.unlock(lane); db.close();
+    const reopened = openDb(path, { serviceId: "new-worker", runId: "new-process" });
+    try {
+      const dispatch = vi.fn();
+      reconcileRunContinuations(reopened, identity.surfaceIdentity, now + 6000);
+      expect(listRunContinuations(reopened, identity.surfaceIdentity)[0]).toMatchObject({ state: "claimed", successorRunId: "ambiguous-successor" });
+      await scanRunContinuations(reopened, identity.surfaceIdentity, dispatch, now + 6001);
+      expect(dispatch).not.toHaveBeenCalled();
+      reopened.updateRunFailed("ambiguous-successor", "interrupted with uncertain effects");
+      reconcileRunContinuations(reopened, identity.surfaceIdentity, now + 6002);
+      expect(listRunContinuations(reopened, identity.surfaceIdentity)[0]).toMatchObject({ state: "failed", successorRunId: "ambiguous-successor" });
+      await scanRunContinuations(reopened, identity.surfaceIdentity, dispatch, now + 6003);
+      expect(dispatch).not.toHaveBeenCalled();
+    } finally { reopened.close(); }
   });
 
   it("persists one bounded continuation for the originating Run", () => {
