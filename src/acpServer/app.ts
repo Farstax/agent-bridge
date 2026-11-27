@@ -242,8 +242,10 @@ export function createOutwardAcpAgent(options: OutwardAcpAgentOptions = {}): Age
         for (const turn of page.turns) {
           const id = `${session.sessionId}:${turn.role}:${turn.ordinal}`;
           const last = messages.at(-1);
-          if (turn.role === "assistant" && last?.id === id) last.text += turn.text;
-          else messages.push({ id, role: turn.role, text: turn.text, createdAt: turn.createdAt, state: "complete", ...(turn.role === "user" && turn.operationId ? { operationId: turn.operationId } : {}) });
+          if (turn.role === "assistant" && last?.id === id) {
+            last.text += turn.text;
+            last.createdAt = turn.createdAt;
+          } else messages.push({ id, role: turn.role, text: turn.text, createdAt: turn.createdAt, state: "complete", ...(turn.role === "user" && turn.operationId ? { operationId: turn.operationId } : {}) });
         }
         // Queued-only text is separate from provider-facing conversation_turns.
         // Present it on the newest page; transcript cursors/ordinals remain unchanged.
