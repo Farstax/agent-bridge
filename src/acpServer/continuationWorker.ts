@@ -6,7 +6,7 @@
 import { realpath } from "node:fs/promises";
 import { isAbsolute } from "node:path";
 import { openProductionDb, type BridgeDb } from "../db.js";
-import { RunContinuationRunner, buildRunContinuationInstruction, acceptedRecoveryTurn, rolloutRecoveryProviderAuthority, listRunContinuations, type RunContinuation } from "../runContinuation.js";
+import { RunContinuationRunner, buildRunContinuationInstruction, acceptedContinuationObjective, provenReselectedOriginBinding, outwardSelectionRevision, acceptedRecoveryTurn, rolloutRecoveryProviderAuthority, listRunContinuations, type RunContinuation } from "../runContinuation.js";
 import { lookupProviderSession } from "../providers/sessionRuntime.js";
 import { outwardServiceId, recoverOutwardLanes } from "./recovery.js";
 import { prepareInteractiveCliAuth } from "../interactiveCliAuth.js";
@@ -81,8 +81,11 @@ export async function resumeOutwardOrdinaryContinuation(
   const providerSessionId = lookupProviderSession(db,
     { surfaceIdentity: OUTWARD_ACP_SURFACE, chatKey: wake.chatKey }, wake.provider);
   const recovery = wake.rolloutRecoveryOnly ? rolloutRecoveryProviderAuthority(db, wake) : null;
+  const switchedWithoutBinding = wake.selectionRevision !== undefined &&
+    outwardSelectionRevision(db, wake.chatKey) > wake.selectionRevision && !providerSessionId &&
+    Boolean(acceptedContinuationObjective(db, wake));
   const ordinary = !wake.rolloutRecoveryOnly && origin?.status === "done" && origin.session_id
-    && providerSessionId === origin.session_id;
+    && (providerSessionId === origin.session_id || switchedWithoutBinding || provenReselectedOriginBinding(db, wake, providerSessionId));
   if ((!ordinary && !recovery) || !origin ||
       origin.surface_identity !== OUTWARD_ACP_SURFACE || origin.chat_id !== wake.chatKey ||
       origin.bot !== wake.provider) {
@@ -102,7 +105,7 @@ export async function resumeOutwardOrdinaryContinuation(
     onUpdate: () => undefined,
     ordinaryResume: {
       id: wake.id, claimToken: wake.claimToken, provider: wake.provider,
-      ...(recovery ? recovery : { providerSessionId: providerSessionId! }),
+      ...(recovery ? recovery : providerSessionId ? { providerSessionId } : {}),
     },
     // A busy Workstream is admitted to the existing durable Core queue;
     // its correlation is the same claimed continuation, not a fresh user Run.

@@ -2,12 +2,15 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   beginExecutionLifecycle,
   completeExecutionLifecycle,
   isAbortRequested,
 } from "../src/cli.js";
+import { lookupProviderSession } from "../src/providers/sessionRuntime.js";
+import { markHandoffRequired, isHandoffRequired } from "../src/handoffState.js";
+import { type as eventType } from "../src/events/types.js";
 import { openDb } from "../src/db.js";
 import {
   BridgeOutwardAcpPromptExecutor,
@@ -21,6 +24,7 @@ describe("outward ACP cancellation ownership", () => {
     const db = openDb(join(root, "bridge.sqlite"), { databaseRole: "interactive" });
     try {
       const session = new OutwardAcpSessionRepository(db.raw).create({ sessionId: "late-success", conversationId: "acp:late-success", cwd: root });
+      markHandoffRequired(db, OUTWARD_ACP_SURFACE, session.conversationId, "codex", "manual_switch");
       let entered!: () => void;
       const ready = new Promise<void>((resolve) => { entered = resolve; });
       let release!: () => void;
@@ -31,7 +35,7 @@ describe("outward ACP cancellation ownership", () => {
         createEngine: () => ({ executeSurfaceNeutralTurn: async () => {
           entered();
           await gate;
-          return { text: "late response", sessionId: null, stopReason: "end_turn" as const };
+          return { text: "late response", sessionId: "late-session", nativeSessionMode: "fresh" as const, stopReason: "end_turn" as const };
         } }),
       });
       const execution = executor.execute({ session, prompt: "work", signal: new AbortController().signal, onUpdate: (update) => { updates.push(update); } });
@@ -41,12 +45,71 @@ describe("outward ACP cancellation ownership", () => {
       const [result] = await Promise.all([execution, cancellation]);
       expect(result.stopReason).toBe("cancelled");
       expect(db.getRun("late-success-run").status).toBe("cancelled");
+      expect(isHandoffRequired(db, OUTWARD_ACP_SURFACE, session.conversationId, "codex")).toBe(true);
+      expect(lookupProviderSession(db, { surfaceIdentity: OUTWARD_ACP_SURFACE, chatKey: session.conversationId }, "codex")).toBeNull();
       expect(db.getRecentConvTurns(session.conversationId, 20, undefined, OUTWARD_ACP_SURFACE).filter((turn) => turn.role === "assistant")).toEqual([]);
       expect(JSON.stringify(updates)).not.toContain("late response");
     } finally {
       db.close();
       rmSync(root, { recursive: true, force: true });
     }
+  });
+
+  it("honours Stop while a provider result waits for an update to be delivered", async () => {
+    const root = mkdtempSync(join(tmpdir(), "bridge-cancel-update-"));
+    const db = openDb(join(root, "bridge.sqlite"), { databaseRole: "interactive" });
+    const session = new OutwardAcpSessionRepository(db.raw).create({ sessionId: "update-ws", conversationId: "acp:update-ws", cwd: root });
+    let entered!: () => void; const ready = new Promise<void>((resolve) => { entered = resolve; });
+    let release!: () => void; const gate = new Promise<void>((resolve) => { release = resolve; });
+    const executor = new BridgeOutwardAcpPromptExecutor({ db, providerChain: ["codex"], runId: () => "update-run",
+      createEngine: () => ({ executeSurfaceNeutralTurn: async (input) => {
+        input.collect(eventType.runStarted({ runId: input.runId, bot: "codex", chatId: String(input.chatId),
+          chatKey: input.chatKey, command: "fake", cwd: root, model: null }));
+        input.onInterimCommentary?.("progress", "1");
+        return { text: "late", sessionId: "late-session", nativeSessionMode: "fresh" as const, stopReason: "end_turn" as const };
+      } }) });
+    try {
+      const execution = executor.execute({ session, prompt: "work", interimCommentary: true, signal: new AbortController().signal,
+        onUpdate: async () => { entered(); await gate; } });
+      await ready;
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      const cancellation = executor.cancel(session);
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      release();
+      const [response] = await Promise.all([execution, cancellation]);
+      expect(response.stopReason).toBe("cancelled");
+      expect(db.getRun("update-run").status).toBe("cancelled");
+      expect(lookupProviderSession(db, { surfaceIdentity: OUTWARD_ACP_SURFACE, chatKey: session.conversationId }, "codex")).toBeNull();
+    } finally { release(); await executor.shutdown(); db.close(); rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it("honours a different process Stop committed immediately before terminal settlement", async () => {
+    const root = mkdtempSync(join(tmpdir(), "bridge-cross-stop-"));
+    const path = join(root, "bridge.sqlite");
+    const db = openDb(path, { databaseRole: "interactive" });
+    const other = openDb(path, { databaseRole: "interactive" });
+    const session = new OutwardAcpSessionRepository(db.raw).create({ sessionId: "cross-ws", conversationId: "acp:cross-ws", cwd: root });
+    let providerReturned = false; let injected = false;
+    const original = db.runWithLockFence.bind(db);
+    vi.spyOn(db, "runWithLockFence").mockImplementation((lane, operation) => {
+      if (providerReturned && !injected) {
+        injected = true;
+        other.setSetting(`outward-stop-fence:${session.conversationId}`, new Date().toISOString());
+      }
+      return original(lane, operation);
+    });
+    const executor = new BridgeOutwardAcpPromptExecutor({ db, providerChain: ["codex"], runId: () => "cross-run",
+      createEngine: () => ({ executeSurfaceNeutralTurn: async () => {
+        providerReturned = true;
+        return { text: "late", sessionId: "late-session", nativeSessionMode: "fresh" as const, stopReason: "end_turn" as const };
+      } }) });
+    try {
+      const response = await executor.execute({ session, prompt: "work", signal: new AbortController().signal, onUpdate: () => undefined });
+      expect(injected).toBe(true);
+      expect(response.stopReason).toBe("cancelled");
+      expect(db.getRun("cross-run").status).toBe("cancelled");
+      expect(lookupProviderSession(db, { surfaceIdentity: OUTWARD_ACP_SURFACE, chatKey: session.conversationId }, "codex")).toBeNull();
+    } finally { await executor.shutdown(); other.close(); db.close(); rmSync(root, { recursive: true, force: true }); }
   });
 
   it("keeps cancellation asserted when it arrives before Bridge lifecycle registration", async () => {

@@ -14,6 +14,7 @@ import { type as eventType, type BridgeEvent, type RunCompletedEvent } from "../
 import { executionLaneCoordinator } from "../executionLaneCoordinator.js";
 import { SAFE_SURFACE_CAPABILITIES, type MessagingPlatform } from "../platform.js";
 import { interactiveChainKinds, parseCliChain } from "../providers/selection.js";
+import { clearHandoffRequired } from "../handoffState.js";
 import { lookupProviderSession, persistProviderSession } from "../providers/sessionRuntime.js";
 import type { OutwardAcpSessionRecord } from "../repositories/outwardAcpSessionRepository.js";
 import { OUTWARD_USER_TURN_OPERATION_PREFIX } from "../repositories/conversationRepository.js";
@@ -25,7 +26,7 @@ import { QUEUED_ATTACHMENT_MARKER, readRetainedOutwardAcpAttachments, retainOutw
 import { rememberQueuedDisplay, settleQueuedDisplay, retireQueuedDisplay } from "./queuedDisplay.js";
 import { resolveLaneBusyMessageMode } from "../busyMessageMode.js";
 import { discardDeskRunArtifacts, retainDeskArtifacts } from "./artifacts.js";
-import { hasPendingCapacityWait, listRunContinuations, linkCapacityContinuationRun, linkRunContinuationRun, RUN_CONTINUATION_PREFIX, OUTWARD_RUN_ACCEPTED_TURN_PREFIX, requestRunContinuation, rolloutRecoveryProviderAuthority, cancelPendingRunContinuation, settleRunContinuation, type RunContinuation } from "../runContinuation.js";
+import { hasPendingCapacityWait, acceptedContinuationObjective, provenReselectedOriginBinding, outwardSelectionRevision, outwardSelectionRevisionKey, listRunContinuations, linkCapacityContinuationRun, linkRunContinuationRun, RUN_CONTINUATION_PREFIX, OUTWARD_RUN_ACCEPTED_TURN_PREFIX, requestRunContinuation, rolloutRecoveryProviderAuthority, cancelPendingRunContinuation, settleRunContinuation, type RunContinuation } from "../runContinuation.js";
 
 
 import { OUTWARD_ACP_SURFACE, outwardServiceId, recoverOutwardLanes } from "./recovery.js";
@@ -90,6 +91,7 @@ type QueuedExecution = {
   laneHandle: ExecutionLaneHandle;
   key: string;
   retainedId: string | null;
+  ordinaryClaimToken?: string;
   settled?: boolean;
   coreOutcome?: "committed" | "deferred" | "settled";
 };
@@ -453,6 +455,9 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
         } else {
           applyManualCliSwitchHandoff(db, identity, target as CliKind);
         }
+        const revision = outwardSelectionRevision(db, session.conversationId);
+        if (revision >= Number.MAX_SAFE_INTEGER) throw new Error("outward selection revision exhausted");
+        db.setSetting(outwardSelectionRevisionKey(session.conversationId), String(revision + 1));
         this.routers.delete(session.conversationId);
       }
     });
@@ -831,7 +836,8 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
     };
     const idempotencyKey = queued?.key
       ?? (input.busyMessages === true && input.requestId ? requestKey(input.session, input.requestId) : null);
-    const provider = input.ordinaryResume?.provider ?? this.selectedProvider(input.session);
+    let provider = input.ordinaryResume?.provider ?? this.selectedProvider(input.session);
+    let continuationObjective: string | undefined;
     const ordinaryWorkstreamId = input.ordinaryResume || (input.ordinaryContinuations && this.supportsOrdinaryContinuations)
       ? input.session.sessionId : undefined;
     const runId = input.runId ?? this.options.runId?.() ?? randomUUID();
@@ -859,19 +865,58 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
         }
         if (input.ordinaryResume) {
           const current = this.options.lookupSession?.(input.session.sessionId);
-          const boundProvider = lookupProviderSession(db, identity, provider);
+          const boundProvider = lookupProviderSession(db, identity, input.ordinaryResume.provider);
           const claimed = listRunContinuations(db, OUTWARD_ACP_SURFACE)
             .find((wake) => wake.id === input.ordinaryResume!.id && wake.state === "claimed"
               && wake.claimToken === input.ordinaryResume!.claimToken);
-          const recovery = claimed && input.ordinaryResume.rolloutRecovery
+          if (!claimed || claimed.outwardSessionId !== input.session.sessionId ||
+              claimed.chatKey !== identity.chatKey || claimed.provider !== input.ordinaryResume.provider ||
+              !Number.isFinite(Date.parse(claimed.expiresAt)) || Date.parse(claimed.expiresAt) <= Date.now() ||
+              !claimed.claimExpiresAt || !Number.isFinite(Date.parse(claimed.claimExpiresAt)) ||
+              (Date.parse(claimed.claimExpiresAt) <= Date.now() &&
+                !(queued && queued.key === `${RUN_CONTINUATION_PREFIX}${claimed.id}` &&
+                  db.ownsPendingClaim(lane, queued.id) && !claimed.successorRunId))) {
+            throw new Error("outward ordinary continuation claim or identity changed");
+          }
+          const origin = db.getRun(claimed.originRunId);
+          if (!origin || origin.surface_identity !== claimed.surfaceIdentity ||
+              origin.chat_id !== claimed.chatKey || origin.bot !== claimed.provider ||
+              (!claimed.rolloutRecoveryOnly && (origin.status !== "done" || !origin.session_id))) {
+            throw new Error("outward ordinary continuation origin changed");
+          }
+          const recovery = input.ordinaryResume.rolloutRecovery
             ? rolloutRecoveryProviderAuthority(db, claimed) : null;
+          const switchedWithoutBinding = claimed.selectionRevision !== undefined &&
+            outwardSelectionRevision(db, identity.chatKey) > claimed.selectionRevision &&
+            !boundProvider && Boolean(acceptedContinuationObjective(db, claimed));
           const bindingMatches = input.ordinaryResume.rolloutRecovery
             ? Boolean(recovery && (boundProvider ?? undefined) === recovery.providerSessionId)
-            : Boolean(input.ordinaryResume.providerSessionId
-              && boundProvider === input.ordinaryResume.providerSessionId);
+            : Boolean(input.ordinaryResume.providerSessionId && boundProvider === input.ordinaryResume.providerSessionId &&
+              (boundProvider === origin.session_id || provenReselectedOriginBinding(db, claimed, boundProvider))) ||
+              Boolean(switchedWithoutBinding);
+          const revision = outwardSelectionRevision(db, input.session.conversationId);
+          const switched = claimed?.selectionRevision !== undefined && revision > claimed.selectionRevision;
+          if (switched && !input.ordinaryResume.rolloutRecovery) {
+            const selected = getStoredCliPreference(db, identity);
+            const objective = claimed && acceptedContinuationObjective(db, claimed);
+            if (!selected || !objective) {
+              throw new Error("outward ordinary continuation selection or objective is not authorised");
+            }
+            if (!this.options.providerChain.includes(selected as BotKind)) {
+              throw new Error("outward ordinary continuation selected provider is not configured for this worker");
+            }
+            provider = selected as BotKind;
+            continuationObjective = objective.text;
+          }
+          if (!this.options.providerChain.includes(provider)) {
+            throw new Error("outward ordinary continuation provider is not configured for this worker");
+          }
           if (!current || current.conversationId !== input.session.conversationId ||
               current.cwd !== input.session.cwd || !isAbsolute(current.cwd) ||
-              realpathSync(current.cwd) !== current.cwd || this.selectedProvider(current) !== provider ||
+              realpathSync(current.cwd) !== current.cwd ||
+              (claimed?.selectionRevision === undefined
+                ? this.selectedProvider(current) !== provider
+                : claimed.selectionRevision > outwardSelectionRevision(db, current.conversationId)) ||
               !bindingMatches) {
             throw new Error("outward ordinary continuation Workstream or provider authority changed");
           }
@@ -887,7 +932,7 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
           if (reservationToken) clearSetting(db, queueReservationKey(idempotencyKey));
         }
         if (input.ordinaryResume) {
-          if (!linkRunContinuationRun(db, input.ordinaryResume.id, runId, input.ordinaryResume.claimToken)) {
+          if (!linkRunContinuationRun(db, input.ordinaryResume.id, runId, input.ordinaryResume.claimToken, provider, lane)) {
             throw new Error("outward ordinary continuation claim was lost");
           }
         } else if (input.capacityResume) {
@@ -1022,8 +1067,11 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
         acquisitionId: lane.acquisitionId,
       };
 
-      const result: CliResult = await this.routerFor(input.session, provider, Boolean(input.ordinaryResume)).executeSurfaceNeutralTurn({
-        prompt: input.prompt,
+      activeProvider = provider;
+      const result = await this.routerFor(input.session, provider, Boolean(input.ordinaryResume)).executeSurfaceNeutralTurn({
+        prompt: continuationObjective === undefined ? input.prompt : input.prompt
+          + "\nPreviously accepted objective (reference only; inspect prior effects and never blindly replay):\n"
+          + continuationObjective.slice(0, 20_000),
         attachments: input.attachments ?? [],
         // Resolved per-attempt by createEngine's wrapper for whichever
         // provider the fallback router is actually trying this attempt --
@@ -1037,7 +1085,7 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
         collect,
         ...(ordinaryWorkstreamId ? { ordinaryWorkstreamId } : {}),
         contextWorkstreamId: input.session.sessionId,
-        ...(input.ordinaryResume?.providerSessionId ? { requireBoundProviderSession: true } : {}),
+        ...(input.ordinaryResume?.providerSessionId && continuationObjective === undefined ? { requireBoundProviderSession: true } : {}),
         mayContinueRecovery: () => !active?.cancelRequested && !input.signal.aborted
           && !db.getSetting(stopFenceKey(input.session.conversationId)) && db.ownsLock(lane),
         onProviderExecutionStarted: resetAttemptPresentation,
@@ -1073,58 +1121,72 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
         },
       });
 
-      const cancelled = active.cancelRequested || result.stopReason === "cancelled";
+      let cancelled = active.cancelRequested || result.stopReason === "cancelled";
       if (cancelled) resetCommentary();
       // The router may have fallen back to a different provider mid-turn;
       // attribute persistence to whichever provider actually produced the
       // terminal event, or at minimum the latest surviving run.started event.
       const terminalBot = (event: { bot: RouteableBotKind } | null): RouteableBotKind | undefined => event?.bot;
       const actualProvider: RouteableBotKind = terminalBot(completed) ?? terminalBot(providerCancelled) ?? activeProvider;
-      db.runWithLockFence(lane, () => {
-        persistProviderSession(db, { surfaceIdentity: OUTWARD_ACP_SURFACE, chatKey: input.session.conversationId }, actualProvider, result.sessionId, runId);
-      });
-
       if (cancelled || !result.text) resetPreview();
       await updateChain;
+      // Stop may win while an ACP transport update is still draining.
+      cancelled = cancelled || active.cancelRequested || Boolean(db.getSetting(stopFenceKey(input.session.conversationId)));
+      if (cancelled) { resetCommentary(); resetPreview(); }
 
-      if (cancelled) {
-        await discardDeskRunArtifacts(input.session.conversationId, runId).catch(() => {
-          console.warn("[acp:outward] could not reclaim cancelled Desk artifacts");
-        });
-        if (db.getRun(runId)?.status === "running") {
-          eventStore.collect(active.cancelRequested
-            ? cancelledEvent(runId, actualProvider, input.session, active.cancelReason ?? "shutdown")
-            : providerCancelled ?? cancelledEvent(runId, actualProvider, input.session, "provider"));
-        }
-      } else if (completed) {
-        eventStore.queueCompleted(completed);
-      } else {
-        eventStore.queueCompleted(eventType.runCompleted({
-          runId,
-          bot: actualProvider,
-          chatId: input.session.sessionId,
-          chatKey: input.session.conversationId,
-          text: result.text,
-          sessionId: result.sessionId,
-          ...(result.telemetry ? { telemetry: result.telemetry } : {}),
-        }));
-      }
       db.runWithLockFence(lane, () => db.runInTransaction(() => {
+        // Stop admission and terminal settlement serialize in SQLite. The
+        // fence must be re-read inside this transaction, including for Stop
+        // requests from a different process.
+        cancelled = cancelled || active!.cancelRequested || Boolean(db.getSetting(stopFenceKey(input.session.conversationId)));
+        if (cancelled) {
+          if (db.getRun(runId)?.status === "running") {
+            eventStore!.collect(active!.cancelRequested
+              ? cancelledEvent(runId, actualProvider, input.session, active!.cancelReason ?? "shutdown")
+              : providerCancelled ?? cancelledEvent(runId, actualProvider, input.session, "user"));
+          }
+        } else if (completed) {
+          eventStore!.queueCompleted(completed);
+        } else {
+          eventStore!.queueCompleted(eventType.runCompleted({
+            runId, bot: actualProvider, chatId: input.session.sessionId, chatKey: input.session.conversationId,
+            text: result.text, sessionId: result.sessionId, ...(result.telemetry ? { telemetry: result.telemetry } : {}),
+          }));
+        }
+        if (!cancelled) {
+          persistProviderSession(db, { surfaceIdentity: OUTWARD_ACP_SURFACE, chatKey: input.session.conversationId }, actualProvider, result.sessionId, runId);
+        }
         if (!cancelled && result.text) {
           db.addConvTurn(input.session.conversationId, "assistant", result.text, actualProvider, {
             surfaceIdentity: OUTWARD_ACP_SURFACE,
           });
-          // A successful fallback becomes the next turn's durable provider,
-          // including after ACP process restarts. Never persist a failed attempt.
-          if (actualProvider !== provider) setUserCliPreference(db, this.identity(input.session), actualProvider as CliKind);
+          // An ordinary wake belongs to the existing selection. Its fallback
+          // provider may schedule another wake without changing that selection.
+          if (!input.ordinaryResume && actualProvider !== provider) {
+            setUserCliPreference(db, this.identity(input.session), actualProvider as CliKind);
+          }
         }
         eventStore!.finalize();
         if (db.getRun(runId)?.status !== (cancelled ? "cancelled" : "done")) {
           throw new Error("outward ACP terminal Run state was not persisted");
         }
-        db.raw.prepare("DELETE FROM settings WHERE key = ?")
-          .run(OUTWARD_RUN_ACCEPTED_TURN_PREFIX + runId);
+        if (!cancelled && result.sessionId && result.nativeSessionMode === "fresh") {
+          clearHandoffRequired(db, OUTWARD_ACP_SURFACE, input.session.conversationId, actualProvider);
+        }
+        // A pending ordinary wake needs this exact accepted-turn provenance
+        // after the originating Run finishes, including through later wakes.
+        if (!listRunContinuations(db, OUTWARD_ACP_SURFACE).some((wake) =>
+          !wake.capacityWait && wake.originRunId === runId && wake.outwardSessionId === input.session.sessionId &&
+          (wake.state === "pending" || wake.state === "claimed"))) {
+          db.raw.prepare("DELETE FROM settings WHERE key = ?").run(OUTWARD_RUN_ACCEPTED_TURN_PREFIX + runId);
+        }
       }));
+      if (cancelled) {
+        resetCommentary(); resetPreview();
+        await discardDeskRunArtifacts(input.session.conversationId, runId).catch(() => {
+          console.warn("[acp:outward] could not reclaim cancelled Desk artifacts");
+        });
+      }
       if (!cancelled && result.text && actualProvider !== provider) this.routers.delete(input.session.conversationId);
       if (!cancelled && result.text && !previewEmitted) {
         await sendUpdate({
@@ -1140,6 +1202,16 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
         console.warn("[acp:outward] could not reclaim failed Desk artifacts");
       });
       if (error instanceof QueuedMessageStopped) return { stopReason: "cancelled" };
+      if (!eventStore && input.ordinaryResume && db.ownsLock(lane)) {
+        db.runWithLockFence(lane, () => {
+          const wake = listRunContinuations(db, OUTWARD_ACP_SURFACE).find((item) => item.id === input.ordinaryResume!.id);
+          if (wake?.state === "claimed" && wake.claimToken === input.ordinaryResume!.claimToken &&
+              wake.outwardSessionId === input.session.sessionId && wake.chatKey === input.session.conversationId &&
+              !wake.successorRunId && Number.isFinite(Date.parse(wake.expiresAt)) && Date.parse(wake.expiresAt) <= Date.now()) {
+            settleRunContinuation(db, wake.id, "expired", undefined, Date.now(), wake.claimToken);
+          }
+        });
+      }
       if (active?.cancelRequested) {
         if (eventStore && db.getRun(runId)?.status === "running") {
           eventStore.collect(cancelledEvent(runId, activeProvider, input.session, active.cancelReason ?? "shutdown"));
@@ -1347,7 +1419,20 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
     if (!run || run.status === "running") return "settled"; // preserve the run link and claimed row; never replay uncertain work
     const settled = db.runInImmediateTransaction(() => {
       if (!db.ownsPendingClaim(queued.laneHandle, queued.id)) return false;
-      this.writeQueueReceipt(queued.key, { status: run.status, runId });
+      let receiptStatus = run.status;
+      if (queued.key.startsWith(RUN_CONTINUATION_PREFIX)) {
+        const wakeId = queued.key.slice(RUN_CONTINUATION_PREFIX.length);
+        const wake = listRunContinuations(db, OUTWARD_ACP_SURFACE).find((item) => item.id === wakeId);
+        if (!wake || wake.state !== "claimed" || !wake.claimToken || wake.claimToken !== queued.ordinaryClaimToken ||
+            wake.successorRunId !== runId || wake.outwardSessionId !== session.sessionId || wake.chatKey !== session.conversationId) return false;
+        const outcome = run.status === "done" ? (run.outcome_status ? "completed" : "failed")
+          : run.status === "cancelled" ? "cancelled" : "failed";
+        settleRunContinuation(db, wake.id, outcome,
+          run.status === "done" && !run.outcome_status ? "successor objective outcome unresolved" : run.error ?? undefined,
+          Date.now(), wake.claimToken);
+        if (outcome === "failed") receiptStatus = "failed";
+      }
+      this.writeQueueReceipt(queued.key, { status: receiptStatus, runId });
       clearSetting(db, queueRunLinkKey(queued.key));
       clearSetting(db, `outward-queue-attempts:${queued.key}`);
       return true;
@@ -1359,31 +1444,6 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
   async executeQueuedMessage(session: OutwardAcpSessionRecord, message: PendingMessage): Promise<"committed" | "deferred" | "settled"> {
     const key = message.scheduledOccurrenceKey;
     if (!key || !message.laneHandle) return "committed";
-    const ordinaryId = key.startsWith(RUN_CONTINUATION_PREFIX)
-      ? key.slice(RUN_CONTINUATION_PREFIX.length) : null;
-    const ordinaryWait = ordinaryId
-      ? listRunContinuations(this.options.db, OUTWARD_ACP_SURFACE).find((item) => item.id === ordinaryId) : null;
-    const origin = ordinaryWait ? this.options.db.getRun(ordinaryWait.originRunId) : null;
-    const providerSessionId = ordinaryWait ? lookupProviderSession(this.options.db,
-      this.identity(session), ordinaryWait.provider) : null;
-    const recovery = ordinaryWait?.rolloutRecoveryOnly && ordinaryWait.state === "claimed"
-      ? rolloutRecoveryProviderAuthority(this.options.db, ordinaryWait) : null;
-    const regular = !ordinaryWait?.rolloutRecoveryOnly && origin?.status === "done"
-      && origin.session_id && providerSessionId && origin.session_id === providerSessionId;
-    const ordinaryResume = ordinaryWait?.state === "claimed" && ordinaryWait.claimToken &&
-      ordinaryWait.outwardSessionId === session.sessionId &&
-      this.selectedProvider(session) === ordinaryWait.provider &&
-      (regular || recovery)
-      ? { id: ordinaryWait.id, claimToken: ordinaryWait.claimToken, provider: ordinaryWait.provider,
-          ...(recovery ? recovery : { providerSessionId: providerSessionId! }) } : undefined;
-    if (ordinaryId && !ordinaryResume) {
-      if (ordinaryWait?.claimToken) {
-        settleRunContinuation(this.options.db, ordinaryWait.id, "failed",
-          "ordinary continuation Workstream or provider authority changed", Date.now(), ordinaryWait.claimToken);
-      }
-      this.writeQueueReceipt(key, { status: "failed", reason: "ordinary_continuation_authority_lost" });
-      return "committed";
-    }
     const existingReceipt = this.options.db.getSetting(queueReceiptKey(key));
     if (existingReceipt) {
       try {
@@ -1394,8 +1454,59 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
           this.writeQueueReceipt(key, { status: "uncertain", reason: "steering_interrupted" });
           return "committed";
         }
-        if (["done", "failed", "cancelled", "steered", "uncertain"].includes(String(receipt.status))) return "committed";
+        if (["done", "failed", "cancelled", "expired", "steered", "uncertain"].includes(String(receipt.status))) return "committed";
       } catch { /* corrupt receipts fail closed through the Run link below */ }
+    }
+    const ordinaryId = key.startsWith(RUN_CONTINUATION_PREFIX)
+      ? key.slice(RUN_CONTINUATION_PREFIX.length) : null;
+    const ordinaryWait = ordinaryId
+      ? listRunContinuations(this.options.db, OUTWARD_ACP_SURFACE).find((item) => item.id === ordinaryId) : null;
+    if (ordinaryWait?.state === "claimed" && ordinaryWait.claimToken &&
+        ordinaryWait.outwardSessionId === session.sessionId && ordinaryWait.chatKey === session.conversationId &&
+        !ordinaryWait.successorRunId && Number.isFinite(Date.parse(ordinaryWait.expiresAt)) &&
+        Date.parse(ordinaryWait.expiresAt) <= Date.now()) {
+      return this.options.db.runWithLockFence(message.laneHandle, () => {
+        if (!this.options.db.ownsPendingClaim(message.laneHandle!, message.id)) return "settled";
+        const current = listRunContinuations(this.options.db, OUTWARD_ACP_SURFACE).find((item) => item.id === ordinaryWait.id);
+        if (!current || current.state !== "claimed" || current.claimToken !== ordinaryWait.claimToken ||
+            current.successorRunId || Date.parse(current.expiresAt) > Date.now()) return "settled";
+        settleRunContinuation(this.options.db, current.id, "expired", undefined, Date.now(), current.claimToken);
+        this.writeQueueReceipt(key, { status: "expired", reason: "continuation_expired" });
+        return "committed";
+      });
+    }
+    const origin = ordinaryWait ? this.options.db.getRun(ordinaryWait.originRunId) : null;
+    const providerSessionId = ordinaryWait ? lookupProviderSession(this.options.db,
+      this.identity(session), ordinaryWait.provider) : null;
+    const recovery = ordinaryWait?.rolloutRecoveryOnly && ordinaryWait.state === "claimed"
+      ? rolloutRecoveryProviderAuthority(this.options.db, ordinaryWait) : null;
+    const switchedWithoutBinding = ordinaryWait?.selectionRevision !== undefined &&
+      outwardSelectionRevision(this.options.db, session.conversationId) > ordinaryWait.selectionRevision &&
+      !providerSessionId && Boolean(acceptedContinuationObjective(this.options.db, ordinaryWait));
+    const regular = !ordinaryWait?.rolloutRecoveryOnly && origin?.status === "done"
+      && origin.session_id && (origin.session_id === providerSessionId || switchedWithoutBinding ||
+        provenReselectedOriginBinding(this.options.db, ordinaryWait!, providerSessionId));
+    const ordinaryResume = ordinaryWait?.state === "claimed" && ordinaryWait.claimToken &&
+      ordinaryWait.provider !== "custom-acp" &&
+      ordinaryWait.outwardSessionId === session.sessionId &&
+      (ordinaryWait.selectionRevision === undefined
+        ? this.selectedProvider(session) === ordinaryWait.provider
+        : ordinaryWait.selectionRevision <= outwardSelectionRevision(this.options.db, session.conversationId)) &&
+      (regular || recovery)
+      ? { id: ordinaryWait.id, claimToken: ordinaryWait.claimToken, provider: ordinaryWait.provider,
+          ...(recovery ? recovery : providerSessionId ? { providerSessionId } : {}) } : undefined;
+    if (ordinaryId && !ordinaryResume) {
+      const unconfiguredLegacy = ordinaryWait?.state === "claimed" && ordinaryWait.selectionRevision === undefined &&
+        ordinaryWait.outwardSessionId === session.sessionId && ordinaryWait.chatKey === session.conversationId &&
+        origin?.surface_identity === ordinaryWait.surfaceIdentity && origin.chat_id === ordinaryWait.chatKey &&
+        origin.bot === ordinaryWait.provider && regular && ordinaryWait.provider !== "custom-acp" && !this.options.providerChain.includes(ordinaryWait.provider);
+      if (ordinaryWait?.claimToken) {
+        settleRunContinuation(this.options.db, ordinaryWait.id, "failed", unconfiguredLegacy
+          ? "ordinary continuation provider is not configured for this worker"
+          : "ordinary continuation Workstream or provider authority changed", Date.now(), ordinaryWait.claimToken);
+      }
+      this.writeQueueReceipt(key, { status: "failed", reason: unconfiguredLegacy ? "provider_not_configured" : "ordinary_continuation_authority_lost" });
+      return "committed";
     }
     const linkedRun = this.options.db.getSetting(queueRunLinkKey(key));
     if (linkedRun) {
@@ -1416,7 +1527,8 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
         return "committed";
       }
     }
-    const queued: QueuedExecution = { id: message.id, laneHandle: message.laneHandle!, key, retainedId };
+    const queued: QueuedExecution = { id: message.id, laneHandle: message.laneHandle!, key, retainedId,
+      ...(ordinaryResume ? { ordinaryClaimToken: ordinaryResume.claimToken } : {}) };
     try {
       await this.runOnLane({
         session,
@@ -1494,6 +1606,17 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
       // Authorisation for a queued Run commits with its single queue admission;
       // an independent worker cannot drain it between enqueue and consent.
       admission = db.runInImmediateTransaction(() => {
+        if (input.ordinaryResume) {
+          const wake = listRunContinuations(db, OUTWARD_ACP_SURFACE).find((item) => item.id === input.ordinaryResume!.id);
+          if (!wake || wake.state !== "claimed" || wake.claimToken !== input.ordinaryResume.claimToken ||
+              wake.outwardSessionId !== session.sessionId || wake.chatKey !== session.conversationId ||
+              wake.provider !== input.ordinaryResume.provider || wake.successorRunId ||
+              !wake.claimExpiresAt || !Number.isFinite(Date.parse(wake.claimExpiresAt)) ||
+              Date.parse(wake.claimExpiresAt) <= Date.now() ||
+              !Number.isFinite(Date.parse(wake.expiresAt)) || Date.parse(wake.expiresAt) <= Date.now()) {
+            throw new Error("outward ordinary continuation claim was cancelled or changed");
+          }
+        }
         stopPendingAtAdmission = Boolean(db.getSetting(stopFenceKey(session.conversationId)));
         const accepted = db.admitQueuedMessageOnce(OUTWARD_ACP_SURFACE, session.conversationId, {
           prompt: input.prompt,

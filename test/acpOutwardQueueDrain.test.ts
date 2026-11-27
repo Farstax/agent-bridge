@@ -7,7 +7,10 @@ import { openDb } from "../src/db.js";
 import { executionLaneCoordinator } from "../src/executionLaneCoordinator.js";
 import { type as eventType } from "../src/events/types.js";
 import { setLaneBusyMessageMode } from "../src/busyMessageMode.js";
-import { listRunContinuations } from "../src/runContinuation.js";
+import { claimDueRunContinuation, listRunContinuations, requestRunContinuation } from "../src/runContinuation.js";
+import { persistProviderSession } from "../src/providers/sessionRuntime.js";
+import { resumeOutwardOrdinaryContinuation } from "../src/acpServer/continuationWorker.js";
+import { recordRunOutcome } from "../src/runOutcome.js";
 import { OutwardAcpSessionRepository } from "../src/repositories/outwardAcpSessionRepository.js";
 import { BridgeOutwardAcpPromptExecutor, OUTWARD_ACP_SURFACE } from "../src/acpServer/execution.js";
 import { BridgeEngine, type PendingMessage, type QueuedMessageOutcome } from "../src/engine.js";
@@ -130,6 +133,111 @@ describe("outward ACP durable queue ownership", () => {
       release();
       await active;
     } finally { release(); f.cleanup(); }
+  });
+
+  it.each([[false, false, false, false, false, false], [true, false, false, false, false, false], [false, true, false, false, false, false],
+    [false, false, true, false, false, false], [false, false, false, true, false, false], [false, false, false, false, true, false],
+    [false, false, false, false, false, true]])
+    ("settles queued wakes (stop=%s expiry=%s missing=%s rotated=%s continue=%s legacyMissing=%s)", async (stop, expired, missing, rotated, continued, legacyMissing) => {
+    const f = fixture();
+    const identity = { surfaceIdentity: OUTWARD_ACP_SURFACE, chatKey: f.session.conversationId };
+    const lookup = (id: string) => new OutwardAcpSessionRepository(f.db.raw).get(id);
+    const calls: string[] = [];
+    let executor!: BridgeOutwardAcpPromptExecutor;
+    const core = coreQueueOwner(f.db, (message) => executor.executeQueuedMessage(f.session, message));
+    executor = new BridgeOutwardAcpPromptExecutor({
+      db: f.db, providerChain: ["codex", "claude"], enableDeferredCapacity: true,
+      lookupSession: lookup, isProviderAvailable: () => true,
+      createEngine: (_session, provider) => ({
+        executeSurfaceNeutralTurn: async (input) => {
+          calls.push(provider);
+          expect(input.prompt).toContain("inspect the pending result");
+          input.collect(eventType.runStarted({ runId: input.runId, bot: provider, chatId: String(input.chatId),
+            chatKey: input.chatKey, command: "fake", cwd: f.root, model: null }));
+          if (!missing) recordRunOutcome(f.db, { runId: input.runId, ...identity, provider, status: continued ? "continue" : "complete", detail: "done",
+            lock: { serviceId: input.laneHandle.serviceId, runId: input.laneHandle.runId, acquisitionId: input.laneHandle.acquisitionId } });
+          if (rotated) {
+            const current = listRunContinuations(f.db, OUTWARD_ACP_SURFACE)[0];
+            f.db.setSetting(`run-continuation:v1:${current.id}`, JSON.stringify({ ...current, claimToken: "different-token" }));
+          }
+          return { text: "done", sessionId: "destination-session", stopReason: "end_turn" as const };
+        },
+        recoverPendingQueue: (chatKey) => core.recoverPendingQueue(chatKey),
+      }),
+    });
+    try {
+      executor.selectProvider(f.session, "codex");
+      const turn = f.db.addConvTurn(identity.chatKey, "user", "inspect the pending result", "codex", identity);
+      f.db.insertRun("queued-origin", identity, "codex");
+      f.db.setSetting("outward-run-accepted-turn:v1:queued-origin", String(turn));
+      persistProviderSession(f.db, identity, "codex", "source-session", "queued-origin");
+      const now = Date.now();
+      const wake = requestRunContinuation(f.db, { originRunId: "queued-origin", ...identity, provider: "codex",
+        reason: "check", afterSeconds: 5, outwardSessionId: f.session.sessionId }, now);
+      f.db.updateRunCompleted("queued-origin", "pending", "source-session");
+      const claimed = claimDueRunContinuation(f.db, wake.id, now + 5001, { runId: "worker", claimToken: "claim" })!;
+      const lane = f.db.acquireLock(OUTWARD_ACP_SURFACE, identity.chatKey)!;
+      expect(await resumeOutwardOrdinaryContinuation(f.db, lookup, executor, claimed)).toBe("queued");
+      f.db.unlock(lane);
+      if (!legacyMissing) expect(executor.selectProvider(f.session, "claude").selectedProvider).toBe("claude");
+      const queuedWake = listRunContinuations(f.db, OUTWARD_ACP_SURFACE)[0];
+      const persistedWake = { ...queuedWake, claimExpiresAt: new Date(Date.now() - 1).toISOString(),
+        ...(expired ? { expiresAt: new Date(Date.now() - 1).toISOString() } : {}) };
+      if (legacyMissing) delete persistedWake.selectionRevision;
+      f.db.setSetting(`run-continuation:v1:${wake.id}`, JSON.stringify(persistedWake));
+      if (legacyMissing) {
+        await executor.shutdown();
+        executor = new BridgeOutwardAcpPromptExecutor({ db: f.db, providerChain: ["claude"], enableDeferredCapacity: true,
+          lookupSession: lookup, createEngine: () => ({ executeSurfaceNeutralTurn: async () => { calls.push("unexpected"); throw new Error("unexpected invocation"); } }) });
+      }
+      if (stop) {
+        expect(await executor.cancel(f.session)).toBe("confirmed");
+        await core.recoverPendingQueue(identity.chatKey, undefined, undefined, false);
+        expect(calls).toEqual([]);
+        expect(listRunContinuations(f.db, OUTWARD_ACP_SURFACE)[0]).toMatchObject({ state: "cancelled" });
+        expect(f.db.pendingMsgCount(OUTWARD_ACP_SURFACE, identity.chatKey)).toBe(0);
+        return;
+      }
+      await core.recoverPendingQueue(identity.chatKey, undefined, undefined, false);
+      if (legacyMissing) {
+        expect(calls).toEqual([]);
+        expect(listRunContinuations(f.db, OUTWARD_ACP_SURFACE)[0]).toMatchObject({ state: "failed", error: expect.stringMatching(/configur/i) });
+        return;
+      }
+      if (expired) {
+        expect(calls).toEqual([]);
+        expect(listRunContinuations(f.db, OUTWARD_ACP_SURFACE)[0]).toMatchObject({ state: "expired" });
+        expect(f.db.pendingMsgCount(OUTWARD_ACP_SURFACE, identity.chatKey)).toBe(0);
+        const key = `run-continuation:v1:${wake.id}`;
+        f.db.admitMessage(OUTWARD_ACP_SURFACE, identity.chatKey, {
+          prompt: "duplicate after crash", chatId: f.session.sessionId, chatType: "acp", scheduledOccurrenceKey: key,
+        }, 5, true);
+        await core.recoverPendingQueue(identity.chatKey, undefined, undefined, false);
+        expect(JSON.parse(f.db.getSetting(`outward-queue-receipt:${key}`)!)).toMatchObject({ status: "expired" });
+        expect(calls).toEqual([]);
+        return;
+      }
+      expect(calls).toEqual(["claude"]);
+      const settledWake = listRunContinuations(f.db, OUTWARD_ACP_SURFACE)[0];
+      if (rotated) {
+        expect(settledWake.state).toBe("claimed");
+        expect(settledWake.claimToken).toBe("different-token");
+        expect(f.db.pendingMsgCount(OUTWARD_ACP_SURFACE, identity.chatKey)).toBe(1);
+        expect(f.db.getSetting(`outward-queue-receipt:run-continuation:v1:${wake.id}`)).toBeNull();
+        return;
+      }
+      if (missing) {
+        expect(settledWake).toMatchObject({ state: "failed", error: "successor objective outcome unresolved" });
+        expect(JSON.parse(f.db.getSetting(`outward-queue-receipt:run-continuation:v1:${wake.id}`)!)).toMatchObject({ status: "failed" });
+        return;
+      }
+      expect(settledWake.state).toBe("completed");
+      const linked = settledWake.successorRunId;
+      expect(linked).toBeTruthy();
+      expect(f.db.getRun(linked!)).toMatchObject({ bot: "claude", status: "done", outcome_status: continued ? "continue" : "complete" });
+      await core.recoverPendingQueue(identity.chatKey, undefined, undefined, false);
+      expect(calls).toEqual(["claude"]);
+    } finally { await executor.shutdown(); f.cleanup(); }
   });
 
   it("a supervised owner drains accepted work with no connected client", async () => {
