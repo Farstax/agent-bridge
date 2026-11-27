@@ -260,6 +260,39 @@ describe("outward ACP Workstreams (#1101)", () => {
     expect(f.db.raw.prepare("SELECT key FROM settings WHERE key LIKE ?").all(`${OUTWARD_USER_TURN_OPERATION_PREFIX}%`)).toEqual([]);
   });
 
+  it("uses the last retained assistant completion time for combined responses", async () => {
+    const f = fixture();
+    f.sessions.historyPage = (conversationId, beforeId) =>
+      f.db.getConvHistoryPage(conversationId, 50, beforeId, OUTWARD_ACP_SURFACE);
+    f.repo.create({ sessionId: "history-time", conversationId: "acp:history-time", cwd: f.root });
+    const add = (role: "user" | "assistant", text: string, time: string) =>
+      f.db.addConvTurn("acp:history-time", role, text, undefined, { surfaceIdentity: OUTWARD_ACP_SURFACE }, time);
+    const submitted = "2026-11-27T07:32:00Z";
+    const first = "2026-11-27T07:34:00Z";
+    const final = "2026-11-27T08:47:00Z";
+    const next = "2026-11-27T08:49:00Z";
+    add("user", "Finish the work", submitted);
+    add("assistant", "Progress. ", first);
+    add("assistant", "Completed.", final);
+    // Move the combined exchange to an older page; it must still retain its final time.
+    for (let i = 0; i < 50; i++) {
+      add("user", "Next " + i, next);
+      add("assistant", "Answer " + i, next);
+    }
+    const app = agent(f, { workstreams: executor(f.db, []) });
+    type Page = { messages: Array<{ id: string; text: string; createdAt: string }>; nextCursor: number | null };
+    const params = { sessionId: "history-time", cwd: f.root };
+    const page = await call<Page>(app, WORKSTREAM_METHODS.historyPage, params);
+    expect(page.messages[1]).toMatchObject({ id: "history-time:assistant:1", text: "Answer 0", createdAt: next });
+    expect(page.nextCursor).not.toBeNull();
+    const previous = await call<Page>(app, WORKSTREAM_METHODS.historyPage, { ...params, beforeId: page.nextCursor });
+    expect(previous.messages).toEqual([
+      { id: "history-time:user:0", role: "user", text: "Finish the work", createdAt: submitted, state: "complete" },
+      { id: "history-time:assistant:0", role: "assistant", text: "Progress. Completed.", createdAt: final, state: "complete" },
+    ]);
+    expect(await call<Page>(app, WORKSTREAM_METHODS.historyPage, { ...params, beforeId: page.nextCursor })).toEqual(previous);
+  });
+
   it("authorizes and serves complete 50-turn pages through the outward ACP extension", async () => {
     const f = fixture();
     f.sessions.historyPage = (conversationId, beforeId) =>
