@@ -252,10 +252,13 @@ describe("outward ACP durable capacity worker (#1114)", () => {
           expect(wake.successorRunId).toBeUndefined();
           expect(wake.error).toMatch(/configur/i);
           expect(wake.error).not.toContain("authority changed");
+          expect(db.getSetting("outward-run-accepted-turn:v1:agy-origin")).toBeNull();
         } else {
           expect(calls).toEqual([switched ? { provider: awayBack ? "antigravity" : "codex", nativeSession: proven ? "intervening-session" : null }
             : { provider: "antigravity", nativeSession: "agy-native-session" }]);
           expect(wake).toMatchObject({ state: "completed", successorRunId: "agy-successor" });
+          // Provenance is retired once no live wake traces to the accepted turn.
+          expect(db.getSetting("outward-run-accepted-turn:v1:agy-origin")).toBeNull();
           expect(db.getRun("agy-successor")).toMatchObject({
             status: "done", bot: switched && !awayBack ? "codex" : "antigravity", session_id: proven ? "intervening-session" : awayBack ? "agy-new-session" : switched ? "codex-native-session" : "agy-native-session", outcome_status: "complete",
           });

@@ -26,7 +26,7 @@ import { QUEUED_ATTACHMENT_MARKER, readRetainedOutwardAcpAttachments, retainOutw
 import { rememberQueuedDisplay, settleQueuedDisplay, retireQueuedDisplay } from "./queuedDisplay.js";
 import { resolveLaneBusyMessageMode } from "../busyMessageMode.js";
 import { discardDeskRunArtifacts, retainDeskArtifacts } from "./artifacts.js";
-import { hasPendingCapacityWait, acceptedContinuationObjective, provenReselectedOriginBinding, outwardSelectionRevision, outwardSelectionRevisionKey, listRunContinuations, linkCapacityContinuationRun, linkRunContinuationRun, RUN_CONTINUATION_PREFIX, OUTWARD_RUN_ACCEPTED_TURN_PREFIX, requestRunContinuation, rolloutRecoveryProviderAuthority, cancelPendingRunContinuation, settleRunContinuation, type RunContinuation } from "../runContinuation.js";
+import { hasPendingCapacityWait, acceptedContinuationObjective, ordinaryWakeBindingAuthorised, outwardSelectionRevision, outwardSelectionRevisionKey, listRunContinuations, linkCapacityContinuationRun, linkRunContinuationRun, RUN_CONTINUATION_PREFIX, OUTWARD_RUN_ACCEPTED_TURN_PREFIX, requestRunContinuation, rolloutRecoveryProviderAuthority, cancelPendingRunContinuation, settleRunContinuation, type RunContinuation } from "../runContinuation.js";
 
 
 import { OUTWARD_ACP_SURFACE, outwardServiceId, recoverOutwardLanes } from "./recovery.js";
@@ -92,6 +92,8 @@ type QueuedExecution = {
   key: string;
   retainedId: string | null;
   ordinaryClaimToken?: string;
+  /** Ordinary wake admission was refused before any successor Run existed. */
+  admissionRefused?: string;
   settled?: boolean;
   coreOutcome?: "committed" | "deferred" | "settled";
 };
@@ -886,14 +888,10 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
           }
           const recovery = input.ordinaryResume.rolloutRecovery
             ? rolloutRecoveryProviderAuthority(db, claimed) : null;
-          const switchedWithoutBinding = claimed.selectionRevision !== undefined &&
-            outwardSelectionRevision(db, identity.chatKey) > claimed.selectionRevision &&
-            !boundProvider && Boolean(acceptedContinuationObjective(db, claimed));
           const bindingMatches = input.ordinaryResume.rolloutRecovery
             ? Boolean(recovery && (boundProvider ?? undefined) === recovery.providerSessionId)
-            : Boolean(input.ordinaryResume.providerSessionId && boundProvider === input.ordinaryResume.providerSessionId &&
-              (boundProvider === origin.session_id || provenReselectedOriginBinding(db, claimed, boundProvider))) ||
-              Boolean(switchedWithoutBinding);
+            : (input.ordinaryResume.providerSessionId ?? null) === boundProvider &&
+              ordinaryWakeBindingAuthorised(db, claimed, origin.session_id, boundProvider);
           const revision = outwardSelectionRevision(db, input.session.conversationId);
           const switched = claimed?.selectionRevision !== undefined && revision > claimed.selectionRevision;
           if (switched && !input.ordinaryResume.rolloutRecovery) {
@@ -1143,7 +1141,8 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
           if (db.getRun(runId)?.status === "running") {
             eventStore!.collect(active!.cancelRequested
               ? cancelledEvent(runId, actualProvider, input.session, active!.cancelReason ?? "shutdown")
-              : providerCancelled ?? cancelledEvent(runId, actualProvider, input.session, "user"));
+              : providerCancelled ?? cancelledEvent(runId, actualProvider, input.session,
+                db.getSetting(stopFenceKey(input.session.conversationId)) ? "user" : "provider"));
           }
         } else if (completed) {
           eventStore!.queueCompleted(completed);
@@ -1202,6 +1201,10 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
         console.warn("[acp:outward] could not reclaim failed Desk artifacts");
       });
       if (error instanceof QueuedMessageStopped) return { stopReason: "cancelled" };
+      if (!eventStore && input.ordinaryResume && queued &&
+          !(error instanceof Error && error.name === "ProviderExecutionCapacityError")) {
+        queued.admissionRefused = error instanceof Error ? error.message : String(error);
+      }
       if (!eventStore && input.ordinaryResume && db.ownsLock(lane)) {
         db.runWithLockFence(lane, () => {
           const wake = listRunContinuations(db, OUTWARD_ACP_SURFACE).find((item) => item.id === input.ordinaryResume!.id);
@@ -1416,6 +1419,23 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
       return attempts < QUEUE_CAPACITY_RETRIES ? "deferred" : "committed";
     }
     const run = db.getRun(runId);
+    if (!run && queued.admissionRefused && queued.ordinaryClaimToken) {
+      // A refusal before Run creation is a truthful terminal disposition
+      // (for example a worker chain missing the provider), not an expiry.
+      const reason = queued.admissionRefused;
+      const refused = db.runInImmediateTransaction(() => {
+        if (!db.ownsPendingClaim(queued.laneHandle, queued.id) || db.getSetting(queueRunLinkKey(queued.key))) return false;
+        const wakeId = queued.key.slice(RUN_CONTINUATION_PREFIX.length);
+        const wake = listRunContinuations(db, OUTWARD_ACP_SURFACE).find((item) => item.id === wakeId);
+        if (!wake || wake.state !== "claimed" || wake.claimToken !== queued.ordinaryClaimToken || wake.successorRunId ||
+            wake.outwardSessionId !== session.sessionId || wake.chatKey !== session.conversationId) return false;
+        settleRunContinuation(db, wake.id, "failed", reason, Date.now(), wake.claimToken);
+        this.writeQueueReceipt(queued.key, { status: "failed",
+          reason: /not configured/.test(reason) ? "provider_not_configured" : "ordinary_continuation_admission_refused" });
+        return true;
+      });
+      if (refused) return "committed";
+    }
     if (!run || run.status === "running") return "settled"; // preserve the run link and claimed row; never replay uncertain work
     const settled = db.runInImmediateTransaction(() => {
       if (!db.ownsPendingClaim(queued.laneHandle, queued.id)) return false;
@@ -1480,12 +1500,8 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor,
       this.identity(session), ordinaryWait.provider) : null;
     const recovery = ordinaryWait?.rolloutRecoveryOnly && ordinaryWait.state === "claimed"
       ? rolloutRecoveryProviderAuthority(this.options.db, ordinaryWait) : null;
-    const switchedWithoutBinding = ordinaryWait?.selectionRevision !== undefined &&
-      outwardSelectionRevision(this.options.db, session.conversationId) > ordinaryWait.selectionRevision &&
-      !providerSessionId && Boolean(acceptedContinuationObjective(this.options.db, ordinaryWait));
-    const regular = !ordinaryWait?.rolloutRecoveryOnly && origin?.status === "done"
-      && origin.session_id && (origin.session_id === providerSessionId || switchedWithoutBinding ||
-        provenReselectedOriginBinding(this.options.db, ordinaryWait!, providerSessionId));
+    const regular = Boolean(ordinaryWait && !ordinaryWait.rolloutRecoveryOnly && origin?.status === "done"
+      && ordinaryWakeBindingAuthorised(this.options.db, ordinaryWait, origin.session_id, providerSessionId));
     const ordinaryResume = ordinaryWait?.state === "claimed" && ordinaryWait.claimToken &&
       ordinaryWait.provider !== "custom-acp" &&
       ordinaryWait.outwardSessionId === session.sessionId &&

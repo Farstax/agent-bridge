@@ -477,8 +477,23 @@ export function provenReselectedOriginBinding(db: BridgeDb, wake: RunContinuatio
     run.bot === wake.provider && run.session_id === sessionId && run.status === "done");
 }
 
-/** Follow durable successor links to the accepted objective, never timestamps. */
-export function acceptedContinuationObjective(db: BridgeDb, wake: RunContinuation): { id: number; text: string } | null {
+/**
+ * The wake's native binding is still authorised: the origin session, a binding
+ * re-established by a completed Run after deliberate reselection, or no binding
+ * after a deliberate switch whose accepted objective is durably linked.
+ */
+export function ordinaryWakeBindingAuthorised(db: BridgeDb, wake: RunContinuation,
+  originSessionId: string | null | undefined, boundSessionId: string | null): boolean {
+  if (!originSessionId) return false;
+  if (boundSessionId === originSessionId) return true;
+  const switched = Boolean(wake.outwardSessionId) && wake.selectionRevision !== undefined &&
+    outwardSelectionRevision(db, wake.chatKey) > wake.selectionRevision;
+  if (switched && !boundSessionId) return Boolean(acceptedContinuationObjective(db, wake));
+  return provenReselectedOriginBinding(db, wake, boundSessionId);
+}
+
+/** Follow durable successor links to the Run holding the accepted-turn link, never timestamps. */
+function acceptedObjectiveRunId(db: BridgeDb, wake: RunContinuation): string | null {
   if (wake.surfaceIdentity !== "acp:outward" || !wake.outwardSessionId) return null;
   let runId = wake.originRunId;
   const seen = new Set<string>();
@@ -486,15 +501,7 @@ export function acceptedContinuationObjective(db: BridgeDb, wake: RunContinuatio
     seen.add(runId);
     const run = db.getRun(runId);
     if (!run || run.surface_identity !== wake.surfaceIdentity || run.chat_id !== wake.chatKey) return null;
-    const link = db.getSetting(OUTWARD_RUN_ACCEPTED_TURN_PREFIX + runId);
-    if (link) {
-      if (!/^[1-9][0-9]*$/.test(link)) return null;
-      const id = Number(link);
-      const turn = db.raw.prepare("SELECT id, text FROM conversation_turns WHERE id = ? AND chat_key = ? AND surface_identity = ? AND role = 'user'")
-        .get(id, wake.chatKey, wake.surfaceIdentity) as { id: number; text: string } | undefined;
-      if (!turn?.text?.trim() || turn.text.length > 160_000 || /^\/(?:stop|cancel|reset)(?:\s|$)/i.test(turn.text)) return null;
-      return turn;
-    }
+    if (db.getSetting(OUTWARD_RUN_ACCEPTED_TURN_PREFIX + runId)) return runId;
     const parents = listRunContinuations(db, wake.surfaceIdentity).filter((parent) =>
       !parent.capacityWait && parent.successorRunId === runId && parent.chatKey === wake.chatKey &&
       parent.outwardSessionId === wake.outwardSessionId);
@@ -502,6 +509,26 @@ export function acceptedContinuationObjective(db: BridgeDb, wake: RunContinuatio
     runId = parents[0].originRunId;
   }
   return null;
+}
+
+export function acceptedContinuationObjective(db: BridgeDb, wake: RunContinuation): { id: number; text: string } | null {
+  const runId = acceptedObjectiveRunId(db, wake);
+  const link = runId ? db.getSetting(OUTWARD_RUN_ACCEPTED_TURN_PREFIX + runId) : null;
+  if (!link || !/^[1-9][0-9]*$/.test(link)) return null;
+  const turn = db.raw.prepare("SELECT id, text FROM conversation_turns WHERE id = ? AND chat_key = ? AND surface_identity = ? AND role = 'user'")
+    .get(Number(link), wake.chatKey, wake.surfaceIdentity) as { id: number; text: string } | undefined;
+  if (!turn?.text?.trim() || turn.text.length > 160_000 || /^\/(?:stop|cancel|reset)(?:\s|$)/i.test(turn.text)) return null;
+  return turn;
+}
+
+/** Retire accepted-turn provenance once no live ordinary wake still traces to it. */
+function retireAcceptedObjectiveLink(db: BridgeDb, settled: RunContinuation): void {
+  const rootRunId = acceptedObjectiveRunId(db, settled);
+  if (!rootRunId || db.getRun(rootRunId)?.status === "running") return;
+  const live = listRunContinuations(db, settled.surfaceIdentity).some((wake) => wake.id !== settled.id &&
+    !wake.capacityWait && wake.chatKey === settled.chatKey && (wake.state === "pending" || wake.state === "claimed") &&
+    acceptedObjectiveRunId(db, wake) === rootRunId);
+  if (!live) db.raw.prepare("DELETE FROM settings WHERE key = ?").run(OUTWARD_RUN_ACCEPTED_TURN_PREFIX + rootRunId);
 }
 
 /** Strictly attribute an interrupted Run to exactly one accepted user turn. */
@@ -787,17 +814,13 @@ export function claimDueRunContinuation(
     }
 
     const boundSessionId = lookupProviderSession(db, { surfaceIdentity: current.surfaceIdentity, chatKey: current.chatKey }, current.provider);
-    const switchedWithoutBinding = current.outwardSessionId && current.selectionRevision !== undefined &&
-      outwardSelectionRevision(db, current.chatKey) > current.selectionRevision && !boundSessionId &&
-      Boolean(acceptedContinuationObjective(db, current));
     if (
       originRun.status !== "done"
       || originRun.surface_identity !== current.surfaceIdentity
       || originRun.chat_id !== current.chatKey
       || originRun.bot !== current.provider
       || !originRun.session_id
-      || (boundSessionId !== originRun.session_id && !switchedWithoutBinding &&
-        !provenReselectedOriginBinding(db, current, boundSessionId))
+      || !ordinaryWakeBindingAuthorised(db, current, originRun.session_id, boundSessionId)
     ) {
       return cancel(
         originRun.status !== "done"
@@ -897,6 +920,7 @@ export function settleRunContinuation(
       completedAt: new Date(nowMs).toISOString(),
       ...(outcome === "failed" && error ? { error: error.slice(0, 500) } : {}),
     };
+    if (current.outwardSessionId && !current.capacityWait) retireAcceptedObjectiveLink(db, current);
     db.raw.prepare("UPDATE settings SET value = ? WHERE key = ?").run(JSON.stringify(settled), key(id));
   });
 }

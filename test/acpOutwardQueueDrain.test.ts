@@ -135,10 +135,10 @@ describe("outward ACP durable queue ownership", () => {
     } finally { release(); f.cleanup(); }
   });
 
-  it.each([[false, false, false, false, false, false], [true, false, false, false, false, false], [false, true, false, false, false, false],
-    [false, false, true, false, false, false], [false, false, false, true, false, false], [false, false, false, false, true, false],
-    [false, false, false, false, false, true]])
-    ("settles queued wakes (stop=%s expiry=%s missing=%s rotated=%s continue=%s legacyMissing=%s)", async (stop, expired, missing, rotated, continued, legacyMissing) => {
+  it.each([[false, false, false, false, false, false, false], [true, false, false, false, false, false, false], [false, true, false, false, false, false, false],
+    [false, false, true, false, false, false, false], [false, false, false, true, false, false, false], [false, false, false, false, true, false, false],
+    [false, false, false, false, false, true, false], [false, false, false, false, false, false, true]])
+    ("settles queued wakes (stop=%s expiry=%s missing=%s rotated=%s continue=%s legacyMissing=%s staleWorker=%s)", async (stop, expired, missing, rotated, continued, legacyMissing, staleWorker) => {
     const f = fixture();
     const identity = { surfaceIdentity: OUTWARD_ACP_SURFACE, chatKey: f.session.conversationId };
     const lookup = (id: string) => new OutwardAcpSessionRepository(f.db.raw).get(id);
@@ -179,13 +179,13 @@ describe("outward ACP durable queue ownership", () => {
       const lane = f.db.acquireLock(OUTWARD_ACP_SURFACE, identity.chatKey)!;
       expect(await resumeOutwardOrdinaryContinuation(f.db, lookup, executor, claimed)).toBe("queued");
       f.db.unlock(lane);
-      if (!legacyMissing) expect(executor.selectProvider(f.session, "claude").selectedProvider).toBe("claude");
+      if (!legacyMissing && !staleWorker) expect(executor.selectProvider(f.session, "claude").selectedProvider).toBe("claude");
       const queuedWake = listRunContinuations(f.db, OUTWARD_ACP_SURFACE)[0];
       const persistedWake = { ...queuedWake, claimExpiresAt: new Date(Date.now() - 1).toISOString(),
         ...(expired ? { expiresAt: new Date(Date.now() - 1).toISOString() } : {}) };
       if (legacyMissing) delete persistedWake.selectionRevision;
       f.db.setSetting(`run-continuation:v1:${wake.id}`, JSON.stringify(persistedWake));
-      if (legacyMissing) {
+      if (legacyMissing || staleWorker) {
         await executor.shutdown();
         executor = new BridgeOutwardAcpPromptExecutor({ db: f.db, providerChain: ["claude"], enableDeferredCapacity: true,
           lookupSession: lookup, createEngine: () => ({ executeSurfaceNeutralTurn: async () => { calls.push("unexpected"); throw new Error("unexpected invocation"); } }) });
@@ -199,9 +199,15 @@ describe("outward ACP durable queue ownership", () => {
         return;
       }
       await core.recoverPendingQueue(identity.chatKey, undefined, undefined, false);
-      if (legacyMissing) {
+      if (legacyMissing || staleWorker) {
+        // A worker chain missing the unchanged provider is a configuration
+        // failure, settled now rather than left claimed until expiry.
         expect(calls).toEqual([]);
         expect(listRunContinuations(f.db, OUTWARD_ACP_SURFACE)[0]).toMatchObject({ state: "failed", error: expect.stringMatching(/configur/i) });
+        expect(listRunContinuations(f.db, OUTWARD_ACP_SURFACE)[0].error).not.toContain("authority changed");
+        expect(JSON.parse(f.db.getSetting(`outward-queue-receipt:run-continuation:v1:${wake.id}`)!))
+          .toMatchObject({ status: "failed", reason: "provider_not_configured" });
+        expect(f.db.pendingMsgCount(OUTWARD_ACP_SURFACE, identity.chatKey)).toBe(0);
         return;
       }
       if (expired) {
